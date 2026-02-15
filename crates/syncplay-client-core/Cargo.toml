@@ -1,0 +1,15 @@
+[package]
+name = "syncplay-client-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+syncplay-core = { path = "../syncplay-core" }
+syncplay-protocol = { path = "../syncplay-protocol" }
+syncplay-player-api = { path = "../syncplay-player-api" }
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true

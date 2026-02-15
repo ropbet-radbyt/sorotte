@@ -1,0 +1,7 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}}
+{"client":"client-2","message":{"Set":{"playlistIndex":{"index":1}}}}
+{"client":"client-1","message":{"Set":{"controllerAuth":{"room":"room1","password":"secret"}}}}
+{"client":"client-1","message":{"Set":{"newControlledRoom":{"password":"secret","roomName":"managed-room"}}}}
+{"client":"client-2","message":{"List":null}}

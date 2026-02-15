@@ -1,0 +1,9 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"permanent-room"},"version":"9.9.9","features":{"chat":false,"featureList":false,"managedRooms":true,"persistentRooms":false,"readiness":true,"sharedPlaylists":true,"uiMode":"CLI"}}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":["episode1.mkv"]}}}}
+{"client":"client-1","message":{"Set":{"playlistIndex":{"index":0}}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":[]}}}}
+{"client":"client-1","message":{"State":{"playstate":{"position":12.0,"paused":true,"doSeek":true}}}}
+{"client":"client-1","message":{"Set":{"room":{"name":"lobby"}}}}
+{"client":"client-2","message":{"Hello":{"username":"gui-user","room":{"name":"lobby"},"version":"9.9.9","features":{"chat":false,"featureList":false,"managedRooms":true,"persistentRooms":false,"readiness":true,"sharedPlaylists":true,"uiMode":"GUI"}}}}
+{"client":"client-2","message":{"List":null}}
+{"client":"client-3","message":{"Hello":{"username":"bob","room":{"name":"permanent-room"},"version":"9.9.9","features":{"chat":false,"featureList":false,"managedRooms":true,"persistentRooms":false,"readiness":true,"sharedPlaylists":true,"uiMode":"CLI"}}}}

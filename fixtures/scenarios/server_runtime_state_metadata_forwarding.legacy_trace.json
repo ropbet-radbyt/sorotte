@@ -1,0 +1,293 @@
+{
+  "scenario": "server_runtime_state_metadata_forwarding.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice",
+              "version": "1.2.255"
+            }
+          }
+        }
+      ],
+      "step": 1
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "bob": {
+                  "event": {
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "bob",
+              "version": "1.2.255"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770681141.4701202,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770681141.5318494,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 2
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "client": 4,
+                "server": 1
+              },
+              "ping": {
+                "clientLatencyCalculation": 124.10002145767211,
+                "latencyCalculation": 1770681141.600737,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 12.5,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "server": 1
+              },
+              "ping": {
+                "latencyCalculation": 1770681141.6007836,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 12.5,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 3
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "server": 1
+              },
+              "ping": {
+                "latencyCalculation": 1770681141.6689897,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 13.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "server": 2
+              },
+              "ping": {
+                "latencyCalculation": 1770681141.669012,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 13.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 4
+    },
+    {
+      "outputs": [],
+      "step": 5
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "client": 8,
+                "server": 1
+              },
+              "ping": {
+                "clientLatencyCalculation": 126.1629162788391,
+                "latencyCalculation": 1770681141.7989106,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 14.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ignoringOnTheFly": {
+                "server": 3
+              },
+              "ping": {
+                "latencyCalculation": 1770681141.7989335,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": true,
+                "paused": true,
+                "position": 14.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 6
+    }
+  ]
+}

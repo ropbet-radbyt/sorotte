@@ -1,0 +1,1248 @@
+{
+  "scenario": "server_runtime_persistent_rooms_timeout_list_updates.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": true,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice",
+              "version": "9.9.9"
+            }
+          }
+        }
+      ],
+      "step": 1
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "bob": {
+                  "event": {
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": true,
+                      "persistentRooms": false,
+                      "readiness": true,
+                      "sharedPlaylists": true,
+                      "uiMode": "CLI"
+                    },
+                    "joined": true,
+                    "version": "9.9.9"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": true,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "bob",
+              "version": "9.9.9"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688787.108917,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688787.1712675,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 2
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "charlie": {
+                  "event": {
+                    "features": {
+                      "__syncplay_rs_missing_features__": true
+                    },
+                    "joined": true,
+                    "version": "9.9.9"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "__syncplay_rs_missing_features__": true
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "user": {
+                "charlie": {
+                  "event": {
+                    "features": {
+                      "__syncplay_rs_missing_features__": true
+                    },
+                    "joined": true,
+                    "version": "9.9.9"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "__syncplay_rs_missing_features__": true
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": true,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "charlie",
+              "version": "9.9.9"
+            }
+          }
+        }
+      ],
+      "step": 3
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688788.120716,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688789.1172855,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688790.1125562,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688791.109111,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688792.1222584,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688793.1213353,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688794.1183157,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688795.1194954,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688796.1224506,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688797.1202116,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688788.1819315,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688789.179777,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688790.1749842,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688791.1859553,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688792.1846197,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688793.183238,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688794.1833577,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688795.1823685,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688796.1849704,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688797.1829145,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688787.3437314,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688788.3549678,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688789.3499973,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688790.3440664,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688791.3562584,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688792.3552444,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688793.3538644,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688794.353881,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688795.356432,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688796.356199,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688797.355055,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 4
+    },
+    {
+      "outputs": [],
+      "step": 5
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688798.1200142,
+                "serverRtt": 1770688787.306535
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688799.116373,
+                "serverRtt": 1770688787.306535
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688800.1113942,
+                "serverRtt": 1770688787.306535
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "bob": {
+                  "event": {
+                    "left": true
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "__syncplay_rs_missing_features__": true
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688798.181004,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688799.1784463,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688800.174326,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "user": {
+                "bob": {
+                  "event": {
+                    "left": true
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688798.3537424,
+                "serverRtt": 1770688787.4233062
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688799.3490815,
+                "serverRtt": 1770688787.4233062
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "user": {
+                "bob": {
+                  "event": {
+                    "left": true
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770688800.3476176,
+                "serverRtt": 1770688787.4233062
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 6
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "__syncplay_rs_missing_features__": true
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "step": 7
+    }
+  ]
+}

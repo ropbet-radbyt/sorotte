@@ -1,0 +1,6 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":true},"ping":{"clientLatencyCalculation":124.1,"clientRtt":0.12},"ignoringOnTheFly":{"client":4}}}}
+{"client":"client-1","message":{"State":{"ignoringOnTheFly":{"server":1},"playstate":{"position":13.0,"paused":true,"doSeek":true}}}}
+{"client":"client-1","message":{"State":{"ping":{"clientLatencyCalculation":126.1,"clientRtt":0.10},"ignoringOnTheFly":{"client":8}}}}
+{"client":"client-1","message":{"State":{"ignoringOnTheFly":{"server":1},"playstate":{"position":14.0,"paused":true,"doSeek":true}}}}

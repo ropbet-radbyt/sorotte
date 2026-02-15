@@ -1,0 +1,4 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-3","message":{"Hello":{"username":"alice_","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"List":null}}

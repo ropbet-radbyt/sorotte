@@ -1,0 +1,11 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"Set":{"controllerAuth":{"room":"room1","password":"AB-123-456"}}}}
+{"client":"client-1","message":{"Set":{"room":{"name":"+room1:CB39A19549E8"}}}}
+{"client":"client-2","message":{"Set":{"room":{"name":"+room1:CB39A19549E8"}}}}
+{"client":"client-2","message":{"Set":{"playlistChange":{"files":["rogue1.mkv"]}}}}
+{"client":"client-1","message":{"Set":{"controllerAuth":{"room":"+room1:CB39A19549E8","password":"AB-123-456"}}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}}
+{"client":"client-2","message":{"Set":{"playlistIndex":{"index":1}}}}
+{"client":"client-1","message":{"Set":{"playlistIndex":{"index":1}}}}
+{"client":"client-2","message":{"List":null}}

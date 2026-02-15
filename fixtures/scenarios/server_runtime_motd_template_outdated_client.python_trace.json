@@ -1,0 +1,44 @@
+{
+  "scenario": "server_runtime_motd_template_outdated_client.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl\nCompat MOTD latest=1.7.5",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "motd-room"
+              },
+              "username": "motd-user",
+              "version": "1.2.255"
+            }
+          }
+        }
+      ],
+      "step": 1
+    }
+  ]
+}

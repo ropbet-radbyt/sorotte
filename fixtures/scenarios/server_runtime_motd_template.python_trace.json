@@ -1,0 +1,44 @@
+{
+  "scenario": "server_runtime_motd_template.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "Compat MOTD latest=1.7.5",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "motd-room"
+              },
+              "username": "motd-user",
+              "version": "1.7.5"
+            }
+          }
+        }
+      ],
+      "step": 1
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "scenario": "server_runtime_persistent_rooms_notice.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": true,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "persistent-room"
+              },
+              "username": "persistent-user",
+              "version": "9.9.9"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "persistent-room": {
+                "persistent-user": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "step": 1
+    }
+  ]
+}

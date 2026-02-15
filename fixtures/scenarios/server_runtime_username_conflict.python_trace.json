@@ -1,0 +1,296 @@
+{
+  "scenario": "server_runtime_username_conflict.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice",
+              "version": "1.2.255"
+            }
+          }
+        }
+      ],
+      "step": 1
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "alice_": {
+                  "event": {
+                    "features": null,
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice_",
+              "version": "1.2.255"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 0.0,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 0.0,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 2
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "alice__": {
+                  "event": {
+                    "features": null,
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "user": {
+                "alice__": {
+                  "event": {
+                    "features": null,
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": []
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "featureList": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true,
+                "uiMode": "UNKNOWN"
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice__",
+              "version": "1.2.255"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 0.0,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 0.0,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 0.0,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 3
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                },
+                "alice_": {
+                  "controller": false,
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                },
+                "alice__": {
+                  "controller": false,
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "step": 4
+    }
+  ]
+}

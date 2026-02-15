@@ -1,0 +1,15 @@
+[package]
+name = "syncplay-compat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+syncplay-protocol = { path = "../syncplay-protocol" }
+syncplay-server = { path = "../syncplay-server" }
+thiserror.workspace = true
+
+[dev-dependencies]
+syncplay-client-core = { path = "../syncplay-client-core" }

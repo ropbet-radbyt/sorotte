@@ -1,0 +1,10 @@
+[package]
+name = "syncplay-player-mpv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+syncplay-player-api = { path = "../syncplay-player-api" }

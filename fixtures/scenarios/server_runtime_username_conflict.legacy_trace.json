@@ -1,0 +1,322 @@
+{
+  "scenario": "server_runtime_username_conflict.jsonl",
+  "steps": [
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice",
+              "version": "1.2.255"
+            }
+          }
+        }
+      ],
+      "step": 1
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "alice_": {
+                  "event": {
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice_",
+              "version": "1.2.255"
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770681157.2343173,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770681157.2970788,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 2
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "user": {
+                "alice__": {
+                  "event": {
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "user": {
+                "alice__": {
+                  "event": {
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
+                    "joined": true,
+                    "version": "1.2.255"
+                  },
+                  "room": {
+                    "name": "room1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "playlistChange": {
+                "files": [],
+                "user": null
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Hello": {
+              "features": {
+                "chat": true,
+                "isolateRooms": false,
+                "managedRooms": true,
+                "maxChatMessageLength": 150,
+                "maxFilenameLength": 250,
+                "maxRoomNameLength": 35,
+                "maxUsernameLength": 16,
+                "persistentRooms": false,
+                "readiness": true,
+                "setOthersReadiness": true
+              },
+              "motd": "You are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl",
+              "realversion": "1.7.5",
+              "room": {
+                "name": "room1"
+              },
+              "username": "alice__",
+              "version": "1.2.255"
+            }
+          }
+        }
+      ],
+      "step": 3
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "alice_": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                },
+                "alice__": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": null,
+                  "position": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1770681157.480985,
+                "serverRtt": 0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0,
+                "setBy": null
+              }
+            }
+          }
+        }
+      ],
+      "step": 4
+    }
+  ]
+}

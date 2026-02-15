@@ -1,0 +1,8 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"Set":{"controllerAuth":{"room":"room1","password":"AB-123-456"}}}}
+{"client":"client-1","message":{"Set":{"room":{"name":"+room1:CB39A19549E8"}}}}
+{"client":"client-1","message":{"State":{"ignoringOnTheFly":{"server":1},"ping":{"latencyCalculation":100.0}}}}
+{"client":"client-2","message":{"Set":{"room":{"name":"+room1:CB39A19549E8"}}}}
+{"client":"client-2","message":{"State":{"ignoringOnTheFly":{"server":1},"ping":{"latencyCalculation":101.0}}}}
+{"client":"client-2","message":{"State":{"playstate":{"position":42.0,"paused":false,"doSeek":false}}}}

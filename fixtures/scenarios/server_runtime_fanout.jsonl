@@ -1,0 +1,7 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"List":null}}
+{"client":"client-1","message":{"Set":{"ready":{"isReady":true,"manuallyInitiated":true}}}}
+{"client":"client-2","message":{"Set":{"room":{"name":"room2"}}}}
+{"client":"client-2","message":{"List":null}}
+{"client":"client-2","message":{"State":{"ignoringOnTheFly":{"server":1},"playstate":{"position":10.0,"paused":false,"doSeek":false}}}}
