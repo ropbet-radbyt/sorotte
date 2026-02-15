@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/syncplay-protocol",
+    "crates/syncplay-core",
+    "crates/syncplay-server",
+    "crates/syncplay-client-core",
+    "crates/syncplay-player-api",
+    "crates/syncplay-player-mpv",
+    "crates/syncplay-cli",
+    "crates/syncplay-sim",
+    "crates/syncplay-compat",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+regex = "1.11.1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha1 = "0.10.6"
+sha2 = "0.10.8"
+thiserror = "2.0.12"
+tokio = { version = "1.44.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.41"
