@@ -442,6 +442,12 @@ pub struct DirectedOutboundLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRuntimeDispatch {
+    pub outbound_lines: Vec<DirectedOutboundLine>,
+    pub transport_actions: Vec<DirectedTransportAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerTransportAction {
     StartTls,
 }
@@ -863,6 +869,19 @@ impl ServerRuntime {
                 })
             })
             .collect()
+    }
+
+    pub fn handle_line_fanout_with_transport_actions(
+        &mut self,
+        client_id: &str,
+        json_line: &str,
+    ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
+        let outbound_lines = self.handle_line_fanout(client_id, json_line)?;
+        let transport_actions = self.drain_transport_actions();
+        Ok(ServerRuntimeDispatch {
+            outbound_lines,
+            transport_actions,
+        })
     }
 
     pub fn handle_protocol_message(
@@ -3083,6 +3102,43 @@ mod tests {
         assert!(
             runtime.drain_transport_actions().is_empty(),
             "transport actions should drain once"
+        );
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn tls_send_dispatch_includes_transport_action_bundle() {
+        let cert_path = temporary_directory_path("tls-dispatch-action");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let mut runtime = ServerRuntime::new();
+        runtime.set_tls_cert_path(Some(cert_path.clone()));
+        let dispatch = runtime
+            .handle_line_fanout_with_transport_actions("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("tls dispatch should be handled");
+        assert_eq!(
+            tls_start_response(
+                &dispatch
+                    .outbound_lines
+                    .iter()
+                    .map(|line| line.line.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .as_deref(),
+            Some("true")
+        );
+        assert!(
+            has_start_tls_transport_action(&dispatch.transport_actions, "client-1"),
+            "dispatch should contain start-tls transport action"
+        );
+        assert!(
+            runtime.drain_transport_actions().is_empty(),
+            "dispatch helper should drain transport action queue"
         );
 
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
