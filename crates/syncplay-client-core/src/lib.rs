@@ -2163,7 +2163,7 @@ impl ClientSession {
         &self,
         message: String,
     ) -> Vec<ClientRuntimeAction> {
-        if self.server_chat_supported == Some(false) {
+        if self.server_chat_supported != Some(true) {
             return Vec::new();
         }
         let sanitized = Self::sanitize_chat_message_legacy_compatible(&message);
@@ -6670,6 +6670,11 @@ mod tests {
     #[test]
     fn outbound_chat_message_truncates_to_configured_max_length() {
         let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
         session.chat_config_mut().max_chat_message_length = 5;
         assert_eq!(
             session.runtime_actions_for_outbound_chat_message("hello world".to_owned()),
@@ -6682,7 +6687,22 @@ mod tests {
     #[test]
     fn outbound_chat_message_is_omitted_when_max_length_is_zero() {
         let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
         session.chat_config_mut().max_chat_message_length = 0;
+        assert!(
+            session
+                .runtime_actions_for_outbound_chat_message("hello world".to_owned())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn outbound_chat_message_is_omitted_before_server_hello() {
+        let session = ClientSession::default();
         assert!(
             session
                 .runtime_actions_for_outbound_chat_message("hello world".to_owned())
@@ -6708,6 +6728,11 @@ mod tests {
     #[test]
     fn outbound_chat_message_strips_newlines_before_truncation() {
         let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
         session.chat_config_mut().max_chat_message_length = 4;
         assert_eq!(
             session.runtime_actions_for_outbound_chat_message("a\nb\rcd".to_owned()),

@@ -3768,6 +3768,15 @@ mod tests {
                 feature_list: Some(json!({"maxChatMessageLength": 7})),
             },
             LegacyClientChatSendContractCase {
+                message: "disconnected transport".to_owned(),
+                protocol_logged: false,
+                server_version: "1.7.5".to_owned(),
+                chat_supported: Some(true),
+                max_chat_message_length: Some(150),
+                derive_server_features: false,
+                feature_list: None,
+            },
+            LegacyClientChatSendContractCase {
                 message: "feature-list disabled".to_owned(),
                 protocol_logged: true,
                 server_version: "1.7.5".to_owned(),
@@ -3833,6 +3842,9 @@ mod tests {
             session
                 .apply_message_json(&hello_line)
                 .expect("hello should apply");
+            if !case.protocol_logged {
+                let _ = session.handle_disconnect(0.0);
+            }
 
             let rust_messages = session
                 .runtime_actions_for_outbound_chat_message(case.message.clone())
