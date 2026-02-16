@@ -176,6 +176,7 @@ enum LocalInputCommand {
     SeekRelative(f64),
     TogglePause,
     ToggleReady,
+    SetRoomWithLegacyFallback,
     SetRoom(String),
 }
 
@@ -259,7 +260,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         return (!room.is_empty()).then(|| LocalInputCommand::SetRoom(room.to_owned()));
     }
     if matches!(trimmed, "room" | "r" | "/room" | "/r") {
-        return None;
+        return Some(LocalInputCommand::SetRoomWithLegacyFallback);
     }
     if matches!(trimmed, "t" | "toggle" | "/t" | "/toggle") {
         return Some(LocalInputCommand::ToggleReady);
@@ -894,6 +895,8 @@ where
                         }
                         LocalInputCommand::TogglePause => runtime.run_toggle_pause()?,
                         LocalInputCommand::ToggleReady => runtime.run_toggle_ready(true)?,
+                        LocalInputCommand::SetRoomWithLegacyFallback => runtime
+                            .run_set_room_with_legacy_fallback(config.room.clone())?,
                         LocalInputCommand::SetRoom(room) => runtime.run_set_room(room)?,
                     };
                     if emitted {
@@ -1372,6 +1375,22 @@ mod tests {
             parse_local_input_command("/r room2"),
             Some(LocalInputCommand::SetRoom("room2".to_owned()))
         );
+        assert_eq!(
+            parse_local_input_command("room"),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
+        assert_eq!(
+            parse_local_input_command("r"),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
+        assert_eq!(
+            parse_local_input_command("/room"),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
+        assert_eq!(
+            parse_local_input_command("/r"),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
     }
 
     #[test]
@@ -1384,8 +1403,6 @@ mod tests {
             parse_local_input_command("chat hello everyone"),
             Some(LocalInputCommand::Chat("hello everyone".to_owned()))
         );
-        assert_eq!(parse_local_input_command("room"), None);
-        assert_eq!(parse_local_input_command("r"), None);
         assert_eq!(parse_local_input_command("/unknown hello"), None);
     }
 
@@ -2264,6 +2281,123 @@ mod tests {
             sender
                 .send("room room2".to_owned())
                 .expect("room command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_sets_room_with_legacy_fallback_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let mut set_room_name = None;
+            for _ in 0..4 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("set room line read should not timeout")
+                    .expect("set room line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if let Some(room) = payload.set.room {
+                    set_room_name = Some(room.name);
+                    break;
+                }
+            }
+            let Some(set_room_name) = set_room_name else {
+                panic!("client should emit Set.room from local room fallback command");
+            };
+            assert_eq!(set_room_name, "fallback-room");
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "fallback-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .send("room".to_owned())
+                .expect("room fallback command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;

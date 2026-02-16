@@ -732,6 +732,17 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_set_room_with_legacy_fallback(
+        &mut self,
+        default_room: impl Into<String>,
+    ) -> Result<bool, PlayerError> {
+        let default_room = default_room.into();
+        let room = self
+            .session
+            .local_room_command_target_with_legacy_fallback(&default_room);
+        self.run_set_room(room)
+    }
+
     pub fn run_toggle_pause(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_pause_toggle();
         let sent = !actions.is_empty();
@@ -1821,6 +1832,15 @@ impl ClientSession {
         vec![ClientRuntimeAction::SetRoom {
             room: room.to_owned(),
         }]
+    }
+
+    pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
+        self.username
+            .as_deref()
+            .and_then(|username| self.user_file_name(username))
+            .filter(|file_name| !file_name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| default_room.to_owned())
     }
 
     pub fn runtime_actions_for_local_pause_toggle(&mut self) -> Vec<ClientRuntimeAction> {
@@ -7225,6 +7245,71 @@ mod tests {
             "unchanged room switch should be ignored"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_room_with_legacy_fallback_prefers_local_file_name() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"movie.mkv"}}}}}"#,
+            )
+            .expect("local file metadata should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room_with_legacy_fallback("fallback-room")
+                .expect("set room fallback should not fail"),
+            "room fallback should emit outbound Set.room from local file name"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.room protocol message");
+        };
+        let room = set_message
+            .set
+            .room
+            .as_ref()
+            .expect("Set message should contain room payload");
+        assert_eq!(room.name, "movie.mkv");
+    }
+
+    #[test]
+    fn client_runtime_set_room_with_legacy_fallback_uses_default_when_no_file() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room_with_legacy_fallback("fallback-room")
+                .expect("set room fallback should not fail"),
+            "room fallback should emit outbound Set.room from default room"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.room protocol message");
+        };
+        let room = set_message
+            .set
+            .room
+            .as_ref()
+            .expect("Set message should contain room payload");
+        assert_eq!(room.name, "fallback-room");
     }
 
     #[test]
