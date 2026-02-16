@@ -297,6 +297,7 @@ impl Default for ChatConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientRuntimeAction {
     SetPaused(bool),
+    RequestUserList,
     SetRoom {
         room: String,
     },
@@ -334,6 +335,7 @@ pub enum ClientRuntimeAction {
 }
 
 pub trait ClientRuntimeControl {
+    fn request_user_list(&mut self) {}
     fn set_room(&mut self, _room: String) {}
     fn set_ready(&mut self, ready: bool, manually_initiated: bool);
     fn set_file(&mut self, _file_payload: Value) {}
@@ -468,6 +470,10 @@ impl QueuedRuntimeControl {
 }
 
 impl ClientRuntimeControl for QueuedRuntimeControl {
+    fn request_user_list(&mut self) {
+        self.outbound_messages.push(ProtocolMessage::list_request());
+    }
+
     fn set_room(&mut self, room: String) {
         let set_payload = SetPayload::new().with_room(RoomRef::new(room));
         self.outbound_messages
@@ -728,6 +734,13 @@ where
 
     pub fn run_toggle_pause(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_pause_toggle();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
+    pub fn run_request_user_list(&mut self) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_user_list_request();
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
             .map(|_| sent)
@@ -1067,6 +1080,9 @@ impl ClientSession {
             match action {
                 ClientRuntimeAction::SetPaused(paused) => {
                     player.set_paused(*paused)?;
+                }
+                ClientRuntimeAction::RequestUserList => {
+                    control.request_user_list();
                 }
                 ClientRuntimeAction::SetRoom { room } => {
                     control.set_room(room.clone());
@@ -1802,6 +1818,13 @@ impl ClientSession {
         let target_paused = !self.local_paused.unwrap_or(false);
         self.local_paused = Some(target_paused);
         vec![ClientRuntimeAction::SetPaused(target_paused)]
+    }
+
+    pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        vec![ClientRuntimeAction::RequestUserList]
     }
 
     pub fn runtime_actions_for_local_seek(
@@ -3343,8 +3366,8 @@ mod tests {
     };
     use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerError};
     use syncplay_protocol::{
-        ChatPayload, IgnoringOnTheFlyPayload, PlaystatePayload, ProtocolMessage, StatePayload,
-        decode_line, decode_message_line,
+        ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PlaystatePayload, ProtocolMessage,
+        StatePayload, decode_line, decode_message_line,
     };
 
     fn scenario_fixture_path(name: &str) -> PathBuf {
@@ -7194,6 +7217,47 @@ mod tests {
             runtime.control().outbound_messages().is_empty(),
             "local pause toggles should not directly emit protocol lines"
         );
+    }
+
+    #[test]
+    fn client_runtime_request_user_list_dispatches_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_request_user_list()
+                .expect("list request should not fail"),
+            "list request should emit outbound List request after hello"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued List protocol message");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
+    }
+
+    #[test]
+    fn client_runtime_request_user_list_is_omitted_before_server_hello() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_request_user_list()
+                .expect("list request should not fail"),
+            "list request should be suppressed before server hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
     }
 
     #[test]
