@@ -18,6 +18,7 @@ use tokio::time::Instant;
 
 const ROUND_HALF_EPSILON: f64 = 1e-12;
 const CONTROL_ROOM_HASH_LEN: usize = 12;
+const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
 static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -241,6 +242,7 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
 enum LocalInputCommand {
     Chat(String),
     RequestUserList,
+    ShowPlaylist,
     SelectPlaylistIndex(i64),
     NextPlaylistItem,
     QueuePlaylistItem {
@@ -331,6 +333,12 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "list" | "l" | "users" | "/list" | "/l" | "/users") {
         return Some(LocalInputCommand::RequestUserList);
+    }
+    if matches!(
+        trimmed,
+        "playlist" | "ql" | "pl" | "/playlist" | "/ql" | "/pl"
+    ) {
+        return Some(LocalInputCommand::ShowPlaylist);
     }
     if let Some(index) = trimmed
         .strip_prefix("select ")
@@ -823,6 +831,38 @@ fn emit_chat_notification(notification: &ChatNotification) -> anyhow::Result<()>
     Ok(())
 }
 
+fn playlist_listing_message_legacy_compatible(session: &ClientSession) -> String {
+    let Some(playlist) = session.current_room_playlist() else {
+        return PLAYLIST_EMPTY_MESSAGE_LEGACY.to_owned();
+    };
+    if playlist.files.is_empty() {
+        return PLAYLIST_EMPTY_MESSAGE_LEGACY.to_owned();
+    }
+
+    let mut playlist_elements: Vec<String> = playlist
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file_name)| format!("\t{}: {}", index + 1, file_name))
+        .collect();
+    if let Some(selected_index) = playlist.index.and_then(|index| usize::try_from(index).ok()) {
+        if selected_index < playlist_elements.len() {
+            playlist_elements[selected_index] = format!(" *{}", playlist_elements[selected_index]);
+        }
+    }
+    playlist_elements.join("\n")
+}
+
+fn emit_playlist_listing_for_current_room(
+    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        playlist_listing_message_legacy_compatible(runtime.session())
+    );
+    Ok(())
+}
+
 fn flush_chat_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -1104,6 +1144,10 @@ where
                             runtime.run_send_chat_message(chat_message)?
                         }
                         LocalInputCommand::RequestUserList => runtime.run_request_user_list()?,
+                        LocalInputCommand::ShowPlaylist => {
+                            emit_playlist_listing_for_current_room(runtime)?;
+                            false
+                        }
                         LocalInputCommand::SelectPlaylistIndex(index) => {
                             runtime.run_set_playlist_index(index)?
                         }
@@ -1304,15 +1348,15 @@ mod tests {
         format_duration_legacy, format_file_difference_summary,
         generate_room_password_legacy_compatible, normalize_controlled_room_input,
         parse_local_input_chat_message, parse_local_input_command,
-        reconnect_transition_notification_message, run_client_network_loop,
-        run_connected_client_session, user_change_notification_hidden_from_osd,
-        user_change_notification_message,
+        playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
+        run_client_network_loop, run_connected_client_session,
+        user_change_notification_hidden_from_osd, user_change_notification_message,
     };
     use std::time::Duration;
     use syncplay_client_core::{
-        AutoplayCountdownNotification, ChatNotification, ControllerAuthTransitionNotification,
-        FileDifferenceSummary, PrivacyMode, ReconnectTransitionNotification,
-        UserChangeNotification,
+        AutoplayCountdownNotification, ChatNotification, ClientSession,
+        ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
+        ReconnectTransitionNotification, UserChangeNotification,
     };
     use syncplay_player_api::PlayerAdapter;
     use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
@@ -1465,6 +1509,43 @@ mod tests {
                 message: "server broadcast".to_owned(),
             }),
             "server broadcast"
+        );
+    }
+
+    #[test]
+    fn playlist_listing_message_legacy_compatible_formats_entries_and_selected_index() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        assert_eq!(
+            playlist_listing_message_legacy_compatible(&session),
+            "\t1: episode1.mkv\n *\t2: episode2.mkv"
+        );
+    }
+
+    #[test]
+    fn playlist_listing_message_legacy_compatible_uses_empty_message_when_no_playlist() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            playlist_listing_message_legacy_compatible(&session),
+            "Playlist is currently empty."
         );
     }
 
@@ -1682,6 +1763,34 @@ mod tests {
         assert_eq!(
             parse_local_input_command("/users"),
             Some(LocalInputCommand::RequestUserList)
+        );
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_playlist_aliases() {
+        assert_eq!(
+            parse_local_input_command("playlist"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("ql"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("pl"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("/playlist"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("/ql"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("/pl"),
+            Some(LocalInputCommand::ShowPlaylist)
         );
     }
 
@@ -3723,6 +3832,126 @@ mod tests {
             sender
                 .send("room".to_owned())
                 .expect("room fallback command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_shows_playlist_from_local_input_channel_without_outbound_messages()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"cli-user"}}}
+{"Set":{"playlistIndex":{"index":1,"user":"cli-user"}}}
+"#,
+                )
+                .await
+                .expect("server hello and playlist snapshot writes should succeed");
+
+            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(350);
+            loop {
+                let remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+
+                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Ok(Ok(Some(line))) = next_line else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                assert!(
+                    payload.set.playlist_change.is_none() && payload.set.playlist_index.is_none(),
+                    "playlist display command should not emit outbound playlist set messages"
+                );
+            }
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender
+                .send("playlist".to_owned())
+                .expect("playlist command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
