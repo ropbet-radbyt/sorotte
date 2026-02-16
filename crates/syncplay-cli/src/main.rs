@@ -243,12 +243,20 @@ enum LocalInputCommand {
     RequestUserList,
     SelectPlaylistIndex(i64),
     NextPlaylistItem,
+    QueuePlaylistItem {
+        file_name: String,
+        select_after_queue: bool,
+    },
+    DeletePlaylistIndex(i64),
     UndoSeek,
     SeekAbsolute(f64),
     SeekRelative(f64),
     TogglePause,
     ToggleReady,
-    SetUserReady { username: String, ready: bool },
+    SetUserReady {
+        username: String,
+        ready: bool,
+    },
     CreateControlledRoom(Option<String>),
     AuthController(String),
     SetRoomWithLegacyFallback,
@@ -308,6 +316,11 @@ fn parse_playlist_index_parameter_legacy_compatible(parameter: &str) -> Option<i
     one_based_index.checked_sub(1)
 }
 
+fn parse_playlist_file_parameter_legacy_compatible(parameter: &str) -> Option<String> {
+    let file_name = parameter.trim();
+    (!file_name.is_empty()).then(|| file_name.to_owned())
+}
+
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     let trimmed = input.trim();
     if matches!(
@@ -333,6 +346,57 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "next" | "qn" | "/next" | "/qn") {
         return Some(LocalInputCommand::NextPlaylistItem);
+    }
+    if let Some(file_name) = trimmed
+        .strip_prefix("queueandselect ")
+        .or_else(|| trimmed.strip_prefix("qas "))
+        .or_else(|| trimmed.strip_prefix("/queueandselect "))
+        .or_else(|| trimmed.strip_prefix("/qas "))
+    {
+        return parse_playlist_file_parameter_legacy_compatible(file_name).map(|file_name| {
+            LocalInputCommand::QueuePlaylistItem {
+                file_name,
+                select_after_queue: true,
+            }
+        });
+    }
+    if matches!(
+        trimmed,
+        "queueandselect" | "qas" | "/queueandselect" | "/qas"
+    ) {
+        return None;
+    }
+    if let Some(file_name) = trimmed
+        .strip_prefix("queue ")
+        .or_else(|| trimmed.strip_prefix("qa "))
+        .or_else(|| trimmed.strip_prefix("add "))
+        .or_else(|| trimmed.strip_prefix("/queue "))
+        .or_else(|| trimmed.strip_prefix("/qa "))
+        .or_else(|| trimmed.strip_prefix("/add "))
+    {
+        return parse_playlist_file_parameter_legacy_compatible(file_name).map(|file_name| {
+            LocalInputCommand::QueuePlaylistItem {
+                file_name,
+                select_after_queue: false,
+            }
+        });
+    }
+    if matches!(trimmed, "queue" | "qa" | "add" | "/queue" | "/qa" | "/add") {
+        return None;
+    }
+    if let Some(index) = trimmed
+        .strip_prefix("delete ")
+        .or_else(|| trimmed.strip_prefix("d "))
+        .or_else(|| trimmed.strip_prefix("qd "))
+        .or_else(|| trimmed.strip_prefix("/delete "))
+        .or_else(|| trimmed.strip_prefix("/d "))
+        .or_else(|| trimmed.strip_prefix("/qd "))
+    {
+        let index = parse_playlist_index_parameter_legacy_compatible(index)?;
+        return Some(LocalInputCommand::DeletePlaylistIndex(index));
+    }
+    if matches!(trimmed, "delete" | "d" | "qd" | "/delete" | "/d" | "/qd") {
+        return None;
     }
     if let Some(username) = trimmed
         .strip_prefix("setready ")
@@ -1046,6 +1110,13 @@ where
                         LocalInputCommand::NextPlaylistItem => {
                             runtime.run_advance_playlist_index()?
                         }
+                        LocalInputCommand::QueuePlaylistItem {
+                            file_name,
+                            select_after_queue,
+                        } => runtime.run_queue_playlist_item(file_name, select_after_queue)?,
+                        LocalInputCommand::DeletePlaylistIndex(index) => {
+                            runtime.run_delete_playlist_index(index)?
+                        }
                         LocalInputCommand::UndoSeek => runtime.run_undo_seek()?,
                         LocalInputCommand::SeekAbsolute(position_seconds) => {
                             runtime.run_seek_to_position(position_seconds)?
@@ -1655,6 +1726,107 @@ mod tests {
             parse_local_input_command("/qn"),
             Some(LocalInputCommand::NextPlaylistItem)
         );
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_queue_aliases() {
+        assert_eq!(
+            parse_local_input_command("queue episode1.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode1.mkv".to_owned(),
+                select_after_queue: false
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("qa episode2.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode2.mkv".to_owned(),
+                select_after_queue: false
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("add episode3.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode3.mkv".to_owned(),
+                select_after_queue: false
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("/queue episode4.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode4.mkv".to_owned(),
+                select_after_queue: false
+            })
+        );
+        assert_eq!(parse_local_input_command("queue"), None);
+        assert_eq!(parse_local_input_command("qa"), None);
+        assert_eq!(parse_local_input_command("add"), None);
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_queueandselect_aliases() {
+        assert_eq!(
+            parse_local_input_command("queueandselect episode1.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode1.mkv".to_owned(),
+                select_after_queue: true
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("qas episode2.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode2.mkv".to_owned(),
+                select_after_queue: true
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("/queueandselect episode3.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode3.mkv".to_owned(),
+                select_after_queue: true
+            })
+        );
+        assert_eq!(
+            parse_local_input_command("/qas episode4.mkv"),
+            Some(LocalInputCommand::QueuePlaylistItem {
+                file_name: "episode4.mkv".to_owned(),
+                select_after_queue: true
+            })
+        );
+        assert_eq!(parse_local_input_command("queueandselect"), None);
+        assert_eq!(parse_local_input_command("qas"), None);
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_delete_aliases() {
+        assert_eq!(
+            parse_local_input_command("delete 1"),
+            Some(LocalInputCommand::DeletePlaylistIndex(0))
+        );
+        assert_eq!(
+            parse_local_input_command("d 2"),
+            Some(LocalInputCommand::DeletePlaylistIndex(1))
+        );
+        assert_eq!(
+            parse_local_input_command("qd 3"),
+            Some(LocalInputCommand::DeletePlaylistIndex(2))
+        );
+        assert_eq!(
+            parse_local_input_command("/delete 4"),
+            Some(LocalInputCommand::DeletePlaylistIndex(3))
+        );
+        assert_eq!(
+            parse_local_input_command("/d 5"),
+            Some(LocalInputCommand::DeletePlaylistIndex(4))
+        );
+        assert_eq!(
+            parse_local_input_command("/qd 6"),
+            Some(LocalInputCommand::DeletePlaylistIndex(5))
+        );
+        assert_eq!(parse_local_input_command("delete"), None);
+        assert_eq!(parse_local_input_command("d"), None);
+        assert_eq!(parse_local_input_command("qd"), None);
+        assert_eq!(parse_local_input_command("delete 0"), None);
     }
 
     #[test]
@@ -2665,6 +2837,284 @@ mod tests {
             sender
                 .send("next".to_owned())
                 .expect("next command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_queues_and_selects_playlist_item_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"cli-user"}}}
+{"Set":{"playlistIndex":{"index":0,"user":"cli-user"}}}
+"#,
+                )
+                .await
+                .expect("server hello and playlist snapshot writes should succeed");
+
+            let mut queued_files = None;
+            let mut queued_index = None;
+            for _ in 0..8 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("playlist queue line read should not timeout")
+                    .expect("playlist queue line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if queued_files.is_none() {
+                    if let Some(change) = payload.set.playlist_change.as_ref() {
+                        queued_files = Some(change.files.clone());
+                        continue;
+                    }
+                }
+                if queued_index.is_none() {
+                    if let Some(index) = payload.set.playlist_index.as_ref() {
+                        queued_index = Some(index.index);
+                    }
+                }
+                if queued_files.is_some() && queued_index.is_some() {
+                    break;
+                }
+            }
+            assert_eq!(
+                queued_files,
+                Some(vec![
+                    "episode1.mkv".to_owned(),
+                    "episode2.mkv".to_owned(),
+                    "episode3.mkv".to_owned()
+                ]),
+                "queue-and-select should emit playlistChange with appended file"
+            );
+            assert_eq!(
+                queued_index,
+                Some(2),
+                "queue-and-select should emit playlistIndex targeting appended file"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender
+                .send("qas episode3.mkv".to_owned())
+                .expect("queue-and-select command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_deletes_playlist_item_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"cli-user"}}}
+{"Set":{"playlistIndex":{"index":2,"user":"cli-user"}}}
+"#,
+                )
+                .await
+                .expect("server hello and playlist snapshot writes should succeed");
+
+            let mut deleted_files = None;
+            let mut deleted_index = None;
+            for _ in 0..8 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("playlist delete line read should not timeout")
+                    .expect("playlist delete line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if deleted_files.is_none() {
+                    if let Some(change) = payload.set.playlist_change.as_ref() {
+                        deleted_files = Some(change.files.clone());
+                        continue;
+                    }
+                }
+                if deleted_index.is_none() {
+                    if let Some(index) = payload.set.playlist_index.as_ref() {
+                        deleted_index = Some(index.index);
+                    }
+                }
+                if deleted_files.is_some() && deleted_index.is_some() {
+                    break;
+                }
+            }
+            assert_eq!(
+                deleted_files,
+                Some(vec!["episode1.mkv".to_owned(), "episode3.mkv".to_owned()]),
+                "delete command should emit playlistChange without removed file"
+            );
+            assert_eq!(
+                deleted_index,
+                Some(1),
+                "delete command should emit playlistIndex adjusted to remaining file"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender
+                .send("delete 2".to_owned())
+                .expect("delete command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
