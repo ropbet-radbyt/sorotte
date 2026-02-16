@@ -1,4 +1,5 @@
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -16,6 +17,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::Instant;
 
 const ROUND_HALF_EPSILON: f64 = 1e-12;
+const CONTROL_ROOM_HASH_LEN: usize = 12;
+static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 struct ClientLoopConfig {
@@ -139,6 +142,73 @@ fn normalize_controlled_room_input(room: String) -> (String, Option<String>) {
     (canonical_room, Some(normalized_password))
 }
 
+fn controlled_room_base_name_legacy_compatible(room: &str) -> String {
+    let room = room.trim();
+    if !room.starts_with('+') {
+        return room.to_owned();
+    }
+
+    let Some(room_without_prefix) = room.strip_prefix('+') else {
+        return room.to_owned();
+    };
+    let Some((room_base, hash_suffix)) = room_without_prefix.rsplit_once(':') else {
+        return room.to_owned();
+    };
+    if room_base.is_empty()
+        || hash_suffix.len() != CONTROL_ROOM_HASH_LEN
+        || !hash_suffix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return room.to_owned();
+    }
+    room_base.to_owned()
+}
+
+fn generate_room_password_legacy_compatible() -> String {
+    fn next_seed() -> u64 {
+        let nanos_since_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let nonce = ROOM_PASSWORD_NONCE.fetch_add(1, Ordering::Relaxed);
+        nanos_since_epoch
+            ^ nonce.rotate_left(17)
+            ^ ((std::process::id() as u64) << 32)
+            ^ 0x9E37_79B9_7F4A_7C15
+    }
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed
+    }
+
+    fn next_letter(seed: &mut u64) -> char {
+        let value = (lcg(seed) % 26) as u8;
+        (b'A' + value) as char
+    }
+
+    fn next_digit(seed: &mut u64) -> char {
+        let value = (lcg(seed) % 10) as u8;
+        (b'0' + value) as char
+    }
+
+    let mut seed = next_seed();
+    format!(
+        "{}{}-{}{}{}-{}{}{}",
+        next_letter(&mut seed),
+        next_letter(&mut seed),
+        next_digit(&mut seed),
+        next_digit(&mut seed),
+        next_digit(&mut seed),
+        next_digit(&mut seed),
+        next_digit(&mut seed),
+        next_digit(&mut seed)
+    )
+}
+
 fn parse_local_input_chat_message(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -171,12 +241,15 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
 enum LocalInputCommand {
     Chat(String),
     RequestUserList,
+    SelectPlaylistIndex(i64),
+    NextPlaylistItem,
     UndoSeek,
     SeekAbsolute(f64),
     SeekRelative(f64),
     TogglePause,
     ToggleReady,
     SetUserReady { username: String, ready: bool },
+    CreateControlledRoom(Option<String>),
     AuthController(String),
     SetRoomWithLegacyFallback,
     SetRoom(String),
@@ -227,6 +300,14 @@ fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
     Some(LocalInputCommand::SeekAbsolute(seconds))
 }
 
+fn parse_playlist_index_parameter_legacy_compatible(parameter: &str) -> Option<i64> {
+    let one_based_index = parameter.trim().parse::<i64>().ok()?;
+    if one_based_index <= 0 {
+        return None;
+    }
+    one_based_index.checked_sub(1)
+}
+
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     let trimmed = input.trim();
     if matches!(
@@ -237,6 +318,21 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "list" | "l" | "users" | "/list" | "/l" | "/users") {
         return Some(LocalInputCommand::RequestUserList);
+    }
+    if let Some(index) = trimmed
+        .strip_prefix("select ")
+        .or_else(|| trimmed.strip_prefix("qs "))
+        .or_else(|| trimmed.strip_prefix("/select "))
+        .or_else(|| trimmed.strip_prefix("/qs "))
+    {
+        let index = parse_playlist_index_parameter_legacy_compatible(index)?;
+        return Some(LocalInputCommand::SelectPlaylistIndex(index));
+    }
+    if matches!(trimmed, "select" | "qs" | "/select" | "/qs") {
+        return None;
+    }
+    if matches!(trimmed, "next" | "qn" | "/next" | "/qn") {
+        return Some(LocalInputCommand::NextPlaylistItem);
     }
     if let Some(username) = trimmed
         .strip_prefix("setready ")
@@ -267,6 +363,19 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "setnotready" | "snr" | "/setnotready" | "/snr") {
         return None;
+    }
+    if let Some(room_name) = trimmed
+        .strip_prefix("create ")
+        .or_else(|| trimmed.strip_prefix("c "))
+        .or_else(|| trimmed.strip_prefix("/create "))
+        .or_else(|| trimmed.strip_prefix("/c "))
+    {
+        let room_name = room_name.trim();
+        return (!room_name.is_empty())
+            .then(|| LocalInputCommand::CreateControlledRoom(Some(room_name.to_owned())));
+    }
+    if matches!(trimmed, "create" | "c" | "/create" | "/c") {
+        return Some(LocalInputCommand::CreateControlledRoom(None));
     }
     if let Some(password) = trimmed
         .strip_prefix("auth ")
@@ -931,6 +1040,12 @@ where
                             runtime.run_send_chat_message(chat_message)?
                         }
                         LocalInputCommand::RequestUserList => runtime.run_request_user_list()?,
+                        LocalInputCommand::SelectPlaylistIndex(index) => {
+                            runtime.run_set_playlist_index(index)?
+                        }
+                        LocalInputCommand::NextPlaylistItem => {
+                            runtime.run_advance_playlist_index()?
+                        }
                         LocalInputCommand::UndoSeek => runtime.run_undo_seek()?,
                         LocalInputCommand::SeekAbsolute(position_seconds) => {
                             runtime.run_seek_to_position(position_seconds)?
@@ -942,6 +1057,18 @@ where
                         LocalInputCommand::ToggleReady => runtime.run_toggle_ready(true)?,
                         LocalInputCommand::SetUserReady { username, ready } => {
                             runtime.run_set_ready_for_user(username, ready, true)?
+                        }
+                        LocalInputCommand::CreateControlledRoom(room_name) => {
+                            let room = room_name.unwrap_or_else(|| {
+                                runtime
+                                    .session()
+                                    .room
+                                    .clone()
+                                    .unwrap_or_else(|| config.room.clone())
+                            });
+                            let room = controlled_room_base_name_legacy_compatible(&room);
+                            let password = generate_room_password_legacy_compatible();
+                            runtime.run_request_controller_auth(room, password)?
                         }
                         LocalInputCommand::AuthController(password) => {
                             let room = runtime
@@ -1098,12 +1225,13 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         ClientLoopConfig, ConnectedSessionExit, LocalInputCommand, chat_notification_message,
-        controller_auth_notification_hidden_from_osd,
+        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
         flush_reconnect_notifications_to_sink, flush_user_change_notifications_to_sink,
-        format_duration_legacy, format_file_difference_summary, normalize_controlled_room_input,
+        format_duration_legacy, format_file_difference_summary,
+        generate_room_password_legacy_compatible, normalize_controlled_room_input,
         parse_local_input_chat_message, parse_local_input_command,
         reconnect_transition_notification_message, run_client_network_loop,
         run_connected_client_session, user_change_notification_hidden_from_osd,
@@ -1151,6 +1279,23 @@ mod tests {
         _notification: &UserChangeNotification,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn is_legacy_generated_room_password_shape(password: &str) -> bool {
+        let chars: Vec<char> = password.chars().collect();
+        if chars.len() != 10 {
+            return false;
+        }
+        chars[0].is_ascii_uppercase()
+            && chars[1].is_ascii_uppercase()
+            && chars[2] == '-'
+            && chars[3].is_ascii_digit()
+            && chars[4].is_ascii_digit()
+            && chars[5].is_ascii_digit()
+            && chars[6] == '-'
+            && chars[7].is_ascii_digit()
+            && chars[8].is_ascii_digit()
+            && chars[9].is_ascii_digit()
     }
 
     #[test]
@@ -1376,6 +1521,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_local_input_command_parses_create_aliases() {
+        assert_eq!(
+            parse_local_input_command("create"),
+            Some(LocalInputCommand::CreateControlledRoom(None))
+        );
+        assert_eq!(
+            parse_local_input_command("c"),
+            Some(LocalInputCommand::CreateControlledRoom(None))
+        );
+        assert_eq!(
+            parse_local_input_command("/create"),
+            Some(LocalInputCommand::CreateControlledRoom(None))
+        );
+        assert_eq!(
+            parse_local_input_command("/c"),
+            Some(LocalInputCommand::CreateControlledRoom(None))
+        );
+        assert_eq!(
+            parse_local_input_command("create base-room"),
+            Some(LocalInputCommand::CreateControlledRoom(Some(
+                "base-room".to_owned()
+            )))
+        );
+        assert_eq!(
+            parse_local_input_command("c base-room"),
+            Some(LocalInputCommand::CreateControlledRoom(Some(
+                "base-room".to_owned()
+            )))
+        );
+        assert_eq!(
+            parse_local_input_command("/create base-room"),
+            Some(LocalInputCommand::CreateControlledRoom(Some(
+                "base-room".to_owned()
+            )))
+        );
+        assert_eq!(
+            parse_local_input_command("/c base-room"),
+            Some(LocalInputCommand::CreateControlledRoom(Some(
+                "base-room".to_owned()
+            )))
+        );
+    }
+
+    #[test]
     fn parse_local_input_command_parses_auth_aliases() {
         assert_eq!(
             parse_local_input_command("auth ab-123-456"),
@@ -1422,6 +1611,49 @@ mod tests {
         assert_eq!(
             parse_local_input_command("/users"),
             Some(LocalInputCommand::RequestUserList)
+        );
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_select_aliases() {
+        assert_eq!(
+            parse_local_input_command("select 1"),
+            Some(LocalInputCommand::SelectPlaylistIndex(0))
+        );
+        assert_eq!(
+            parse_local_input_command("qs 2"),
+            Some(LocalInputCommand::SelectPlaylistIndex(1))
+        );
+        assert_eq!(
+            parse_local_input_command("/select 3"),
+            Some(LocalInputCommand::SelectPlaylistIndex(2))
+        );
+        assert_eq!(
+            parse_local_input_command("/qs 4"),
+            Some(LocalInputCommand::SelectPlaylistIndex(3))
+        );
+        assert_eq!(parse_local_input_command("select"), None);
+        assert_eq!(parse_local_input_command("qs"), None);
+        assert_eq!(parse_local_input_command("select 0"), None);
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_next_aliases() {
+        assert_eq!(
+            parse_local_input_command("next"),
+            Some(LocalInputCommand::NextPlaylistItem)
+        );
+        assert_eq!(
+            parse_local_input_command("qn"),
+            Some(LocalInputCommand::NextPlaylistItem)
+        );
+        assert_eq!(
+            parse_local_input_command("/next"),
+            Some(LocalInputCommand::NextPlaylistItem)
+        );
+        assert_eq!(
+            parse_local_input_command("/qn"),
+            Some(LocalInputCommand::NextPlaylistItem)
         );
     }
 
@@ -2336,6 +2568,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_client_session_advances_playlist_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"cli-user"}}}
+{"Set":{"playlistIndex":{"index":0,"user":"cli-user"}}}
+"#,
+                )
+                .await
+                .expect("server hello and playlist snapshot writes should succeed");
+
+            let mut saw_next_index = false;
+            for _ in 0..6 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("playlist next line read should not timeout")
+                    .expect("playlist next line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                let Some(playlist_index) = payload.set.playlist_index else {
+                    continue;
+                };
+                if playlist_index.index == 1 {
+                    saw_next_index = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_next_index,
+                "client should emit Set.playlistIndex with next index from local next command"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender
+                .send("next".to_owned())
+                .expect("next command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
     async fn connected_client_session_sets_other_user_ready_from_local_input_channel() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -2431,6 +2786,134 @@ mod tests {
             sender
                 .send("sr other-user".to_owned())
                 .expect("setready command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_creates_controlled_room_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"+managed-room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}
+"#,
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let mut controller_auth_payload = None;
+            for _ in 0..6 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("controller auth line read should not timeout")
+                    .expect("controller auth line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if let Some(controller_auth) = payload.set.controller_auth {
+                    controller_auth_payload = Some(controller_auth);
+                    break;
+                }
+            }
+            let Some(controller_auth_payload) = controller_auth_payload else {
+                panic!("client should emit Set.controllerAuth from local create command");
+            };
+            assert_eq!(
+                controller_auth_payload.room.as_deref(),
+                Some("managed-room")
+            );
+            let Some(password) = controller_auth_payload.password.as_deref() else {
+                panic!("controller auth payload should include password");
+            };
+            assert!(
+                is_legacy_generated_room_password_shape(password),
+                "create command password should match legacy generated password shape"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "fallback-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .send("create".to_owned())
+                .expect("create command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
@@ -4020,6 +4503,35 @@ mod tests {
         let (room, password) = normalize_controlled_room_input("room1".to_owned());
         assert_eq!(room, "room1");
         assert!(password.is_none());
+    }
+
+    #[test]
+    fn controlled_room_base_name_legacy_compatible_strips_managed_suffix() {
+        assert_eq!(
+            controlled_room_base_name_legacy_compatible("+base-room:ABCDEF123456"),
+            "base-room"
+        );
+        assert_eq!(
+            controlled_room_base_name_legacy_compatible("+room_name:ABCDEF12345_"),
+            "room_name"
+        );
+        assert_eq!(
+            controlled_room_base_name_legacy_compatible("room1"),
+            "room1"
+        );
+        assert_eq!(
+            controlled_room_base_name_legacy_compatible("+room:SHORT"),
+            "+room:SHORT"
+        );
+    }
+
+    #[test]
+    fn generate_room_password_legacy_compatible_matches_expected_shape() {
+        let password = generate_room_password_legacy_compatible();
+        assert!(
+            is_legacy_generated_room_password_shape(&password),
+            "generated password should match legacy shape AA-999-999"
+        );
     }
 
     #[test]

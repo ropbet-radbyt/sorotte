@@ -803,6 +803,22 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_set_playlist_index(&mut self, index: i64) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_playlist_index_set(index);
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
+    pub fn run_advance_playlist_index(&mut self) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_playlist_next();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let sent = !actions.is_empty();
@@ -1962,6 +1978,51 @@ impl ClientSession {
             return Vec::new();
         }
         vec![ClientRuntimeAction::RequestUserList]
+    }
+
+    pub fn runtime_actions_for_local_playlist_index_set(
+        &self,
+        index: i64,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() || index < 0 {
+            return Vec::new();
+        }
+
+        let Some(playlist) = self.current_room_playlist() else {
+            return Vec::new();
+        };
+        let Ok(index_usize) = usize::try_from(index) else {
+            return Vec::new();
+        };
+        if index_usize >= playlist.files.len() {
+            return Vec::new();
+        }
+
+        vec![ClientRuntimeAction::SetPlaylistIndex { index }]
+    }
+
+    pub fn runtime_actions_for_local_playlist_next(&self) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+
+        let Some(playlist) = self.current_room_playlist() else {
+            return Vec::new();
+        };
+        let Some(current_index) = playlist.index.and_then(|index| usize::try_from(index).ok())
+        else {
+            return Vec::new();
+        };
+        let Some(next_index) = current_index.checked_add(1) else {
+            return Vec::new();
+        };
+        if next_index >= playlist.files.len() {
+            return Vec::new();
+        }
+
+        vec![ClientRuntimeAction::SetPlaylistIndex {
+            index: next_index as i64,
+        }]
     }
 
     pub fn runtime_actions_for_local_seek(
@@ -7585,6 +7646,161 @@ mod tests {
                 .run_request_user_list()
                 .expect("list request should not fail"),
             "list request should be suppressed before server hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_playlist_index_dispatches_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_playlist_index(1)
+                .expect("set playlist index should not fail"),
+            "set playlist index should emit outbound Set.playlistIndex"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_index = set_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("Set message should contain playlistIndex payload");
+        assert_eq!(playlist_index.index, 1);
+        assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_set_playlist_index_is_omitted_before_server_hello() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_playlist_index(0)
+                .expect("set playlist index should not fail"),
+            "set playlist index should be suppressed before server hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_playlist_index_is_omitted_for_invalid_index() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_playlist_index(3)
+                .expect("set playlist index should not fail"),
+            "set playlist index should be suppressed when index is out of bounds"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should emit outbound Set.playlistIndex"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_index = set_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("Set message should contain playlistIndex payload");
+        assert_eq!(playlist_index.index, 1);
+        assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_is_omitted_without_next_item() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should be suppressed when no next item exists"
         );
         assert!(runtime.control().outbound_messages().is_empty());
     }
