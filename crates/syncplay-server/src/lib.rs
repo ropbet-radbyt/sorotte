@@ -3133,6 +3133,52 @@ mod tests {
     }
 
     #[test]
+    fn tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads() {
+        let cert_path = temporary_directory_path("tls-cert-rotation-retry-cap");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let mut runtime = ServerRuntime::new();
+        runtime.set_tls_cert_path(Some(cert_path.clone()));
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+
+        for attempt in 0..super::TLS_CERT_ROTATION_MAX_RETRIES {
+            overwrite_file_until_modified_time_changes(
+                &cert_path.join("cert.pem"),
+                &format!("rotated-cert-{attempt}"),
+            );
+            let outbound_lines = runtime
+                .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+                .expect("tls request should be handled");
+            assert_eq!(
+                tls_start_response(&outbound_lines).as_deref(),
+                Some("false")
+            );
+        }
+        assert!(
+            !runtime.server_accepts_tls,
+            "retry cap should eventually disable server_accepts_tls gate"
+        );
+
+        fs::write(cert_path.join("chain.pem"), "chain-restored")
+            .expect("chain file restore should succeed");
+        overwrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), "restored-cert");
+        let outbound_after_restore = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("tls request after restore should be handled");
+        assert_eq!(
+            tls_start_response(&outbound_after_restore).as_deref(),
+            Some("false"),
+            "legacy retry-cap behavior should keep TLS disabled once acceptability gate is off"
+        );
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
     fn persistent_room_retains_playlist_index_and_position_after_empty_transition() {
         let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
         runtime.set_time_now_override_seconds(Some(0.0));
