@@ -37,6 +37,8 @@ const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
 const LEGACY_SHOW_OSD_WARNINGS: bool = true;
 const LEGACY_SHOW_NONCONTROLLER_OSD: bool = false;
 const LEGACY_SHOW_DIFFERENT_ROOM_OSD: bool = false;
+const LEGACY_ONLY_SWITCH_TO_TRUSTED_DOMAINS: bool = true;
+const LEGACY_DEFAULT_TRUSTED_DOMAINS: [&str; 2] = ["youtube.com", "youtu.be"];
 const ROUND_HALF_EPSILON: f64 = 1e-12;
 const PRIVACY_HIDDEN_FILENAME: &str = "**Hidden filename**";
 const MUSIC_FORMATS: [&str; 8] = [
@@ -210,6 +212,8 @@ pub struct SessionBehaviorConfig {
     pub show_different_room_osd: bool,
     pub loop_at_end_of_playlist: bool,
     pub loop_single_files: bool,
+    pub only_switch_to_trusted_domains: bool,
+    pub trusted_domains: Vec<String>,
 }
 
 impl Default for SessionBehaviorConfig {
@@ -222,6 +226,11 @@ impl Default for SessionBehaviorConfig {
             show_different_room_osd: LEGACY_SHOW_DIFFERENT_ROOM_OSD,
             loop_at_end_of_playlist: false,
             loop_single_files: false,
+            only_switch_to_trusted_domains: LEGACY_ONLY_SWITCH_TO_TRUSTED_DOMAINS,
+            trusted_domains: LEGACY_DEFAULT_TRUSTED_DOMAINS
+                .iter()
+                .map(|domain| (*domain).to_owned())
+                .collect(),
         }
     }
 }
@@ -1730,6 +1739,125 @@ impl ClientSession {
         self.behavior_config.loop_at_end_of_playlist || self.is_playing_music()
     }
 
+    fn playlist_target_switch_allowed_legacy_compatible(&self, file_name: &str) -> bool {
+        if !Self::is_url(file_name) {
+            return true;
+        }
+        self.uri_is_trusted_legacy_compatible(file_name)
+    }
+
+    fn uri_is_trusted_legacy_compatible(&self, uri: &str) -> bool {
+        let Some((host, path)) = Self::parse_trustable_web_uri_host_and_path_legacy_compatible(uri)
+        else {
+            return false;
+        };
+
+        if !self.behavior_config.only_switch_to_trusted_domains {
+            return true;
+        }
+
+        for trusted_entry in &self.behavior_config.trusted_domains {
+            let trusted_entry = trusted_entry.trim();
+            if trusted_entry.is_empty() {
+                continue;
+            }
+            let (trusted_domain, required_path_prefix) =
+                trusted_entry.split_once('/').unwrap_or((trusted_entry, ""));
+            let trusted_domain = trusted_domain.trim().to_ascii_lowercase();
+            if trusted_domain.is_empty() {
+                continue;
+            }
+            if !Self::trusted_domain_matches_host_legacy_compatible(&host, &trusted_domain) {
+                continue;
+            }
+            if !required_path_prefix.is_empty() {
+                let path_prefix = format!("/{required_path_prefix}");
+                if !path.starts_with(&path_prefix) {
+                    continue;
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    fn parse_trustable_web_uri_host_and_path_legacy_compatible(
+        uri: &str,
+    ) -> Option<(String, String)> {
+        let uri = uri.trim();
+        let authority_and_path = if let Some(value) = uri.strip_prefix("http://") {
+            value
+        } else if let Some(value) = uri.strip_prefix("https://") {
+            value
+        } else {
+            return None;
+        };
+        if authority_and_path.is_empty() {
+            return None;
+        }
+
+        let (authority, path_tail) = authority_and_path
+            .split_once('/')
+            .unwrap_or((authority_and_path, ""));
+        if authority.is_empty() {
+            return None;
+        }
+
+        let authority = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, value)| value);
+        if authority.is_empty() {
+            return None;
+        }
+
+        let host = authority
+            .split(':')
+            .next()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+
+        let path_with_query = if path_tail.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{path_tail}")
+        };
+        let path = path_with_query
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("/")
+            .to_owned();
+        Some((host, path))
+    }
+
+    fn trusted_domain_matches_host_legacy_compatible(host: &str, trusted_domain: &str) -> bool {
+        if host == trusted_domain || host == format!("www.{trusted_domain}") {
+            return true;
+        }
+        if !trusted_domain.contains('*') {
+            return false;
+        }
+
+        let host_parts = host.split('.').collect::<Vec<_>>();
+        let pattern_parts = trusted_domain.split('.').collect::<Vec<_>>();
+        if host_parts.len() != pattern_parts.len() {
+            return false;
+        }
+        host_parts
+            .iter()
+            .zip(pattern_parts.iter())
+            .all(|(host_part, pattern_part)| {
+                if *pattern_part == "*" {
+                    !host_part.is_empty()
+                } else {
+                    host_part.eq_ignore_ascii_case(pattern_part)
+                }
+            })
+    }
+
     pub fn recently_advanced(&self, now_seconds: f64) -> bool {
         let threshold_seconds =
             self.readiness_autoplay_config.autoplay_delay_seconds + RECENTLY_ADVANCED_GRACE_SECONDS;
@@ -2031,6 +2159,9 @@ impl ClientSession {
         if index_usize >= playlist.files.len() {
             return Vec::new();
         }
+        if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[index_usize]) {
+            return Vec::new();
+        }
 
         vec![ClientRuntimeAction::SetPlaylistIndex { index }]
     }
@@ -2071,7 +2202,13 @@ impl ClientSession {
             if !self.loop_at_end_of_playlist_enabled_legacy_compatible() {
                 return Vec::new();
             }
+            if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[0]) {
+                return Vec::new();
+            }
             return vec![ClientRuntimeAction::SetPlaylistIndex { index: 0 }];
+        }
+        if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[next_index]) {
+            return Vec::new();
         }
 
         vec![ClientRuntimeAction::SetPlaylistIndex {
@@ -7882,6 +8019,86 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_playlist_index_is_omitted_for_untrusted_url_target() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["https://example.com/video.mp4"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_playlist_index(0)
+                .expect("set playlist index should not fail"),
+            "set playlist index should be suppressed for untrusted URL targets"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_playlist_index_allows_default_trusted_youtube_domain() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["https://youtube.com/watch?v=abc"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_playlist_index(0)
+                .expect("set playlist index should not fail"),
+            "set playlist index should allow default trusted domains"
+        );
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+    }
+
+    #[test]
+    fn client_runtime_trusted_url_matching_supports_wildcard_and_path_prefix() {
+        let mut session = ClientSession::default();
+        session.behavior_config_mut().trusted_domains = vec!["*.example.com/videos".to_owned()];
+
+        assert!(session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos/a.mp4"));
+        assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com/clips/a.mp4"));
+        assert!(!session.uri_is_trusted_legacy_compatible("ftp://cdn.example.com/videos/a.mp4"));
+        assert!(!session.uri_is_trusted_legacy_compatible("https://a.b.example.com/videos/a.mp4"));
+    }
+
+    #[test]
+    fn client_runtime_trusted_url_matching_respects_only_switch_toggle() {
+        let mut session = ClientSession::default();
+        session.behavior_config_mut().only_switch_to_trusted_domains = false;
+        session.behavior_config_mut().trusted_domains.clear();
+
+        assert!(session.uri_is_trusted_legacy_compatible("http://example.com/video.mp4"));
+        assert!(session.uri_is_trusted_legacy_compatible("https://example.com/video.mp4"));
+        assert!(!session.uri_is_trusted_legacy_compatible("ftp://example.com/video.mp4"));
+    }
+
+    #[test]
     fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
         let mut session = ClientSession::default();
         session
@@ -7920,6 +8137,35 @@ mod tests {
             .expect("Set message should contain playlistIndex payload");
         assert_eq!(playlist_index.index, 1);
         assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_is_omitted_for_untrusted_url_target() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","https://example.com/video.mp4"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should be suppressed for untrusted URL targets"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
     }
 
     #[test]
