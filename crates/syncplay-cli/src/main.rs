@@ -57,6 +57,14 @@ struct RuntimeLoopInputs {
     recently_advanced: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ClientBehaviorOverrides {
+    loop_at_end_of_playlist: Option<bool>,
+    loop_single_files: Option<bool>,
+    only_switch_to_trusted_domains: Option<bool>,
+    trusted_domains: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectedSessionExit {
     RuntimeWindowElapsed,
@@ -118,6 +126,54 @@ fn parse_env_port_legacy_compatible(value: &str) -> Option<u16> {
 
 fn env_port(name: &str) -> Option<u16> {
     env_trimmed(name).and_then(|value| parse_env_port_legacy_compatible(&value))
+}
+
+fn parse_env_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
+    let values: Vec<String> = value
+        .split([',', ';', '\n', '\r'])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn env_string_list(name: &str) -> Option<Vec<String>> {
+    env_trimmed(name).and_then(|value| parse_env_string_list_legacy_compatible(&value))
+}
+
+fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
+    ClientBehaviorOverrides {
+        loop_at_end_of_playlist: env_flag_override("SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST"),
+        loop_single_files: env_flag_override("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES"),
+        only_switch_to_trusted_domains: env_flag_override(
+            "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
+        ),
+        trusted_domains: env_string_list("SYNCPLAY_CLIENT_TRUSTED_DOMAINS"),
+    }
+}
+
+fn apply_client_behavior_overrides(
+    session: &mut ClientSession,
+    overrides: &ClientBehaviorOverrides,
+) {
+    let behavior = session.behavior_config_mut();
+    if let Some(loop_at_end_of_playlist) = overrides.loop_at_end_of_playlist {
+        behavior.loop_at_end_of_playlist = loop_at_end_of_playlist;
+    }
+    if let Some(loop_single_files) = overrides.loop_single_files {
+        behavior.loop_single_files = loop_single_files;
+    }
+    if let Some(only_switch_to_trusted_domains) = overrides.only_switch_to_trusted_domains {
+        behavior.only_switch_to_trusted_domains = only_switch_to_trusted_domains;
+    }
+    if let Some(trusted_domains) = overrides.trusted_domains.clone() {
+        behavior.trusted_domains = trusted_domains;
+    }
 }
 
 fn env_u32(name: &str) -> Option<u32> {
@@ -754,6 +810,7 @@ fn create_client_runtime(
     if let Some(show_different_room_osd) = config.show_different_room_osd_override {
         session.behavior_config_mut().show_different_room_osd = show_different_room_osd;
     }
+    apply_client_behavior_overrides(&mut session, &behavior_overrides_from_env());
     session.reconnect_policy_mut().max_retries = config.max_retries;
     ClientRuntime::new(
         session,
@@ -1588,9 +1645,9 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientLoopConfig, ConnectedSessionExit, LocalInputCommand, LocalOffsetCommand,
-        chat_notification_message, controlled_room_base_name_legacy_compatible,
-        controller_auth_notification_hidden_from_osd,
+        ClientBehaviorOverrides, ClientLoopConfig, ConnectedSessionExit, LocalInputCommand,
+        LocalOffsetCommand, apply_client_behavior_overrides, chat_notification_message,
+        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
@@ -1600,10 +1657,11 @@ mod tests {
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
         parse_env_bool_legacy_compatible, parse_env_port_legacy_compatible,
-        parse_local_input_chat_message, parse_local_input_command,
-        playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
-        run_client_network_loop, run_connected_client_session,
-        user_change_notification_hidden_from_osd, user_change_notification_message,
+        parse_env_string_list_legacy_compatible, parse_local_input_chat_message,
+        parse_local_input_command, playlist_listing_message_legacy_compatible,
+        reconnect_transition_notification_message, run_client_network_loop,
+        run_connected_client_session, user_change_notification_hidden_from_osd,
+        user_change_notification_message,
     };
     use std::time::Duration;
     use syncplay_client_core::{
@@ -1829,6 +1887,58 @@ mod tests {
         assert_eq!(parse_env_port_legacy_compatible("0"), None);
         assert_eq!(parse_env_port_legacy_compatible("65536"), None);
         assert_eq!(parse_env_port_legacy_compatible("abc"), None);
+    }
+
+    #[test]
+    fn parse_env_string_list_legacy_compatible_splits_and_trims_entries() {
+        assert_eq!(
+            parse_env_string_list_legacy_compatible(
+                " youtube.com , *.example.com/videos ; youtu.be"
+            ),
+            Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned(),
+                "youtu.be".to_owned()
+            ])
+        );
+        assert_eq!(
+            parse_env_string_list_legacy_compatible("alpha\nbeta\r\ngamma"),
+            Some(vec![
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "gamma".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_env_string_list_legacy_compatible_rejects_empty_values() {
+        assert_eq!(parse_env_string_list_legacy_compatible(""), None);
+        assert_eq!(parse_env_string_list_legacy_compatible(" , ; \n "), None);
+    }
+
+    #[test]
+    fn apply_client_behavior_overrides_updates_playlist_behavior_fields() {
+        let mut session = ClientSession::default();
+        let overrides = ClientBehaviorOverrides {
+            loop_at_end_of_playlist: Some(true),
+            loop_single_files: Some(true),
+            only_switch_to_trusted_domains: Some(false),
+            trusted_domains: Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned(),
+            ]),
+        };
+        apply_client_behavior_overrides(&mut session, &overrides);
+
+        let behavior = session.behavior_config();
+        assert!(behavior.loop_at_end_of_playlist);
+        assert!(behavior.loop_single_files);
+        assert!(!behavior.only_switch_to_trusted_domains);
+        assert_eq!(
+            behavior.trusted_domains,
+            vec!["youtube.com".to_owned(), "*.example.com/videos".to_owned()]
+        );
     }
 
     #[test]
