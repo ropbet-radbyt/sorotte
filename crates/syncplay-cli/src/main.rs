@@ -81,6 +81,12 @@ struct ReadinessAutoplayOverrides {
     last_paused_diff_threshold_seconds: Option<f64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ChatPolicyOverrides {
+    max_chat_message_length: Option<usize>,
+    apply_server_max_chat_message_length: Option<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectedSessionExit {
     RuntimeWindowElapsed,
@@ -234,6 +240,30 @@ fn apply_readiness_autoplay_overrides(
     }
     if let Some(last_paused_diff_threshold_seconds) = overrides.last_paused_diff_threshold_seconds {
         readiness_config.last_paused_diff_threshold_seconds = last_paused_diff_threshold_seconds;
+    }
+}
+
+fn chat_policy_overrides_from_env() -> ChatPolicyOverrides {
+    ChatPolicyOverrides {
+        max_chat_message_length: env_usize("SYNCPLAY_CLIENT_CHAT_MAX_LENGTH"),
+        apply_server_max_chat_message_length: env_flag_override(
+            "SYNCPLAY_CLIENT_APPLY_SERVER_CHAT_MAX_LENGTH",
+        ),
+    }
+}
+
+fn apply_chat_policy_overrides(session: &mut ClientSession, overrides: &ChatPolicyOverrides) {
+    let chat_config = session.chat_config_mut();
+    if let Some(max_chat_message_length) = overrides.max_chat_message_length {
+        chat_config.max_chat_message_length = max_chat_message_length;
+        if overrides.apply_server_max_chat_message_length.is_none() {
+            chat_config.apply_server_max_chat_message_length = false;
+        }
+    }
+    if let Some(apply_server_max_chat_message_length) =
+        overrides.apply_server_max_chat_message_length
+    {
+        chat_config.apply_server_max_chat_message_length = apply_server_max_chat_message_length;
     }
 }
 
@@ -902,6 +932,7 @@ fn create_client_runtime(
         }
         apply_readiness_autoplay_overrides(readiness_config, &readiness_overrides_from_env());
     }
+    apply_chat_policy_overrides(&mut session, &chat_policy_overrides_from_env());
     session.reconnect_policy_mut().max_retries = config.max_retries;
     ClientRuntime::new(
         session,
@@ -1628,11 +1659,6 @@ async fn run_reconnect_backoff(
 
 async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
     let mut runtime = create_client_runtime(config);
-    if let Some(max_chat_message_length) = env_usize("SYNCPLAY_CLIENT_CHAT_MAX_LENGTH") {
-        let chat_config = runtime.session_mut().chat_config_mut();
-        chat_config.max_chat_message_length = max_chat_message_length;
-        chat_config.apply_server_max_chat_message_length = false;
-    }
     let mut local_input_rx = spawn_local_input_receiver_if_enabled();
     let chat_message_on_connect = env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE");
     let mut notification_sink = emit_autoplay_countdown_notification;
@@ -1736,11 +1762,11 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AutoplayThresholdOverride, ClientBehaviorOverrides, ClientLoopConfig, ConnectedSessionExit,
-        LocalInputCommand, LocalOffsetCommand, ReadinessAutoplayOverrides,
-        apply_client_behavior_overrides, apply_readiness_autoplay_overrides,
-        chat_notification_message, controlled_room_base_name_legacy_compatible,
-        controller_auth_notification_hidden_from_osd,
+        AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
+        ConnectedSessionExit, LocalInputCommand, LocalOffsetCommand, ReadinessAutoplayOverrides,
+        apply_chat_policy_overrides, apply_client_behavior_overrides,
+        apply_readiness_autoplay_overrides, chat_notification_message,
+        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
@@ -2126,6 +2152,41 @@ mod tests {
         };
         apply_readiness_autoplay_overrides(&mut readiness, &disable_threshold_overrides);
         assert_eq!(readiness.auto_play_threshold, None);
+    }
+
+    #[test]
+    fn apply_chat_policy_overrides_sets_max_and_disables_server_sync_by_default() {
+        let mut session = ClientSession::default();
+        let overrides = ChatPolicyOverrides {
+            max_chat_message_length: Some(12),
+            apply_server_max_chat_message_length: None,
+        };
+        apply_chat_policy_overrides(&mut session, &overrides);
+
+        let chat_config = session.chat_config();
+        assert_eq!(chat_config.max_chat_message_length, 12);
+        assert!(!chat_config.apply_server_max_chat_message_length);
+    }
+
+    #[test]
+    fn apply_chat_policy_overrides_allows_explicit_server_sync_override() {
+        let mut session = ClientSession::default();
+        let overrides = ChatPolicyOverrides {
+            max_chat_message_length: Some(12),
+            apply_server_max_chat_message_length: Some(true),
+        };
+        apply_chat_policy_overrides(&mut session, &overrides);
+
+        let chat_config = session.chat_config();
+        assert_eq!(chat_config.max_chat_message_length, 12);
+        assert!(chat_config.apply_server_max_chat_message_length);
+
+        let overrides = ChatPolicyOverrides {
+            max_chat_message_length: None,
+            apply_server_max_chat_message_length: Some(false),
+        };
+        apply_chat_policy_overrides(&mut session, &overrides);
+        assert!(!session.chat_config().apply_server_max_chat_message_length);
     }
 
     #[test]
