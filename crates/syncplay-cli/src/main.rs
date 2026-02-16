@@ -69,9 +69,9 @@ struct FileDifferenceNotificationState {
 }
 
 fn env_flag_enabled(name: &str) -> bool {
-    env::var(name).ok().is_some_and(|value| {
-        value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-    })
+    env_trimmed(name)
+        .and_then(|value| parse_env_bool_legacy_compatible(&value))
+        .unwrap_or(false)
 }
 
 fn env_trimmed(name: &str) -> Option<String> {
@@ -86,13 +86,38 @@ fn env_trimmed(name: &str) -> Option<String> {
 }
 
 fn env_flag_override(name: &str) -> Option<bool> {
-    env_trimmed(name).map(|_| env_flag_enabled(name))
+    env_trimmed(name).and_then(|value| parse_env_bool_legacy_compatible(&value))
 }
 
-fn env_u16(name: &str) -> Option<u16> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
+fn parse_env_bool_legacy_compatible(value: &str) -> Option<bool> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized == "1"
+        || normalized.eq_ignore_ascii_case("true")
+        || normalized.eq_ignore_ascii_case("yes")
+        || normalized.eq_ignore_ascii_case("on")
+    {
+        return Some(true);
+    }
+    if normalized == "0"
+        || normalized.eq_ignore_ascii_case("false")
+        || normalized.eq_ignore_ascii_case("no")
+        || normalized.eq_ignore_ascii_case("off")
+    {
+        return Some(false);
+    }
+    None
+}
+
+fn parse_env_port_legacy_compatible(value: &str) -> Option<u16> {
+    let port = value.trim().parse::<u16>().ok()?;
+    (port > 0).then_some(port)
+}
+
+fn env_port(name: &str) -> Option<u16> {
+    env_trimmed(name).and_then(|value| parse_env_port_legacy_compatible(&value))
 }
 
 fn env_u32(name: &str) -> Option<u32> {
@@ -659,7 +684,7 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
 
     ClientLoopConfig {
         host: env_trimmed("SYNCPLAY_CLIENT_HOST").unwrap_or_else(|| "127.0.0.1".to_owned()),
-        port: env_u16("SYNCPLAY_CLIENT_PORT").unwrap_or(8999),
+        port: env_port("SYNCPLAY_CLIENT_PORT").unwrap_or(8999),
         username: env_trimmed("SYNCPLAY_CLIENT_USERNAME")
             .or_else(|| env_trimmed("SYNCPLAY_CLIENT_NAME"))
             .unwrap_or_else(|| "cli-user".to_owned()),
@@ -1511,7 +1536,7 @@ async fn main() -> anyhow::Result<()> {
     let permanent_rooms_file = env_trimmed("SYNCPLAY_SERVER_PERMANENT_ROOMS_FILE");
     let tls_cert_path = env_trimmed("SYNCPLAY_SERVER_TLS_CERT_PATH");
     let stats_db_file = env_trimmed("SYNCPLAY_SERVER_STATS_DB_FILE");
-    let server_port = env_u16("SYNCPLAY_SERVER_PORT");
+    let server_port = env_port("SYNCPLAY_SERVER_PORT");
     let persistent_rooms_enabled = env_flag_enabled("SYNCPLAY_SERVER_PERSISTENT_ROOMS");
     let mut server = ServerApp::new();
     if let Some(template) = motd_template {
@@ -1574,6 +1599,7 @@ mod tests {
         generate_room_password_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
+        parse_env_bool_legacy_compatible, parse_env_port_legacy_compatible,
         parse_local_input_chat_message, parse_local_input_command,
         playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
         run_client_network_loop, run_connected_client_session,
@@ -1774,6 +1800,35 @@ mod tests {
             playlist_listing_message_legacy_compatible(&session),
             "Playlist is currently empty."
         );
+    }
+
+    #[test]
+    fn parse_env_bool_legacy_compatible_parses_expected_tokens() {
+        assert_eq!(parse_env_bool_legacy_compatible("1"), Some(true));
+        assert_eq!(parse_env_bool_legacy_compatible("true"), Some(true));
+        assert_eq!(parse_env_bool_legacy_compatible("YES"), Some(true));
+        assert_eq!(parse_env_bool_legacy_compatible("on"), Some(true));
+        assert_eq!(parse_env_bool_legacy_compatible("0"), Some(false));
+        assert_eq!(parse_env_bool_legacy_compatible("false"), Some(false));
+        assert_eq!(parse_env_bool_legacy_compatible("No"), Some(false));
+        assert_eq!(parse_env_bool_legacy_compatible("off"), Some(false));
+    }
+
+    #[test]
+    fn parse_env_bool_legacy_compatible_rejects_invalid_values() {
+        assert_eq!(parse_env_bool_legacy_compatible(""), None);
+        assert_eq!(parse_env_bool_legacy_compatible("  "), None);
+        assert_eq!(parse_env_bool_legacy_compatible("maybe"), None);
+        assert_eq!(parse_env_bool_legacy_compatible("2"), None);
+    }
+
+    #[test]
+    fn parse_env_port_legacy_compatible_requires_port_range_one_to_65535() {
+        assert_eq!(parse_env_port_legacy_compatible("1"), Some(1));
+        assert_eq!(parse_env_port_legacy_compatible("65535"), Some(65535));
+        assert_eq!(parse_env_port_legacy_compatible("0"), None);
+        assert_eq!(parse_env_port_legacy_compatible("65536"), None);
+        assert_eq!(parse_env_port_legacy_compatible("abc"), None);
     }
 
     #[test]
