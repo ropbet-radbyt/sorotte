@@ -762,6 +762,13 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_seek_undo();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
         let actions = self.session.handle_disconnect(now_seconds);
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -1007,6 +1014,7 @@ pub struct ClientSession {
     controlled_room_switch_intent: Option<String>,
     controller_reidentify_intent: Option<(String, String)>,
     controlled_room_passwords: BTreeMap<String, String>,
+    last_seek_position_before_manual_seek: Option<f64>,
     local_position: Option<f64>,
     local_paused: Option<bool>,
     autoplay_enabled: bool,
@@ -1055,6 +1063,7 @@ impl Default for ClientSession {
             controlled_room_switch_intent: None,
             controller_reidentify_intent: None,
             controlled_room_passwords: BTreeMap::new(),
+            last_seek_position_before_manual_seek: None,
             local_position: None,
             local_paused: None,
             autoplay_enabled: false,
@@ -1834,6 +1843,14 @@ impl ClientSession {
         if !target_position.is_finite() {
             return Vec::new();
         }
+        let previous_position = self
+            .local_position
+            .or_else(|| {
+                self.current_room_playstate()
+                    .and_then(|playstate| playstate.position)
+            })
+            .unwrap_or(0.0);
+        self.last_seek_position_before_manual_seek = Some(previous_position);
         self.local_position = Some(target_position);
         vec![ClientRuntimeAction::SetPosition(target_position)]
     }
@@ -1851,6 +1868,22 @@ impl ClientSession {
             .or(self.local_position)
             .unwrap_or(0.0);
         self.runtime_actions_for_local_seek(baseline_position + offset_seconds)
+    }
+
+    pub fn runtime_actions_for_local_seek_undo(&mut self) -> Vec<ClientRuntimeAction> {
+        let Some(target_position) = self.last_seek_position_before_manual_seek else {
+            return Vec::new();
+        };
+        let current_position = self
+            .local_position
+            .or_else(|| {
+                self.current_room_playstate()
+                    .and_then(|playstate| playstate.position)
+            })
+            .unwrap_or(target_position);
+        self.last_seek_position_before_manual_seek = Some(current_position);
+        self.local_position = Some(target_position);
+        vec![ClientRuntimeAction::SetPosition(target_position)]
     }
 
     pub fn evaluate_desync_correction(
@@ -2220,6 +2253,7 @@ impl ClientSession {
         self.pending_playlist = None;
         self.local_position = None;
         self.local_paused = None;
+        self.last_seek_position_before_manual_seek = None;
         self.autoplay_timer_running = false;
         self.autoplay_time_left_seconds = self.readiness_autoplay_config.autoplay_delay_seconds;
         self.speed_changed = false;
@@ -7325,6 +7359,45 @@ mod tests {
             "seek-by should emit a local SetPosition action"
         );
         assert_eq!(runtime.player().position, Some(8.0));
+    }
+
+    #[test]
+    fn client_runtime_undo_seek_is_omitted_without_seek_history() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime.run_undo_seek().expect("undo seek should not fail"),
+            "undo seek should be suppressed when no previous seek position is available"
+        );
+        assert_eq!(runtime.player().position, None);
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_undo_seek_toggles_between_current_and_previous_positions() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_seek_to_position(10.0)
+            .expect("initial seek should not fail");
+        assert_eq!(runtime.player().position, Some(10.0));
+
+        assert!(
+            runtime.run_undo_seek().expect("undo seek should not fail"),
+            "undo seek should emit a local SetPosition action"
+        );
+        assert_eq!(runtime.player().position, Some(0.0));
+
+        assert!(
+            runtime.run_undo_seek().expect("undo seek should not fail"),
+            "second undo seek should toggle to previous position"
+        );
+        assert_eq!(runtime.player().position, Some(10.0));
+        assert!(runtime.control().outbound_messages().is_empty());
     }
 
     #[test]
