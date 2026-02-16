@@ -5955,6 +5955,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_client_session_drops_local_chat_queued_between_disconnect_and_reconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            {
+                let (socket_1, _) = listener
+                    .accept()
+                    .await
+                    .expect("first accept should succeed");
+                let (reader_1, mut writer_1) = socket_1.into_split();
+                let mut first_lines = BufReader::new(reader_1).lines();
+                let first_hello = first_lines
+                    .next_line()
+                    .await
+                    .expect("first hello read should succeed")
+                    .expect("first hello should be present");
+                assert!(
+                    first_hello.contains("\"Hello\""),
+                    "first connection should receive hello"
+                );
+                writer_1
+                    .shutdown()
+                    .await
+                    .expect("first writer shutdown should succeed");
+            }
+
+            let (socket_2, _) = listener
+                .accept()
+                .await
+                .expect("second accept should succeed");
+            let (reader_2, mut writer_2) = socket_2.into_split();
+            let mut second_lines = BufReader::new(reader_2).lines();
+            let second_hello = second_lines
+                .next_line()
+                .await
+                .expect("second hello read should succeed")
+                .expect("second hello should be present");
+            assert!(
+                second_hello.contains("\"Hello\""),
+                "second connection should receive hello"
+            );
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            writer_2
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true}}}\n",
+                )
+                .await
+                .expect("second server hello write should succeed");
+            writer_2
+                .flush()
+                .await
+                .expect("second server hello flush should succeed");
+
+            for _ in 0..3 {
+                let maybe_line =
+                    tokio::time::timeout(Duration::from_millis(200), second_lines.next_line())
+                        .await;
+                let Ok(Ok(Some(line))) = maybe_line else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                assert!(
+                    !matches!(message, ProtocolMessage::Chat(_)),
+                    "chat queued during disconnect should not be replayed on reconnect"
+                );
+            }
+
+            writer_2
+                .shutdown()
+                .await
+                .expect("second writer shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let stream_1 = TcpStream::connect(addr)
+            .await
+            .expect("client should connect for first session");
+        let first_exit = run_connected_client_session(
+            stream_1,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("first connected session should run");
+        assert_eq!(first_exit, ConnectedSessionExit::TransportClosed);
+
+        runtime
+            .run_disconnect(0.1)
+            .expect("disconnect transition should be applied between sessions");
+        sender
+            .send("/chat reconnect gap message".to_owned())
+            .expect("chat command should queue");
+
+        let stream_2 = TcpStream::connect(addr)
+            .await
+            .expect("client should connect for second session");
+        let second_exit = run_connected_client_session(
+            stream_2,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("second connected session should run");
+        assert_eq!(second_exit, ConnectedSessionExit::TransportClosed);
+
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
     async fn connected_client_session_truncates_chat_message_to_session_max_length() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
