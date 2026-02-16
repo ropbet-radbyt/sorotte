@@ -427,8 +427,10 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if let Some(username) = trimmed
         .strip_prefix("setnotready ")
+        .or_else(|| trimmed.strip_prefix("sn "))
         .or_else(|| trimmed.strip_prefix("snr "))
         .or_else(|| trimmed.strip_prefix("/setnotready "))
+        .or_else(|| trimmed.strip_prefix("/sn "))
         .or_else(|| trimmed.strip_prefix("/snr "))
     {
         let username = username.trim();
@@ -437,7 +439,10 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
             ready: false,
         });
     }
-    if matches!(trimmed, "setnotready" | "snr" | "/setnotready" | "/snr") {
+    if matches!(
+        trimmed,
+        "setnotready" | "sn" | "snr" | "/setnotready" | "/sn" | "/snr"
+    ) {
         return None;
     }
     if let Some(room_name) = trimmed
@@ -1687,6 +1692,13 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_local_input_command("sn bob"),
+            Some(LocalInputCommand::SetUserReady {
+                username: "bob".to_owned(),
+                ready: false
+            })
+        );
+        assert_eq!(
             parse_local_input_command("snr bob"),
             Some(LocalInputCommand::SetUserReady {
                 username: "bob".to_owned(),
@@ -1701,6 +1713,13 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_local_input_command("/sn bob"),
+            Some(LocalInputCommand::SetUserReady {
+                username: "bob".to_owned(),
+                ready: false
+            })
+        );
+        assert_eq!(
             parse_local_input_command("/snr bob"),
             Some(LocalInputCommand::SetUserReady {
                 username: "bob".to_owned(),
@@ -1708,6 +1727,7 @@ mod tests {
             })
         );
         assert_eq!(parse_local_input_command("setnotready"), None);
+        assert_eq!(parse_local_input_command("sn"), None);
         assert_eq!(parse_local_input_command("snr"), None);
     }
 
