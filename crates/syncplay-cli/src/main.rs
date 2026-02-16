@@ -59,6 +59,7 @@ struct RuntimeLoopInputs {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ClientBehaviorOverrides {
+    pause_on_leave: Option<bool>,
     loop_at_end_of_playlist: Option<bool>,
     loop_single_files: Option<bool>,
     only_switch_to_trusted_domains: Option<bool>,
@@ -148,6 +149,7 @@ fn env_string_list(name: &str) -> Option<Vec<String>> {
 
 fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
     ClientBehaviorOverrides {
+        pause_on_leave: env_flag_override("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE"),
         loop_at_end_of_playlist: env_flag_override("SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST"),
         loop_single_files: env_flag_override("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES"),
         only_switch_to_trusted_domains: env_flag_override(
@@ -162,6 +164,9 @@ fn apply_client_behavior_overrides(
     overrides: &ClientBehaviorOverrides,
 ) {
     let behavior = session.behavior_config_mut();
+    if let Some(pause_on_leave) = overrides.pause_on_leave {
+        behavior.pause_on_leave = pause_on_leave;
+    }
     if let Some(loop_at_end_of_playlist) = overrides.loop_at_end_of_playlist {
         behavior.loop_at_end_of_playlist = loop_at_end_of_playlist;
     }
@@ -1939,6 +1944,7 @@ mod tests {
     fn apply_client_behavior_overrides_updates_playlist_behavior_fields() {
         let mut session = ClientSession::default();
         let overrides = ClientBehaviorOverrides {
+            pause_on_leave: Some(false),
             loop_at_end_of_playlist: Some(true),
             loop_single_files: Some(true),
             only_switch_to_trusted_domains: Some(false),
@@ -1950,6 +1956,7 @@ mod tests {
         apply_client_behavior_overrides(&mut session, &overrides);
 
         let behavior = session.behavior_config();
+        assert!(!behavior.pause_on_leave);
         assert!(behavior.loop_at_end_of_playlist);
         assert!(behavior.loop_single_files);
         assert!(!behavior.only_switch_to_trusted_domains);
