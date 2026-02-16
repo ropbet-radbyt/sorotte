@@ -311,6 +311,37 @@ fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
     Some(LocalInputCommand::SeekAbsolute(seconds))
 }
 
+fn parse_seek_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (parameter, had_seek_prefix) = if let Some(value) = trimmed.strip_prefix("seek") {
+        (value.trim_start(), true)
+    } else if let Some(value) = trimmed.strip_prefix('s') {
+        (value.trim_start(), true)
+    } else {
+        (trimmed, false)
+    };
+
+    if parameter.is_empty() {
+        return None;
+    }
+
+    if !had_seek_prefix {
+        let starts_like_seek_value = parameter
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '+' || ch == '-' || ch.is_ascii_digit());
+        if !starts_like_seek_value {
+            return None;
+        }
+    }
+
+    parse_seek_parameter(parameter)
+}
+
 fn parse_playlist_index_parameter_legacy_compatible(parameter: &str) -> Option<i64> {
     let one_based_index = parameter.trim().parse::<i64>().ok()?;
     if one_based_index <= 0 {
@@ -499,6 +530,9 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "t" | "toggle" | "/t" | "/toggle") {
         return Some(LocalInputCommand::ToggleReady);
+    }
+    if let Some(command) = parse_seek_input_legacy_compatible(trimmed) {
+        return Some(command);
     }
     parse_local_input_chat_message(input).map(LocalInputCommand::Chat)
 }
@@ -2118,6 +2152,22 @@ mod tests {
         assert_eq!(
             parse_local_input_command("/s -2:00"),
             Some(LocalInputCommand::SeekRelative(-120.0))
+        );
+        assert_eq!(
+            parse_local_input_command("s+0:10"),
+            Some(LocalInputCommand::SeekRelative(10.0))
+        );
+        assert_eq!(
+            parse_local_input_command("seek-2:00"),
+            Some(LocalInputCommand::SeekRelative(-120.0))
+        );
+        assert_eq!(
+            parse_local_input_command("+0:05"),
+            Some(LocalInputCommand::SeekRelative(5.0))
+        );
+        assert_eq!(
+            parse_local_input_command("1:30"),
+            Some(LocalInputCommand::SeekAbsolute(90.0))
         );
         assert_eq!(parse_local_input_command("seek"), None);
         assert_eq!(parse_local_input_command("s"), None);
