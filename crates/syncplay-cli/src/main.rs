@@ -6,7 +6,8 @@ use anyhow::anyhow;
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
     ClientSession, ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-    QueuedRuntimeControl, ReconnectTransitionNotification, UserChangeNotification,
+    QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectTransitionNotification,
+    UnpauseActionMode, UserChangeNotification,
 };
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{ProtocolMessage, encode_message_line};
@@ -64,6 +65,20 @@ struct ClientBehaviorOverrides {
     loop_single_files: Option<bool>,
     only_switch_to_trusted_domains: Option<bool>,
     trusted_domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AutoplayThresholdOverride {
+    Disable,
+    Set(usize),
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ReadinessAutoplayOverrides {
+    unpause_action: Option<UnpauseActionMode>,
+    auto_play_threshold: Option<AutoplayThresholdOverride>,
+    autoplay_delay_seconds: Option<f64>,
+    last_paused_diff_threshold_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +171,69 @@ fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
             "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
         ),
         trusted_domains: env_string_list("SYNCPLAY_CLIENT_TRUSTED_DOMAINS"),
+    }
+}
+
+fn parse_unpause_action_mode_legacy_compatible(value: &str) -> Option<UnpauseActionMode> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "ifalreadyready" | "if_already_ready" | "if-already-ready" => {
+            Some(UnpauseActionMode::IfAlreadyReady)
+        }
+        "ifothersready" | "if_others_ready" | "if-others-ready" => {
+            Some(UnpauseActionMode::IfOthersReady)
+        }
+        "ifminusersready" | "if_min_users_ready" | "if-min-users-ready" => {
+            Some(UnpauseActionMode::IfMinUsersReady)
+        }
+        "always" => Some(UnpauseActionMode::Always),
+        _ => None,
+    }
+}
+
+fn parse_autoplay_min_users_override_legacy_compatible(
+    value: &str,
+) -> Option<AutoplayThresholdOverride> {
+    let parsed = value.trim().parse::<i64>().ok()?;
+    if parsed <= 0 {
+        return Some(AutoplayThresholdOverride::Disable);
+    }
+    usize::try_from(parsed)
+        .ok()
+        .map(AutoplayThresholdOverride::Set)
+}
+
+fn readiness_overrides_from_env() -> ReadinessAutoplayOverrides {
+    ReadinessAutoplayOverrides {
+        unpause_action: env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION")
+            .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
+        auto_play_threshold: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS")
+            .and_then(|value| parse_autoplay_min_users_override_legacy_compatible(&value)),
+        autoplay_delay_seconds: env_non_negative_f64("SYNCPLAY_CLIENT_AUTOPLAY_DELAY_SECONDS"),
+        last_paused_diff_threshold_seconds: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS",
+        ),
+    }
+}
+
+fn apply_readiness_autoplay_overrides(
+    readiness_config: &mut ReadinessAutoplayConfig,
+    overrides: &ReadinessAutoplayOverrides,
+) {
+    if let Some(unpause_action) = overrides.unpause_action.clone() {
+        readiness_config.unpause_action = unpause_action;
+    }
+    if let Some(auto_play_threshold) = overrides.auto_play_threshold.as_ref() {
+        readiness_config.auto_play_threshold = match auto_play_threshold {
+            AutoplayThresholdOverride::Disable => None,
+            AutoplayThresholdOverride::Set(value) => Some(*value),
+        };
+    }
+    if let Some(autoplay_delay_seconds) = overrides.autoplay_delay_seconds {
+        readiness_config.autoplay_delay_seconds = autoplay_delay_seconds;
+    }
+    if let Some(last_paused_diff_threshold_seconds) = overrides.last_paused_diff_threshold_seconds {
+        readiness_config.last_paused_diff_threshold_seconds = last_paused_diff_threshold_seconds;
     }
 }
 
@@ -794,17 +872,6 @@ fn create_client_runtime(
 ) -> ClientRuntime<MpvAdapter, QueuedRuntimeControl> {
     let mut session = ClientSession::default();
     session.set_autoplay_enabled(config.autoplay_enabled);
-    let readiness_config = session.readiness_autoplay_config_mut();
-    readiness_config.autoplay_require_same_filenames = config.autoplay_require_same_filenames;
-    if let Some(show_duration_notification) = config.show_duration_notification_override {
-        readiness_config.show_duration_notification = show_duration_notification;
-    }
-    if let Some(different_duration_threshold_seconds) =
-        config.different_duration_threshold_seconds_override
-    {
-        readiness_config.different_duration_threshold_seconds =
-            different_duration_threshold_seconds;
-    }
     if let Some(control_password) = config.controlled_room_password_override.as_deref() {
         session.remember_control_password_for_room(&config.room, control_password);
     }
@@ -821,6 +888,20 @@ fn create_client_runtime(
         session.behavior_config_mut().show_different_room_osd = show_different_room_osd;
     }
     apply_client_behavior_overrides(&mut session, &behavior_overrides_from_env());
+    {
+        let readiness_config = session.readiness_autoplay_config_mut();
+        readiness_config.autoplay_require_same_filenames = config.autoplay_require_same_filenames;
+        if let Some(show_duration_notification) = config.show_duration_notification_override {
+            readiness_config.show_duration_notification = show_duration_notification;
+        }
+        if let Some(different_duration_threshold_seconds) =
+            config.different_duration_threshold_seconds_override
+        {
+            readiness_config.different_duration_threshold_seconds =
+                different_duration_threshold_seconds;
+        }
+        apply_readiness_autoplay_overrides(readiness_config, &readiness_overrides_from_env());
+    }
     session.reconnect_policy_mut().max_retries = config.max_retries;
     ClientRuntime::new(
         session,
@@ -1655,9 +1736,11 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientBehaviorOverrides, ClientLoopConfig, ConnectedSessionExit, LocalInputCommand,
-        LocalOffsetCommand, apply_client_behavior_overrides, chat_notification_message,
-        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+        AutoplayThresholdOverride, ClientBehaviorOverrides, ClientLoopConfig, ConnectedSessionExit,
+        LocalInputCommand, LocalOffsetCommand, ReadinessAutoplayOverrides,
+        apply_client_behavior_overrides, apply_readiness_autoplay_overrides,
+        chat_notification_message, controlled_room_base_name_legacy_compatible,
+        controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
@@ -1666,9 +1749,10 @@ mod tests {
         generate_room_password_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
-        parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
-        parse_env_port_legacy_compatible, parse_env_string_list_legacy_compatible,
-        parse_local_input_chat_message, parse_local_input_command,
+        parse_autoplay_min_users_override_legacy_compatible, parse_env_bool_legacy_compatible,
+        parse_env_non_negative_f64_legacy_compatible, parse_env_port_legacy_compatible,
+        parse_env_string_list_legacy_compatible, parse_local_input_chat_message,
+        parse_local_input_command, parse_unpause_action_mode_legacy_compatible,
         playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
         run_client_network_loop, run_connected_client_session,
         user_change_notification_hidden_from_osd, user_change_notification_message,
@@ -1677,7 +1761,8 @@ mod tests {
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientSession,
         ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-        ReconnectTransitionNotification, UserChangeNotification,
+        ReadinessAutoplayConfig, ReconnectTransitionNotification, UnpauseActionMode,
+        UserChangeNotification,
     };
     use syncplay_player_api::PlayerAdapter;
     use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
@@ -1941,6 +2026,59 @@ mod tests {
     }
 
     #[test]
+    fn parse_unpause_action_mode_legacy_compatible_accepts_known_values() {
+        assert_eq!(
+            parse_unpause_action_mode_legacy_compatible("IfAlreadyReady"),
+            Some(UnpauseActionMode::IfAlreadyReady)
+        );
+        assert_eq!(
+            parse_unpause_action_mode_legacy_compatible("if_others_ready"),
+            Some(UnpauseActionMode::IfOthersReady)
+        );
+        assert_eq!(
+            parse_unpause_action_mode_legacy_compatible("if-min-users-ready"),
+            Some(UnpauseActionMode::IfMinUsersReady)
+        );
+        assert_eq!(
+            parse_unpause_action_mode_legacy_compatible("always"),
+            Some(UnpauseActionMode::Always)
+        );
+    }
+
+    #[test]
+    fn parse_unpause_action_mode_legacy_compatible_rejects_unknown_values() {
+        assert_eq!(parse_unpause_action_mode_legacy_compatible(""), None);
+        assert_eq!(
+            parse_unpause_action_mode_legacy_compatible("sometimes"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_autoplay_min_users_override_legacy_compatible_maps_legacy_ranges() {
+        assert_eq!(
+            parse_autoplay_min_users_override_legacy_compatible("-1"),
+            Some(AutoplayThresholdOverride::Disable)
+        );
+        assert_eq!(
+            parse_autoplay_min_users_override_legacy_compatible("0"),
+            Some(AutoplayThresholdOverride::Disable)
+        );
+        assert_eq!(
+            parse_autoplay_min_users_override_legacy_compatible("1"),
+            Some(AutoplayThresholdOverride::Set(1))
+        );
+        assert_eq!(
+            parse_autoplay_min_users_override_legacy_compatible("3"),
+            Some(AutoplayThresholdOverride::Set(3))
+        );
+        assert_eq!(
+            parse_autoplay_min_users_override_legacy_compatible("abc"),
+            None
+        );
+    }
+
+    #[test]
     fn apply_client_behavior_overrides_updates_playlist_behavior_fields() {
         let mut session = ClientSession::default();
         let overrides = ClientBehaviorOverrides {
@@ -1964,6 +2102,30 @@ mod tests {
             behavior.trusted_domains,
             vec!["youtube.com".to_owned(), "*.example.com/videos".to_owned()]
         );
+    }
+
+    #[test]
+    fn apply_readiness_autoplay_overrides_updates_fields() {
+        let mut readiness = ReadinessAutoplayConfig::default();
+        let overrides = ReadinessAutoplayOverrides {
+            unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+            auto_play_threshold: Some(AutoplayThresholdOverride::Set(3)),
+            autoplay_delay_seconds: Some(4.5),
+            last_paused_diff_threshold_seconds: Some(2.25),
+        };
+        apply_readiness_autoplay_overrides(&mut readiness, &overrides);
+
+        assert_eq!(readiness.unpause_action, UnpauseActionMode::IfMinUsersReady);
+        assert_eq!(readiness.auto_play_threshold, Some(3));
+        assert_eq!(readiness.autoplay_delay_seconds, 4.5);
+        assert_eq!(readiness.last_paused_diff_threshold_seconds, 2.25);
+
+        let disable_threshold_overrides = ReadinessAutoplayOverrides {
+            auto_play_threshold: Some(AutoplayThresholdOverride::Disable),
+            ..ReadinessAutoplayOverrides::default()
+        };
+        apply_readiness_autoplay_overrides(&mut readiness, &disable_threshold_overrides);
+        assert_eq!(readiness.auto_play_threshold, None);
     }
 
     #[test]
