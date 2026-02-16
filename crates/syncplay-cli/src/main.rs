@@ -242,6 +242,13 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+enum LocalOffsetCommand {
+    Absolute(f64),
+    Relative(f64),
+    RelativeFromCurrentPositionMinus(f64),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum LocalInputCommand {
     Chat(String),
     RequestUserList,
@@ -256,6 +263,7 @@ enum LocalInputCommand {
     },
     DeletePlaylistIndex(i64),
     UndoSeek,
+    SetUserOffset(LocalOffsetCommand),
     SeekAbsolute(f64),
     SeekRelative(f64),
     TogglePause,
@@ -313,6 +321,45 @@ fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
 
     let seconds = parse_seek_time_seconds_legacy_like(parameter)?;
     Some(LocalInputCommand::SeekAbsolute(seconds))
+}
+
+fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffsetCommand> {
+    let parameter = parameter.trim();
+    if parameter.is_empty() {
+        return None;
+    }
+
+    if let Some(value) = parameter.strip_prefix('+') {
+        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        return Some(LocalOffsetCommand::Relative(seconds));
+    }
+    if let Some(value) = parameter.strip_prefix('-') {
+        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        return Some(LocalOffsetCommand::Relative(-seconds));
+    }
+    if let Some(value) = parameter.strip_prefix('/') {
+        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        return Some(LocalOffsetCommand::RelativeFromCurrentPositionMinus(
+            seconds,
+        ));
+    }
+
+    let seconds = parse_seek_time_seconds_legacy_like(parameter)?;
+    Some(LocalOffsetCommand::Absolute(seconds))
+}
+
+fn parse_offset_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
+    let trimmed = input.trim();
+    let parameter = if let Some(parameter) = trimmed.strip_prefix("offset") {
+        parameter
+    } else if let Some(parameter) = trimmed.strip_prefix('o') {
+        parameter
+    } else {
+        return None;
+    };
+
+    let offset_command = parse_offset_parameter_legacy_compatible(parameter)?;
+    Some(LocalInputCommand::SetUserOffset(offset_command))
 }
 
 fn parse_seek_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
@@ -534,6 +581,12 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if matches!(trimmed, "t" | "toggle" | "/t" | "/toggle") {
         return Some(LocalInputCommand::ToggleReady);
+    }
+    if let Some(command) = parse_offset_input_legacy_compatible(trimmed) {
+        return Some(command);
+    }
+    if matches!(trimmed, "o" | "offset") {
+        return None;
     }
     if let Some(command) = parse_seek_input_legacy_compatible(trimmed) {
         return Some(command);
@@ -895,6 +948,7 @@ fn local_command_help_lines_legacy_compatible() -> &'static [&'static str] {
         "\tu - undo last seek",
         "\tp - toggle pause",
         "\t[s][+-]time - seek to the given value of time, if + or - is not specified it's absolute time in seconds or min:sec",
+        "\to[+-]duration - offset local playback by the given duration (in seconds or min:sec) from the server seek position - this is a deprecated feature",
         "\th - this help",
         "\tt - toggles whether you are ready to watch or not",
         "\tsr [name] - sets user as ready",
@@ -921,6 +975,30 @@ fn emit_local_command_help_legacy_compatible() -> anyhow::Result<()> {
 fn emit_unknown_command_help_legacy_compatible() -> anyhow::Result<()> {
     println!("{UNKNOWN_COMMAND_MESSAGE_LEGACY}");
     emit_local_command_help_legacy_compatible()
+}
+
+fn apply_local_offset_command_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    user_offset_seconds: &mut f64,
+    command: LocalOffsetCommand,
+) -> anyhow::Result<bool> {
+    let global_position = runtime
+        .session()
+        .current_room_playstate()
+        .and_then(|playstate| playstate.position)
+        .unwrap_or(0.0);
+    let current_local_position = global_position + *user_offset_seconds;
+    *user_offset_seconds = match command {
+        LocalOffsetCommand::Absolute(offset_seconds) => offset_seconds,
+        LocalOffsetCommand::Relative(offset_delta_seconds) => {
+            *user_offset_seconds + offset_delta_seconds
+        }
+        LocalOffsetCommand::RelativeFromCurrentPositionMinus(offset_seconds) => {
+            current_local_position - offset_seconds
+        }
+    };
+    println!("Current offset: {} seconds", *user_offset_seconds);
+    Ok(runtime.run_seek_to_position(global_position + *user_offset_seconds)?)
 }
 
 fn playlist_listing_message_legacy_compatible(session: &ClientSession) -> String {
@@ -1146,6 +1224,7 @@ where
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
+    let mut local_user_offset_seconds = 0.0f64;
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
@@ -1262,6 +1341,13 @@ where
                             runtime.run_delete_playlist_index(index)?
                         }
                         LocalInputCommand::UndoSeek => runtime.run_undo_seek()?,
+                        LocalInputCommand::SetUserOffset(offset_command) => {
+                            apply_local_offset_command_legacy_compatible(
+                                runtime,
+                                &mut local_user_offset_seconds,
+                                offset_command,
+                            )?
+                        }
                         LocalInputCommand::SeekAbsolute(position_seconds) => {
                             runtime.run_seek_to_position(position_seconds)?
                         }
@@ -1439,8 +1525,9 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientLoopConfig, ConnectedSessionExit, LocalInputCommand, chat_notification_message,
-        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+        ClientLoopConfig, ConnectedSessionExit, LocalInputCommand, LocalOffsetCommand,
+        chat_notification_message, controlled_room_base_name_legacy_compatible,
+        controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
@@ -1932,6 +2019,11 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("\tqd [index] - delete the given entry"))
         );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("\to[+-]duration - offset local playback"))
+        );
     }
 
     #[test]
@@ -2198,6 +2290,36 @@ mod tests {
         );
         assert_eq!(parse_local_input_command("seek"), None);
         assert_eq!(parse_local_input_command("s"), None);
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_offset_aliases() {
+        assert_eq!(
+            parse_local_input_command("offset 1:30"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Absolute(90.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("o +0:10"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Relative(10.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("o-2:00"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Relative(-120.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("offset /0:30"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::RelativeFromCurrentPositionMinus(30.0)
+            ))
+        );
+        assert_eq!(parse_local_input_command("offset"), None);
+        assert_eq!(parse_local_input_command("o"), None);
     }
 
     #[test]
@@ -4595,6 +4717,109 @@ mod tests {
             runtime.player().position_seconds(),
             42.0,
             "local seek command should update player position"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_applies_offset_commands_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"chat\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+            let _ = tokio::time::timeout(Duration::from_millis(150), lines.next_line()).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        sender
+            .send("offset 5".to_owned())
+            .expect("absolute offset command should queue");
+        sender
+            .send("o +2".to_owned())
+            .expect("relative offset command should queue");
+        sender
+            .send("o /3".to_owned())
+            .expect("slash-relative offset command should queue");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        assert_eq!(
+            runtime.player().position_seconds(),
+            4.0,
+            "offset command sequence should adjust local player position with legacy-like math"
         );
         server_task.await.expect("server task join should succeed");
     }
