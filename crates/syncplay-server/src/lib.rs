@@ -33,7 +33,9 @@ const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
+const TLS_CERT_FILENAME: &str = "cert.pem";
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
+const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 
 fn legacy_stats_snapshot_start_delay_seconds_for_port(port: u16) -> f64 {
     SERVER_STATS_DELAY_STEP_SECONDS * (f64::from(port % 10) + 1.0)
@@ -43,6 +45,12 @@ fn tls_certificate_bundle_is_available(path: &Path) -> bool {
     TLS_REQUIRED_CERT_FILENAMES
         .iter()
         .all(|filename| path.join(filename).is_file())
+}
+
+fn tls_certificate_file_modified_time(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path.join(TLS_CERT_FILENAME))
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
 }
 
 static CONTROLLED_ROOM_REGEX: LazyLock<Regex> =
@@ -523,7 +531,10 @@ pub struct ServerRuntime {
     stats_snapshot_interval_seconds: f64,
     stats_next_snapshot_at_seconds: Option<f64>,
     tls_cert_path: Option<PathBuf>,
+    tls_context_available: bool,
     server_accepts_tls: bool,
+    tls_last_edit_cert_time: Option<SystemTime>,
+    tls_rotation_attempts: u32,
     persistent_rooms_enabled: bool,
     room_persistence: Option<RoomPersistenceStore>,
     permanent_rooms: BTreeSet<String>,
@@ -593,7 +604,10 @@ impl ServerRuntime {
             stats_snapshot_interval_seconds: SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS,
             stats_next_snapshot_at_seconds: None,
             tls_cert_path: None,
+            tls_context_available: false,
             server_accepts_tls: false,
+            tls_last_edit_cert_time: None,
+            tls_rotation_attempts: 0,
             persistent_rooms_enabled: false,
             room_persistence: None,
             permanent_rooms: BTreeSet::new(),
@@ -682,7 +696,8 @@ impl ServerRuntime {
 
     pub fn set_tls_cert_path(&mut self, path: Option<PathBuf>) {
         self.tls_cert_path = path;
-        self.refresh_tls_availability();
+        self.tls_rotation_attempts = 0;
+        self.refresh_tls_context_from_cert_path();
     }
 
     pub fn set_persistent_rooms_enabled(&mut self, enabled: bool) {
@@ -860,11 +875,13 @@ impl ServerRuntime {
         if !tls.start_tls.contains("send") {
             return Ok(Vec::new());
         }
-        if self.tls_cert_path.is_some() {
-            self.refresh_tls_availability();
-        }
         let start_tls = if !self.sessions.contains_key(client_id) && self.server_accepts_tls {
-            "true"
+            self.refresh_tls_context_after_cert_rotation_if_needed();
+            if self.tls_context_available {
+                "true"
+            } else {
+                "false"
+            }
         } else {
             "false"
         };
@@ -1301,11 +1318,43 @@ impl ServerRuntime {
         );
     }
 
-    fn refresh_tls_availability(&mut self) {
-        self.server_accepts_tls = self
-            .tls_cert_path
-            .as_ref()
-            .is_some_and(|path| tls_certificate_bundle_is_available(path));
+    fn refresh_tls_context_from_cert_path(&mut self) {
+        let Some(path) = self.tls_cert_path.as_ref() else {
+            self.tls_context_available = false;
+            self.server_accepts_tls = false;
+            self.tls_last_edit_cert_time = None;
+            return;
+        };
+        if tls_certificate_bundle_is_available(path) {
+            self.tls_context_available = true;
+            self.server_accepts_tls = true;
+            self.tls_last_edit_cert_time = tls_certificate_file_modified_time(path);
+            return;
+        }
+        self.tls_context_available = false;
+        self.server_accepts_tls = false;
+        self.tls_last_edit_cert_time = None;
+    }
+
+    fn refresh_tls_context_after_cert_rotation_if_needed(&mut self) {
+        let Some(path) = self.tls_cert_path.as_ref() else {
+            return;
+        };
+        let Some(current_edit_time) = tls_certificate_file_modified_time(path) else {
+            return;
+        };
+        if Some(current_edit_time) == self.tls_last_edit_cert_time {
+            return;
+        }
+        self.refresh_tls_context_after_rotation_attempt();
+    }
+
+    fn refresh_tls_context_after_rotation_attempt(&mut self) {
+        self.refresh_tls_context_from_cert_path();
+        self.tls_rotation_attempts = self.tls_rotation_attempts.saturating_add(1);
+        if self.tls_rotation_attempts < TLS_CERT_ROTATION_MAX_RETRIES {
+            self.server_accepts_tls = true;
+        }
     }
 
     fn collect_due_stats_snapshots(&mut self) -> Result<(), ServerRuntimeError> {
@@ -2166,9 +2215,9 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs,
-        path::PathBuf,
-        process,
-        time::{SystemTime, UNIX_EPOCH},
+        path::{Path, PathBuf},
+        process, thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use rusqlite::Connection;
@@ -2494,6 +2543,26 @@ mod tests {
             .expect("system clock should be after unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("syncplay-rs-{label}-{}-{now_nanos}", process::id()))
+    }
+
+    fn overwrite_file_until_modified_time_changes(path: &Path, contents: &str) {
+        let original_modified_time = fs::metadata(path)
+            .expect("file should be readable before overwrite")
+            .modified()
+            .expect("file should expose modification time");
+        for attempt in 0..8 {
+            fs::write(path, format!("{contents}-{attempt}"))
+                .expect("file overwrite should succeed while testing rotation");
+            let updated_modified_time = fs::metadata(path)
+                .expect("overwritten file should be readable")
+                .modified()
+                .expect("overwritten file should expose modification time");
+            if updated_modified_time != original_modified_time {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        panic!("file modification time did not change after repeated overwrite attempts");
     }
 
     fn tls_start_response(lines: &[String]) -> Option<String> {
@@ -3003,6 +3072,62 @@ mod tests {
             .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
             .expect("tls request should be handled");
         assert_eq!(tls_start_response(&outbound_lines).as_deref(), Some("true"));
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn tls_send_keeps_loaded_context_when_cert_files_disappear_without_rotation_signal() {
+        let cert_path = temporary_directory_path("tls-context-cache");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let mut runtime = ServerRuntime::new();
+        runtime.set_tls_cert_path(Some(cert_path.clone()));
+        fs::remove_file(cert_path.join("privkey.pem")).expect("privkey file should be removable");
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+        fs::remove_file(cert_path.join("cert.pem")).expect("cert file should be removable");
+
+        let outbound_lines = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("tls request should be handled");
+        assert_eq!(tls_start_response(&outbound_lines).as_deref(), Some("true"));
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn tls_send_reloads_context_when_cert_edit_time_changes() {
+        let cert_path = temporary_directory_path("tls-cert-rotation");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let mut runtime = ServerRuntime::new();
+        runtime.set_tls_cert_path(Some(cert_path.clone()));
+        let initial_outbound = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("initial tls request should be handled");
+        assert_eq!(
+            tls_start_response(&initial_outbound).as_deref(),
+            Some("true")
+        );
+
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+        overwrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), "rotated-cert");
+
+        let rotated_outbound = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("rotated tls request should be handled");
+        assert_eq!(
+            tls_start_response(&rotated_outbound).as_deref(),
+            Some("false")
+        );
 
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
     }
