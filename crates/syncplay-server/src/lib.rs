@@ -442,6 +442,26 @@ pub struct DirectedOutboundLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerTransportAction {
+    StartTls,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectedTransportAction {
+    pub client_id: String,
+    pub action: ServerTransportAction,
+}
+
+impl DirectedTransportAction {
+    fn new(client_id: impl Into<String>, action: ServerTransportAction) -> Self {
+        Self {
+            client_id: client_id.into(),
+            action,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RoomPasswordCheckError {
     InvalidPassword,
     NotControlledRoom,
@@ -535,6 +555,7 @@ pub struct ServerRuntime {
     server_accepts_tls: bool,
     tls_last_edit_cert_time: Option<SystemTime>,
     tls_rotation_attempts: u32,
+    pending_transport_actions: Vec<DirectedTransportAction>,
     persistent_rooms_enabled: bool,
     room_persistence: Option<RoomPersistenceStore>,
     permanent_rooms: BTreeSet<String>,
@@ -608,6 +629,7 @@ impl ServerRuntime {
             server_accepts_tls: false,
             tls_last_edit_cert_time: None,
             tls_rotation_attempts: 0,
+            pending_transport_actions: Vec::new(),
             persistent_rooms_enabled: false,
             room_persistence: None,
             permanent_rooms: BTreeSet::new(),
@@ -784,6 +806,10 @@ impl ServerRuntime {
         self.time_now_override_seconds = seconds;
     }
 
+    pub fn drain_transport_actions(&mut self) -> Vec<DirectedTransportAction> {
+        std::mem::take(&mut self.pending_transport_actions)
+    }
+
     pub fn advance_time_and_collect_fanout(
         &mut self,
         delta_seconds: f64,
@@ -875,16 +901,21 @@ impl ServerRuntime {
         if !tls.start_tls.contains("send") {
             return Ok(Vec::new());
         }
-        let start_tls = if !self.sessions.contains_key(client_id) && self.server_accepts_tls {
+        let should_start_tls = if !self.sessions.contains_key(client_id) && self.server_accepts_tls
+        {
             self.refresh_tls_context_after_cert_rotation_if_needed();
-            if self.tls_context_available {
-                "true"
-            } else {
-                "false"
-            }
+            self.tls_context_available
         } else {
-            "false"
+            false
         };
+        if should_start_tls {
+            self.pending_transport_actions
+                .push(DirectedTransportAction::new(
+                    client_id,
+                    ServerTransportAction::StartTls,
+                ));
+        }
+        let start_tls = if should_start_tls { "true" } else { "false" };
         Ok(vec![DirectedProtocolMessage::new(
             client_id,
             ProtocolMessage::start_tls(start_tls),
@@ -2224,8 +2255,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        DirectedOutboundLine, RoomPasswordCheckError, RoomPasswordProvider, ServerApp,
-        ServerRuntime, ServerRuntimeError,
+        DirectedOutboundLine, DirectedTransportAction, RoomPasswordCheckError,
+        RoomPasswordProvider, ServerApp, ServerRuntime, ServerRuntimeError, ServerTransportAction,
     };
     use syncplay_protocol::{
         ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
@@ -2572,6 +2603,15 @@ mod tests {
                 return None;
             };
             Some(payload.tls.start_tls)
+        })
+    }
+
+    fn has_start_tls_transport_action(
+        actions: &[DirectedTransportAction],
+        recipient: &str,
+    ) -> bool {
+        actions.iter().any(|action| {
+            action.client_id == recipient && action.action == ServerTransportAction::StartTls
         })
     }
 
@@ -3021,6 +3061,34 @@ mod tests {
     }
 
     #[test]
+    fn tls_send_true_enqueues_start_tls_transport_action() {
+        let cert_path = temporary_directory_path("tls-transport-action");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let mut runtime = ServerRuntime::new();
+        runtime.set_tls_cert_path(Some(cert_path.clone()));
+        let outbound_lines = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("tls request should be handled");
+        assert_eq!(tls_start_response(&outbound_lines).as_deref(), Some("true"));
+        let transport_actions = runtime.drain_transport_actions();
+        assert!(
+            has_start_tls_transport_action(&transport_actions, "client-1"),
+            "startTLS=true should emit a transport StartTls action"
+        );
+        assert!(
+            runtime.drain_transport_actions().is_empty(),
+            "transport actions should drain once"
+        );
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
     fn tls_send_returns_false_for_logged_client_even_when_tls_bundle_is_present() {
         let cert_path = temporary_directory_path("tls-after-hello");
         let _ = fs::remove_dir_all(&cert_path);
@@ -3046,6 +3114,22 @@ mod tests {
         );
 
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn tls_send_false_does_not_enqueue_transport_action() {
+        let mut runtime = ServerRuntime::new();
+        let outbound_lines = runtime
+            .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+            .expect("tls request should be handled");
+        assert_eq!(
+            tls_start_response(&outbound_lines).as_deref(),
+            Some("false")
+        );
+        assert!(
+            runtime.drain_transport_actions().is_empty(),
+            "startTLS=false should not emit transport actions"
+        );
     }
 
     #[test]
