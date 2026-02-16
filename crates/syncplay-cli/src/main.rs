@@ -188,10 +188,13 @@ fn env_usize(name: &str) -> Option<usize> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-fn env_f64(name: &str) -> Option<f64> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
+fn parse_env_non_negative_f64_legacy_compatible(value: &str) -> Option<f64> {
+    let parsed = value.trim().parse::<f64>().ok()?;
+    (parsed.is_finite() && parsed >= 0.0).then_some(parsed)
+}
+
+fn env_non_negative_f64(name: &str) -> Option<f64> {
+    env_trimmed(name).and_then(|value| parse_env_non_negative_f64_legacy_compatible(&value))
 }
 
 fn env_privacy_mode(name: &str) -> Option<PrivacyMode> {
@@ -747,8 +750,10 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
         room,
         version: env_trimmed("SYNCPLAY_CLIENT_VERSION").unwrap_or_else(|| "1.2.255".to_owned()),
         max_retries: env_u32("SYNCPLAY_CLIENT_MAX_RETRIES").unwrap_or(3),
-        max_connected_runtime_seconds: env_f64("SYNCPLAY_CLIENT_MAX_CONNECTED_RUNTIME_SECONDS")
-            .unwrap_or(10.0),
+        max_connected_runtime_seconds: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_MAX_CONNECTED_RUNTIME_SECONDS",
+        )
+        .unwrap_or(10.0),
         readiness_supported_override: env_flag_override("SYNCPLAY_CLIENT_READINESS_SUPPORTED"),
         local_can_control_override: env_flag_override("SYNCPLAY_CLIENT_CAN_CONTROL"),
         is_playing_music_override: env_flag_override("SYNCPLAY_CLIENT_IS_PLAYING_MUSIC"),
@@ -764,7 +769,7 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
         show_duration_notification_override: env_flag_override(
             "SYNCPLAY_CLIENT_SHOW_DURATION_NOTIFICATION",
         ),
-        different_duration_threshold_seconds_override: env_f64(
+        different_duration_threshold_seconds_override: env_non_negative_f64(
             "SYNCPLAY_CLIENT_DIFFERENT_DURATION_THRESHOLD_SECONDS",
         ),
         show_same_room_osd_override: env_flag_override("SYNCPLAY_CLIENT_SHOW_SAME_ROOM_OSD"),
@@ -1656,12 +1661,12 @@ mod tests {
         generate_room_password_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
-        parse_env_bool_legacy_compatible, parse_env_port_legacy_compatible,
-        parse_env_string_list_legacy_compatible, parse_local_input_chat_message,
-        parse_local_input_command, playlist_listing_message_legacy_compatible,
-        reconnect_transition_notification_message, run_client_network_loop,
-        run_connected_client_session, user_change_notification_hidden_from_osd,
-        user_change_notification_message,
+        parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
+        parse_env_port_legacy_compatible, parse_env_string_list_legacy_compatible,
+        parse_local_input_chat_message, parse_local_input_command,
+        playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
+        run_client_network_loop, run_connected_client_session,
+        user_change_notification_hidden_from_osd, user_change_notification_message,
     };
     use std::time::Duration;
     use syncplay_client_core::{
@@ -1887,6 +1892,19 @@ mod tests {
         assert_eq!(parse_env_port_legacy_compatible("0"), None);
         assert_eq!(parse_env_port_legacy_compatible("65536"), None);
         assert_eq!(parse_env_port_legacy_compatible("abc"), None);
+    }
+
+    #[test]
+    fn parse_env_non_negative_f64_legacy_compatible_requires_finite_non_negative_values() {
+        assert_eq!(parse_env_non_negative_f64_legacy_compatible("0"), Some(0.0));
+        assert_eq!(
+            parse_env_non_negative_f64_legacy_compatible("1.25"),
+            Some(1.25)
+        );
+        assert_eq!(parse_env_non_negative_f64_legacy_compatible("-0.01"), None);
+        assert_eq!(parse_env_non_negative_f64_legacy_compatible("NaN"), None);
+        assert_eq!(parse_env_non_negative_f64_legacy_compatible("inf"), None);
+        assert_eq!(parse_env_non_negative_f64_legacy_compatible("abc"), None);
     }
 
     #[test]
