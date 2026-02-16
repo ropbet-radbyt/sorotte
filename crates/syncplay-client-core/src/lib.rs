@@ -756,6 +756,19 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_request_controller_auth(
+        &mut self,
+        room: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_controller_auth_request(room.into(), password.into());
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_set_room(&mut self, room: impl Into<String>) -> Result<bool, PlayerError> {
         let actions = self
             .session
@@ -1885,6 +1898,35 @@ impl ClientSession {
             manually_initiated,
             username: username.to_owned(),
         }]
+    }
+
+    pub fn runtime_actions_for_local_controller_auth_request(
+        &self,
+        room: String,
+        password: String,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        let room = room.trim();
+        if room.is_empty() {
+            return Vec::new();
+        }
+        let password = Self::normalize_control_password_legacy_compatible(&password);
+        if password.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            ClientRuntimeAction::NotifyControllerAuthTransition(
+                ControllerAuthTransitionNotification::Attempting {
+                    room: room.to_owned(),
+                },
+            ),
+            ClientRuntimeAction::RequestControllerAuth {
+                room: room.to_owned(),
+                password,
+            },
+        ]
     }
 
     pub fn runtime_actions_for_local_room_switch(&self, room: String) -> Vec<ClientRuntimeAction> {
@@ -7287,6 +7329,60 @@ mod tests {
             "set ready for user should be suppressed before server hello"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_request_controller_auth_dispatches_protocol_message_with_normalized_password()
+    {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_request_controller_auth(" +room:ABCDEF123456 ", "ab_123-456!")
+                .expect("controller auth request should not fail"),
+            "manual controller auth request should emit outbound Set.controllerAuth after hello"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.controllerAuth protocol message");
+        };
+        let controller_auth = set_message
+            .set
+            .controller_auth
+            .as_ref()
+            .expect("Set message should contain controllerAuth payload");
+        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(controller_auth.password.as_deref(), Some("AB123-456"));
+        assert_eq!(
+            control.controller_auth_notifications(),
+            &[ControllerAuthTransitionNotification::Attempting {
+                room: "+room:ABCDEF123456".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn client_runtime_request_controller_auth_is_omitted_before_server_hello() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_request_controller_auth("+room:ABCDEF123456", "AB-123-456")
+                .expect("controller auth request should not fail"),
+            "manual controller auth request should be suppressed before server hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+        assert!(runtime.control().controller_auth_notifications().is_empty());
     }
 
     #[test]

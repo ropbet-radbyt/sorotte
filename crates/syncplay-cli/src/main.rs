@@ -177,6 +177,7 @@ enum LocalInputCommand {
     TogglePause,
     ToggleReady,
     SetUserReady { username: String, ready: bool },
+    AuthController(String),
     SetRoomWithLegacyFallback,
     SetRoom(String),
 }
@@ -265,6 +266,19 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         });
     }
     if matches!(trimmed, "setnotready" | "snr" | "/setnotready" | "/snr") {
+        return None;
+    }
+    if let Some(password) = trimmed
+        .strip_prefix("auth ")
+        .or_else(|| trimmed.strip_prefix("a "))
+        .or_else(|| trimmed.strip_prefix("/auth "))
+        .or_else(|| trimmed.strip_prefix("/a "))
+    {
+        let password = password.trim();
+        return (!password.is_empty())
+            .then(|| LocalInputCommand::AuthController(password.to_owned()));
+    }
+    if matches!(trimmed, "auth" | "a" | "/auth" | "/a") {
         return None;
     }
     if let Some(parameter) = trimmed
@@ -929,6 +943,14 @@ where
                         LocalInputCommand::SetUserReady { username, ready } => {
                             runtime.run_set_ready_for_user(username, ready, true)?
                         }
+                        LocalInputCommand::AuthController(password) => {
+                            let room = runtime
+                                .session()
+                                .room
+                                .clone()
+                                .unwrap_or_else(|| config.room.clone());
+                            runtime.run_request_controller_auth(room, password)?
+                        }
                         LocalInputCommand::SetRoomWithLegacyFallback => runtime
                             .run_set_room_with_legacy_fallback(config.room.clone())?,
                         LocalInputCommand::SetRoom(room) => runtime.run_set_room(room)?,
@@ -1351,6 +1373,28 @@ mod tests {
         );
         assert_eq!(parse_local_input_command("setnotready"), None);
         assert_eq!(parse_local_input_command("snr"), None);
+    }
+
+    #[test]
+    fn parse_local_input_command_parses_auth_aliases() {
+        assert_eq!(
+            parse_local_input_command("auth ab-123-456"),
+            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        );
+        assert_eq!(
+            parse_local_input_command("a ab-123-456"),
+            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        );
+        assert_eq!(
+            parse_local_input_command("/auth ab-123-456"),
+            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        );
+        assert_eq!(
+            parse_local_input_command("/a ab-123-456"),
+            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+        );
+        assert_eq!(parse_local_input_command("auth"), None);
+        assert_eq!(parse_local_input_command("a"), None);
     }
 
     #[test]
@@ -2387,6 +2431,131 @@ mod tests {
             sender
                 .send("sr other-user".to_owned())
                 .expect("setready command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_authenticates_controller_from_local_input_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}
+"#,
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let mut controller_auth_payload = None;
+            for _ in 0..6 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("controller auth line read should not timeout")
+                    .expect("controller auth line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if let Some(controller_auth) = payload.set.controller_auth {
+                    controller_auth_payload = Some(controller_auth);
+                    break;
+                }
+            }
+            let Some(controller_auth_payload) = controller_auth_payload else {
+                panic!("client should emit Set.controllerAuth from local auth command");
+            };
+            assert_eq!(
+                controller_auth_payload.room.as_deref(),
+                Some("+room:ABCDEF123456")
+            );
+            assert_eq!(
+                controller_auth_payload.password.as_deref(),
+                Some("AB123-456")
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "+room:ABCDEF123456".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .send("auth ab_123-456!".to_owned())
+                .expect("auth command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
