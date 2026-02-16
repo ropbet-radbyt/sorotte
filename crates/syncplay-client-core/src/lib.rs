@@ -854,6 +854,31 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_undo_playlist_change(&mut self) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_playlist_undo();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
+    pub fn run_shuffle_remaining_playlist(&mut self) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_playlist_shuffle_remaining();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
+    pub fn run_shuffle_entire_playlist(&mut self) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_playlist_shuffle_entire();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let sent = !actions.is_empty();
@@ -1122,6 +1147,8 @@ pub struct ClientSession {
     controlled_room_switch_intent: Option<String>,
     controller_reidentify_intent: Option<(String, String)>,
     controlled_room_passwords: BTreeMap<String, String>,
+    playlist_undo_snapshots: BTreeMap<String, Vec<String>>,
+    playlist_shuffle_nonce: u64,
     last_seek_position_before_manual_seek: Option<f64>,
     local_position: Option<f64>,
     local_paused: Option<bool>,
@@ -1171,6 +1198,8 @@ impl Default for ClientSession {
             controlled_room_switch_intent: None,
             controller_reidentify_intent: None,
             controlled_room_passwords: BTreeMap::new(),
+            playlist_undo_snapshots: BTreeMap::new(),
+            playlist_shuffle_nonce: 0,
             last_seek_position_before_manual_seek: None,
             local_position: None,
             local_paused: None,
@@ -1858,6 +1887,115 @@ impl ClientSession {
             })
     }
 
+    fn capture_playlist_undo_snapshot_legacy_compatible(
+        &mut self,
+        room_name: &str,
+        current_files: &[String],
+        new_files: &[String],
+    ) {
+        if current_files == new_files {
+            return;
+        }
+        if self
+            .playlist_undo_snapshots
+            .get(room_name)
+            .is_some_and(|snapshot| snapshot == current_files)
+        {
+            return;
+        }
+        self.playlist_undo_snapshots
+            .insert(room_name.to_owned(), current_files.to_vec());
+    }
+
+    fn local_playlist_target_index_from_changed_playlist_legacy_compatible(
+        current_files: &[String],
+        current_index: Option<usize>,
+        new_files: &[String],
+    ) -> usize {
+        let Some(current_index) = current_index else {
+            return 0;
+        };
+        if new_files.len() <= 1 {
+            return 0;
+        }
+
+        let mut index = current_index;
+        while index <= current_files.len() {
+            if let Some(file_name) = current_files.get(index) {
+                if let Some(valid_index) = new_files.iter().position(|entry| entry == file_name) {
+                    return valid_index;
+                }
+            }
+            index = index.saturating_add(1);
+        }
+
+        let mut index = current_index;
+        while index > 0 {
+            if let Some(file_name) = current_files.get(index) {
+                if let Some(valid_index) = new_files.iter().position(|entry| entry == file_name) {
+                    return if valid_index < new_files.len().saturating_sub(1) {
+                        valid_index.saturating_add(1)
+                    } else {
+                        valid_index
+                    };
+                }
+            }
+            index = index.saturating_sub(1);
+        }
+        0
+    }
+
+    fn next_playlist_shuffle_seed_legacy_compatible(
+        &mut self,
+        files: &[String],
+        current_index: usize,
+        shuffle_scope_remaining: bool,
+    ) -> u64 {
+        let mut hasher = Sha256::new();
+        hasher.update(if shuffle_scope_remaining {
+            &b"remaining"[..]
+        } else {
+            &b"entire"[..]
+        });
+        hasher.update((current_index as u64).to_le_bytes());
+        hasher.update(self.playlist_shuffle_nonce.to_le_bytes());
+        for file_name in files {
+            hasher.update(file_name.as_bytes());
+            hasher.update([0]);
+        }
+        self.playlist_shuffle_nonce = self.playlist_shuffle_nonce.wrapping_add(1);
+
+        let digest = hasher.finalize();
+        let mut seed_bytes = [0u8; 8];
+        seed_bytes.copy_from_slice(&digest[..8]);
+        let seed = u64::from_le_bytes(seed_bytes);
+        if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        }
+    }
+
+    fn next_shuffle_state_legacy_compatible(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state
+    }
+
+    fn shuffle_playlist_slice_in_place_legacy_compatible(files: &mut [String], seed: u64) {
+        if files.len() <= 1 {
+            return;
+        }
+
+        let mut state = seed;
+        for index in (1..files.len()).rev() {
+            let random_value = Self::next_shuffle_state_legacy_compatible(&mut state);
+            let swap_index = (random_value as usize) % (index + 1);
+            files.swap(index, swap_index);
+        }
+    }
+
     pub fn recently_advanced(&self, now_seconds: f64) -> bool {
         let threshold_seconds =
             self.readiness_autoplay_config.autoplay_delay_seconds + RECENTLY_ADVANCED_GRACE_SECONDS;
@@ -2217,39 +2355,44 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_queue(
-        &self,
+        &mut self,
         file_name: String,
         select_after_queue: bool,
     ) -> Vec<ClientRuntimeAction> {
         if self.username.is_none() {
             return Vec::new();
         }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
 
         let file_name = file_name.trim();
         if file_name.is_empty() {
             return Vec::new();
         }
 
-        let mut files = self
+        let (current_files, current_index) = self
             .current_room_playlist()
-            .map(|playlist| playlist.files.clone())
+            .map(|playlist| {
+                (
+                    playlist.files.clone(),
+                    playlist.index.and_then(|index| usize::try_from(index).ok()),
+                )
+            })
             .unwrap_or_default();
-        let previous_files_len = files.len();
+        let mut files = current_files.clone();
         files.push(file_name.to_owned());
-        if files.is_empty() {
+        if files == current_files {
             return Vec::new();
         }
+        self.capture_playlist_undo_snapshot_legacy_compatible(&room_name, &current_files, &files);
 
         let target_index = if select_after_queue {
             files.len().saturating_sub(1)
-        } else if let Some(playlist) = self.current_room_playlist() {
-            playlist
-                .index
-                .and_then(|index| usize::try_from(index).ok())
-                .filter(|index| *index < previous_files_len)
-                .unwrap_or(0)
         } else {
-            0
+            current_index
+                .filter(|index| *index < current_files.len())
+                .unwrap_or(0)
         };
 
         vec![
@@ -2261,33 +2404,39 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_delete(
-        &self,
+        &mut self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
         if self.username.is_none() || index < 0 {
             return Vec::new();
         }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
 
         let Some(playlist) = self.current_room_playlist() else {
             return Vec::new();
         };
+        let current_files = playlist.files.clone();
+        let current_index = playlist
+            .index
+            .and_then(|current| usize::try_from(current).ok());
         let Ok(delete_index) = usize::try_from(index) else {
             return Vec::new();
         };
-        if delete_index >= playlist.files.len() {
+        if delete_index >= current_files.len() {
             return Vec::new();
         }
 
-        let mut files = playlist.files.clone();
+        let mut files = current_files.clone();
         files.remove(delete_index);
+        self.capture_playlist_undo_snapshot_legacy_compatible(&room_name, &current_files, &files);
 
         if files.is_empty() {
             return vec![ClientRuntimeAction::SetPlaylist { files }];
         }
 
-        let target_index = playlist
-            .index
-            .and_then(|current| usize::try_from(current).ok())
+        let target_index = current_index
             .map(|current| {
                 if current < delete_index {
                     current
@@ -2306,6 +2455,155 @@ impl ClientSession {
                 index: target_index as i64,
             },
         ]
+    }
+
+    pub fn runtime_actions_for_local_playlist_undo(&mut self) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
+        let Some(playlist) = self.current_room_playlist() else {
+            return Vec::new();
+        };
+
+        let current_files = playlist.files.clone();
+        let current_index = playlist.index.and_then(|index| usize::try_from(index).ok());
+        let Some(previous_files) = self.playlist_undo_snapshots.get(&room_name).cloned() else {
+            return Vec::new();
+        };
+        if previous_files == current_files {
+            return Vec::new();
+        }
+
+        self.capture_playlist_undo_snapshot_legacy_compatible(
+            &room_name,
+            &current_files,
+            &previous_files,
+        );
+
+        if previous_files.is_empty() {
+            return vec![ClientRuntimeAction::SetPlaylist {
+                files: previous_files,
+            }];
+        }
+
+        let target_index =
+            Self::local_playlist_target_index_from_changed_playlist_legacy_compatible(
+                &current_files,
+                current_index,
+                &previous_files,
+            )
+            .min(previous_files.len().saturating_sub(1));
+
+        vec![
+            ClientRuntimeAction::SetPlaylist {
+                files: previous_files,
+            },
+            ClientRuntimeAction::SetPlaylistIndex {
+                index: target_index as i64,
+            },
+        ]
+    }
+
+    pub fn runtime_actions_for_local_playlist_shuffle_remaining(
+        &mut self,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
+        let Some(playlist) = self.current_room_playlist() else {
+            return Vec::new();
+        };
+        let Some(current_index) = playlist.index.and_then(|index| usize::try_from(index).ok())
+        else {
+            return Vec::new();
+        };
+
+        let current_files = playlist.files.clone();
+        if current_index >= current_files.len() {
+            return Vec::new();
+        }
+        let shuffle_start = current_index.saturating_add(1);
+        if shuffle_start >= current_files.len() {
+            return Vec::new();
+        }
+
+        let mut shuffled_files = current_files.clone();
+        let seed =
+            self.next_playlist_shuffle_seed_legacy_compatible(&current_files, current_index, true);
+        Self::shuffle_playlist_slice_in_place_legacy_compatible(
+            &mut shuffled_files[shuffle_start..],
+            seed,
+        );
+        if shuffled_files == current_files {
+            return Vec::new();
+        }
+
+        self.capture_playlist_undo_snapshot_legacy_compatible(
+            &room_name,
+            &current_files,
+            &shuffled_files,
+        );
+        vec![
+            ClientRuntimeAction::SetPlaylist {
+                files: shuffled_files,
+            },
+            ClientRuntimeAction::SetPlaylistIndex {
+                index: current_index as i64,
+            },
+        ]
+    }
+
+    pub fn runtime_actions_for_local_playlist_shuffle_entire(
+        &mut self,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
+        let Some(playlist) = self.current_room_playlist() else {
+            return Vec::new();
+        };
+
+        let current_files = playlist.files.clone();
+        if current_files.is_empty() {
+            return Vec::new();
+        }
+        let current_index = playlist.index.and_then(|index| usize::try_from(index).ok());
+        let mut shuffled_files = current_files.clone();
+        let seed = self.next_playlist_shuffle_seed_legacy_compatible(
+            &current_files,
+            current_index.unwrap_or(0),
+            false,
+        );
+        Self::shuffle_playlist_slice_in_place_legacy_compatible(&mut shuffled_files, seed);
+
+        let playlist_changed = shuffled_files != current_files;
+        if playlist_changed {
+            self.capture_playlist_undo_snapshot_legacy_compatible(
+                &room_name,
+                &current_files,
+                &shuffled_files,
+            );
+        }
+
+        let mut actions = Vec::new();
+        if playlist_changed {
+            actions.push(ClientRuntimeAction::SetPlaylist {
+                files: shuffled_files,
+            });
+        }
+        if current_index != Some(0) || playlist_changed {
+            actions.push(ClientRuntimeAction::SetPlaylistIndex { index: 0 });
+        }
+        actions
     }
 
     pub fn runtime_actions_for_local_seek(
@@ -2723,6 +3021,8 @@ impl ClientSession {
         self.room_playlists.clear();
         self.room_playstates.clear();
         self.pending_playlist = None;
+        self.playlist_undo_snapshots.clear();
+        self.playlist_shuffle_nonce = 0;
         self.local_position = None;
         self.local_paused = None;
         self.last_seek_position_before_manual_seek = None;
@@ -3036,17 +3336,30 @@ impl ClientSession {
             }
 
             if !skip_playlist_change_apply {
+                let playlist_change_files = playlist_change.files;
+                let playlist_change_user = playlist_change.user;
                 if let Some(room_name) =
-                    self.resolve_room_for_playlist_update(playlist_change.user.as_deref())
+                    self.resolve_room_for_playlist_update(playlist_change_user.as_deref())
                 {
+                    let current_files = self
+                        .room_playlists
+                        .get(&room_name)
+                        .map(|playlist| playlist.files.clone())
+                        .unwrap_or_default();
+                    self.capture_playlist_undo_snapshot_legacy_compatible(
+                        &room_name,
+                        &current_files,
+                        &playlist_change_files,
+                    );
+
                     let playlist = self.room_playlists.entry(room_name).or_default();
-                    playlist.files = playlist_change.files;
-                    playlist.set_by = playlist_change.user;
+                    playlist.files = playlist_change_files;
+                    playlist.set_by = playlist_change_user;
                 } else {
                     let pending_playlist =
                         self.pending_playlist.get_or_insert_with(Default::default);
-                    pending_playlist.files = playlist_change.files;
-                    pending_playlist.set_by = playlist_change.user;
+                    pending_playlist.files = playlist_change_files;
+                    pending_playlist.set_by = playlist_change_user;
                 }
             }
         }
@@ -8533,6 +8846,261 @@ mod tests {
             "delete command should be suppressed for invalid index"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_shuffle_remaining_playlist_preserves_prefix_and_index() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv","episode4.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let mut sent = false;
+        for _ in 0..4 {
+            if runtime
+                .run_shuffle_remaining_playlist()
+                .expect("shuffle remaining should not fail")
+            {
+                sent = true;
+                break;
+            }
+        }
+        assert!(
+            sent,
+            "shuffle remaining should eventually emit playlist change/index updates"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        let outbound_messages = control.outbound_messages();
+        assert_eq!(outbound_messages.len(), 2);
+
+        let ProtocolMessage::Set(change_message) = &outbound_messages[0] else {
+            panic!("first outbound shuffle-remaining message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("first outbound message should include playlistChange");
+        assert_eq!(
+            &playlist_change.files[..2],
+            &["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
+        );
+        let mut expected_tail = vec!["episode3.mkv".to_owned(), "episode4.mkv".to_owned()];
+        let mut actual_tail = playlist_change.files[2..].to_vec();
+        expected_tail.sort();
+        actual_tail.sort();
+        assert_eq!(actual_tail, expected_tail);
+
+        let ProtocolMessage::Set(index_message) = &outbound_messages[1] else {
+            panic!("second outbound shuffle-remaining message should be Set.playlistIndex");
+        };
+        let playlist_index = index_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("second outbound message should include playlistIndex");
+        assert_eq!(playlist_index.index, 1);
+    }
+
+    #[test]
+    fn client_runtime_shuffle_entire_playlist_resets_index_to_zero() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_shuffle_entire_playlist()
+                .expect("shuffle entire should not fail"),
+            "shuffle entire should emit at least a playlist index reset"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        let outbound_messages = control.outbound_messages();
+        assert!(
+            !outbound_messages.is_empty(),
+            "shuffle entire should emit protocol messages"
+        );
+
+        let ProtocolMessage::Set(last_set) = outbound_messages
+            .last()
+            .expect("shuffle entire should emit at least one Set message")
+        else {
+            panic!("last outbound message should be Set.playlistIndex");
+        };
+        let playlist_index = last_set
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("last outbound message should include playlistIndex");
+        assert_eq!(playlist_index.index, 0);
+    }
+
+    #[test]
+    fn client_runtime_undo_playlist_change_toggles_between_previous_and_current_playlist() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("initial playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("initial playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("updated playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("updated playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_undo_playlist_change()
+                .expect("undo playlist should not fail"),
+            "undo playlist should emit restore actions when a previous playlist exists"
+        );
+
+        {
+            let outbound_messages = runtime.control().outbound_messages();
+            assert_eq!(outbound_messages.len(), 2);
+            let ProtocolMessage::Set(change_message) = &outbound_messages[0] else {
+                panic!("first outbound undo message should be Set.playlistChange");
+            };
+            let playlist_change = change_message
+                .set
+                .playlist_change
+                .as_ref()
+                .expect("first outbound undo message should include playlistChange");
+            assert_eq!(
+                playlist_change.files,
+                vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+            );
+
+            let ProtocolMessage::Set(index_message) = &outbound_messages[1] else {
+                panic!("second outbound undo message should be Set.playlistIndex");
+            };
+            let playlist_index = index_message
+                .set
+                .playlist_index
+                .as_ref()
+                .expect("second outbound undo message should include playlistIndex");
+            assert_eq!(playlist_index.index, 2);
+        }
+
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("restored playlist echo should apply");
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"alice"}}}"#)
+            .expect("restored playlist index echo should apply");
+
+        assert!(
+            runtime
+                .run_undo_playlist_change()
+                .expect("second undo playlist should not fail"),
+            "second undo should toggle back to the most recent playlist snapshot"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 4);
+        let ProtocolMessage::Set(change_message) = &control.outbound_messages()[2] else {
+            panic!("first outbound second-undo message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("second undo change message should include playlistChange");
+        assert_eq!(playlist_change.files, vec!["episode1.mkv", "episode3.mkv"]);
+    }
+
+    #[test]
+    fn client_runtime_undo_playlist_change_restores_initial_empty_snapshot_once() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_undo_playlist_change()
+                .expect("undo playlist should not fail"),
+            "first undo should restore the initial empty snapshot"
+        );
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Set(change_message) = &runtime.control().outbound_messages()[0] else {
+            panic!("undo playlist message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("undo playlist message should include playlistChange");
+        assert!(playlist_change.files.is_empty());
+
+        assert!(
+            !runtime
+                .run_undo_playlist_change()
+                .expect("second undo playlist should not fail"),
+            "second undo without playlist echo should be suppressed"
+        );
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
     }
 
     #[test]
