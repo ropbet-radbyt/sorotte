@@ -208,6 +208,8 @@ pub struct SessionBehaviorConfig {
     pub show_osd_warnings: bool,
     pub show_noncontroller_osd: bool,
     pub show_different_room_osd: bool,
+    pub loop_at_end_of_playlist: bool,
+    pub loop_single_files: bool,
 }
 
 impl Default for SessionBehaviorConfig {
@@ -218,6 +220,8 @@ impl Default for SessionBehaviorConfig {
             show_osd_warnings: LEGACY_SHOW_OSD_WARNINGS,
             show_noncontroller_osd: LEGACY_SHOW_NONCONTROLLER_OSD,
             show_different_room_osd: LEGACY_SHOW_DIFFERENT_ROOM_OSD,
+            loop_at_end_of_playlist: false,
+            loop_single_files: false,
         }
     }
 }
@@ -1718,6 +1722,14 @@ impl ClientSession {
             .is_some_and(Self::is_music_file_name)
     }
 
+    fn loop_single_files_enabled_legacy_compatible(&self) -> bool {
+        self.behavior_config.loop_single_files || self.is_playing_music()
+    }
+
+    fn loop_at_end_of_playlist_enabled_legacy_compatible(&self) -> bool {
+        self.behavior_config.loop_at_end_of_playlist || self.is_playing_music()
+    }
+
     pub fn recently_advanced(&self, now_seconds: f64) -> bool {
         let threshold_seconds =
             self.readiness_autoplay_config.autoplay_delay_seconds + RECENTLY_ADVANCED_GRACE_SECONDS;
@@ -2031,15 +2043,35 @@ impl ClientSession {
         let Some(playlist) = self.current_room_playlist() else {
             return Vec::new();
         };
+        if playlist.files.is_empty() {
+            return Vec::new();
+        }
         let Some(current_index) = playlist.index.and_then(|index| usize::try_from(index).ok())
         else {
             return Vec::new();
         };
+        if current_index >= playlist.files.len() {
+            return Vec::new();
+        }
+
+        if playlist.files.len() == 1 {
+            if !self.loop_single_files_enabled_legacy_compatible() {
+                return Vec::new();
+            }
+            return vec![
+                ClientRuntimeAction::SetPosition(0.0),
+                ClientRuntimeAction::SetPaused(false),
+            ];
+        }
+
         let Some(next_index) = current_index.checked_add(1) else {
             return Vec::new();
         };
         if next_index >= playlist.files.len() {
-            return Vec::new();
+            if !self.loop_at_end_of_playlist_enabled_legacy_compatible() {
+                return Vec::new();
+            }
+            return vec![ClientRuntimeAction::SetPlaylistIndex { index: 0 }];
         }
 
         vec![ClientRuntimeAction::SetPlaylistIndex {
@@ -7916,6 +7948,111 @@ mod tests {
                 .expect("next playlist command should not fail"),
             "next playlist command should be suppressed when no next item exists"
         );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_loops_to_start_when_loop_at_end_enabled() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+        session.behavior_config_mut().loop_at_end_of_playlist = true;
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should loop back to first item when loop-at-end is enabled"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_index = set_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("Set message should contain playlistIndex payload");
+        assert_eq!(playlist_index.index, 0);
+        assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_rewinds_single_music_file_legacy_style() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["song.flac"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should rewind/unpause for single music playlist entries"
+        );
+        assert_eq!(runtime.player().position, Some(0.0));
+        assert_eq!(runtime.player().paused, Some(false));
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_advance_playlist_index_rewinds_single_file_when_loop_single_enabled() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+        session.behavior_config_mut().loop_single_files = true;
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_advance_playlist_index()
+                .expect("next playlist command should not fail"),
+            "next playlist command should rewind/unpause when loop-single-files is enabled"
+        );
+        assert_eq!(runtime.player().position, Some(0.0));
+        assert_eq!(runtime.player().paused, Some(false));
         assert!(runtime.control().outbound_messages().is_empty());
     }
 
