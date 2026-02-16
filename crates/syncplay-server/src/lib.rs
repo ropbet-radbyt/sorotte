@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,6 +17,17 @@ use syncplay_protocol::{
     NewControlledRoomPayload, PingPayload, PlaylistChangePayload, PlaylistIndexPayload,
     PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef, SetPayload,
     StatePayload, TlsPayload, UserSetPayload, decode_message_line, encode_message_line,
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
+    sync::{
+        Mutex,
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        watch,
+    },
+    task::JoinHandle,
+    time,
 };
 
 const SERVER_REAL_VERSION: &str = "syncplay-rs-dev-server";
@@ -33,6 +44,7 @@ const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
+const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
 const TLS_CERT_FILENAME: &str = "cert.pem";
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
@@ -420,6 +432,14 @@ pub enum ServerRuntimeError {
     InvalidHello,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ServerNetworkError {
+    #[error(transparent)]
+    Runtime(#[from] ServerRuntimeError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectedProtocolMessage {
     pub client_id: String,
@@ -466,6 +486,9 @@ impl DirectedTransportAction {
         }
     }
 }
+
+type ClientLineSender = UnboundedSender<String>;
+type SharedClientLineSenders = Arc<Mutex<BTreeMap<String, ClientLineSender>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RoomPasswordCheckError {
@@ -860,6 +883,22 @@ impl ServerRuntime {
     ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
         let message = decode_message_line(json_line)?;
         let outbound_messages = self.handle_protocol_message_fanout(client_id, message)?;
+        outbound_messages
+            .into_iter()
+            .map(|message| {
+                Ok(DirectedOutboundLine {
+                    client_id: message.client_id,
+                    line: encode_message_line(&message.message)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn handle_transport_disconnect_fanout(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
+        let outbound_messages = self.timeout_disconnect_messages(client_id)?;
         outbound_messages
             .into_iter()
             .map(|message| {
@@ -2191,6 +2230,188 @@ fn server_feature_list(persistent_rooms_enabled: bool) -> Value {
     })
 }
 
+async fn dispatch_outbound_lines_to_clients(
+    client_line_senders: &SharedClientLineSenders,
+    outbound_lines: Vec<DirectedOutboundLine>,
+) {
+    for line in outbound_lines {
+        let line_sender = {
+            let senders = client_line_senders.lock().await;
+            senders.get(&line.client_id).cloned()
+        };
+        if let Some(line_sender) = line_sender {
+            let _ = line_sender.send(line.line);
+        }
+    }
+}
+
+fn dispatch_transport_actions_to_sink(
+    transport_action_sink: Option<&UnboundedSender<DirectedTransportAction>>,
+    transport_actions: Vec<DirectedTransportAction>,
+) {
+    if let Some(transport_action_sink) = transport_action_sink {
+        for action in transport_actions {
+            let _ = transport_action_sink.send(action);
+        }
+    }
+}
+
+async fn run_server_network_writer_loop(
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    mut line_rx: UnboundedReceiver<String>,
+) -> io::Result<()> {
+    while let Some(line) = line_rx.recv().await {
+        writer.write_all(line.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+    }
+    writer.shutdown().await?;
+    Ok(())
+}
+
+async fn run_server_network_client_session(
+    stream: TcpStream,
+    client_id: String,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    client_line_senders: SharedClientLineSenders,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+) -> Result<(), ServerNetworkError> {
+    let (reader, writer) = stream.into_split();
+    let (line_tx, line_rx) = unbounded_channel::<String>();
+    {
+        let mut senders = client_line_senders.lock().await;
+        senders.insert(client_id.clone(), line_tx.clone());
+    }
+    let writer_task = tokio::spawn(run_server_network_writer_loop(writer, line_rx));
+
+    let mut session_error: Option<ServerNetworkError> = None;
+    let mut buffered_reader = BufReader::new(reader);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = match buffered_reader.read_line(&mut line).await {
+            Ok(bytes_read) => bytes_read,
+            Err(source) => {
+                session_error = Some(ServerNetworkError::Io(source));
+                break;
+            }
+        };
+        if bytes_read == 0 {
+            break;
+        }
+        let inbound_line = line.trim_end_matches(['\r', '\n']);
+        if inbound_line.is_empty() {
+            continue;
+        }
+        let dispatch = {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.handle_line_fanout_with_transport_actions(&client_id, inbound_line)
+        };
+        let dispatch = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(source) => {
+                session_error = Some(ServerNetworkError::Runtime(source));
+                break;
+            }
+        };
+        dispatch_outbound_lines_to_clients(&client_line_senders, dispatch.outbound_lines).await;
+        dispatch_transport_actions_to_sink(
+            transport_action_sink.as_ref(),
+            dispatch.transport_actions,
+        );
+    }
+
+    {
+        let mut senders = client_line_senders.lock().await;
+        senders.remove(&client_id);
+    }
+    drop(line_tx);
+
+    let disconnect_fanout = {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.handle_transport_disconnect_fanout(&client_id)
+    };
+    match disconnect_fanout {
+        Ok(outbound_lines) => {
+            dispatch_outbound_lines_to_clients(&client_line_senders, outbound_lines).await;
+        }
+        Err(source) => {
+            if session_error.is_none() {
+                session_error = Some(ServerNetworkError::Runtime(source));
+            }
+        }
+    }
+
+    match writer_task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(source)) => {
+            if session_error.is_none() {
+                session_error = Some(ServerNetworkError::Io(source));
+            }
+        }
+        Err(_) => {}
+    }
+
+    if let Some(session_error) = session_error {
+        return Err(session_error);
+    }
+    Ok(())
+}
+
+pub async fn run_server_network_loop_until_shutdown(
+    listener: TcpListener,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), ServerNetworkError> {
+    let client_line_senders: SharedClientLineSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut session_tasks: Vec<JoinHandle<()>> = Vec::new();
+    let mut next_client_number: u64 = 1;
+    let mut tick = time::interval(std::time::Duration::from_secs_f64(
+        SERVER_NETWORK_TICK_INTERVAL_SECONDS,
+    ));
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let outbound_lines = {
+                    let mut runtime_guard = runtime.lock().await;
+                    runtime_guard.advance_time_and_collect_fanout(SERVER_NETWORK_TICK_INTERVAL_SECONDS)?
+                };
+                dispatch_outbound_lines_to_clients(&client_line_senders, outbound_lines).await;
+            }
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let client_id = format!("client-{next_client_number}");
+                next_client_number = next_client_number.saturating_add(1);
+                let runtime = runtime.clone();
+                let client_line_senders = client_line_senders.clone();
+                let transport_action_sink = transport_action_sink.clone();
+                session_tasks.push(tokio::spawn(async move {
+                    let _ = run_server_network_client_session(
+                        stream,
+                        client_id,
+                        runtime,
+                        client_line_senders,
+                        transport_action_sink,
+                    )
+                    .await;
+                }));
+            }
+        }
+    }
+
+    for task in session_tasks {
+        task.abort();
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct ServerApp {
     runtime: ServerRuntime,
@@ -2266,16 +2487,25 @@ mod tests {
         collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
-        process, thread,
+        process,
+        sync::Arc,
+        thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use rusqlite::Connection;
     use serde_json::{Value, json};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::{TcpListener, TcpStream},
+        sync::{Mutex, mpsc, watch},
+        time::timeout,
+    };
 
     use super::{
         DirectedOutboundLine, DirectedTransportAction, RoomPasswordCheckError,
         RoomPasswordProvider, ServerApp, ServerRuntime, ServerRuntimeError, ServerTransportAction,
+        run_server_network_loop_until_shutdown,
     };
     use syncplay_protocol::{
         ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
@@ -3314,6 +3544,178 @@ mod tests {
             Some("false"),
             "legacy retry-cap behavior should keep TLS disabled once acceptability gate is off"
         );
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn transport_disconnect_fanout_emits_left_event_and_removes_session() {
+        let mut runtime = ServerRuntime::default();
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .expect("first hello should establish session");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .expect("second hello should establish session");
+
+        let disconnect_lines = runtime
+            .handle_transport_disconnect_fanout("client-1")
+            .expect("transport disconnect should generate fanout");
+        let disconnect_messages = decode_directed_lines(&disconnect_lines);
+        assert!(
+            has_user_event(&disconnect_messages, "client-2", "alice", "left"),
+            "remaining peer should receive left event on transport disconnect"
+        );
+        assert!(
+            runtime.session("client-1").is_none(),
+            "disconnected client session should be removed from runtime state"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_network_loop_routes_hello_response_to_connected_client() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            None,
+            shutdown_rx,
+        ));
+
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("client should connect");
+        let (reader, mut writer) = stream.into_split();
+        writer
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .await
+            .expect("hello line should write");
+        writer
+            .write_all(b"\n")
+            .await
+            .expect("hello newline should write");
+        writer.flush().await.expect("hello write should flush");
+
+        let mut buffered_reader = BufReader::new(reader);
+        let mut saw_hello = false;
+        for _ in 0..4 {
+            let mut line = String::new();
+            let read_bytes = timeout(Duration::from_secs(2), buffered_reader.read_line(&mut line))
+                .await
+                .expect("server response should arrive before timeout")
+                .expect("server response read should succeed");
+            if read_bytes == 0 {
+                break;
+            }
+            let message =
+                decode_message_line(line.trim_end()).expect("response line should decode");
+            if matches!(message, ProtocolMessage::Hello(_)) {
+                saw_hello = true;
+                break;
+            }
+        }
+        assert!(
+            saw_hello,
+            "network loop should route runtime hello response to connected client"
+        );
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
+    }
+
+    #[tokio::test]
+    async fn server_network_loop_forwards_tls_start_transport_action_to_sink() {
+        let cert_path = temporary_directory_path("tls-network-loop");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
+        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
+        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+        }
+        let (transport_action_tx, mut transport_action_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            Some(transport_action_tx),
+            shutdown_rx,
+        ));
+
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("client should connect");
+        let (reader, mut writer) = stream.into_split();
+        writer
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("tls request line should write");
+        writer
+            .write_all(b"\n")
+            .await
+            .expect("tls request newline should write");
+        writer.flush().await.expect("tls request should flush");
+
+        let mut buffered_reader = BufReader::new(reader);
+        let mut response_line = String::new();
+        timeout(
+            Duration::from_secs(2),
+            buffered_reader.read_line(&mut response_line),
+        )
+        .await
+        .expect("tls response should arrive before timeout")
+        .expect("tls response read should succeed");
+        let tls_response =
+            decode_message_line(response_line.trim_end()).expect("tls response should decode");
+        let ProtocolMessage::Tls(payload) = tls_response else {
+            panic!("server should respond with TLS payload");
+        };
+        assert_eq!(payload.tls.start_tls, "true");
+
+        let action = timeout(Duration::from_secs(2), transport_action_rx.recv())
+            .await
+            .expect("transport action should arrive before timeout")
+            .expect("transport action channel should deliver StartTls");
+        assert_eq!(action.client_id, "client-1");
+        assert_eq!(action.action, ServerTransportAction::StartTls);
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
 
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
     }

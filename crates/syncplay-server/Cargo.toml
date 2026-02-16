@@ -15,5 +15,5 @@ sha2.workspace = true
 syncplay-core = { path = "../syncplay-core" }
 syncplay-protocol = { path = "../syncplay-protocol" }
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
 tracing.workspace = true
