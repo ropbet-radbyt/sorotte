@@ -326,7 +326,7 @@ fn parse_playlist_file_parameter_legacy_compatible(parameter: &str) -> Option<St
 
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     let trimmed = input.trim();
-    if matches!(trimmed, "help" | "h" | "?" | "/?" | "\\?") {
+    if matches!(trimmed, "help" | "h" | "?" | "/help" | "/h" | "/?" | "\\?") {
         return Some(LocalInputCommand::ShowHelp);
     }
     if matches!(
@@ -1817,6 +1817,14 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("?"),
+            Some(LocalInputCommand::ShowHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/help"),
+            Some(LocalInputCommand::ShowHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/h"),
             Some(LocalInputCommand::ShowHelp)
         );
         assert_eq!(
