@@ -20,6 +20,7 @@ const ROUND_HALF_EPSILON: f64 = 1e-12;
 const CONTROL_ROOM_HASH_LEN: usize = 12;
 const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
 const UNKNOWN_COMMAND_MESSAGE_LEGACY: &str = "Unrecognized command";
+const PROJECT_URL_LEGACY: &str = "https://syncplay.pl/";
 static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -965,16 +966,26 @@ fn local_command_help_lines_legacy_compatible() -> &'static [&'static str] {
     ]
 }
 
-fn emit_local_command_help_legacy_compatible() -> anyhow::Result<()> {
+fn local_command_help_footer_lines_legacy_compatible(version: &str) -> [String; 2] {
+    [
+        format!("Syncplay version: {version}"),
+        format!("More info available at: {PROJECT_URL_LEGACY}"),
+    ]
+}
+
+fn emit_local_command_help_legacy_compatible(version: &str) -> anyhow::Result<()> {
     for line in local_command_help_lines_legacy_compatible() {
+        println!("{line}");
+    }
+    for line in local_command_help_footer_lines_legacy_compatible(version) {
         println!("{line}");
     }
     Ok(())
 }
 
-fn emit_unknown_command_help_legacy_compatible() -> anyhow::Result<()> {
+fn emit_unknown_command_help_legacy_compatible(version: &str) -> anyhow::Result<()> {
     println!("{UNKNOWN_COMMAND_MESSAGE_LEGACY}");
-    emit_local_command_help_legacy_compatible()
+    emit_local_command_help_legacy_compatible(version)
 }
 
 fn apply_local_offset_command_legacy_compatible(
@@ -1310,17 +1321,18 @@ where
                 };
 
                 if let Some(command) = parse_local_input_command(&local_line) {
+                    let help_version = config.version.as_str();
                     let emitted = match command {
                         LocalInputCommand::Chat(chat_message) => {
                             runtime.run_send_chat_message(chat_message)?
                         }
                         LocalInputCommand::RequestUserList => runtime.run_request_user_list()?,
                         LocalInputCommand::ShowUnknownCommandHelp => {
-                            emit_unknown_command_help_legacy_compatible()?;
+                            emit_unknown_command_help_legacy_compatible(help_version)?;
                             false
                         }
                         LocalInputCommand::ShowHelp => {
-                            emit_local_command_help_legacy_compatible()?;
+                            emit_local_command_help_legacy_compatible(help_version)?;
                             false
                         }
                         LocalInputCommand::ShowPlaylist => {
@@ -1330,9 +1342,7 @@ where
                         LocalInputCommand::SelectPlaylistIndex(index) => {
                             runtime.run_set_playlist_index(index)?
                         }
-                        LocalInputCommand::NextPlaylistItem => {
-                            runtime.run_advance_playlist_index()?
-                        }
+                        LocalInputCommand::NextPlaylistItem => runtime.run_advance_playlist_index()?,
                         LocalInputCommand::QueuePlaylistItem {
                             file_name,
                             select_after_queue,
@@ -1379,8 +1389,9 @@ where
                                 .unwrap_or_else(|| config.room.clone());
                             runtime.run_request_controller_auth(room, password)?
                         }
-                        LocalInputCommand::SetRoomWithLegacyFallback => runtime
-                            .run_set_room_with_legacy_fallback(config.room.clone())?,
+                        LocalInputCommand::SetRoomWithLegacyFallback => {
+                            runtime.run_set_room_with_legacy_fallback(config.room.clone())?
+                        }
                         LocalInputCommand::SetRoom(room) => runtime.run_set_room(room)?,
                     };
                     if emitted {
@@ -1533,8 +1544,10 @@ mod tests {
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
         flush_reconnect_notifications_to_sink, flush_user_change_notifications_to_sink,
         format_duration_legacy, format_file_difference_summary,
-        generate_room_password_legacy_compatible, local_command_help_lines_legacy_compatible,
-        normalize_controlled_room_input, parse_local_input_chat_message, parse_local_input_command,
+        generate_room_password_legacy_compatible,
+        local_command_help_footer_lines_legacy_compatible,
+        local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
+        parse_local_input_chat_message, parse_local_input_command,
         playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
         run_client_network_loop, run_connected_client_session,
         user_change_notification_hidden_from_osd, user_change_notification_message,
@@ -2024,6 +2037,13 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("\to[+-]duration - offset local playback"))
         );
+    }
+
+    #[test]
+    fn local_command_help_footer_lines_legacy_compatible_includes_expected_entries() {
+        let lines = local_command_help_footer_lines_legacy_compatible("1.7.5");
+        assert_eq!(lines[0], "Syncplay version: 1.7.5");
+        assert_eq!(lines[1], "More info available at: https://syncplay.pl/");
     }
 
     #[test]
