@@ -305,6 +305,11 @@ pub enum ClientRuntimeAction {
         ready: bool,
         manually_initiated: bool,
     },
+    SetReadyForUser {
+        ready: bool,
+        manually_initiated: bool,
+        username: String,
+    },
     SetFile {
         file_payload: Value,
     },
@@ -338,6 +343,9 @@ pub trait ClientRuntimeControl {
     fn request_user_list(&mut self) {}
     fn set_room(&mut self, _room: String) {}
     fn set_ready(&mut self, ready: bool, manually_initiated: bool);
+    fn set_ready_for_user(&mut self, ready: bool, manually_initiated: bool, _username: String) {
+        self.set_ready(ready, manually_initiated);
+    }
     fn set_file(&mut self, _file_payload: Value) {}
     fn set_playlist(&mut self, _files: Vec<String>) {}
     fn set_playlist_index(&mut self, _index: i64) {}
@@ -482,6 +490,15 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
 
     fn set_ready(&mut self, ready: bool, manually_initiated: bool) {
         let ready_payload = ReadyPayload::new(ready).with_manually_initiated(manually_initiated);
+        let set_payload = SetPayload::new().with_ready(ready_payload);
+        self.outbound_messages
+            .push(ProtocolMessage::set(set_payload));
+    }
+
+    fn set_ready_for_user(&mut self, ready: bool, manually_initiated: bool, username: String) {
+        let ready_payload = ReadyPayload::new(ready)
+            .with_manually_initiated(manually_initiated)
+            .with_username(username);
         let set_payload = SetPayload::new().with_ready(ready_payload);
         self.outbound_messages
             .push(ProtocolMessage::set(set_payload));
@@ -718,6 +735,22 @@ where
         let actions = self
             .session
             .runtime_actions_for_local_ready_toggle(manually_initiated);
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
+    pub fn run_set_ready_for_user(
+        &mut self,
+        username: impl Into<String>,
+        ready: bool,
+        manually_initiated: bool,
+    ) -> Result<bool, PlayerError> {
+        let actions = self.session.runtime_actions_for_local_user_ready_set(
+            username.into(),
+            ready,
+            manually_initiated,
+        );
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
             .map(|_| sent)
@@ -1112,6 +1145,13 @@ impl ClientSession {
                     manually_initiated,
                 } => {
                     control.set_ready(*ready, *manually_initiated);
+                }
+                ClientRuntimeAction::SetReadyForUser {
+                    ready,
+                    manually_initiated,
+                    username,
+                } => {
+                    control.set_ready_for_user(*ready, *manually_initiated, username.clone());
                 }
                 ClientRuntimeAction::SetFile { file_payload } => {
                     control.set_file(file_payload.clone());
@@ -1818,6 +1858,32 @@ impl ClientSession {
         vec![ClientRuntimeAction::SetReady {
             ready: !self.local_user_ready(),
             manually_initiated,
+        }]
+    }
+
+    pub fn runtime_actions_for_local_user_ready_set(
+        &self,
+        username: String,
+        ready: bool,
+        manually_initiated: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() || self.server_readiness_supported == Some(false) {
+            return Vec::new();
+        }
+        let username = username.trim();
+        if username.is_empty() {
+            return Vec::new();
+        }
+        if self.username.as_deref() == Some(username) {
+            return vec![ClientRuntimeAction::SetReady {
+                ready,
+                manually_initiated,
+            }];
+        }
+        vec![ClientRuntimeAction::SetReadyForUser {
+            ready,
+            manually_initiated,
+            username: username.to_owned(),
         }]
     }
 
@@ -7171,6 +7237,54 @@ mod tests {
                 .run_toggle_ready(true)
                 .expect("toggle ready should not fail"),
             "toggle ready should be suppressed when server readiness is disabled"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_ready_for_user_dispatches_protocol_message_with_username() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_ready_for_user("bob", true, true)
+                .expect("set ready for user should not fail"),
+            "set ready for user should emit outbound Set.ready after hello"
+        );
+        let (_, _, control) = runtime.into_parts();
+
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.ready protocol message");
+        };
+        let ready = set_message
+            .set
+            .ready
+            .as_ref()
+            .expect("Set message should contain ready payload");
+        assert!(ready.is_ready);
+        assert_eq!(ready.manually_initiated, Some(true));
+        assert_eq!(ready.username.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn client_runtime_set_ready_for_user_is_omitted_before_server_hello() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_ready_for_user("bob", true, true)
+                .expect("set ready for user should not fail"),
+            "set ready for user should be suppressed before server hello"
         );
         assert!(runtime.control().outbound_messages().is_empty());
     }
