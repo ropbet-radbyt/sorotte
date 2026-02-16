@@ -2788,6 +2788,7 @@ impl ClientSession {
     }
 
     pub fn handle_disconnect(&mut self, now_seconds: f64) -> Vec<ClientRuntimeAction> {
+        self.server_chat_supported = None;
         if !self.behavior_config.pause_on_leave {
             return Vec::new();
         }
@@ -3034,6 +3035,7 @@ impl ClientSession {
         self.last_advanced_at_seconds = None;
         self.client_ignoring_on_the_fly = 0;
         self.server_ignoring_on_the_fly = 0;
+        self.server_chat_supported = None;
 
         if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
             self.set_user_room(&username, Some(room_name));
@@ -6329,6 +6331,20 @@ mod tests {
     }
 
     #[test]
+    fn handle_disconnect_clears_chat_support_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(session.server_chat_supported(), Some(true));
+
+        let _ = session.handle_disconnect(200.0);
+        assert_eq!(session.server_chat_supported(), None);
+    }
+
+    #[test]
     fn instaplay_conditions_met_respects_legacy_unpause_modes() {
         let mut session = ClientSession::default();
         session
@@ -7870,6 +7886,47 @@ mod tests {
             "disabled chat support should suppress outbound chat actions"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_send_chat_message_is_omitted_after_disconnect_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_disconnect(42.0)
+            .expect("disconnect should apply pause-on-leave/runtime actions");
+        assert!(
+            !runtime
+                .run_send_chat_message("hello while disconnected")
+                .expect("chat send should not fail"),
+            "chat send should be suppressed after disconnect until a new hello is applied"
+        );
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "suppressed disconnected chat should not enqueue outbound chat payloads"
+        );
+
+        runtime
+            .session_mut()
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("reconnect hello should apply");
+        assert!(
+            runtime
+                .run_send_chat_message("hello after reconnect")
+                .expect("chat send should not fail"),
+            "chat send should resume after reconnect hello"
+        );
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
     }
 
     #[test]
