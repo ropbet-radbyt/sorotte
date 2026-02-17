@@ -4200,6 +4200,168 @@ mod tests {
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
     }
 
+    #[tokio::test]
+    async fn server_network_loop_tls_upgrade_keeps_inflight_handshake_when_bundle_rotates_invalid_after_starttls_true()
+     {
+        let cert_path = temporary_directory_path("tls-network-upgrade-rotation-window");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&cert_path);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+        }
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            None,
+            shutdown_rx,
+        ));
+
+        let mut first_stream = TcpStream::connect(address)
+            .await
+            .expect("first client should connect");
+        first_stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("first tls request line should write");
+        first_stream
+            .write_all(b"\n")
+            .await
+            .expect("first tls request newline should write");
+        first_stream
+            .flush()
+            .await
+            .expect("first tls request should flush");
+
+        let first_tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut first_stream),
+        )
+        .await
+        .expect("first tls response should arrive before timeout")
+        .expect("first tls response read should succeed")
+        .expect("first tls response line should be present");
+        let first_tls_response = decode_message_line(&first_tls_response_line)
+            .expect("first tls response line should decode");
+        let ProtocolMessage::Tls(payload) = first_tls_response else {
+            panic!("server should respond with TLS payload for first client");
+        };
+        assert_eq!(payload.tls.start_tls, "true");
+
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+        overwrite_file_until_modified_time_changes(
+            &cert_path.join("cert.pem"),
+            "rotated-after-starttls-true",
+        );
+
+        let connector = tls_client_connector_for_test_fixture();
+        let server_name = ServerName::try_from("localhost").expect("server name should parse");
+        let mut first_tls_stream = timeout(
+            Duration::from_secs(2),
+            connector.connect(server_name, first_stream),
+        )
+        .await
+        .expect("first tls handshake should complete before timeout")
+        .expect("first tls handshake should succeed with cached context");
+
+        first_tls_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .await
+            .expect("hello line should write over first tls stream");
+        first_tls_stream
+            .write_all(b"\n")
+            .await
+            .expect("hello newline should write over first tls stream");
+        first_tls_stream
+            .flush()
+            .await
+            .expect("hello line should flush over first tls stream");
+
+        let mut saw_hello = false;
+        for _ in 0..4 {
+            let maybe_line = timeout(
+                Duration::from_secs(2),
+                super::read_network_line_from_stream(&mut first_tls_stream),
+            )
+            .await
+            .expect("first post-upgrade response should arrive before timeout")
+            .expect("first post-upgrade response read should succeed");
+            let Some(line) = maybe_line else {
+                break;
+            };
+            if line.is_empty() {
+                continue;
+            }
+            let message =
+                decode_message_line(&line).expect("first post-upgrade line should decode");
+            if matches!(message, ProtocolMessage::Hello(_)) {
+                saw_hello = true;
+                break;
+            }
+        }
+        assert!(
+            saw_hello,
+            "first client should complete protocol flow over cached-context upgraded tls transport"
+        );
+
+        let mut second_stream = TcpStream::connect(address)
+            .await
+            .expect("second client should connect");
+        second_stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("second tls request line should write");
+        second_stream
+            .write_all(b"\n")
+            .await
+            .expect("second tls request newline should write");
+        second_stream
+            .flush()
+            .await
+            .expect("second tls request should flush");
+
+        let second_tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut second_stream),
+        )
+        .await
+        .expect("second tls response should arrive before timeout")
+        .expect("second tls response read should succeed")
+        .expect("second tls response line should be present");
+        let second_tls_response = decode_message_line(&second_tls_response_line)
+            .expect("second tls response line should decode");
+        let ProtocolMessage::Tls(payload) = second_tls_response else {
+            panic!("server should respond with TLS payload for second client");
+        };
+        assert_eq!(
+            payload.tls.start_tls, "false",
+            "second client should be denied TLS after cert rotation makes bundle invalid"
+        );
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
     #[test]
     fn persistent_room_retains_playlist_index_and_position_after_empty_transition() {
         let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
