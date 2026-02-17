@@ -3536,6 +3536,138 @@ mod tests {
         result
     }
 
+    fn run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
+        tls_cert_path: &Path,
+    ) -> Result<String, InteropError> {
+        let legacy_checkout = super::legacy_syncplay_checkout_dir();
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+
+        let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
+        if !legacy_server_entry.is_file() {
+            return Err(InteropError::LegacyServerEntryScriptMissing(
+                legacy_server_entry,
+            ));
+        }
+
+        let port = super::reserve_ephemeral_tcp_port()?;
+        let python_bin = super::python_bin_from_env();
+        let python_bin_display = python_bin.to_string_lossy().to_string();
+        let mut command = Command::new(&python_bin);
+        command
+            .arg(&legacy_server_entry)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--ipv4-only")
+            .arg("--interface-ipv4")
+            .arg("127.0.0.1")
+            .arg("--salt")
+            .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+            .arg("--tls")
+            .arg(tls_cert_path)
+            .current_dir(legacy_checkout)
+            .env("PYTHONUNBUFFERED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|source| InteropError::PythonSpawn {
+                python: python_bin_display,
+                source,
+            })?;
+
+        let result = (|| {
+            super::wait_for_legacy_server_startup(port, &mut child)?;
+            super::ensure_legacy_server_is_running(&mut child)?;
+
+            // First verify TLS is actually available for unlogged clients in this legacy setup.
+            let probe_stream = super::connect_legacy_client_stream(port, "legacy-tls-probe")?;
+            let mut probe_connection = super::LegacyServerClientConnection {
+                stream: probe_stream,
+                pending_bytes: Vec::new(),
+            };
+            let tls_request_line =
+                super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            probe_connection
+                .stream
+                .write_all(tls_request_line.as_bytes())?;
+            probe_connection.stream.write_all(b"\r\n")?;
+            probe_connection.stream.flush()?;
+            let probe_response_line = read_plaintext_legacy_protocol_line_with_timeout(
+                &mut probe_connection,
+                Duration::from_secs(2),
+            )?;
+            let probe_message = decode_message_line(&probe_response_line)?;
+            let ProtocolMessage::Tls(probe_payload) = probe_message else {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "expected legacy TLS probe response, got: {probe_response_line}"
+                )));
+            };
+            if probe_payload.tls.start_tls != "true" {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "legacy tls availability probe returned non-true response: {probe_response_line}"
+                )));
+            }
+
+            let stream = super::connect_legacy_client_stream(port, "legacy-tls-logged-client")?;
+            let mut connection = super::LegacyServerClientConnection {
+                stream,
+                pending_bytes: Vec::new(),
+            };
+            let hello_line = encode_message_line(&ProtocolMessage::hello(
+                default_rust_client_hello_for_interop(),
+            ))?;
+            connection.stream.write_all(hello_line.as_bytes())?;
+            connection.stream.write_all(b"\r\n")?;
+            connection.stream.flush()?;
+
+            let mut saw_hello = false;
+            for _ in 0..8 {
+                let line = read_plaintext_legacy_protocol_line_with_timeout(
+                    &mut connection,
+                    Duration::from_secs(2),
+                )?;
+                let message = decode_message_line(&line)?;
+                if matches!(message, ProtocolMessage::Hello(_)) {
+                    saw_hello = true;
+                    break;
+                }
+            }
+            if !saw_hello {
+                return Err(InteropError::InvalidPythonBatchResponse(
+                    "timed out waiting for legacy hello response before logged TLS probe"
+                        .to_owned(),
+                ));
+            }
+
+            connection.stream.write_all(tls_request_line.as_bytes())?;
+            connection.stream.write_all(b"\r\n")?;
+            connection.stream.flush()?;
+            let logged_tls_response_line = read_plaintext_legacy_protocol_line_with_timeout(
+                &mut connection,
+                Duration::from_secs(2),
+            )?;
+            let logged_tls_message = decode_message_line(&logged_tls_response_line)?;
+            let ProtocolMessage::Tls(logged_tls_payload) = logged_tls_message else {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "expected legacy logged TLS response, got: {logged_tls_response_line}"
+                )));
+            };
+            if logged_tls_payload.tls.start_tls != "false" {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "legacy tls send was not denied for logged client: {logged_tls_response_line}"
+                )));
+            }
+
+            Ok(logged_tls_response_line)
+        })();
+
+        super::terminate_legacy_server_process(&mut child);
+        result
+    }
+
     fn legacy_server_tls_prerequisites_missing(error: &InteropError) -> bool {
         if legacy_server_prerequisites_missing(error) {
             return true;
@@ -3552,6 +3684,7 @@ mod tests {
             InteropError::InvalidPythonBatchResponse(message) => {
                 let lowered = message.to_ascii_lowercase();
                 lowered.contains("legacy tls upgrade denied by server response")
+                    || lowered.contains("legacy tls availability probe returned non-true response")
             }
             _ => false,
         }
@@ -3613,6 +3746,16 @@ mod tests {
 
     fn legacy_server_parity_assertions_enabled() -> bool {
         std::env::var("SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY")
+            .ok()
+            .is_some_and(|value| {
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+            })
+    }
+
+    fn legacy_tls_parity_prerequisites_strict_enabled() -> bool {
+        std::env::var("SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY")
             .ok()
             .is_some_and(|value| {
                 value == "1"
@@ -6006,6 +6149,11 @@ mod tests {
                 assert_eq!(hello.room.name, "interop-room");
             }
             Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+                if legacy_tls_parity_prerequisites_strict_enabled() {
+                    panic!(
+                        "legacy live TLS roundtrip prerequisites should be satisfied in strict mode, got: {err}"
+                    );
+                }
                 eprintln!(
                     "legacy live TLS roundtrip test skipped due to missing prerequisites: {err}"
                 );
@@ -6013,6 +6161,48 @@ mod tests {
             Err(err) => {
                 panic!("legacy live TLS roundtrip should succeed over upgraded socket, got: {err}")
             }
+        }
+    }
+
+    #[test]
+    fn legacy_server_live_tls_send_is_denied_for_logged_client() {
+        if !legacy_server_parity_assertions_enabled() {
+            eprintln!(
+                "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
+            );
+            return;
+        }
+
+        let tls_cert_path = legacy_tls_fixture_directory();
+        match run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
+            &tls_cert_path,
+        ) {
+            Ok(tls_response_line) => {
+                let tls_message = decode_message_line(&tls_response_line)
+                    .expect("legacy logged tls response should decode");
+                match tls_message {
+                    ProtocolMessage::Tls(payload) => {
+                        assert_eq!(payload.tls.start_tls, "false");
+                    }
+                    other => panic!(
+                        "expected legacy TLS response for logged client probe, got {}",
+                        other.kind()
+                    ),
+                }
+            }
+            Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+                if legacy_tls_parity_prerequisites_strict_enabled() {
+                    panic!(
+                        "legacy logged-client TLS denial prerequisites should be satisfied in strict mode, got: {err}"
+                    );
+                }
+                eprintln!(
+                    "legacy logged-client TLS denial test skipped due to missing prerequisites: {err}"
+                );
+            }
+            Err(err) => panic!(
+                "legacy logged-client TLS denial behavior should succeed with startTLS=false, got: {err}"
+            ),
         }
     }
 
