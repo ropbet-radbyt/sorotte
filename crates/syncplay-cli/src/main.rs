@@ -785,10 +785,10 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("/seek "))
         .or_else(|| trimmed.strip_prefix("/s "))
     {
-        return parse_seek_parameter(parameter);
+        return parse_seek_parameter(parameter).or(Some(LocalInputCommand::ShowUnknownCommandHelp));
     }
     if matches!(trimmed, "seek" | "s" | "/seek" | "/s") {
-        return None;
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     if matches!(trimmed, "p" | "pause" | "play" | "/p" | "/pause" | "/play") {
         return Some(LocalInputCommand::TogglePause);
@@ -811,11 +811,26 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if let Some(command) = parse_offset_input_legacy_compatible(trimmed) {
         return Some(command);
     }
-    if matches!(trimmed, "o" | "offset") {
-        return None;
+    let command_token = trimmed.split_whitespace().next().unwrap_or_default();
+    if matches!(command_token, "o" | "offset" | "/o" | "/offset")
+        || trimmed.starts_with("o+")
+        || trimmed.starts_with("o-")
+        || trimmed.starts_with("o/")
+        || trimmed.starts_with("offset+")
+        || trimmed.starts_with("offset-")
+        || trimmed.starts_with("offset/")
+    {
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     if let Some(command) = parse_seek_input_legacy_compatible(trimmed) {
         return Some(command);
+    }
+    if trimmed.starts_with("s+")
+        || trimmed.starts_with("s-")
+        || trimmed.starts_with("seek+")
+        || trimmed.starts_with("seek-")
+    {
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     if let Some(chat_message) = parse_local_input_chat_message(input) {
         return Some(LocalInputCommand::Chat(chat_message));
@@ -2964,8 +2979,22 @@ mod tests {
             parse_local_input_command("1:30"),
             Some(LocalInputCommand::SeekAbsolute(90.0))
         );
-        assert_eq!(parse_local_input_command("seek"), None);
-        assert_eq!(parse_local_input_command("s"), None);
+        assert_eq!(
+            parse_local_input_command("seek"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("s"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek nope"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("s+oops"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
     }
 
     #[test]
@@ -2994,8 +3023,22 @@ mod tests {
                 LocalOffsetCommand::RelativeFromCurrentPositionMinus(30.0)
             ))
         );
-        assert_eq!(parse_local_input_command("offset"), None);
-        assert_eq!(parse_local_input_command("o"), None);
+        assert_eq!(
+            parse_local_input_command("offset"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("o"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset nope"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("o+oops"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
     }
 
     #[test]
@@ -3357,7 +3400,7 @@ mod tests {
             version: "1.2.255".to_owned(),
             max_retries: 0,
             max_connected_runtime_seconds: 0.5,
-            readiness_supported_override: None,
+            readiness_supported_override: Some(false),
             local_can_control_override: None,
             is_playing_music_override: None,
             recently_advanced_override: None,
@@ -3456,7 +3499,7 @@ mod tests {
             version: "1.2.255".to_owned(),
             max_retries: 0,
             max_connected_runtime_seconds: 0.5,
-            readiness_supported_override: None,
+            readiness_supported_override: Some(false),
             local_can_control_override: None,
             is_playing_music_override: None,
             recently_advanced_override: None,
@@ -6291,7 +6334,7 @@ mod tests {
                     !matches!(message, ProtocolMessage::Chat(_)),
                     "invalid local playlist commands should not fall back to chat messages"
                 );
-                if let ProtocolMessage::Set(payload) = message {
+                if let ProtocolMessage::Set(ref payload) = message {
                     assert!(
                         payload.set.playlist_change.is_none()
                             && payload.set.playlist_index.is_none(),
@@ -6345,6 +6388,145 @@ mod tests {
             sender
                 .send("delete".to_owned())
                 .expect("delete command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_invalid_seek_offset_commands_show_help_without_falling_back_to_chat()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+"#,
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(350);
+            loop {
+                let remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+
+                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Ok(Ok(Some(line))) = next_line else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                assert!(
+                    !matches!(message, ProtocolMessage::Chat(_)),
+                    "invalid seek/offset commands should not fall back to chat messages"
+                );
+                if let ProtocolMessage::Set(ref payload) = message {
+                    assert!(
+                        payload.set.room.is_none()
+                            && payload.set.ready.is_none()
+                            && payload.set.playlist_change.is_none()
+                            && payload.set.playlist_index.is_none()
+                            && payload.set.controller_auth.is_none(),
+                        "invalid seek/offset commands should not emit local-command set messages: {payload:?}"
+                    );
+                }
+                assert!(
+                    !matches!(message, ProtocolMessage::State(_)),
+                    "invalid seek/offset commands should not emit outbound state messages"
+                );
+            }
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: Some(false),
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender.send("seek".to_owned()).expect("seek should queue");
+            sender
+                .send("seek nope".to_owned())
+                .expect("seek with invalid parameter should queue");
+            sender
+                .send("offset".to_owned())
+                .expect("offset should queue");
+            sender
+                .send("o+oops".to_owned())
+                .expect("offset shorthand with invalid parameter should queue");
+            sender
+                .send("s+oops".to_owned())
+                .expect("seek shorthand with invalid parameter should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
