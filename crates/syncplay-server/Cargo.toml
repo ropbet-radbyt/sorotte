@@ -8,6 +8,8 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 regex.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
@@ -16,4 +18,5 @@ syncplay-core = { path = "../syncplay-core" }
 syncplay-protocol = { path = "../syncplay-protocol" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net"] }
+tokio-rustls.workspace = true
 tracing.workspace = true

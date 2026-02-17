@@ -8,6 +8,10 @@ use std::{
 
 use regex::Regex;
 use rusqlite::{Connection, params};
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer},
+};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -19,7 +23,7 @@ use syncplay_protocol::{
     StatePayload, TlsPayload, UserSetPayload, decode_message_line, encode_message_line,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
         Mutex,
@@ -29,6 +33,7 @@ use tokio::{
     task::JoinHandle,
     time,
 };
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 const SERVER_REAL_VERSION: &str = "syncplay-rs-dev-server";
 const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
@@ -63,6 +68,46 @@ fn tls_certificate_file_modified_time(path: &Path) -> Option<SystemTime> {
     fs::metadata(path.join(TLS_CERT_FILENAME))
         .ok()
         .and_then(|metadata| metadata.modified().ok())
+}
+
+fn tls_certificates_from_pem(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
+    let file = fs::File::open(path)?;
+    let mut reader = io::BufReader::new(file);
+    let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    if certificates.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tls certificate file '{}' is empty", path.display()),
+        ));
+    }
+    Ok(certificates)
+}
+
+fn tls_private_key_from_pem(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
+    let file = fs::File::open(path)?;
+    let mut reader = io::BufReader::new(file);
+    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tls private key file '{}' has no key", path.display()),
+        )
+    })
+}
+
+fn load_tls_server_config(path: &Path) -> io::Result<Arc<ServerConfig>> {
+    let mut certificate_chain = tls_certificates_from_pem(&path.join("cert.pem"))?;
+    certificate_chain.extend(tls_certificates_from_pem(&path.join("chain.pem"))?);
+    let private_key = tls_private_key_from_pem(&path.join("privkey.pem"))?;
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificate_chain, private_key)
+        .map_err(|source| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tls certificate bundle is invalid: {source}"),
+            )
+        })?;
+    Ok(Arc::new(server_config))
 }
 
 static CONTROLLED_ROOM_REGEX: LazyLock<Regex> =
@@ -829,6 +874,10 @@ impl ServerRuntime {
 
     pub fn session(&self, client_id: &str) -> Option<&ServerSession> {
         self.sessions.get(client_id)
+    }
+
+    pub fn tls_cert_path(&self) -> Option<PathBuf> {
+        self.tls_cert_path.clone()
     }
 
     pub fn set_time_now_override_seconds(&mut self, seconds: Option<f64>) {
@@ -2247,24 +2296,161 @@ async fn dispatch_outbound_lines_to_clients(
 
 fn dispatch_transport_actions_to_sink(
     transport_action_sink: Option<&UnboundedSender<DirectedTransportAction>>,
-    transport_actions: Vec<DirectedTransportAction>,
+    transport_actions: &[DirectedTransportAction],
 ) {
     if let Some(transport_action_sink) = transport_action_sink {
         for action in transport_actions {
-            let _ = transport_action_sink.send(action);
+            let _ = transport_action_sink.send(action.clone());
         }
     }
 }
 
-async fn run_server_network_writer_loop(
-    mut writer: tokio::net::tcp::OwnedWriteHalf,
-    mut line_rx: UnboundedReceiver<String>,
-) -> io::Result<()> {
-    while let Some(line) = line_rx.recv().await {
-        writer.write_all(line.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
+async fn write_network_line_to_stream<S>(stream: &mut S, line: &str) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    stream.write_all(line.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn read_network_line_from_stream<S>(stream: &mut S) -> io::Result<Option<String>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        let bytes_read = stream.read(&mut byte).await?;
+        if bytes_read == 0 {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        bytes.push(byte[0]);
     }
-    writer.shutdown().await?;
+
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+
+    String::from_utf8(bytes).map(Some).map_err(|source| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("inbound protocol line is not valid utf-8: {source}"),
+        )
+    })
+}
+
+#[derive(Debug)]
+enum ServerNetworkTransport {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+    Closed,
+}
+
+impl ServerNetworkTransport {
+    fn is_tls(&self) -> bool {
+        matches!(self, Self::Tls(_))
+    }
+
+    async fn read_line(&mut self) -> io::Result<Option<String>> {
+        match self {
+            Self::Plain(stream) => read_network_line_from_stream(stream).await,
+            Self::Tls(stream) => read_network_line_from_stream(stream.as_mut()).await,
+            Self::Closed => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "transport is closed",
+            )),
+        }
+    }
+
+    async fn write_line(&mut self, line: &str) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => write_network_line_to_stream(stream, line).await,
+            Self::Tls(stream) => write_network_line_to_stream(stream.as_mut(), line).await,
+            Self::Closed => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "transport is closed",
+            )),
+        }
+    }
+
+    async fn shutdown(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.shutdown().await,
+            Self::Tls(stream) => stream.shutdown().await,
+            Self::Closed => Ok(()),
+        }
+    }
+
+    async fn upgrade_to_tls(self, acceptor: TlsAcceptor) -> io::Result<Self> {
+        match self {
+            Self::Plain(stream) => {
+                let tls_stream = acceptor.accept(stream).await?;
+                Ok(Self::Tls(Box::new(tls_stream)))
+            }
+            Self::Tls(stream) => Ok(Self::Tls(stream)),
+            Self::Closed => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "transport is closed",
+            )),
+        }
+    }
+}
+
+async fn route_outbound_lines_for_client_session(
+    transport: &mut ServerNetworkTransport,
+    client_id: &str,
+    client_line_senders: &SharedClientLineSenders,
+    outbound_lines: Vec<DirectedOutboundLine>,
+) -> io::Result<()> {
+    let mut peer_outbound_lines = Vec::new();
+    for line in outbound_lines {
+        if line.client_id == client_id {
+            transport.write_line(&line.line).await?;
+        } else {
+            peer_outbound_lines.push(line);
+        }
+    }
+    dispatch_outbound_lines_to_clients(client_line_senders, peer_outbound_lines).await;
+    Ok(())
+}
+
+async fn tls_acceptor_from_runtime(runtime: &Arc<Mutex<ServerRuntime>>) -> io::Result<TlsAcceptor> {
+    let tls_cert_path = {
+        let runtime_guard = runtime.lock().await;
+        runtime_guard.tls_cert_path()
+    };
+    let Some(tls_cert_path) = tls_cert_path else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "tls cert path is not configured",
+        ));
+    };
+    Ok(TlsAcceptor::from(load_tls_server_config(&tls_cert_path)?))
+}
+
+async fn apply_local_transport_actions(
+    transport: &mut ServerNetworkTransport,
+    client_id: &str,
+    runtime: &Arc<Mutex<ServerRuntime>>,
+    transport_actions: &[DirectedTransportAction],
+) -> io::Result<()> {
+    let should_start_tls = transport_actions.iter().any(|action| {
+        action.client_id == client_id && action.action == ServerTransportAction::StartTls
+    });
+    if !should_start_tls || transport.is_tls() {
+        return Ok(());
+    }
+    let tls_acceptor = tls_acceptor_from_runtime(runtime).await?;
+    let current_transport = std::mem::replace(transport, ServerNetworkTransport::Closed);
+    *transport = current_transport.upgrade_to_tls(tls_acceptor).await?;
     Ok(())
 }
 
@@ -2275,56 +2461,88 @@ async fn run_server_network_client_session(
     client_line_senders: SharedClientLineSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
 ) -> Result<(), ServerNetworkError> {
-    let (reader, writer) = stream.into_split();
-    let (line_tx, line_rx) = unbounded_channel::<String>();
+    let (line_tx, mut line_rx): (UnboundedSender<String>, UnboundedReceiver<String>) =
+        unbounded_channel();
     {
         let mut senders = client_line_senders.lock().await;
-        senders.insert(client_id.clone(), line_tx.clone());
+        senders.insert(client_id.clone(), line_tx);
     }
-    let writer_task = tokio::spawn(run_server_network_writer_loop(writer, line_rx));
 
+    let mut transport = ServerNetworkTransport::Plain(stream);
     let mut session_error: Option<ServerNetworkError> = None;
-    let mut buffered_reader = BufReader::new(reader);
-    let mut line = String::new();
     loop {
-        line.clear();
-        let bytes_read = match buffered_reader.read_line(&mut line).await {
-            Ok(bytes_read) => bytes_read,
-            Err(source) => {
-                session_error = Some(ServerNetworkError::Io(source));
-                break;
+        tokio::select! {
+            inbound_line_result = transport.read_line() => {
+                let inbound_line = match inbound_line_result {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(source) => {
+                        session_error = Some(ServerNetworkError::Io(source));
+                        break;
+                    }
+                };
+                if inbound_line.is_empty() {
+                    continue;
+                }
+                let dispatch = {
+                    let mut runtime_guard = runtime.lock().await;
+                    runtime_guard.handle_line_fanout_with_transport_actions(&client_id, &inbound_line)
+                };
+                let dispatch = match dispatch {
+                    Ok(dispatch) => dispatch,
+                    Err(source) => {
+                        session_error = Some(ServerNetworkError::Runtime(source));
+                        break;
+                    }
+                };
+                if let Err(source) = route_outbound_lines_for_client_session(
+                    &mut transport,
+                    &client_id,
+                    &client_line_senders,
+                    dispatch.outbound_lines,
+                )
+                .await
+                {
+                    session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
+                dispatch_transport_actions_to_sink(
+                    transport_action_sink.as_ref(),
+                    &dispatch.transport_actions,
+                );
+                if let Err(source) = apply_local_transport_actions(
+                    &mut transport,
+                    &client_id,
+                    &runtime,
+                    &dispatch.transport_actions,
+                )
+                .await
+                {
+                    session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
             }
-        };
-        if bytes_read == 0 {
-            break;
-        }
-        let inbound_line = line.trim_end_matches(['\r', '\n']);
-        if inbound_line.is_empty() {
-            continue;
-        }
-        let dispatch = {
-            let mut runtime_guard = runtime.lock().await;
-            runtime_guard.handle_line_fanout_with_transport_actions(&client_id, inbound_line)
-        };
-        let dispatch = match dispatch {
-            Ok(dispatch) => dispatch,
-            Err(source) => {
-                session_error = Some(ServerNetworkError::Runtime(source));
-                break;
+            outbound_line = line_rx.recv() => {
+                let Some(outbound_line) = outbound_line else {
+                    break;
+                };
+                if let Err(source) = transport.write_line(&outbound_line).await {
+                    session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
             }
-        };
-        dispatch_outbound_lines_to_clients(&client_line_senders, dispatch.outbound_lines).await;
-        dispatch_transport_actions_to_sink(
-            transport_action_sink.as_ref(),
-            dispatch.transport_actions,
-        );
+        }
     }
 
     {
         let mut senders = client_line_senders.lock().await;
         senders.remove(&client_id);
     }
-    drop(line_tx);
+    if let Err(source) = transport.shutdown().await {
+        if session_error.is_none() {
+            session_error = Some(ServerNetworkError::Io(source));
+        }
+    }
 
     let disconnect_fanout = {
         let mut runtime_guard = runtime.lock().await;
@@ -2339,16 +2557,6 @@ async fn run_server_network_client_session(
                 session_error = Some(ServerNetworkError::Runtime(source));
             }
         }
-    }
-
-    match writer_task.await {
-        Ok(Ok(())) => {}
-        Ok(Err(source)) => {
-            if session_error.is_none() {
-                session_error = Some(ServerNetworkError::Io(source));
-            }
-        }
-        Err(_) => {}
     }
 
     if let Some(session_error) = session_error {
@@ -2485,7 +2693,7 @@ impl ServerApp {
 mod tests {
     use std::{
         collections::BTreeSet,
-        fs,
+        fs, io,
         path::{Path, PathBuf},
         process,
         sync::Arc,
@@ -2494,6 +2702,7 @@ mod tests {
     };
 
     use rusqlite::Connection;
+    use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
     use serde_json::{Value, json};
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -2501,6 +2710,7 @@ mod tests {
         sync::{Mutex, mpsc, watch},
         time::timeout,
     };
+    use tokio_rustls::TlsConnector;
 
     use super::{
         DirectedOutboundLine, DirectedTransportAction, RoomPasswordCheckError,
@@ -2510,6 +2720,10 @@ mod tests {
     use syncplay_protocol::{
         ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
     };
+
+    const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
+    const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../fixtures/tls/test_chain.pem");
+    const TEST_TLS_PRIVATE_KEY_PEM: &str = include_str!("../../../fixtures/tls/test_privkey.pem");
 
     fn decode_directed_lines(lines: &[DirectedOutboundLine]) -> Vec<(String, ProtocolMessage)> {
         lines
@@ -2823,6 +3037,32 @@ mod tests {
             .expect("system clock should be after unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("syncplay-rs-{label}-{}-{now_nanos}", process::id()))
+    }
+
+    fn write_valid_tls_bundle(path: &Path) {
+        fs::write(path.join("privkey.pem"), TEST_TLS_PRIVATE_KEY_PEM)
+            .expect("valid private key fixture should write");
+        fs::write(path.join("cert.pem"), TEST_TLS_CERT_PEM)
+            .expect("valid certificate fixture should write");
+        fs::write(path.join("chain.pem"), TEST_TLS_CHAIN_PEM)
+            .expect("valid chain fixture should write");
+    }
+
+    fn tls_client_connector_for_test_fixture() -> TlsConnector {
+        let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
+        let certs = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test certificate fixture should parse");
+        let mut roots = RootCertStore::empty();
+        for cert in certs {
+            roots
+                .add(cert)
+                .expect("test certificate should be addable to root store");
+        }
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        TlsConnector::from(Arc::new(client_config))
     }
 
     fn overwrite_file_until_modified_time_changes(path: &Path, contents: &str) {
@@ -3648,9 +3888,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-network-loop");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3708,6 +3946,122 @@ mod tests {
             .expect("transport action channel should deliver StartTls");
         assert_eq!(action.client_id, "client-1");
         assert_eq!(action.action, ServerTransportAction::StartTls);
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[tokio::test]
+    async fn server_network_loop_tls_upgrade_preserves_post_upgrade_protocol_flow() {
+        let cert_path = temporary_directory_path("tls-network-upgrade-flow");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&cert_path);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+        }
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            None,
+            shutdown_rx,
+        ));
+
+        let mut stream = TcpStream::connect(address)
+            .await
+            .expect("client should connect");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("tls request line should write");
+        stream
+            .write_all(b"\n")
+            .await
+            .expect("tls request newline should write");
+        stream.flush().await.expect("tls request should flush");
+
+        let tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut stream),
+        )
+        .await
+        .expect("tls response should arrive before timeout")
+        .expect("tls response read should succeed")
+        .expect("tls response line should be present");
+        let tls_response =
+            decode_message_line(&tls_response_line).expect("tls response line should decode");
+        let ProtocolMessage::Tls(payload) = tls_response else {
+            panic!("server should respond with TLS payload");
+        };
+        assert_eq!(payload.tls.start_tls, "true");
+
+        let connector = tls_client_connector_for_test_fixture();
+        let server_name = ServerName::try_from("localhost").expect("server name should parse");
+        let mut tls_stream = timeout(
+            Duration::from_secs(2),
+            connector.connect(server_name, stream),
+        )
+        .await
+        .expect("tls handshake should complete before timeout")
+        .expect("tls handshake should succeed");
+
+        tls_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .await
+            .expect("hello line should write over tls");
+        tls_stream
+            .write_all(b"\n")
+            .await
+            .expect("hello newline should write over tls");
+        tls_stream
+            .flush()
+            .await
+            .expect("hello line should flush over tls");
+
+        let mut saw_hello = false;
+        for _ in 0..4 {
+            let maybe_line = timeout(
+                Duration::from_secs(2),
+                super::read_network_line_from_stream(&mut tls_stream),
+            )
+            .await
+            .expect("post-upgrade response should arrive before timeout")
+            .expect("post-upgrade response read should succeed");
+            let Some(line) = maybe_line else {
+                break;
+            };
+            if line.is_empty() {
+                continue;
+            }
+            let message = decode_message_line(&line).expect("post-upgrade line should decode");
+            if matches!(message, ProtocolMessage::Hello(_)) {
+                saw_hello = true;
+                break;
+            }
+        }
+        assert!(
+            saw_hello,
+            "server should continue protocol flow over upgraded TLS transport"
+        );
 
         shutdown_tx
             .send(true)
