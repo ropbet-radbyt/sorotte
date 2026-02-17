@@ -613,35 +613,55 @@ fn parse_playlist_file_parameter_legacy_compatible(parameter: &str) -> Option<St
     (!file_name.is_empty()).then(|| file_name.to_owned())
 }
 
+fn matches_local_command_alias_legacy_compatible(input: &str, aliases: &[&str]) -> bool {
+    aliases.iter().any(|alias| {
+        if input == *alias {
+            return true;
+        }
+        input
+            .strip_prefix(alias)
+            .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+    })
+}
+
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     let trimmed = input.trim();
-    if matches!(trimmed, "help" | "h" | "?" | "/help" | "/h" | "/?" | "\\?") {
+    if matches_local_command_alias_legacy_compatible(
+        trimmed,
+        &["help", "h", "?", "/help", "/h", "/?", "\\?"],
+    ) {
         return Some(LocalInputCommand::ShowHelp);
     }
-    if matches!(trimmed, "undoplaylist" | "/undoplaylist") {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["undoplaylist", "/undoplaylist"]) {
         return Some(LocalInputCommand::UndoPlaylistChange);
     }
-    if matches!(
+    if matches_local_command_alias_legacy_compatible(
         trimmed,
-        "shuffleremainingplaylist" | "/shuffleremainingplaylist"
+        &["shuffleremainingplaylist", "/shuffleremainingplaylist"],
     ) {
         return Some(LocalInputCommand::ShuffleRemainingPlaylist);
     }
-    if matches!(trimmed, "shuffleentireplaylist" | "/shuffleentireplaylist") {
+    if matches_local_command_alias_legacy_compatible(
+        trimmed,
+        &["shuffleentireplaylist", "/shuffleentireplaylist"],
+    ) {
         return Some(LocalInputCommand::ShuffleEntirePlaylist);
     }
-    if matches!(
+    if matches_local_command_alias_legacy_compatible(
         trimmed,
-        "undo" | "u" | "revert" | "/undo" | "/u" | "/revert"
+        &["undo", "u", "revert", "/undo", "/u", "/revert"],
     ) {
         return Some(LocalInputCommand::UndoSeek);
     }
-    if matches!(trimmed, "list" | "l" | "users" | "/list" | "/l" | "/users") {
+    if matches_local_command_alias_legacy_compatible(
+        trimmed,
+        &["list", "l", "users", "/list", "/l", "/users"],
+    ) {
         return Some(LocalInputCommand::RequestUserList);
     }
-    if matches!(
+    if matches_local_command_alias_legacy_compatible(
         trimmed,
-        "playlist" | "ql" | "pl" | "/playlist" | "/ql" | "/pl"
+        &["playlist", "ql", "pl", "/playlist", "/ql", "/pl"],
     ) {
         return Some(LocalInputCommand::ShowPlaylist);
     }
@@ -658,7 +678,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "select" | "qs" | "/select" | "/qs") {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
-    if matches!(trimmed, "next" | "qn" | "/next" | "/qn") {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["next", "qn", "/next", "/qn"]) {
         return Some(LocalInputCommand::NextPlaylistItem);
     }
     if let Some(file_name) = trimmed
@@ -790,7 +810,10 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "seek" | "s" | "/seek" | "/s") {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
-    if matches!(trimmed, "p" | "pause" | "play" | "/p" | "/pause" | "/play") {
+    if matches_local_command_alias_legacy_compatible(
+        trimmed,
+        &["p", "pause", "play", "/p", "/pause", "/play"],
+    ) {
         return Some(LocalInputCommand::TogglePause);
     }
     if let Some(room) = trimmed
@@ -805,7 +828,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "room" | "r" | "/room" | "/r") {
         return Some(LocalInputCommand::SetRoomWithLegacyFallback);
     }
-    if matches!(trimmed, "t" | "toggle" | "/t" | "/toggle") {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["t", "toggle", "/t", "/toggle"]) {
         return Some(LocalInputCommand::ToggleReady);
     }
     if let Some(command) = parse_offset_input_legacy_compatible(trimmed) {
@@ -3110,6 +3133,50 @@ mod tests {
         assert_eq!(
             parse_local_input_command("/unknown hello"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+    }
+
+    #[test]
+    fn parse_local_input_command_noarg_aliases_ignore_extra_parameters_legacy_style() {
+        assert_eq!(
+            parse_local_input_command("help now"),
+            Some(LocalInputCommand::ShowHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("list now"),
+            Some(LocalInputCommand::RequestUserList)
+        );
+        assert_eq!(
+            parse_local_input_command("playlist now"),
+            Some(LocalInputCommand::ShowPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("next now"),
+            Some(LocalInputCommand::NextPlaylistItem)
+        );
+        assert_eq!(
+            parse_local_input_command("toggle now"),
+            Some(LocalInputCommand::ToggleReady)
+        );
+        assert_eq!(
+            parse_local_input_command("p now"),
+            Some(LocalInputCommand::TogglePause)
+        );
+        assert_eq!(
+            parse_local_input_command("undo now"),
+            Some(LocalInputCommand::UndoSeek)
+        );
+        assert_eq!(
+            parse_local_input_command("undoplaylist now"),
+            Some(LocalInputCommand::UndoPlaylistChange)
+        );
+        assert_eq!(
+            parse_local_input_command("shuffleremainingplaylist now"),
+            Some(LocalInputCommand::ShuffleRemainingPlaylist)
+        );
+        assert_eq!(
+            parse_local_input_command("shuffleentireplaylist now"),
+            Some(LocalInputCommand::ShuffleEntirePlaylist)
         );
     }
 
@@ -6141,7 +6208,7 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(120)).await;
             sender
-                .send("help".to_owned())
+                .send("help please".to_owned())
                 .expect("help command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
