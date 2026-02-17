@@ -499,7 +499,7 @@ fn parse_room_command_legacy_compatible(input: &str) -> Option<Option<LocalInput
         };
 
         if parameter.is_empty() {
-            return Some(None);
+            return Some(Some(LocalInputCommand::SetRoomWithLegacyFallback));
         }
 
         return Some(Some(LocalInputCommand::SetRoom(parameter.to_owned())));
@@ -3092,22 +3092,34 @@ mod tests {
             parse_local_input_command("room   "),
             Some(LocalInputCommand::SetRoom("  ".to_owned()))
         );
-        assert_eq!(parse_local_input_command("room "), None);
+        assert_eq!(
+            parse_local_input_command("room "),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
         assert_eq!(
             parse_local_input_command("r room2"),
             Some(LocalInputCommand::SetRoom("room2".to_owned()))
         );
-        assert_eq!(parse_local_input_command("r "), None);
+        assert_eq!(
+            parse_local_input_command("r "),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
         assert_eq!(
             parse_local_input_command("/room room2"),
             Some(LocalInputCommand::SetRoom("room2".to_owned()))
         );
-        assert_eq!(parse_local_input_command("/room "), None);
+        assert_eq!(
+            parse_local_input_command("/room "),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
         assert_eq!(
             parse_local_input_command("/r room2"),
             Some(LocalInputCommand::SetRoom("room2".to_owned()))
         );
-        assert_eq!(parse_local_input_command("/r "), None);
+        assert_eq!(
+            parse_local_input_command("/r "),
+            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        );
         assert_eq!(
             parse_local_input_command("room"),
             Some(LocalInputCommand::SetRoomWithLegacyFallback)
@@ -5908,7 +5920,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_client_session_ignores_room_command_with_single_trailing_space() {
+    async fn connected_client_session_applies_legacy_fallback_for_room_command_with_single_trailing_space()
+     {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
@@ -5937,30 +5950,28 @@ mod tests {
                 .await
                 .expect("server hello write should succeed");
 
-            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(350);
-            loop {
-                let remaining =
-                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-
-                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
-                let Ok(Ok(Some(line))) = next_line else {
+            let mut set_room_name = None;
+            for _ in 0..4 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("set room line read should not timeout")
+                    .expect("set room line read should succeed")
+                else {
                     break;
                 };
                 let message = decode_message_line(&line).expect("line should decode");
-                assert!(
-                    !matches!(message, ProtocolMessage::Chat(_)),
-                    "malformed room command should not fall back to chat messages"
-                );
-                if let ProtocolMessage::Set(ref payload) = message {
-                    assert!(
-                        payload.set.room.is_none(),
-                        "malformed room command should not emit outbound Set.room message"
-                    );
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if let Some(room) = payload.set.room {
+                    set_room_name = Some(room.name);
+                    break;
                 }
             }
+            let Some(set_room_name) = set_room_name else {
+                panic!("client should emit Set.room from legacy fallback room command");
+            };
+            assert_eq!(set_room_name, "cli-room");
             writer
                 .shutdown()
                 .await
@@ -5998,7 +6009,9 @@ mod tests {
         let (sender, mut receiver) = unbounded_channel::<String>();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(120)).await;
-            sender.send("room ".to_owned()).expect("room should queue");
+            sender
+                .send("room ".to_owned())
+                .expect("room command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
