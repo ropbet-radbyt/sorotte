@@ -2243,13 +2243,10 @@ impl ClientSession {
         if self.server_chat_supported.is_none() {
             return Vec::new();
         }
-        let room = room.trim();
         if room.is_empty() {
             return Vec::new();
         }
-        vec![ClientRuntimeAction::SetRoom {
-            room: room.to_owned(),
-        }]
+        vec![ClientRuntimeAction::SetRoom { room }]
     }
 
     pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
@@ -8300,7 +8297,7 @@ mod tests {
             .room
             .as_ref()
             .expect("Set message should contain room payload");
-        assert_eq!(room.name, "room2");
+        assert_eq!(room.name, "  room2  ");
     }
 
     #[test]
@@ -8330,12 +8327,40 @@ mod tests {
         let control = QueuedRuntimeControl::default();
         let mut runtime = ClientRuntime::new(session, player, control);
         assert!(
-            !runtime
-                .run_set_room("   ")
-                .expect("set room should not fail"),
+            !runtime.run_set_room("").expect("set room should not fail"),
             "empty room switch should be ignored"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_room_dispatches_when_target_is_whitespace_only() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room("   ")
+                .expect("set room should not fail"),
+            "whitespace-only room switch should still emit outbound Set.room"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.room protocol message");
+        };
+        let room = set_message
+            .set
+            .room
+            .as_ref()
+            .expect("Set message should contain room payload");
+        assert_eq!(room.name, "   ");
     }
 
     #[test]
