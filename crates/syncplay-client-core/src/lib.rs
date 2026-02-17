@@ -2200,10 +2200,7 @@ impl ClientSession {
             return Vec::new();
         }
         let username = username.trim();
-        if username.is_empty() {
-            return Vec::new();
-        }
-        if self.username.as_deref() == Some(username) {
+        if username.is_empty() || self.username.as_deref() == Some(username) {
             return vec![ClientRuntimeAction::SetReady {
                 ready,
                 manually_initiated,
@@ -8053,6 +8050,42 @@ mod tests {
         assert!(ready.is_ready);
         assert_eq!(ready.manually_initiated, Some(true));
         assert_eq!(ready.username.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn client_runtime_set_ready_for_user_without_username_dispatches_local_ready_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_ready_for_user("", true, true)
+                .expect("set ready without username should not fail"),
+            "set ready without username should emit local Set.ready after hello"
+        );
+        let (_, _, control) = runtime.into_parts();
+
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.ready protocol message");
+        };
+        let ready = set_message
+            .set
+            .ready
+            .as_ref()
+            .expect("Set message should contain ready payload");
+        assert!(ready.is_ready);
+        assert_eq!(ready.manually_initiated, Some(true));
+        assert!(
+            ready.username.is_none(),
+            "local ready set should omit username payload field"
+        );
     }
 
     #[test]
