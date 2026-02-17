@@ -3103,6 +3103,26 @@ mod tests {
         panic!("file modification time did not change after repeated overwrite attempts");
     }
 
+    fn rewrite_file_until_modified_time_changes(path: &Path, contents: &str) {
+        let original_modified_time = fs::metadata(path)
+            .expect("file should be readable before overwrite")
+            .modified()
+            .expect("file should expose modification time");
+        for _ in 0..8 {
+            fs::write(path, contents)
+                .expect("file rewrite should succeed while testing rotation recovery");
+            let updated_modified_time = fs::metadata(path)
+                .expect("rewritten file should be readable")
+                .modified()
+                .expect("rewritten file should expose modification time");
+            if updated_modified_time != original_modified_time {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        panic!("file modification time did not change after repeated rewrite attempts");
+    }
+
     fn tls_start_response(lines: &[String]) -> Option<String> {
         lines.iter().find_map(|line| {
             let message = decode_message_line(line).ok()?;
@@ -4349,6 +4369,201 @@ mod tests {
         assert_eq!(
             payload.tls.start_tls, "false",
             "second client should be denied TLS after cert rotation makes bundle invalid"
+        );
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[tokio::test]
+    async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_is_restored() {
+        let cert_path = temporary_directory_path("tls-network-upgrade-rotation-recovery");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&cert_path);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+        }
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            None,
+            shutdown_rx,
+        ));
+
+        let mut first_stream = TcpStream::connect(address)
+            .await
+            .expect("first client should connect");
+        first_stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("first tls request line should write");
+        first_stream
+            .write_all(b"\n")
+            .await
+            .expect("first tls request newline should write");
+        first_stream
+            .flush()
+            .await
+            .expect("first tls request should flush");
+        let first_tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut first_stream),
+        )
+        .await
+        .expect("first tls response should arrive before timeout")
+        .expect("first tls response read should succeed")
+        .expect("first tls response line should be present");
+        let first_tls_response = decode_message_line(&first_tls_response_line)
+            .expect("first tls response line should decode");
+        let ProtocolMessage::Tls(first_tls_payload) = first_tls_response else {
+            panic!("server should respond with TLS payload for first client");
+        };
+        assert_eq!(first_tls_payload.tls.start_tls, "true");
+
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+        overwrite_file_until_modified_time_changes(
+            &cert_path.join("cert.pem"),
+            "rotated-invalid-before-second-client",
+        );
+
+        let mut second_stream = TcpStream::connect(address)
+            .await
+            .expect("second client should connect");
+        second_stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("second tls request line should write");
+        second_stream
+            .write_all(b"\n")
+            .await
+            .expect("second tls request newline should write");
+        second_stream
+            .flush()
+            .await
+            .expect("second tls request should flush");
+        let second_tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut second_stream),
+        )
+        .await
+        .expect("second tls response should arrive before timeout")
+        .expect("second tls response read should succeed")
+        .expect("second tls response line should be present");
+        let second_tls_response = decode_message_line(&second_tls_response_line)
+            .expect("second tls response line should decode");
+        let ProtocolMessage::Tls(second_tls_payload) = second_tls_response else {
+            panic!("server should respond with TLS payload for second client");
+        };
+        assert_eq!(
+            second_tls_payload.tls.start_tls, "false",
+            "second client should be denied TLS after invalid cert rotation"
+        );
+
+        write_valid_tls_bundle(&cert_path);
+        rewrite_file_until_modified_time_changes(&cert_path.join("cert.pem"), TEST_TLS_CERT_PEM);
+
+        let mut third_stream = TcpStream::connect(address)
+            .await
+            .expect("third client should connect");
+        third_stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("third tls request line should write");
+        third_stream
+            .write_all(b"\n")
+            .await
+            .expect("third tls request newline should write");
+        third_stream
+            .flush()
+            .await
+            .expect("third tls request should flush");
+        let third_tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut third_stream),
+        )
+        .await
+        .expect("third tls response should arrive before timeout")
+        .expect("third tls response read should succeed")
+        .expect("third tls response line should be present");
+        let third_tls_response = decode_message_line(&third_tls_response_line)
+            .expect("third tls response line should decode");
+        let ProtocolMessage::Tls(third_tls_payload) = third_tls_response else {
+            panic!("server should respond with TLS payload for third client");
+        };
+        assert_eq!(
+            third_tls_payload.tls.start_tls, "true",
+            "third client should be allowed TLS after valid bundle restoration"
+        );
+
+        let connector = tls_client_connector_for_test_fixture();
+        let server_name = ServerName::try_from("localhost").expect("server name should parse");
+        let mut third_tls_stream = timeout(
+            Duration::from_secs(2),
+            connector.connect(server_name, third_stream),
+        )
+        .await
+        .expect("third tls handshake should complete before timeout")
+        .expect("third tls handshake should succeed after bundle restoration");
+
+        third_tls_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .await
+            .expect("hello line should write over third tls stream");
+        third_tls_stream
+            .write_all(b"\n")
+            .await
+            .expect("hello newline should write over third tls stream");
+        third_tls_stream
+            .flush()
+            .await
+            .expect("hello line should flush over third tls stream");
+
+        let mut saw_hello = false;
+        for _ in 0..4 {
+            let maybe_line = timeout(
+                Duration::from_secs(2),
+                super::read_network_line_from_stream(&mut third_tls_stream),
+            )
+            .await
+            .expect("third post-upgrade response should arrive before timeout")
+            .expect("third post-upgrade response read should succeed");
+            let Some(line) = maybe_line else {
+                break;
+            };
+            if line.is_empty() {
+                continue;
+            }
+            let message =
+                decode_message_line(&line).expect("third post-upgrade line should decode");
+            if matches!(message, ProtocolMessage::Hello(_)) {
+                saw_hello = true;
+                break;
+            }
+        }
+        assert!(
+            saw_hello,
+            "third client should complete protocol flow over restored TLS context"
         );
 
         shutdown_tx
