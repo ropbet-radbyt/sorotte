@@ -2226,9 +2226,6 @@ impl ClientSession {
             return Vec::new();
         }
         let password = Self::normalize_control_password_legacy_compatible(&password);
-        if password.is_empty() {
-            return Vec::new();
-        }
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting {
@@ -8133,6 +8130,43 @@ mod tests {
             .expect("Set message should contain controllerAuth payload");
         assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
         assert_eq!(controller_auth.password.as_deref(), Some("AB123-456"));
+        assert_eq!(
+            control.controller_auth_notifications(),
+            &[ControllerAuthTransitionNotification::Attempting {
+                room: "+room:ABCDEF123456".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn client_runtime_request_controller_auth_without_password_dispatches_empty_password_payload() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_request_controller_auth(" +room:ABCDEF123456 ", "   ")
+                .expect("controller auth request should not fail"),
+            "manual controller auth request should emit outbound Set.controllerAuth even with empty password after normalization"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.controllerAuth protocol message");
+        };
+        let controller_auth = set_message
+            .set
+            .controller_auth
+            .as_ref()
+            .expect("Set message should contain controllerAuth payload");
+        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(controller_auth.password.as_deref(), Some(""));
         assert_eq!(
             control.controller_auth_notifications(),
             &[ControllerAuthTransitionNotification::Attempting {
