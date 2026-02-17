@@ -625,6 +625,7 @@ pub struct ServerRuntime {
     stats_snapshot_interval_seconds: f64,
     stats_next_snapshot_at_seconds: Option<f64>,
     tls_cert_path: Option<PathBuf>,
+    tls_server_config: Option<Arc<ServerConfig>>,
     tls_context_available: bool,
     server_accepts_tls: bool,
     tls_last_edit_cert_time: Option<SystemTime>,
@@ -699,6 +700,7 @@ impl ServerRuntime {
             stats_snapshot_interval_seconds: SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS,
             stats_next_snapshot_at_seconds: None,
             tls_cert_path: None,
+            tls_server_config: None,
             tls_context_available: false,
             server_accepts_tls: false,
             tls_last_edit_cert_time: None,
@@ -878,6 +880,10 @@ impl ServerRuntime {
 
     pub fn tls_cert_path(&self) -> Option<PathBuf> {
         self.tls_cert_path.clone()
+    }
+
+    fn tls_server_config(&self) -> Option<Arc<ServerConfig>> {
+        self.tls_server_config.clone()
     }
 
     pub fn set_time_now_override_seconds(&mut self, seconds: Option<f64>) {
@@ -1458,20 +1464,32 @@ impl ServerRuntime {
 
     fn refresh_tls_context_from_cert_path(&mut self) {
         let Some(path) = self.tls_cert_path.as_ref() else {
+            self.tls_server_config = None;
             self.tls_context_available = false;
             self.server_accepts_tls = false;
             self.tls_last_edit_cert_time = None;
             return;
         };
-        if tls_certificate_bundle_is_available(path) {
-            self.tls_context_available = true;
-            self.server_accepts_tls = true;
-            self.tls_last_edit_cert_time = tls_certificate_file_modified_time(path);
+        if !tls_certificate_bundle_is_available(path) {
+            self.tls_server_config = None;
+            self.tls_context_available = false;
+            self.server_accepts_tls = false;
+            self.tls_last_edit_cert_time = None;
             return;
         }
-        self.tls_context_available = false;
-        self.server_accepts_tls = false;
-        self.tls_last_edit_cert_time = None;
+        self.tls_last_edit_cert_time = tls_certificate_file_modified_time(path);
+        match load_tls_server_config(path) {
+            Ok(server_config) => {
+                self.tls_server_config = Some(server_config);
+                self.tls_context_available = true;
+                self.server_accepts_tls = true;
+            }
+            Err(_) => {
+                self.tls_server_config = None;
+                self.tls_context_available = false;
+                self.server_accepts_tls = false;
+            }
+        }
     }
 
     fn refresh_tls_context_after_cert_rotation_if_needed(&mut self) {
@@ -2423,17 +2441,17 @@ async fn route_outbound_lines_for_client_session(
 }
 
 async fn tls_acceptor_from_runtime(runtime: &Arc<Mutex<ServerRuntime>>) -> io::Result<TlsAcceptor> {
-    let tls_cert_path = {
+    let tls_server_config = {
         let runtime_guard = runtime.lock().await;
-        runtime_guard.tls_cert_path()
+        runtime_guard.tls_server_config()
     };
-    let Some(tls_cert_path) = tls_cert_path else {
+    let Some(tls_server_config) = tls_server_config else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "tls cert path is not configured",
+            "tls server config is not available",
         ));
     };
-    Ok(TlsAcceptor::from(load_tls_server_config(&tls_cert_path)?))
+    Ok(TlsAcceptor::from(tls_server_config))
 }
 
 async fn apply_local_transport_actions(
@@ -3535,9 +3553,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-cert-bundle");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3554,9 +3570,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-transport-action");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3582,9 +3596,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-dispatch-action");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3619,9 +3631,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-after-hello");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3672,9 +3682,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-server-app");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut app = ServerApp::with_tls_cert_path(cert_path.clone());
         let outbound_lines = app
@@ -3691,9 +3699,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-context-cache");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3714,9 +3720,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-cert-rotation");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -3747,9 +3751,7 @@ mod tests {
         let cert_path = temporary_directory_path("tls-cert-rotation-retry-cap");
         let _ = fs::remove_dir_all(&cert_path);
         fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
-        fs::write(cert_path.join("privkey.pem"), "key").expect("privkey file should write");
-        fs::write(cert_path.join("cert.pem"), "cert").expect("cert file should write");
-        fs::write(cert_path.join("chain.pem"), "chain").expect("chain file should write");
+        write_valid_tls_bundle(&cert_path);
 
         let mut runtime = ServerRuntime::new();
         runtime.set_tls_cert_path(Some(cert_path.clone()));
@@ -4061,6 +4063,130 @@ mod tests {
         assert!(
             saw_hello,
             "server should continue protocol flow over upgraded TLS transport"
+        );
+
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should send successfully");
+        server_task
+            .await
+            .expect("server task should join cleanly")
+            .expect("server loop should exit without error");
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[tokio::test]
+    async fn server_network_loop_tls_upgrade_uses_cached_context_when_files_disappear() {
+        let cert_path = temporary_directory_path("tls-network-upgrade-cached-context");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&cert_path);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have local address");
+        let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+        }
+
+        fs::remove_file(cert_path.join("privkey.pem")).expect("privkey file should be removable");
+        fs::remove_file(cert_path.join("chain.pem")).expect("chain file should be removable");
+        fs::remove_file(cert_path.join("cert.pem")).expect("cert file should be removable");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+            listener,
+            runtime,
+            None,
+            shutdown_rx,
+        ));
+
+        let mut stream = TcpStream::connect(address)
+            .await
+            .expect("client should connect");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+            .await
+            .expect("tls request line should write");
+        stream
+            .write_all(b"\n")
+            .await
+            .expect("tls request newline should write");
+        stream.flush().await.expect("tls request should flush");
+
+        let tls_response_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut stream),
+        )
+        .await
+        .expect("tls response should arrive before timeout")
+        .expect("tls response read should succeed")
+        .expect("tls response line should be present");
+        let tls_response =
+            decode_message_line(&tls_response_line).expect("tls response line should decode");
+        let ProtocolMessage::Tls(payload) = tls_response else {
+            panic!("server should respond with TLS payload");
+        };
+        assert_eq!(
+            payload.tls.start_tls, "true",
+            "server should still accept TLS using cached loaded context"
+        );
+
+        let connector = tls_client_connector_for_test_fixture();
+        let server_name = ServerName::try_from("localhost").expect("server name should parse");
+        let mut tls_stream = timeout(
+            Duration::from_secs(2),
+            connector.connect(server_name, stream),
+        )
+        .await
+        .expect("tls handshake should complete before timeout")
+        .expect("tls handshake should succeed with cached context");
+
+        tls_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#,
+            )
+            .await
+            .expect("hello line should write over tls");
+        tls_stream
+            .write_all(b"\n")
+            .await
+            .expect("hello newline should write over tls");
+        tls_stream
+            .flush()
+            .await
+            .expect("hello line should flush over tls");
+
+        let mut saw_hello = false;
+        for _ in 0..4 {
+            let maybe_line = timeout(
+                Duration::from_secs(2),
+                super::read_network_line_from_stream(&mut tls_stream),
+            )
+            .await
+            .expect("post-upgrade response should arrive before timeout")
+            .expect("post-upgrade response read should succeed");
+            let Some(line) = maybe_line else {
+                break;
+            };
+            if line.is_empty() {
+                continue;
+            }
+            let message = decode_message_line(&line).expect("post-upgrade line should decode");
+            if matches!(message, ProtocolMessage::Hello(_)) {
+                saw_hello = true;
+                break;
+            }
+        }
+        assert!(
+            saw_hello,
+            "server should continue protocol flow over cached-context upgraded tls transport"
         );
 
         shutdown_tx
