@@ -21,6 +21,8 @@ const ROUND_HALF_EPSILON: f64 = 1e-12;
 const CONTROL_ROOM_HASH_LEN: usize = 12;
 const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
 const UNKNOWN_COMMAND_MESSAGE_LEGACY: &str = "Unrecognized command";
+const PLAYLIST_INVALID_INDEX_ERROR_LEGACY: &str = "Invalid playlist index";
+const QUEUE_MISSING_FILE_ERROR_LEGACY: &str = "No file/url given";
 const PROJECT_URL_LEGACY: &str = "https://syncplay.pl/";
 static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -452,6 +454,8 @@ enum LocalInputCommand {
     RequestUserList,
     ShowUnknownCommandHelp,
     ShowHelp,
+    ShowPlaylistInvalidIndexError,
+    ShowQueueMissingFileError,
     ShowPlaylist,
     SelectPlaylistIndex(i64),
     NextPlaylistItem,
@@ -645,11 +649,12 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("/select "))
         .or_else(|| trimmed.strip_prefix("/qs "))
     {
-        let index = parse_playlist_index_parameter_legacy_compatible(index)?;
-        return Some(LocalInputCommand::SelectPlaylistIndex(index));
+        return parse_playlist_index_parameter_legacy_compatible(index)
+            .map(LocalInputCommand::SelectPlaylistIndex)
+            .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
     }
     if matches!(trimmed, "select" | "qs" | "/select" | "/qs") {
-        return None;
+        return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
     if matches!(trimmed, "next" | "qn" | "/next" | "/qn") {
         return Some(LocalInputCommand::NextPlaylistItem);
@@ -660,18 +665,18 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("/queueandselect "))
         .or_else(|| trimmed.strip_prefix("/qas "))
     {
-        return parse_playlist_file_parameter_legacy_compatible(file_name).map(|file_name| {
-            LocalInputCommand::QueuePlaylistItem {
+        return parse_playlist_file_parameter_legacy_compatible(file_name)
+            .map(|file_name| LocalInputCommand::QueuePlaylistItem {
                 file_name,
                 select_after_queue: true,
-            }
-        });
+            })
+            .or(Some(LocalInputCommand::ShowQueueMissingFileError));
     }
     if matches!(
         trimmed,
         "queueandselect" | "qas" | "/queueandselect" | "/qas"
     ) {
-        return None;
+        return Some(LocalInputCommand::ShowQueueMissingFileError);
     }
     if let Some(file_name) = trimmed
         .strip_prefix("queue ")
@@ -681,15 +686,15 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("/qa "))
         .or_else(|| trimmed.strip_prefix("/add "))
     {
-        return parse_playlist_file_parameter_legacy_compatible(file_name).map(|file_name| {
-            LocalInputCommand::QueuePlaylistItem {
+        return parse_playlist_file_parameter_legacy_compatible(file_name)
+            .map(|file_name| LocalInputCommand::QueuePlaylistItem {
                 file_name,
                 select_after_queue: false,
-            }
-        });
+            })
+            .or(Some(LocalInputCommand::ShowQueueMissingFileError));
     }
     if matches!(trimmed, "queue" | "qa" | "add" | "/queue" | "/qa" | "/add") {
-        return None;
+        return Some(LocalInputCommand::ShowQueueMissingFileError);
     }
     if let Some(index) = trimmed
         .strip_prefix("delete ")
@@ -699,11 +704,12 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         .or_else(|| trimmed.strip_prefix("/d "))
         .or_else(|| trimmed.strip_prefix("/qd "))
     {
-        let index = parse_playlist_index_parameter_legacy_compatible(index)?;
-        return Some(LocalInputCommand::DeletePlaylistIndex(index));
+        return parse_playlist_index_parameter_legacy_compatible(index)
+            .map(LocalInputCommand::DeletePlaylistIndex)
+            .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
     }
     if matches!(trimmed, "delete" | "d" | "qd" | "/delete" | "/d" | "/qd") {
-        return None;
+        return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
     if let Some(username) = trimmed
         .strip_prefix("setready ")
@@ -1210,6 +1216,11 @@ fn emit_unknown_command_help_legacy_compatible(version: &str) -> anyhow::Result<
     emit_local_command_help_legacy_compatible(version)
 }
 
+fn emit_local_error_message_legacy_compatible(message: &str) -> anyhow::Result<()> {
+    println!("ERROR:\t{message}");
+    Ok(())
+}
+
 fn apply_local_offset_command_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     user_offset_seconds: &mut f64,
@@ -1555,6 +1566,18 @@ where
                         }
                         LocalInputCommand::ShowHelp => {
                             emit_local_command_help_legacy_compatible(help_version)?;
+                            false
+                        }
+                        LocalInputCommand::ShowPlaylistInvalidIndexError => {
+                            emit_local_error_message_legacy_compatible(
+                                PLAYLIST_INVALID_INDEX_ERROR_LEGACY,
+                            )?;
+                            false
+                        }
+                        LocalInputCommand::ShowQueueMissingFileError => {
+                            emit_local_error_message_legacy_compatible(
+                                QUEUE_MISSING_FILE_ERROR_LEGACY,
+                            )?;
                             false
                         }
                         LocalInputCommand::ShowPlaylist => {
@@ -2537,9 +2560,26 @@ mod tests {
             parse_local_input_command("/qs 4"),
             Some(LocalInputCommand::SelectPlaylistIndex(3))
         );
-        assert_eq!(parse_local_input_command("select"), None);
-        assert_eq!(parse_local_input_command("qs"), None);
-        assert_eq!(parse_local_input_command("select 0"), None);
+        assert_eq!(
+            parse_local_input_command("select"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("qs"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("/select"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("/qs"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("select 0"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
     }
 
     #[test]
@@ -2592,9 +2632,18 @@ mod tests {
                 select_after_queue: false
             })
         );
-        assert_eq!(parse_local_input_command("queue"), None);
-        assert_eq!(parse_local_input_command("qa"), None);
-        assert_eq!(parse_local_input_command("add"), None);
+        assert_eq!(
+            parse_local_input_command("queue"),
+            Some(LocalInputCommand::ShowQueueMissingFileError)
+        );
+        assert_eq!(
+            parse_local_input_command("qa"),
+            Some(LocalInputCommand::ShowQueueMissingFileError)
+        );
+        assert_eq!(
+            parse_local_input_command("add"),
+            Some(LocalInputCommand::ShowQueueMissingFileError)
+        );
     }
 
     #[test]
@@ -2627,8 +2676,14 @@ mod tests {
                 select_after_queue: true
             })
         );
-        assert_eq!(parse_local_input_command("queueandselect"), None);
-        assert_eq!(parse_local_input_command("qas"), None);
+        assert_eq!(
+            parse_local_input_command("queueandselect"),
+            Some(LocalInputCommand::ShowQueueMissingFileError)
+        );
+        assert_eq!(
+            parse_local_input_command("qas"),
+            Some(LocalInputCommand::ShowQueueMissingFileError)
+        );
     }
 
     #[test]
@@ -2657,10 +2712,22 @@ mod tests {
             parse_local_input_command("/qd 6"),
             Some(LocalInputCommand::DeletePlaylistIndex(5))
         );
-        assert_eq!(parse_local_input_command("delete"), None);
-        assert_eq!(parse_local_input_command("d"), None);
-        assert_eq!(parse_local_input_command("qd"), None);
-        assert_eq!(parse_local_input_command("delete 0"), None);
+        assert_eq!(
+            parse_local_input_command("delete"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("d"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("qd"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
+        assert_eq!(
+            parse_local_input_command("delete 0"),
+            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+        );
     }
 
     #[test]
@@ -5413,6 +5480,134 @@ mod tests {
             sender
                 .send("/unknown hello".to_owned())
                 .expect("unknown command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_invalid_playlist_commands_do_not_fall_back_to_chat_or_emit_playlist_updates()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
+"#,
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(350);
+            loop {
+                let remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+
+                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Ok(Ok(Some(line))) = next_line else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                assert!(
+                    !matches!(message, ProtocolMessage::Chat(_)),
+                    "invalid local playlist commands should not fall back to chat messages"
+                );
+                if let ProtocolMessage::Set(payload) = message {
+                    assert!(
+                        payload.set.playlist_change.is_none()
+                            && payload.set.playlist_index.is_none(),
+                        "invalid local playlist commands should not emit outbound playlist set messages"
+                    );
+                }
+            }
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            sender
+                .send("queue".to_owned())
+                .expect("queue command should queue");
+            sender
+                .send("select".to_owned())
+                .expect("select command should queue");
+            sender
+                .send("delete".to_owned())
+                .expect("delete command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
