@@ -1128,6 +1128,14 @@ pub fn default_rust_client_hello_for_interop() -> HelloPayload {
         .with_features(json!({ "featureList": true }))
 }
 
+#[cfg(test)]
+fn default_rust_client_hello_for_legacy_live_tls() -> HelloPayload {
+    // Legacy live-server handshake paths parse version-like strings as dotted integers.
+    HelloPayload::new("interop-client", "interop-room", "1.2.255")
+        .with_realversion("1.2.255")
+        .with_features(json!({ "featureList": true }))
+}
+
 pub fn run_python_protocol_roundtrip(
     requests: &[ProtocolMessage],
 ) -> Result<PythonProtocolTranscript, InteropError> {
@@ -3301,15 +3309,6 @@ mod tests {
         }
     }
 
-    fn legacy_tls_fixture_directory() -> PathBuf {
-        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("..");
-        path.push("..");
-        path.push("fixtures");
-        path.push("tls");
-        path
-    }
-
     fn read_next_protocol_line_from_pending(pending_bytes: &mut Vec<u8>) -> Option<String> {
         loop {
             let newline_index = pending_bytes.iter().position(|byte| *byte == b'\n')?;
@@ -3364,13 +3363,13 @@ mod tests {
 
     fn read_tls_protocol_line_with_timeout(
         stream: &mut StreamOwned<ClientConnection, TcpStream>,
+        pending_bytes: &mut Vec<u8>,
         timeout: Duration,
     ) -> Result<String, InteropError> {
         let deadline = Instant::now() + timeout;
-        let mut pending_bytes = Vec::new();
         let mut chunk = [0_u8; 4096];
         loop {
-            if let Some(line) = read_next_protocol_line_from_pending(&mut pending_bytes) {
+            if let Some(line) = read_next_protocol_line_from_pending(pending_bytes) {
                 return Ok(line);
             }
 
@@ -3519,15 +3518,32 @@ mod tests {
             let mut tls_stream = open_legacy_tls_client_stream(connection.stream, tls_cert_path)?;
 
             let hello_line = encode_message_line(&ProtocolMessage::hello(
-                default_rust_client_hello_for_interop(),
+                super::default_rust_client_hello_for_legacy_live_tls(),
             ))?;
             tls_stream.write_all(hello_line.as_bytes())?;
             tls_stream.write_all(b"\r\n")?;
             tls_stream.flush()?;
-            let hello_response_line =
-                read_tls_protocol_line_with_timeout(&mut tls_stream, Duration::from_secs(3))?;
-            let hello_message = decode_message_line(&hello_response_line)?;
-            let _ = extract_hello_from_message(hello_message)?;
+            let mut tls_pending_bytes = Vec::new();
+
+            let mut hello_response_line = None;
+            for _ in 0..8 {
+                let candidate_line = read_tls_protocol_line_with_timeout(
+                    &mut tls_stream,
+                    &mut tls_pending_bytes,
+                    Duration::from_secs(3),
+                )?;
+                let candidate_message = decode_message_line(&candidate_line)?;
+                if extract_hello_from_message(candidate_message).is_ok() {
+                    hello_response_line = Some(candidate_line);
+                    break;
+                }
+            }
+            let hello_response_line = hello_response_line.ok_or_else(|| {
+                InteropError::InvalidPythonBatchResponse(
+                    "timed out waiting for legacy hello response over upgraded TLS socket"
+                        .to_owned(),
+                )
+            })?;
 
             Ok((tls_response_line, hello_response_line))
         })();
@@ -3617,7 +3633,7 @@ mod tests {
                 pending_bytes: Vec::new(),
             };
             let hello_line = encode_message_line(&ProtocolMessage::hello(
-                default_rust_client_hello_for_interop(),
+                super::default_rust_client_hello_for_legacy_live_tls(),
             ))?;
             connection.stream.write_all(hello_line.as_bytes())?;
             connection.stream.write_all(b"\r\n")?;
@@ -6437,8 +6453,15 @@ mod tests {
             return;
         }
 
-        let tls_cert_path = legacy_tls_fixture_directory();
-        match run_legacy_server_tls_upgrade_roundtrip_with_cert_path(&tls_cert_path) {
+        let tls_cert_path = temporary_tls_directory_path("legacy-live-tls-upgrade");
+        let _ = fs::remove_dir_all(&tls_cert_path);
+        fs::create_dir_all(&tls_cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&tls_cert_path);
+
+        let result = run_legacy_server_tls_upgrade_roundtrip_with_cert_path(&tls_cert_path);
+        let _ = fs::remove_dir_all(&tls_cert_path);
+
+        match result {
             Ok((tls_response_line, hello_response_line)) => {
                 let tls_message = decode_message_line(&tls_response_line)
                     .expect("legacy TLS response should decode");
@@ -6484,10 +6507,17 @@ mod tests {
             return;
         }
 
-        let tls_cert_path = legacy_tls_fixture_directory();
-        match run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
+        let tls_cert_path = temporary_tls_directory_path("legacy-live-tls-logged");
+        let _ = fs::remove_dir_all(&tls_cert_path);
+        fs::create_dir_all(&tls_cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&tls_cert_path);
+
+        let result = run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
             &tls_cert_path,
-        ) {
+        );
+        let _ = fs::remove_dir_all(&tls_cert_path);
+
+        match result {
             Ok(tls_response_line) => {
                 let tls_message = decode_message_line(&tls_response_line)
                     .expect("legacy logged tls response should decode");
