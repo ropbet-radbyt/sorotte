@@ -32,3 +32,18 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install legacy TLS parity prerequisites
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install twisted pyopenssl service_identity
+
+      - name: Strict live legacy TLS parity
+        env:
+          SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
+          SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
+        run: cargo test -p syncplay-compat legacy_server_live_tls_ -- --nocapture
