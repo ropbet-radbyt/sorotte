@@ -543,6 +543,8 @@ dependencies = [
 name = "syncplay-compat"
 version = "0.1.0"
 dependencies = [
+ "rustls",
+ "rustls-pemfile",
  "serde_json",
  "syncplay-client-core",
  "syncplay-protocol",

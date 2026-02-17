@@ -1695,11 +1695,18 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs,
+        io::{Cursor, Read, Write},
+        net::TcpStream,
         path::{Path, PathBuf},
-        process,
-        time::{SystemTime, UNIX_EPOCH},
+        process::{self, Command, Stdio},
+        sync::Arc,
+        thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
+    use rustls::{
+        ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName,
+    };
     use serde_json::{Value, json};
 
     use super::{
@@ -1730,7 +1737,7 @@ mod tests {
     use syncplay_client_core::{ClientRuntimeAction, ClientSession, PrivacyMode};
     use syncplay_protocol::{
         ListPayload, PlaystatePayload, ProtocolMessage, ReadyPayload, RoomRef, SetPayload,
-        StatePayload, decode_message_line, extract_hello_from_message,
+        StatePayload, decode_message_line, encode_message_line, extract_hello_from_message,
     };
     use syncplay_server::ServerRuntime;
 
@@ -3289,6 +3296,262 @@ mod tests {
                 lowered.contains("no module named 'twisted'")
                     || lowered.contains("unable import twisted")
                     || lowered.contains("unable to import twisted")
+            }
+            _ => false,
+        }
+    }
+
+    fn legacy_tls_fixture_directory() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("..");
+        path.push("..");
+        path.push("fixtures");
+        path.push("tls");
+        path
+    }
+
+    fn read_next_protocol_line_from_pending(pending_bytes: &mut Vec<u8>) -> Option<String> {
+        loop {
+            let newline_index = pending_bytes.iter().position(|byte| *byte == b'\n')?;
+            let mut raw_line: Vec<u8> = pending_bytes.drain(..=newline_index).collect();
+            if raw_line.last().is_some_and(|byte| *byte == b'\n') {
+                raw_line.pop();
+            }
+            if raw_line.last().is_some_and(|byte| *byte == b'\r') {
+                raw_line.pop();
+            }
+            if raw_line.is_empty() {
+                continue;
+            }
+
+            let line = String::from_utf8_lossy(&raw_line).trim().to_owned();
+            if line.is_empty() {
+                continue;
+            }
+            if decode_message_line(&line).is_ok() {
+                return Some(line);
+            }
+        }
+    }
+
+    fn read_plaintext_legacy_protocol_line_with_timeout(
+        connection: &mut super::LegacyServerClientConnection,
+        timeout: Duration,
+    ) -> Result<String, InteropError> {
+        let deadline = Instant::now() + timeout;
+        let mut chunk = [0_u8; 4096];
+        loop {
+            if let Some(line) = read_next_protocol_line_from_pending(&mut connection.pending_bytes)
+            {
+                return Ok(line);
+            }
+
+            match connection.stream.read(&mut chunk) {
+                Ok(0) => {}
+                Ok(count) => connection.pending_bytes.extend_from_slice(&chunk[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(InteropError::Io(error)),
+            }
+
+            if Instant::now() >= deadline {
+                return Err(InteropError::InvalidPythonBatchResponse(
+                    "timed out waiting for legacy plaintext protocol line".to_owned(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn read_tls_protocol_line_with_timeout(
+        stream: &mut StreamOwned<ClientConnection, TcpStream>,
+        timeout: Duration,
+    ) -> Result<String, InteropError> {
+        let deadline = Instant::now() + timeout;
+        let mut pending_bytes = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            if let Some(line) = read_next_protocol_line_from_pending(&mut pending_bytes) {
+                return Ok(line);
+            }
+
+            match stream.read(&mut chunk) {
+                Ok(0) => {}
+                Ok(count) => pending_bytes.extend_from_slice(&chunk[..count]),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(error) => return Err(InteropError::Io(error)),
+            }
+
+            if Instant::now() >= deadline {
+                return Err(InteropError::InvalidPythonBatchResponse(
+                    "timed out waiting for legacy TLS protocol line".to_owned(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn open_legacy_tls_client_stream(
+        stream: TcpStream,
+        tls_cert_path: &Path,
+    ) -> Result<StreamOwned<ClientConnection, TcpStream>, InteropError> {
+        let cert_pem_path = tls_cert_path.join("cert.pem");
+        let cert_pem = fs::read(&cert_pem_path)?;
+        let certs = rustls_pemfile::certs(&mut Cursor::new(cert_pem))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(InteropError::Io)?;
+        if certs.is_empty() {
+            return Err(InteropError::InvalidPythonBatchResponse(format!(
+                "legacy TLS cert bundle contains no certificates at {}",
+                cert_pem_path.display()
+            )));
+        }
+
+        let mut roots = RootCertStore::empty();
+        for cert in certs {
+            roots.add(cert).map_err(|error| {
+                InteropError::InvalidPythonBatchResponse(format!(
+                    "failed to add legacy TLS root certificate: {error}"
+                ))
+            })?;
+        }
+
+        let config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server_name = ServerName::try_from("localhost").map_err(|error| {
+            InteropError::InvalidPythonBatchResponse(format!(
+                "invalid legacy TLS server name: {error}"
+            ))
+        })?;
+        let connection =
+            ClientConnection::new(Arc::new(config), server_name.to_owned()).map_err(|error| {
+                InteropError::InvalidPythonBatchResponse(format!(
+                    "failed to initialize legacy TLS client connection: {error}"
+                ))
+            })?;
+
+        Ok(StreamOwned::new(connection, stream))
+    }
+
+    fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
+        tls_cert_path: &Path,
+    ) -> Result<(String, String), InteropError> {
+        let legacy_checkout = super::legacy_syncplay_checkout_dir();
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+
+        let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
+        if !legacy_server_entry.is_file() {
+            return Err(InteropError::LegacyServerEntryScriptMissing(
+                legacy_server_entry,
+            ));
+        }
+
+        let port = super::reserve_ephemeral_tcp_port()?;
+        let python_bin = super::python_bin_from_env();
+        let python_bin_display = python_bin.to_string_lossy().to_string();
+        let mut command = Command::new(&python_bin);
+        command
+            .arg(&legacy_server_entry)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--ipv4-only")
+            .arg("--interface-ipv4")
+            .arg("127.0.0.1")
+            .arg("--salt")
+            .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+            .arg("--tls")
+            .arg(tls_cert_path)
+            .current_dir(legacy_checkout)
+            .env("PYTHONUNBUFFERED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|source| InteropError::PythonSpawn {
+                python: python_bin_display,
+                source,
+            })?;
+
+        let result = (|| {
+            super::wait_for_legacy_server_startup(port, &mut child)?;
+            super::ensure_legacy_server_is_running(&mut child)?;
+
+            let stream = super::connect_legacy_client_stream(port, "legacy-tls-client")?;
+            let mut connection = super::LegacyServerClientConnection {
+                stream,
+                pending_bytes: Vec::new(),
+            };
+            let request_line =
+                super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            connection.stream.write_all(request_line.as_bytes())?;
+            connection.stream.write_all(b"\r\n")?;
+            connection.stream.flush()?;
+
+            let tls_response_line = read_plaintext_legacy_protocol_line_with_timeout(
+                &mut connection,
+                Duration::from_secs(2),
+            )?;
+            let tls_message = decode_message_line(&tls_response_line)?;
+            let ProtocolMessage::Tls(tls_payload) = tls_message else {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "expected legacy TLS response before upgrade, got: {tls_response_line}"
+                )));
+            };
+            if tls_payload.tls.start_tls != "true" {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "legacy TLS upgrade denied by server response: {tls_response_line}"
+                )));
+            }
+
+            connection.pending_bytes.clear();
+            connection.stream.set_nonblocking(false)?;
+            connection
+                .stream
+                .set_read_timeout(Some(Duration::from_secs(3)))?;
+            connection
+                .stream
+                .set_write_timeout(Some(Duration::from_secs(3)))?;
+            let mut tls_stream = open_legacy_tls_client_stream(connection.stream, tls_cert_path)?;
+
+            let hello_line = encode_message_line(&ProtocolMessage::hello(
+                default_rust_client_hello_for_interop(),
+            ))?;
+            tls_stream.write_all(hello_line.as_bytes())?;
+            tls_stream.write_all(b"\r\n")?;
+            tls_stream.flush()?;
+            let hello_response_line =
+                read_tls_protocol_line_with_timeout(&mut tls_stream, Duration::from_secs(3))?;
+            let hello_message = decode_message_line(&hello_response_line)?;
+            let _ = extract_hello_from_message(hello_message)?;
+
+            Ok((tls_response_line, hello_response_line))
+        })();
+
+        super::terminate_legacy_server_process(&mut child);
+        result
+    }
+
+    fn legacy_server_tls_prerequisites_missing(error: &InteropError) -> bool {
+        if legacy_server_prerequisites_missing(error) {
+            return true;
+        }
+        match error {
+            InteropError::LegacyServerExited { stdout, stderr, .. } => {
+                let lowered = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+                lowered.contains("no module named 'openssl'")
+                    || lowered.contains("unable import openssl")
+                    || lowered.contains("unable to import openssl")
+                    || lowered.contains("error while loading the tls certificates")
+                    || lowered.contains("tls support is not enabled")
+            }
+            InteropError::InvalidPythonBatchResponse(message) => {
+                let lowered = message.to_ascii_lowercase();
+                lowered.contains("legacy tls upgrade denied by server response")
             }
             _ => false,
         }
@@ -5709,6 +5972,48 @@ mod tests {
         }
 
         fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+    }
+
+    #[test]
+    fn legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket() {
+        if !legacy_server_parity_assertions_enabled() {
+            eprintln!(
+                "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
+            );
+            return;
+        }
+
+        let tls_cert_path = legacy_tls_fixture_directory();
+        match run_legacy_server_tls_upgrade_roundtrip_with_cert_path(&tls_cert_path) {
+            Ok((tls_response_line, hello_response_line)) => {
+                let tls_message = decode_message_line(&tls_response_line)
+                    .expect("legacy TLS response should decode");
+                match tls_message {
+                    ProtocolMessage::Tls(payload) => {
+                        assert_eq!(payload.tls.start_tls, "true");
+                    }
+                    other => panic!(
+                        "expected legacy TLS response before upgrade, got {}",
+                        other.kind()
+                    ),
+                }
+
+                let hello_message = decode_message_line(&hello_response_line)
+                    .expect("post-upgrade legacy hello response should decode");
+                let hello = extract_hello_from_message(hello_message)
+                    .expect("post-upgrade legacy response should be hello");
+                assert_eq!(hello.username, "interop-client");
+                assert_eq!(hello.room.name, "interop-room");
+            }
+            Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+                eprintln!(
+                    "legacy live TLS roundtrip test skipped due to missing prerequisites: {err}"
+                );
+            }
+            Err(err) => {
+                panic!("legacy live TLS roundtrip should succeed over upgraded socket, got: {err}")
+            }
+        }
     }
 
     #[test]

@@ -12,4 +12,6 @@ syncplay-server = { path = "../syncplay-server" }
 thiserror.workspace = true
 
 [dev-dependencies]
+rustls.workspace = true
+rustls-pemfile.workspace = true
 syncplay-client-core = { path = "../syncplay-client-core" }
