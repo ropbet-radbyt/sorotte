@@ -4503,6 +4503,15 @@ mod tests {
                 feature_list: None,
             },
             LegacyClientChatSendContractCase {
+                message: "".to_owned(),
+                protocol_logged: true,
+                server_version: "1.7.5".to_owned(),
+                chat_supported: Some(true),
+                max_chat_message_length: Some(150),
+                derive_server_features: false,
+                feature_list: None,
+            },
+            LegacyClientChatSendContractCase {
                 message: "hello\nroom\r!".to_owned(),
                 protocol_logged: true,
                 server_version: "1.7.5".to_owned(),

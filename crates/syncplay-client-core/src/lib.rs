@@ -2166,14 +2166,14 @@ impl ClientSession {
         if self.server_chat_supported != Some(true) {
             return Vec::new();
         }
+        if self.chat_config.max_chat_message_length == 0 {
+            return Vec::new();
+        }
         let sanitized = Self::sanitize_chat_message_legacy_compatible(&message);
         let truncated = Self::truncate_chat_message_legacy_compatible(
             &sanitized,
             self.chat_config.max_chat_message_length,
         );
-        if truncated.is_empty() {
-            return Vec::new();
-        }
         vec![ClientRuntimeAction::SendChat { message: truncated }]
     }
 
@@ -6679,6 +6679,28 @@ mod tests {
     }
 
     #[test]
+    fn outbound_chat_message_preserves_empty_payload_legacy_compatible() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            session.runtime_actions_for_outbound_chat_message("".to_owned()),
+            vec![ClientRuntimeAction::SendChat {
+                message: "".to_owned(),
+            }]
+        );
+        assert_eq!(
+            session.runtime_actions_for_outbound_chat_message("\n\r".to_owned()),
+            vec![ClientRuntimeAction::SendChat {
+                message: "".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
     fn outbound_chat_message_is_omitted_when_max_length_is_zero() {
         let mut session = ClientSession::default();
         session
@@ -7868,6 +7890,32 @@ mod tests {
             chat_message.chat,
             ChatPayload::Text("hello room".to_owned())
         );
+    }
+
+    #[test]
+    fn client_runtime_send_chat_message_dispatches_empty_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_send_chat_message("")
+                .expect("send chat should dispatch"),
+            "empty outbound chat should still produce a queued send action"
+        );
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Chat(chat_message) = &runtime.control().outbound_messages()[0] else {
+            panic!("queued outbound message should be Chat");
+        };
+        assert_eq!(chat_message.chat, ChatPayload::Text("".to_owned()));
     }
 
     #[test]
