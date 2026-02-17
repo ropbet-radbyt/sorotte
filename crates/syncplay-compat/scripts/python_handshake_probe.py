@@ -184,11 +184,13 @@ class ProbeSession:
         motd_template=None,
         persistent_rooms_enabled=False,
         permanent_rooms=None,
+        tls_available=False,
     ):
         self.server_version = server_version
         self.motd_template = motd_template
         self.persistent_rooms_enabled = persistent_rooms_enabled
         self.permanent_rooms = set(permanent_rooms or [])
+        self.tls_available = bool(tls_available)
         self.logged = False
         self.username = None
         self.room_name = None
@@ -322,7 +324,13 @@ class ProbeSession:
                 return self._error("not-known-server-error")
             return []
         if command == "TLS":
-            return [{"TLS": {"startTLS": "false"}}]
+            if not isinstance(payload, dict):
+                return self._error("not-json-server-error")
+            start_tls = payload.get("startTLS")
+            if not isinstance(start_tls, str) or "send" not in start_tls:
+                return []
+            should_start_tls = (not self.logged) and self.tls_available
+            return [{"TLS": {"startTLS": "true" if should_start_tls else "false"}}]
         if command in ("Chat", "Error"):
             return []
         return self._error("unknown-command-server-error")
@@ -336,12 +344,14 @@ class FanoutBatchProbe:
         motd_template=None,
         persistent_rooms_enabled=False,
         permanent_rooms=None,
+        tls_available=False,
     ):
         self.server_version = server_version
         self.controlled_room_salt = controlled_room_salt
         self.motd_template = motd_template
         self.persistent_rooms_enabled = persistent_rooms_enabled
         self.permanent_rooms = set(permanent_rooms or [])
+        self.tls_available = bool(tls_available)
         self.sessions = {}
         self.room_controllers = {}
         self.room_playlists = {}
@@ -1256,7 +1266,18 @@ class FanoutBatchProbe:
         if command == "State":
             return self._handle_state(client_id, payload)
         if command == "TLS":
-            return [{"client": client_id, "message": {"TLS": {"startTLS": "false"}}}]
+            if not isinstance(payload, dict):
+                return self._error(client_id, "not-json-server-error")
+            start_tls = payload.get("startTLS")
+            if not isinstance(start_tls, str) or "send" not in start_tls:
+                return []
+            should_start_tls = client_id not in self.sessions and self.tls_available
+            return [
+                {
+                    "client": client_id,
+                    "message": {"TLS": {"startTLS": "true" if should_start_tls else "false"}},
+                }
+            ]
         if command in ("Chat", "Error"):
             return []
         return self._error(client_id, "unknown-command-server-error")
@@ -1321,6 +1342,7 @@ def _run_fanout_batch_mode(
     motd_template,
     persistent_rooms_enabled,
     permanent_rooms,
+    tls_available,
 ):
     body = sys.stdin.read()
     if not body:
@@ -1344,6 +1366,7 @@ def _run_fanout_batch_mode(
         motd_template,
         persistent_rooms_enabled,
         permanent_rooms,
+        tls_available,
     )
     outputs = []
     for event in events:
@@ -2129,6 +2152,7 @@ def main():
     motd_template = os.environ.get("SYNCPLAY_PROBE_MOTD_TEMPLATE")
     persistent_rooms_enabled = _env_flag_enabled("SYNCPLAY_PROBE_PERSISTENT_ROOMS")
     permanent_rooms = _env_multiline_list("SYNCPLAY_PROBE_PERMANENT_ROOMS")
+    tls_available = _env_flag_enabled("SYNCPLAY_PROBE_TLS_AVAILABLE")
     if mode == "fanout-batch":
         return _run_fanout_batch_mode(
             server_version,
@@ -2136,6 +2160,7 @@ def main():
             motd_template,
             persistent_rooms_enabled,
             permanent_rooms,
+            tls_available,
         )
     if mode == "same-filename-batch":
         return _run_same_filename_batch_mode(legacy_root)
@@ -2153,7 +2178,11 @@ def main():
         return _run_client_chat_send_contract_batch_mode(legacy_root)
 
     session = ProbeSession(
-        server_version, motd_template, persistent_rooms_enabled, permanent_rooms
+        server_version,
+        motd_template,
+        persistent_rooms_enabled,
+        permanent_rooms,
+        tls_available,
     )
     if mode == "batch":
         return _run_batch_mode(session)

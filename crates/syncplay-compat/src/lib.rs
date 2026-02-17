@@ -377,6 +377,13 @@ pub fn run_python_fanout_roundtrip(
     run_python_fanout_roundtrip_with_motd_template(steps, None)
 }
 
+pub fn run_python_fanout_roundtrip_with_tls_available(
+    steps: &[ServerRuntimeScenarioStep],
+    tls_available: bool,
+) -> Result<Vec<ServerRuntimeScenarioEvent>, InteropError> {
+    run_python_fanout_roundtrip_with_full_overrides(steps, None, false, &[], tls_available)
+}
+
 pub fn run_python_fanout_roundtrip_with_motd_template(
     steps: &[ServerRuntimeScenarioStep],
     motd_template: Option<&str>,
@@ -394,6 +401,7 @@ pub fn run_python_fanout_roundtrip_with_overrides(
         motd_template,
         persistent_rooms_enabled,
         &[],
+        false,
     )
 }
 
@@ -402,6 +410,7 @@ fn run_python_fanout_roundtrip_with_full_overrides(
     motd_template: Option<&str>,
     persistent_rooms_enabled: bool,
     permanent_rooms: &[&str],
+    tls_available: bool,
 ) -> Result<Vec<ServerRuntimeScenarioEvent>, InteropError> {
     if steps.is_empty() {
         return Ok(Vec::new());
@@ -423,6 +432,7 @@ fn run_python_fanout_roundtrip_with_full_overrides(
         motd_template,
         persistent_rooms_enabled,
         permanent_rooms,
+        tls_available,
     )?;
     let stdout_line =
         first_non_empty_stdout_line(&stdout).ok_or(InteropError::EmptyPythonResponse)?;
@@ -802,6 +812,7 @@ fn capture_python_trace_fixture_with_full_overrides(
         motd_template,
         persistent_rooms_enabled,
         permanent_rooms,
+        false,
     )?;
     let trace_value = scenario_events_to_trace_fixture_value(scenario_name, &events)?;
     fs::write(
@@ -1595,7 +1606,7 @@ pub fn run_python_legacy_client_chat_send_contract_batch(
 }
 
 fn run_python_probe_raw(extra_args: &[&str], stdin_payload: &[u8]) -> Result<String, InteropError> {
-    run_python_probe_raw_with_overrides(extra_args, stdin_payload, None, false, &[])
+    run_python_probe_raw_with_overrides(extra_args, stdin_payload, None, false, &[], false)
 }
 
 fn run_python_probe_raw_with_overrides(
@@ -1604,6 +1615,7 @@ fn run_python_probe_raw_with_overrides(
     motd_template: Option<&str>,
     persistent_rooms_enabled: bool,
     permanent_rooms: &[&str],
+    tls_available: bool,
 ) -> Result<String, InteropError> {
     let legacy_checkout = legacy_syncplay_checkout_dir();
     if !legacy_checkout.is_dir() {
@@ -1635,6 +1647,9 @@ fn run_python_probe_raw_with_overrides(
     }
     if !permanent_rooms.is_empty() {
         command.env("SYNCPLAY_PROBE_PERMANENT_ROOMS", permanent_rooms.join("\n"));
+    }
+    if tls_available {
+        command.env("SYNCPLAY_PROBE_TLS_AVAILABLE", "1");
     }
     for arg in extra_args {
         command.arg(arg);
@@ -1677,7 +1692,13 @@ fn python_bin_from_env() -> OsString {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::{Path, PathBuf},
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use serde_json::{Value, json};
 
@@ -1697,7 +1718,8 @@ mod tests {
         replay_server_runtime_scenario_steps_with_motd_template,
         replay_server_runtime_scenario_steps_with_overrides, run_legacy_server_fanout_roundtrip,
         run_legacy_server_fanout_roundtrip_with_full_overrides, run_python_fanout_roundtrip,
-        run_python_fanout_roundtrip_with_full_overrides, run_python_handshake_roundtrip,
+        run_python_fanout_roundtrip_with_full_overrides,
+        run_python_fanout_roundtrip_with_tls_available, run_python_handshake_roundtrip,
         run_python_legacy_client_chat_send_contract_batch,
         run_python_legacy_client_set_file_contract_probe,
         run_python_legacy_client_user_file_metadata_probe, run_python_privacy_file_payload_batch,
@@ -1710,6 +1732,7 @@ mod tests {
         ListPayload, PlaystatePayload, ProtocolMessage, ReadyPayload, RoomRef, SetPayload,
         StatePayload, decode_message_line, extract_hello_from_message,
     };
+    use syncplay_server::ServerRuntime;
 
     #[derive(Clone, Copy)]
     struct MessageNormalizationOptions {
@@ -1760,6 +1783,29 @@ mod tests {
     const PERMANENT_ROOMS_FILE_SCENARIO: &str = "server_runtime_permanent_rooms_file.jsonl";
     const PERMANENT_ROOMS_FILE_LIST: &[&str] = &["permanent-room"];
     const PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
+    const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
+    const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../fixtures/tls/test_chain.pem");
+    const TEST_TLS_PRIVATE_KEY_PEM: &str = include_str!("../../../fixtures/tls/test_privkey.pem");
+
+    fn temporary_tls_directory_path(label: &str) -> PathBuf {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "syncplay-rs-compat-{label}-{}-{unique_suffix}",
+            process::id()
+        ))
+    }
+
+    fn write_valid_tls_bundle(path: &Path) {
+        fs::write(path.join("privkey.pem"), TEST_TLS_PRIVATE_KEY_PEM)
+            .expect("valid private key fixture should write");
+        fs::write(path.join("cert.pem"), TEST_TLS_CERT_PEM)
+            .expect("valid certificate fixture should write");
+        fs::write(path.join("chain.pem"), TEST_TLS_CHAIN_PEM)
+            .expect("valid chain fixture should write");
+    }
 
     fn normalization_options_for_runtime_trace_scenario(
         _scenario_name: &str,
@@ -3008,6 +3054,7 @@ mod tests {
             probe_motd_template,
             probe_persistent_rooms_enabled,
             probe_permanent_rooms,
+            false,
         )?;
 
         assert_eq!(python_events.len(), rust_events.len());
@@ -5585,6 +5632,83 @@ mod tests {
             }
             Err(err) => panic!("python fanout interop should succeed, got: {err}"),
         }
+    }
+
+    #[test]
+    fn python_fanout_roundtrip_matches_server_runtime_on_tls_send_available_scenario() {
+        let cert_path = temporary_tls_directory_path("tls-fanout-available");
+        let _ = fs::remove_dir_all(&cert_path);
+        fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&cert_path);
+
+        let steps = vec![ServerRuntimeScenarioStep {
+            client_id: "client-1".to_owned(),
+            request_line: r#"{"TLS":{"startTLS":"send"}}"#.to_owned(),
+            advance_seconds: 0.0,
+        }];
+
+        let rust_events = {
+            let mut runtime = ServerRuntime::new();
+            runtime.set_tls_cert_path(Some(cert_path.clone()));
+            runtime.set_time_now_override_seconds(Some(0.0));
+
+            let mut events = Vec::new();
+            for step in &steps {
+                let mut outbound_lines = runtime
+                    .advance_time_and_collect_fanout(step.advance_seconds)
+                    .expect("runtime fanout tick should encode");
+                outbound_lines.extend(
+                    runtime
+                        .handle_line_fanout(&step.client_id, &step.request_line)
+                        .expect("runtime step should succeed"),
+                );
+                events.push(super::ServerRuntimeScenarioEvent {
+                    client_id: step.client_id.clone(),
+                    request_line: step.request_line.clone(),
+                    outbound_lines,
+                });
+            }
+            events
+        };
+
+        let python_events = match run_python_fanout_roundtrip_with_tls_available(&steps, true) {
+            Ok(events) => events,
+            Err(InteropError::LegacySyncplayCheckoutMissing(_))
+            | Err(InteropError::PythonSpawn { .. }) => {
+                let _ = fs::remove_dir_all(&cert_path);
+                eprintln!("python fanout interop test skipped due to missing local prerequisites");
+                return;
+            }
+            Err(err) => panic!("python tls fanout interop should succeed, got: {err}"),
+        };
+
+        assert_eq!(python_events.len(), rust_events.len());
+        for (python_event, rust_event) in python_events.iter().zip(rust_events.iter()) {
+            assert_eq!(python_event.client_id, rust_event.client_id);
+            assert_eq!(python_event.request_line, rust_event.request_line);
+            assert_eq!(
+                python_event.outbound_lines.len(),
+                rust_event.outbound_lines.len()
+            );
+            for (python_output, rust_output) in python_event
+                .outbound_lines
+                .iter()
+                .zip(rust_event.outbound_lines.iter())
+            {
+                assert_eq!(python_output.client_id, rust_output.client_id);
+                let python_value = normalize_cross_impl_message(
+                    serde_json::from_str::<Value>(&python_output.line)
+                        .expect("python output line should decode"),
+                );
+                let rust_value = normalize_cross_impl_message(
+                    serde_json::from_str::<Value>(&rust_output.line)
+                        .expect("runtime output line should decode"),
+                );
+                assert_eq!(python_value, rust_value);
+            }
+        }
+
+        fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
     }
 
     #[test]
