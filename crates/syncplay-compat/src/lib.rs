@@ -3668,6 +3668,139 @@ mod tests {
         result
     }
 
+    fn overwrite_file_until_modified_time_changes(
+        path: &Path,
+        contents: &str,
+    ) -> Result<(), InteropError> {
+        let original_modified_time = fs::metadata(path)?.modified()?;
+        for attempt in 0..8 {
+            fs::write(path, format!("{contents}-{attempt}"))?;
+            let updated_modified_time = fs::metadata(path)?.modified()?;
+            if updated_modified_time != original_modified_time {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        Err(InteropError::InvalidPythonBatchResponse(
+            "legacy tls cert file modified time did not change after repeated overwrite attempts"
+                .to_owned(),
+        ))
+    }
+
+    fn run_legacy_server_tls_rotation_invalidates_subsequent_send_with_cert_path(
+        tls_cert_path: &Path,
+    ) -> Result<(String, String), InteropError> {
+        let legacy_checkout = super::legacy_syncplay_checkout_dir();
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+
+        let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
+        if !legacy_server_entry.is_file() {
+            return Err(InteropError::LegacyServerEntryScriptMissing(
+                legacy_server_entry,
+            ));
+        }
+
+        let port = super::reserve_ephemeral_tcp_port()?;
+        let python_bin = super::python_bin_from_env();
+        let python_bin_display = python_bin.to_string_lossy().to_string();
+        let mut command = Command::new(&python_bin);
+        command
+            .arg(&legacy_server_entry)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--ipv4-only")
+            .arg("--interface-ipv4")
+            .arg("127.0.0.1")
+            .arg("--salt")
+            .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+            .arg("--tls")
+            .arg(tls_cert_path)
+            .current_dir(legacy_checkout)
+            .env("PYTHONUNBUFFERED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|source| InteropError::PythonSpawn {
+                python: python_bin_display,
+                source,
+            })?;
+
+        let result = (|| {
+            super::wait_for_legacy_server_startup(port, &mut child)?;
+            super::ensure_legacy_server_is_running(&mut child)?;
+
+            let initial_stream = super::connect_legacy_client_stream(port, "legacy-tls-initial")?;
+            let mut initial_connection = super::LegacyServerClientConnection {
+                stream: initial_stream,
+                pending_bytes: Vec::new(),
+            };
+            let tls_request_line =
+                super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            initial_connection
+                .stream
+                .write_all(tls_request_line.as_bytes())?;
+            initial_connection.stream.write_all(b"\r\n")?;
+            initial_connection.stream.flush()?;
+            let initial_response_line = read_plaintext_legacy_protocol_line_with_timeout(
+                &mut initial_connection,
+                Duration::from_secs(2),
+            )?;
+            let initial_message = decode_message_line(&initial_response_line)?;
+            let ProtocolMessage::Tls(initial_payload) = initial_message else {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "expected initial legacy TLS probe response, got: {initial_response_line}"
+                )));
+            };
+            if initial_payload.tls.start_tls != "true" {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "legacy tls availability probe returned non-true response: {initial_response_line}"
+                )));
+            }
+
+            fs::remove_file(tls_cert_path.join("chain.pem"))?;
+            overwrite_file_until_modified_time_changes(
+                &tls_cert_path.join("cert.pem"),
+                "legacy-rotated-invalid",
+            )?;
+            super::ensure_legacy_server_is_running(&mut child)?;
+
+            let rotated_stream = super::connect_legacy_client_stream(port, "legacy-tls-rotated")?;
+            let mut rotated_connection = super::LegacyServerClientConnection {
+                stream: rotated_stream,
+                pending_bytes: Vec::new(),
+            };
+            rotated_connection
+                .stream
+                .write_all(tls_request_line.as_bytes())?;
+            rotated_connection.stream.write_all(b"\r\n")?;
+            rotated_connection.stream.flush()?;
+            let rotated_response_line = read_plaintext_legacy_protocol_line_with_timeout(
+                &mut rotated_connection,
+                Duration::from_secs(2),
+            )?;
+            let rotated_message = decode_message_line(&rotated_response_line)?;
+            let ProtocolMessage::Tls(rotated_payload) = rotated_message else {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "expected rotated legacy TLS probe response, got: {rotated_response_line}"
+                )));
+            };
+            if rotated_payload.tls.start_tls != "false" {
+                return Err(InteropError::InvalidPythonBatchResponse(format!(
+                    "legacy tls rotation invalidation expected false response: {rotated_response_line}"
+                )));
+            }
+
+            Ok((initial_response_line, rotated_response_line))
+        })();
+
+        super::terminate_legacy_server_process(&mut child);
+        result
+    }
+
     fn legacy_server_tls_prerequisites_missing(error: &InteropError) -> bool {
         if legacy_server_prerequisites_missing(error) {
             return true;
@@ -3685,6 +3818,9 @@ mod tests {
                 let lowered = message.to_ascii_lowercase();
                 lowered.contains("legacy tls upgrade denied by server response")
                     || lowered.contains("legacy tls availability probe returned non-true response")
+                    || lowered.contains(
+                        "legacy tls cert file modified time did not change after repeated overwrite attempts",
+                    )
             }
             _ => false,
         }
@@ -6202,6 +6338,57 @@ mod tests {
             }
             Err(err) => panic!(
                 "legacy logged-client TLS denial behavior should succeed with startTLS=false, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn legacy_server_live_tls_rotation_invalidates_subsequent_send() {
+        if !legacy_server_parity_assertions_enabled() {
+            eprintln!(
+                "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
+            );
+            return;
+        }
+
+        let tls_cert_path = temporary_tls_directory_path("legacy-live-tls-rotation");
+        let _ = fs::remove_dir_all(&tls_cert_path);
+        fs::create_dir_all(&tls_cert_path).expect("tls cert temp directory should be creatable");
+        write_valid_tls_bundle(&tls_cert_path);
+
+        let result = run_legacy_server_tls_rotation_invalidates_subsequent_send_with_cert_path(
+            &tls_cert_path,
+        );
+        let _ = fs::remove_dir_all(&tls_cert_path);
+
+        match result {
+            Ok((initial_tls_response_line, rotated_tls_response_line)) => {
+                let initial_message = decode_message_line(&initial_tls_response_line)
+                    .expect("initial legacy tls response should decode");
+                let ProtocolMessage::Tls(initial_payload) = initial_message else {
+                    panic!("expected initial legacy tls response payload");
+                };
+                assert_eq!(initial_payload.tls.start_tls, "true");
+
+                let rotated_message = decode_message_line(&rotated_tls_response_line)
+                    .expect("rotated legacy tls response should decode");
+                let ProtocolMessage::Tls(rotated_payload) = rotated_message else {
+                    panic!("expected rotated legacy tls response payload");
+                };
+                assert_eq!(rotated_payload.tls.start_tls, "false");
+            }
+            Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+                if legacy_tls_parity_prerequisites_strict_enabled() {
+                    panic!(
+                        "legacy TLS rotation invalidation prerequisites should be satisfied in strict mode, got: {err}"
+                    );
+                }
+                eprintln!(
+                    "legacy tls rotation invalidation test skipped due to missing prerequisites: {err}"
+                );
+            }
+            Err(err) => panic!(
+                "legacy TLS rotation invalidation behavior should succeed with true->false progression, got: {err}"
             ),
         }
     }
