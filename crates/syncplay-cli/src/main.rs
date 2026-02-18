@@ -878,43 +878,25 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
 
     let trimmed = input.trim_end_matches(' ');
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["help", "h", "?", "/help", "/h", "/?", "\\?"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["help", "h", "?", "/?", "\\?"]) {
         return Some(LocalInputCommand::ShowHelp);
     }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["undoplaylist", "/undoplaylist"]) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["undoplaylist"]) {
         return Some(LocalInputCommand::UndoPlaylistChange);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["shuffleremainingplaylist", "/shuffleremainingplaylist"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["shuffleremainingplaylist"]) {
         return Some(LocalInputCommand::ShuffleRemainingPlaylist);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["shuffleentireplaylist", "/shuffleentireplaylist"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["shuffleentireplaylist"]) {
         return Some(LocalInputCommand::ShuffleEntirePlaylist);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["undo", "u", "revert", "/undo", "/u", "/revert"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["undo", "u", "revert"]) {
         return Some(LocalInputCommand::UndoSeek);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["list", "l", "users", "/list", "/l", "/users"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["list", "l", "users"]) {
         return Some(LocalInputCommand::RequestUserList);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["playlist", "ql", "pl", "/playlist", "/ql", "/pl"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["playlist", "ql", "pl"]) {
         return Some(LocalInputCommand::ShowPlaylist);
     }
     if let Some(index) = trimmed
@@ -930,7 +912,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "select" | "qs" | "/select" | "/qs") {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["next", "qn", "/next", "/qn"]) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["next", "qn"]) {
         return Some(LocalInputCommand::NextPlaylistItem);
     }
     if let Some(command) = parse_queue_command_legacy_compatible(
@@ -1002,16 +984,13 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "seek" | "s" | "/seek" | "/s") {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
-    if matches_local_command_alias_legacy_compatible(
-        trimmed,
-        &["p", "pause", "play", "/p", "/pause", "/play"],
-    ) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["p", "pause", "play"]) {
         return Some(LocalInputCommand::TogglePause);
     }
     if let Some(room_command) = parse_room_command_legacy_compatible(input) {
         return room_command;
     }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["t", "toggle", "/t", "/toggle"]) {
+    if matches_local_command_alias_legacy_compatible(trimmed, &["t", "toggle"]) {
         return Some(LocalInputCommand::ToggleReady);
     }
     if let Some(command) = parse_offset_input_legacy_compatible(input) {
@@ -2620,11 +2599,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/toggle"),
-            Some(LocalInputCommand::ToggleReady)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/t"),
-            Some(LocalInputCommand::ToggleReady)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -2946,15 +2925,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/list"),
-            Some(LocalInputCommand::RequestUserList)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/l"),
-            Some(LocalInputCommand::RequestUserList)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/users"),
-            Some(LocalInputCommand::RequestUserList)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -2974,11 +2953,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/help"),
-            Some(LocalInputCommand::ShowHelp)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/h"),
-            Some(LocalInputCommand::ShowHelp)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/?"),
@@ -3039,15 +3018,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/playlist"),
-            Some(LocalInputCommand::ShowPlaylist)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/ql"),
-            Some(LocalInputCommand::ShowPlaylist)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/pl"),
-            Some(LocalInputCommand::ShowPlaylist)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -3103,11 +3082,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/next"),
-            Some(LocalInputCommand::NextPlaylistItem)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/qn"),
-            Some(LocalInputCommand::NextPlaylistItem)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -3283,7 +3262,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/undoplaylist"),
-            Some(LocalInputCommand::UndoPlaylistChange)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -3295,7 +3274,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/shuffleremainingplaylist"),
-            Some(LocalInputCommand::ShuffleRemainingPlaylist)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("shuffleentireplaylist"),
@@ -3303,7 +3282,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/shuffleentireplaylist"),
-            Some(LocalInputCommand::ShuffleEntirePlaylist)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -3323,15 +3302,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/undo"),
-            Some(LocalInputCommand::UndoSeek)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/u"),
-            Some(LocalInputCommand::UndoSeek)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/revert"),
-            Some(LocalInputCommand::UndoSeek)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -3351,15 +3330,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/pause"),
-            Some(LocalInputCommand::TogglePause)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/play"),
-            Some(LocalInputCommand::TogglePause)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/p"),
-            Some(LocalInputCommand::TogglePause)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
