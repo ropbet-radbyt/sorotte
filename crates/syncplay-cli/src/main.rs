@@ -575,7 +575,11 @@ fn parse_room_command_legacy_compatible(input: &str) -> Option<Option<LocalInput
     None
 }
 
-fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
+fn parse_time_seconds_with_component_limits_legacy(
+    value: &str,
+    max_first_digits: usize,
+    max_other_digits: usize,
+) -> Option<f64> {
     if value.is_empty() {
         return None;
     }
@@ -601,6 +605,42 @@ fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
         return None;
     }
 
+    for (index, part) in parts.iter().enumerate() {
+        let is_last = index == parts.len() - 1;
+        let (whole, fractional) = if is_last {
+            let mut split = part.split('.');
+            let whole = split.next().unwrap_or_default();
+            let fractional = split.next();
+            if split.next().is_some() {
+                return None;
+            }
+            (whole, fractional)
+        } else {
+            (*part, None)
+        };
+
+        if whole.is_empty() || !whole.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let max_digits = if index == 0 {
+            max_first_digits
+        } else {
+            max_other_digits
+        };
+        if whole.len() > max_digits {
+            return None;
+        }
+
+        if let Some(fractional) = fractional {
+            if fractional.is_empty()
+                || fractional.len() > 3
+                || !fractional.chars().all(|ch| ch.is_ascii_digit())
+            {
+                return None;
+            }
+        }
+    }
+
     let seconds = match parts.as_slice() {
         [seconds] => seconds.parse::<f64>().ok()?,
         [minutes, seconds] => {
@@ -617,6 +657,14 @@ fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
         _ => return None,
     };
     seconds.is_finite().then_some(seconds)
+}
+
+fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
+    parse_time_seconds_with_component_limits_legacy(value, 4, 6)
+}
+
+fn parse_offset_time_seconds_legacy_like(value: &str) -> Option<f64> {
+    parse_time_seconds_with_component_limits_legacy(value, 9, 9)
 }
 
 fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
@@ -643,21 +691,21 @@ fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffs
     }
 
     if let Some(value) = parameter.strip_prefix('+') {
-        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        let seconds = parse_offset_time_seconds_legacy_like(value)?;
         return Some(LocalOffsetCommand::Relative(seconds));
     }
     if let Some(value) = parameter.strip_prefix('-') {
-        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        let seconds = parse_offset_time_seconds_legacy_like(value)?;
         return Some(LocalOffsetCommand::Relative(-seconds));
     }
     if let Some(value) = parameter.strip_prefix('/') {
-        let seconds = parse_seek_time_seconds_legacy_like(value)?;
+        let seconds = parse_offset_time_seconds_legacy_like(value)?;
         return Some(LocalOffsetCommand::RelativeFromCurrentPositionMinus(
             seconds,
         ));
     }
 
-    let seconds = parse_seek_time_seconds_legacy_like(parameter)?;
+    let seconds = parse_offset_time_seconds_legacy_like(parameter)?;
     Some(LocalOffsetCommand::Absolute(seconds))
 }
 
@@ -3263,6 +3311,18 @@ mod tests {
             Some(LocalInputCommand::SeekAbsolute(3723.0))
         );
         assert_eq!(
+            parse_local_input_command("seek 1234"),
+            Some(LocalInputCommand::SeekAbsolute(1234.0))
+        );
+        assert_eq!(
+            parse_local_input_command("seek 1.123"),
+            Some(LocalInputCommand::SeekAbsolute(1.123))
+        );
+        assert_eq!(
+            parse_local_input_command("seek 12:123456"),
+            Some(LocalInputCommand::SeekAbsolute(124176.0))
+        );
+        assert_eq!(
             parse_local_input_command("+1-30"),
             Some(LocalInputCommand::SeekRelative(90.0))
         );
@@ -3288,6 +3348,18 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("seek 1::30"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek 12345"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek 1.1234"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek 12:1234567"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
@@ -3341,6 +3413,24 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse_local_input_command("offset 123456789"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Absolute(123456789.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("offset 1.123"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Absolute(1.123)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("offset 12:123456789"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Absolute(123457509.0)
+            ))
+        );
+        assert_eq!(
             parse_local_input_command("offset"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
@@ -3358,6 +3448,18 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("offset 1:30 "),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset 1234567890"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset 1.1234"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset 12:1234567890"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
