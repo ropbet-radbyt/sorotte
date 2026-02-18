@@ -52,6 +52,27 @@ struct ClientLoopConfig {
     controlled_room_password_override: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LegacyClientArgOverrides {
+    connect_requested: bool,
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    room: Option<String>,
+    controlled_room_password_override: Option<String>,
+}
+
+impl LegacyClientArgOverrides {
+    fn should_connect_client(&self) -> bool {
+        self.connect_requested
+            || self.host.is_some()
+            || self.port.is_some()
+            || self.username.is_some()
+            || self.room.is_some()
+            || self.controlled_room_password_override.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RuntimeLoopInputs {
     readiness_supported: bool,
@@ -168,6 +189,126 @@ fn parse_env_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
 
 fn env_string_list(name: &str) -> Option<Vec<String>> {
     env_trimmed(name).and_then(|value| parse_env_string_list_legacy_compatible(&value))
+}
+
+fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
+    host_value: &str,
+) -> (String, Option<u16>) {
+    if host_value.matches(':').count() == 1 {
+        let mut pieces = host_value.rsplitn(2, ':');
+        let maybe_port = pieces.next().unwrap_or_default();
+        let maybe_host = pieces.next().unwrap_or_default();
+        if let Ok(port) = maybe_port.parse::<u16>() {
+            return (maybe_host.to_owned(), Some(port));
+        }
+        return (maybe_host.to_owned(), None);
+    }
+
+    if host_value.starts_with('[') {
+        if let Some(end_bracket) = host_value.find(']') {
+            let host = &host_value[..=end_bracket];
+            if let Some(port_text) = host_value
+                .get(end_bracket + 1..)
+                .and_then(|s| s.strip_prefix(':'))
+            {
+                if let Ok(port) = port_text.parse::<u16>() {
+                    return (host.to_owned(), Some(port));
+                }
+            }
+            return (host.to_owned(), None);
+        }
+    }
+
+    if host_value.matches(':').count() > 1 {
+        return (format!("[{host_value}]"), None);
+    }
+
+    (host_value.to_owned(), None)
+}
+
+fn take_next_non_flag_arg_legacy_compatible<I>(args: &mut std::iter::Peekable<I>) -> Option<String>
+where
+    I: Iterator<Item = String>,
+{
+    if args.peek().is_some_and(|value| !value.starts_with('-')) {
+        return args.next();
+    }
+    None
+}
+
+fn parse_legacy_client_arg_overrides<I, S>(args: I) -> LegacyClientArgOverrides
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut overrides = LegacyClientArgOverrides::default();
+    let mut iter = args
+        .into_iter()
+        .map(|value| value.as_ref().to_owned())
+        .peekable();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--no-gui" => {
+                overrides.connect_requested = true;
+            }
+            "-a" | "--host" => {
+                overrides.connect_requested = true;
+                if let Some(value) = take_next_non_flag_arg_legacy_compatible(&mut iter) {
+                    let (host, port) =
+                        parse_host_and_optional_port_from_host_arg_legacy_compatible(&value);
+                    if !host.is_empty() {
+                        overrides.host = Some(host);
+                    }
+                    if port.is_some() {
+                        overrides.port = port;
+                    }
+                }
+            }
+            "-n" | "--name" => {
+                overrides.connect_requested = true;
+                overrides.username = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            "-r" | "--room" => {
+                overrides.connect_requested = true;
+                overrides.room = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            "-p" | "--password" => {
+                overrides.connect_requested = true;
+                overrides.controlled_room_password_override =
+                    take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            _ => {}
+        }
+    }
+
+    overrides
+}
+
+fn apply_legacy_client_arg_overrides(
+    config: &mut ClientLoopConfig,
+    overrides: &LegacyClientArgOverrides,
+) {
+    if let Some(host) = overrides.host.as_deref() {
+        config.host = host.to_owned();
+    }
+    if let Some(port) = overrides.port {
+        config.port = port;
+    }
+    if let Some(username) = overrides.username.as_deref() {
+        config.username = username.to_owned();
+    }
+    if let Some(room) = overrides.room.as_deref() {
+        let (normalized_room, normalized_password) =
+            normalize_controlled_room_input(room.to_owned());
+        config.room = normalized_room;
+        config.controlled_room_password_override = normalized_password;
+    }
+    if let Some(password) = overrides.controlled_room_password_override.as_deref() {
+        if !password.is_empty() {
+            config.controlled_room_password_override = Some(password.to_owned());
+        }
+    }
 }
 
 fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
@@ -1993,8 +2134,10 @@ async fn main() -> anyhow::Result<()> {
         .set_stats_db_path(stats_db_file.as_deref().map(std::path::PathBuf::from))?;
     server.bootstrap_room("cli-demo");
 
-    if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") {
-        let config = build_client_loop_config_from_env();
+    let client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
+    if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
+        let mut config = build_client_loop_config_from_env();
+        apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
         run_client_network_loop(&config).await?;
         return Ok(());
     }
@@ -2016,10 +2159,11 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-        ConnectedSessionExit, LocalInputCommand, LocalOffsetCommand, ReadinessAutoplayOverrides,
-        apply_chat_policy_overrides, apply_client_behavior_overrides,
-        apply_readiness_autoplay_overrides, chat_notification_message,
-        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+        ConnectedSessionExit, LegacyClientArgOverrides, LocalInputCommand, LocalOffsetCommand,
+        ReadinessAutoplayOverrides, apply_chat_policy_overrides, apply_client_behavior_overrides,
+        apply_legacy_client_arg_overrides, apply_readiness_autoplay_overrides,
+        chat_notification_message, controlled_room_base_name_legacy_compatible,
+        controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
@@ -2030,7 +2174,9 @@ mod tests {
         local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
         parse_autoplay_min_users_override_legacy_compatible, parse_env_bool_legacy_compatible,
         parse_env_non_negative_f64_legacy_compatible, parse_env_port_legacy_compatible,
-        parse_env_string_list_legacy_compatible, parse_local_input_chat_message,
+        parse_env_string_list_legacy_compatible,
+        parse_host_and_optional_port_from_host_arg_legacy_compatible,
+        parse_legacy_client_arg_overrides, parse_local_input_chat_message,
         parse_local_input_command, parse_unpause_action_mode_legacy_compatible,
         playlist_index_in_bounds_legacy_compatible, playlist_listing_message_legacy_compatible,
         reconnect_transition_notification_message, run_client_network_loop,
@@ -2099,6 +2245,141 @@ mod tests {
             && chars[7].is_ascii_digit()
             && chars[8].is_ascii_digit()
             && chars[9].is_ascii_digit()
+    }
+
+    fn test_client_loop_config() -> ClientLoopConfig {
+        ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 8999,
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 3,
+            max_connected_runtime_seconds: 10.0,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        }
+    }
+
+    #[test]
+    fn parse_host_and_optional_port_from_host_arg_legacy_compatible_parses_expected_shapes() {
+        assert_eq!(
+            parse_host_and_optional_port_from_host_arg_legacy_compatible("example.org:8999"),
+            ("example.org".to_owned(), Some(8999))
+        );
+        assert_eq!(
+            parse_host_and_optional_port_from_host_arg_legacy_compatible("example.org:notaport"),
+            ("example.org".to_owned(), None)
+        );
+        assert_eq!(
+            parse_host_and_optional_port_from_host_arg_legacy_compatible("[2001:db8::1]:8999"),
+            ("[2001:db8::1]".to_owned(), Some(8999))
+        );
+        assert_eq!(
+            parse_host_and_optional_port_from_host_arg_legacy_compatible("2001:db8::1"),
+            ("[2001:db8::1]".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--no-gui",
+            "-a",
+            "example.org:12345",
+            "-n",
+            "alice",
+            "-r",
+            "room1",
+            "-p",
+            "AB-123-456",
+        ]);
+
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: true,
+                host: Some("example.org".to_owned()),
+                port: Some(12345),
+                username: Some("alice".to_owned()),
+                room: Some("room1".to_owned()),
+                controlled_room_password_override: Some("AB-123-456".to_owned()),
+            }
+        );
+        assert!(overrides.should_connect_client());
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_handles_optional_room_and_ipv6_host() {
+        let overrides = parse_legacy_client_arg_overrides(["-r", "-n", "alice", "--host", "[::1]"]);
+
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: true,
+                host: Some("[::1]".to_owned()),
+                port: None,
+                username: Some("alice".to_owned()),
+                room: None,
+                controlled_room_password_override: None,
+            }
+        );
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
+        let mut config = test_client_loop_config();
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            host: Some("legacy.example".to_owned()),
+            port: Some(3210),
+            username: Some("legacy-user".to_owned()),
+            room: Some("+room:ABCDEF123456:AB-123-456".to_owned()),
+            controlled_room_password_override: None,
+        };
+
+        apply_legacy_client_arg_overrides(&mut config, &overrides);
+
+        assert_eq!(config.host, "legacy.example");
+        assert_eq!(config.port, 3210);
+        assert_eq!(config.username, "legacy-user");
+        assert_eq!(config.room, "+room:ABCDEF123456");
+        assert_eq!(
+            config.controlled_room_password_override.as_deref(),
+            Some("AB-123-456")
+        );
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_overrides_prefers_explicit_password_flag() {
+        let mut config = test_client_loop_config();
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            host: None,
+            port: None,
+            username: None,
+            room: Some("+room:ABCDEF123456:AB-123-456".to_owned()),
+            controlled_room_password_override: Some("CD-987-654".to_owned()),
+        };
+
+        apply_legacy_client_arg_overrides(&mut config, &overrides);
+        assert_eq!(
+            config.controlled_room_password_override.as_deref(),
+            Some("CD-987-654")
+        );
     }
 
     #[test]
