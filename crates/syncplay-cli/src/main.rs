@@ -411,7 +411,7 @@ fn generate_room_password_legacy_compatible() -> String {
 }
 
 fn parse_local_input_chat_message(input: &str) -> Option<String> {
-    if input.starts_with(' ') || input.starts_with('\t') {
+    if input.chars().next().is_some_and(char::is_whitespace) {
         return None;
     }
 
@@ -882,7 +882,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if input.starts_with(' ') {
         return None;
     }
-    if input.starts_with('\t') {
+    if input.chars().next().is_some_and(char::is_whitespace) {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
 
@@ -2495,6 +2495,10 @@ mod tests {
         assert_eq!(parse_local_input_chat_message(" hello everyone"), None);
         assert_eq!(parse_local_input_chat_message("\thello everyone"), None);
         assert_eq!(
+            parse_local_input_chat_message("\u{000B}hello everyone"),
+            None
+        );
+        assert_eq!(
             parse_local_input_chat_message(" /chat hello everyone"),
             None
         );
@@ -3711,6 +3715,14 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("\t/chat hello everyone"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("\u{000B}help"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("\u{000B}hello everyone"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
@@ -4955,6 +4967,9 @@ mod tests {
         let (sender, mut receiver) = unbounded_channel::<String>();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
+            sender
+                .send("\u{000B}hello room".to_owned())
+                .expect("vertical-tab plain message should queue");
             sender
                 .send("\thello room".to_owned())
                 .expect("plain message should queue");
