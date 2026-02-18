@@ -2350,7 +2350,6 @@ impl ClientSession {
             return Vec::new();
         };
 
-        let file_name = file_name.trim();
         if file_name.is_empty() {
             return Vec::new();
         }
@@ -2365,7 +2364,7 @@ impl ClientSession {
             })
             .unwrap_or_default();
         let mut files = current_files.clone();
-        files.push(file_name.to_owned());
+        files.push(file_name);
         if files == current_files {
             return Vec::new();
         }
@@ -9016,6 +9015,50 @@ mod tests {
             .expect("second outbound message should include playlistIndex");
         assert_eq!(playlist_index.index, 0);
         assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_queue_playlist_item_preserves_whitespace_only_file_name() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_queue_playlist_item(" ", false)
+                .expect("queue command should not fail"),
+            "queue command should preserve whitespace-only file names"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 2);
+        let ProtocolMessage::Set(change_message) = &control.outbound_messages()[0] else {
+            panic!("first outbound queue message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("first outbound message should include playlistChange");
+        assert_eq!(
+            playlist_change.files,
+            vec!["episode1.mkv", "episode2.mkv", " "]
+        );
+        assert!(playlist_change.user.is_none());
     }
 
     #[test]
