@@ -567,7 +567,6 @@ fn parse_room_command_legacy_compatible(input: &str) -> Option<Option<LocalInput
 }
 
 fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
-    let value = value.trim();
     if value.is_empty() {
         return None;
     }
@@ -593,7 +592,6 @@ fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
 }
 
 fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
-    let parameter = parameter.trim();
     if parameter.is_empty() {
         return None;
     }
@@ -612,7 +610,6 @@ fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
 }
 
 fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffsetCommand> {
-    let parameter = parameter.trim();
     if parameter.is_empty() {
         return None;
     }
@@ -637,38 +634,57 @@ fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffs
 }
 
 fn parse_offset_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
-    let trimmed = input.trim();
-    let parameter = if let Some(parameter) = trimmed.strip_prefix("offset") {
-        parameter
-    } else if let Some(parameter) = trimmed.strip_prefix('o') {
-        parameter
+    let remainder = if let Some(remainder) = input.strip_prefix("offset") {
+        remainder
+    } else if let Some(remainder) = input.strip_prefix('o') {
+        remainder
     } else {
         return None;
     };
+
+    let parameter = if let Some(parameter) = remainder.strip_prefix(' ') {
+        if parameter.starts_with(' ') {
+            return None;
+        }
+        parameter
+    } else {
+        remainder
+    };
+    if parameter.is_empty() {
+        return None;
+    }
 
     let offset_command = parse_offset_parameter_legacy_compatible(parameter)?;
     Some(LocalInputCommand::SetUserOffset(offset_command))
 }
 
 fn parse_seek_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if input.is_empty() {
         return None;
     }
 
-    let (parameter, had_seek_prefix) = if let Some(value) = trimmed.strip_prefix("seek") {
-        (value.trim_start(), true)
-    } else if let Some(value) = trimmed.strip_prefix('s') {
-        (value.trim_start(), true)
+    let (parameter, had_seek_prefix) = if let Some(value) = input.strip_prefix("seek") {
+        (value, true)
+    } else if let Some(value) = input.strip_prefix('s') {
+        (value, true)
     } else {
-        (trimmed, false)
+        (input, false)
     };
 
-    if parameter.is_empty() {
-        return None;
-    }
-
-    if !had_seek_prefix {
+    if had_seek_prefix {
+        let parameter = if let Some(parameter) = parameter.strip_prefix(' ') {
+            if parameter.starts_with(' ') {
+                return None;
+            }
+            parameter
+        } else {
+            parameter
+        };
+        if parameter.is_empty() {
+            return None;
+        }
+        return parse_seek_parameter(parameter);
+    } else {
         let starts_like_seek_value = parameter
             .chars()
             .next()
@@ -845,11 +861,11 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "auth" | "a" | "/auth" | "/a") {
         return Some(LocalInputCommand::AuthController(String::new()));
     }
-    if let Some(parameter) = trimmed
+    if let Some(parameter) = input
         .strip_prefix("seek ")
-        .or_else(|| trimmed.strip_prefix("s "))
-        .or_else(|| trimmed.strip_prefix("/seek "))
-        .or_else(|| trimmed.strip_prefix("/s "))
+        .or_else(|| input.strip_prefix("s "))
+        .or_else(|| input.strip_prefix("/seek "))
+        .or_else(|| input.strip_prefix("/s "))
     {
         return parse_seek_parameter(parameter).or(Some(LocalInputCommand::ShowUnknownCommandHelp));
     }
@@ -868,7 +884,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches_local_command_alias_legacy_compatible(trimmed, &["t", "toggle", "/t", "/toggle"]) {
         return Some(LocalInputCommand::ToggleReady);
     }
-    if let Some(command) = parse_offset_input_legacy_compatible(trimmed) {
+    if let Some(command) = parse_offset_input_legacy_compatible(input) {
         return Some(command);
     }
     let command_token = trimmed.split_whitespace().next().unwrap_or_default();
@@ -882,7 +898,7 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
-    if let Some(command) = parse_seek_input_legacy_compatible(trimmed) {
+    if let Some(command) = parse_seek_input_legacy_compatible(input) {
         return Some(command);
     }
     if trimmed.starts_with("s+")
@@ -3153,6 +3169,14 @@ mod tests {
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
+            parse_local_input_command("seek  +0:10"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek 90 "),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
             parse_local_input_command("s+oops"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
@@ -3194,6 +3218,14 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("offset nope"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset  +0:10"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("offset 1:30 "),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
