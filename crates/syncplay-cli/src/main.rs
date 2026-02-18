@@ -411,7 +411,7 @@ fn generate_room_password_legacy_compatible() -> String {
 }
 
 fn parse_local_input_chat_message(input: &str) -> Option<String> {
-    if input.starts_with(' ') {
+    if input.starts_with(' ') || input.starts_with('\t') {
         return None;
     }
 
@@ -881,6 +881,9 @@ fn is_known_local_command_token_legacy_compatible(token: &str) -> bool {
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if input.starts_with(' ') {
         return None;
+    }
+    if input.starts_with('\t') {
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
 
     let trimmed = input.trim_end_matches(' ');
@@ -2490,6 +2493,7 @@ mod tests {
         assert_eq!(parse_local_input_chat_message(""), None);
         assert_eq!(parse_local_input_chat_message("   "), None);
         assert_eq!(parse_local_input_chat_message(" hello everyone"), None);
+        assert_eq!(parse_local_input_chat_message("\thello everyone"), None);
         assert_eq!(
             parse_local_input_chat_message(" /chat hello everyone"),
             None
@@ -3699,6 +3703,14 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("\tp"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("\thello everyone"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("\t/chat hello everyone"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
@@ -4943,6 +4955,9 @@ mod tests {
         let (sender, mut receiver) = unbounded_channel::<String>();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
+            sender
+                .send("\thello room".to_owned())
+                .expect("plain message should queue");
             sender
                 .send("\thelp".to_owned())
                 .expect("help command should queue");
