@@ -420,7 +420,7 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
         return None;
     }
 
-    for alias in ["chat", "ch", "/chat", "/ch", "/msg"] {
+    for alias in ["chat", "ch"] {
         if input == alias {
             return Some(String::new());
         }
@@ -1043,9 +1043,6 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if is_known_local_command_token_legacy_compatible(command_token) {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if matches!(trimmed, "/chat" | "/ch" | "/msg") {
-        return None;
     }
     if trimmed.starts_with('/') {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
@@ -2570,23 +2567,7 @@ mod tests {
             Some("hello everyone".to_owned())
         );
         assert_eq!(
-            parse_local_input_chat_message("/chat hello everyone"),
-            Some("hello everyone".to_owned())
-        );
-        assert_eq!(
-            parse_local_input_chat_message("/ch hello everyone"),
-            Some("hello everyone".to_owned())
-        );
-        assert_eq!(
-            parse_local_input_chat_message("/msg hello everyone"),
-            Some("hello everyone".to_owned())
-        );
-        assert_eq!(
             parse_local_input_chat_message("chat   hello everyone  "),
-            Some("  hello everyone  ".to_owned())
-        );
-        assert_eq!(
-            parse_local_input_chat_message("/msg   hello everyone  "),
             Some("  hello everyone  ".to_owned())
         );
         assert_eq!(
@@ -2612,18 +2593,15 @@ mod tests {
         );
         assert_eq!(parse_local_input_chat_message("chat"), Some("".to_owned()));
         assert_eq!(parse_local_input_chat_message("ch"), Some("".to_owned()));
-        assert_eq!(parse_local_input_chat_message("/chat"), Some("".to_owned()));
-        assert_eq!(parse_local_input_chat_message("/ch"), Some("".to_owned()));
-        assert_eq!(parse_local_input_chat_message("/msg"), Some("".to_owned()));
+        assert_eq!(parse_local_input_chat_message("/chat"), None);
+        assert_eq!(parse_local_input_chat_message("/ch"), None);
+        assert_eq!(parse_local_input_chat_message("/msg"), None);
         assert_eq!(
             parse_local_input_chat_message("chat  "),
             Some(" ".to_owned())
         );
-        assert_eq!(parse_local_input_chat_message("/msg "), Some("".to_owned()));
-        assert_eq!(
-            parse_local_input_chat_message("/msg   "),
-            Some("  ".to_owned())
-        );
+        assert_eq!(parse_local_input_chat_message("/msg "), None);
+        assert_eq!(parse_local_input_chat_message("/msg   "), None);
         assert_eq!(parse_local_input_chat_message("chat\thello"), None);
         assert_eq!(parse_local_input_chat_message("hello\teveryone"), None);
         assert_eq!(parse_local_input_chat_message("help\tplease"), None);
@@ -3657,7 +3635,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/ch hello"),
-            Some(LocalInputCommand::Chat("hello".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("chat"),
@@ -3669,11 +3647,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/chat"),
-            Some(LocalInputCommand::Chat("".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/msg"),
-            Some(LocalInputCommand::Chat("".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("chat  "),
@@ -3681,7 +3659,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/msg   hello  "),
-            Some(LocalInputCommand::Chat("  hello  ".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/unknown hello"),
@@ -4403,7 +4381,7 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             sender
-                .send("/chat hello room".to_owned())
+                .send("chat hello room".to_owned())
                 .expect("chat command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
@@ -9333,7 +9311,7 @@ mod tests {
         let (sender, mut receiver) = unbounded_channel::<String>();
         tokio::spawn(async move {
             sender
-                .send("/chat hello too soon".to_owned())
+                .send("chat hello too soon".to_owned())
                 .expect("chat command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
@@ -9489,7 +9467,7 @@ mod tests {
             .run_disconnect(0.1)
             .expect("disconnect transition should be applied between sessions");
         sender
-            .send("/chat reconnect gap message".to_owned())
+            .send("chat reconnect gap message".to_owned())
             .expect("chat command should queue");
 
         let stream_2 = TcpStream::connect(addr)
