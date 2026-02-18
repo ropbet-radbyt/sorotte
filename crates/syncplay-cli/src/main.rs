@@ -726,7 +726,7 @@ fn matches_local_command_alias_legacy_compatible(input: &str, aliases: &[&str]) 
         }
         input
             .strip_prefix(alias)
-            .is_some_and(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+            .is_some_and(|rest| rest.starts_with(' '))
     })
 }
 
@@ -3347,6 +3347,42 @@ mod tests {
         assert_eq!(
             parse_local_input_command("shuffleentireplaylist now"),
             Some(LocalInputCommand::ShuffleEntirePlaylist)
+        );
+    }
+
+    #[test]
+    fn parse_local_input_command_noarg_aliases_require_literal_space_delimiter() {
+        assert_eq!(
+            parse_local_input_command("/help\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/list\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/playlist\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/next\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/pause\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/toggle\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/undo\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("/undoplaylist\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
