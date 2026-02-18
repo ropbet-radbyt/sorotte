@@ -60,6 +60,8 @@ struct LegacyClientArgOverrides {
     username: Option<String>,
     room: Option<String>,
     controlled_room_password_override: Option<String>,
+    show_help: bool,
+    show_version: bool,
 }
 
 impl LegacyClientArgOverrides {
@@ -249,6 +251,12 @@ where
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "-h" | "--help" => {
+                overrides.show_help = true;
+            }
+            "-v" | "--version" => {
+                overrides.show_version = true;
+            }
             "--no-gui" => {
                 overrides.connect_requested = true;
             }
@@ -283,6 +291,22 @@ where
     }
 
     overrides
+}
+
+fn print_legacy_client_help() {
+    let help_lines = [
+        "Usage: syncplay-cli [OPTIONS]",
+        "  --no-gui",
+        "  -a, --host <hostname[:port]>",
+        "  -n, --name <username>",
+        "  -r, --room [room]",
+        "  -p, --password [password]",
+        "  -v, --version",
+        "  -h, --help",
+    ];
+    for line in help_lines {
+        println!("{line}");
+    }
 }
 
 fn apply_legacy_client_arg_overrides(
@@ -2135,6 +2159,14 @@ async fn main() -> anyhow::Result<()> {
     server.bootstrap_room("cli-demo");
 
     let client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
+    if client_arg_overrides.show_version {
+        println!("syncplay-cli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if client_arg_overrides.show_help {
+        print_legacy_client_help();
+        return Ok(());
+    }
     if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
         let mut config = build_client_loop_config_from_env();
         apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
@@ -2317,6 +2349,8 @@ mod tests {
                 username: Some("alice".to_owned()),
                 room: Some("room1".to_owned()),
                 controlled_room_password_override: Some("AB-123-456".to_owned()),
+                show_help: false,
+                show_version: false,
             }
         );
         assert!(overrides.should_connect_client());
@@ -2335,8 +2369,29 @@ mod tests {
                 username: Some("alice".to_owned()),
                 room: None,
                 controlled_room_password_override: None,
+                show_help: false,
+                show_version: false,
             }
         );
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_parses_help_and_version_switches() {
+        let overrides = parse_legacy_client_arg_overrides(["--help", "-v"]);
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: false,
+                host: None,
+                port: None,
+                username: None,
+                room: None,
+                controlled_room_password_override: None,
+                show_help: true,
+                show_version: true,
+            }
+        );
+        assert!(!overrides.should_connect_client());
     }
 
     #[test]
@@ -2349,6 +2404,8 @@ mod tests {
             username: Some("legacy-user".to_owned()),
             room: Some("+room:ABCDEF123456:AB-123-456".to_owned()),
             controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
         };
 
         apply_legacy_client_arg_overrides(&mut config, &overrides);
@@ -2373,6 +2430,8 @@ mod tests {
             username: None,
             room: Some("+room:ABCDEF123456:AB-123-456".to_owned()),
             controlled_room_password_override: Some("CD-987-654".to_owned()),
+            show_help: false,
+            show_version: false,
         };
 
         apply_legacy_client_arg_overrides(&mut config, &overrides);
