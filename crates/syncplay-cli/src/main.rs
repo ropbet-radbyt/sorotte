@@ -485,7 +485,7 @@ enum LocalInputCommand {
 }
 
 fn parse_create_command_legacy_compatible(input: &str) -> Option<Option<String>> {
-    for alias in ["create", "c", "/create", "/c"] {
+    for alias in ["create", "c"] {
         if input == alias {
             return Some(None);
         }
@@ -544,7 +544,7 @@ fn parse_user_ready_command_legacy_compatible(
 }
 
 fn parse_room_command_legacy_compatible(input: &str) -> Option<Option<LocalInputCommand>> {
-    for alias in ["room", "r", "/room", "/r"] {
+    for alias in ["room", "r"] {
         if input == alias {
             return Some(Some(LocalInputCommand::SetRoomWithLegacyFallback));
         }
@@ -935,18 +935,14 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if matches!(trimmed, "delete" | "d" | "qd") {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
-    if let Some(command) = parse_user_ready_command_legacy_compatible(
-        input,
-        &["setready", "sr", "/setready", "/sr"],
-        true,
-    ) {
+    if let Some(command) =
+        parse_user_ready_command_legacy_compatible(input, &["setready", "sr"], true)
+    {
         return Some(command);
     }
-    if let Some(command) = parse_user_ready_command_legacy_compatible(
-        input,
-        &["setnotready", "sn", "snr", "/setnotready", "/sn", "/snr"],
-        false,
-    ) {
+    if let Some(command) =
+        parse_user_ready_command_legacy_compatible(input, &["setnotready", "sn", "snr"], false)
+    {
         return Some(command);
     }
     if let Some(room_name) = parse_create_command_legacy_compatible(input) {
@@ -955,24 +951,20 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if let Some(password) = trimmed
         .strip_prefix("auth ")
         .or_else(|| trimmed.strip_prefix("a "))
-        .or_else(|| trimmed.strip_prefix("/auth "))
-        .or_else(|| trimmed.strip_prefix("/a "))
     {
         let password = password.trim();
         return Some(LocalInputCommand::AuthController(password.to_owned()));
     }
-    if matches!(trimmed, "auth" | "a" | "/auth" | "/a") {
+    if matches!(trimmed, "auth" | "a") {
         return Some(LocalInputCommand::AuthController(String::new()));
     }
     if let Some(parameter) = input
         .strip_prefix("seek ")
         .or_else(|| input.strip_prefix("s "))
-        .or_else(|| input.strip_prefix("/seek "))
-        .or_else(|| input.strip_prefix("/s "))
     {
         return parse_seek_parameter(parameter).or(Some(LocalInputCommand::ShowUnknownCommandHelp));
     }
-    if matches!(trimmed, "seek" | "s" | "/seek" | "/s") {
+    if matches!(trimmed, "seek" | "s") {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     if matches_local_command_alias_legacy_compatible(trimmed, &["p", "pause", "play"]) {
@@ -2616,17 +2608,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/setready bob"),
-            Some(LocalInputCommand::SetUserReady {
-                username: "bob".to_owned(),
-                ready: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/sr bob"),
-            Some(LocalInputCommand::SetUserReady {
-                username: "bob".to_owned(),
-                ready: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("setready"),
@@ -2651,17 +2637,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/setready"),
-            Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/sr"),
-            Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("setready  "),
@@ -2704,24 +2684,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/setnotready bob"),
-            Some(LocalInputCommand::SetUserReady {
-                username: "bob".to_owned(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/sn bob"),
-            Some(LocalInputCommand::SetUserReady {
-                username: "bob".to_owned(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/snr bob"),
-            Some(LocalInputCommand::SetUserReady {
-                username: "bob".to_owned(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("setnotready"),
@@ -2753,24 +2724,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/setnotready"),
-            Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/sn"),
-            Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/snr"),
-            Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("setnotready  "),
@@ -2808,19 +2770,19 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/create"),
-            Some(LocalInputCommand::CreateControlledRoom(None))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/create "),
-            Some(LocalInputCommand::CreateControlledRoom(None))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/c"),
-            Some(LocalInputCommand::CreateControlledRoom(None))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/c "),
-            Some(LocalInputCommand::CreateControlledRoom(None))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("create  "),
@@ -2848,15 +2810,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/create base-room"),
-            Some(LocalInputCommand::CreateControlledRoom(Some(
-                "base-room".to_owned()
-            )))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/c base-room"),
-            Some(LocalInputCommand::CreateControlledRoom(Some(
-                "base-room".to_owned()
-            )))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
@@ -2872,11 +2830,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/auth ab-123-456"),
-            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/a ab-123-456"),
-            Some(LocalInputCommand::AuthController("ab-123-456".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("auth"),
@@ -2888,11 +2846,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/auth"),
-            Some(LocalInputCommand::AuthController(String::new()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/a"),
-            Some(LocalInputCommand::AuthController(String::new()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("auth   "),
@@ -3336,11 +3294,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/seek +0:10"),
-            Some(LocalInputCommand::SeekRelative(10.0))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/s -2:00"),
-            Some(LocalInputCommand::SeekRelative(-120.0))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("s+0:10"),
@@ -3552,19 +3510,19 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/room room2"),
-            Some(LocalInputCommand::SetRoom("room2".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/room "),
-            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/r room2"),
-            Some(LocalInputCommand::SetRoom("room2".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/r "),
-            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("room"),
@@ -3576,11 +3534,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/room"),
-            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/r"),
-            Some(LocalInputCommand::SetRoomWithLegacyFallback)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
 
