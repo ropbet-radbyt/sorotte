@@ -443,6 +443,11 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
         return None;
     }
 
+    let command_token = trimmed.split_whitespace().next().unwrap_or_default();
+    if is_known_local_command_token_legacy_compatible(command_token) {
+        return None;
+    }
+
     Some(trimmed.to_owned())
 }
 
@@ -769,6 +774,62 @@ fn matches_local_command_alias_legacy_compatible(input: &str, aliases: &[&str]) 
     })
 }
 
+fn is_known_local_command_token_legacy_compatible(token: &str) -> bool {
+    matches!(
+        token,
+        "help"
+            | "h"
+            | "?"
+            | "\\?"
+            | "undoplaylist"
+            | "shuffleremainingplaylist"
+            | "shuffleentireplaylist"
+            | "undo"
+            | "u"
+            | "revert"
+            | "list"
+            | "l"
+            | "users"
+            | "playlist"
+            | "ql"
+            | "pl"
+            | "select"
+            | "qs"
+            | "next"
+            | "qn"
+            | "queue"
+            | "qa"
+            | "add"
+            | "queueandselect"
+            | "qas"
+            | "delete"
+            | "d"
+            | "qd"
+            | "setready"
+            | "sr"
+            | "setnotready"
+            | "sn"
+            | "snr"
+            | "create"
+            | "c"
+            | "auth"
+            | "a"
+            | "seek"
+            | "s"
+            | "pause"
+            | "play"
+            | "p"
+            | "room"
+            | "r"
+            | "toggle"
+            | "t"
+            | "offset"
+            | "o"
+            | "chat"
+            | "ch"
+    )
+}
+
 fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if input.starts_with(' ') {
         return None;
@@ -937,6 +998,9 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     }
     if let Some(chat_message) = parse_local_input_chat_message(input) {
         return Some(LocalInputCommand::Chat(chat_message));
+    }
+    if is_known_local_command_token_legacy_compatible(command_token) {
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     if matches!(trimmed, "/chat" | "/ch" | "/msg") {
         return None;
@@ -2396,6 +2460,8 @@ mod tests {
             parse_local_input_chat_message("/msg   "),
             Some("  ".to_owned())
         );
+        assert_eq!(parse_local_input_chat_message("chat\thello"), None);
+        assert_eq!(parse_local_input_chat_message("help\tplease"), None);
         assert_eq!(parse_local_input_chat_message("/unknown hello"), None);
     }
 
@@ -3483,6 +3549,34 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/undoplaylist\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+    }
+
+    #[test]
+    fn parse_local_input_command_known_tokens_with_tab_delimiter_show_unknown_help() {
+        assert_eq!(
+            parse_local_input_command("help\tplease"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("chat\thello"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("queue\tmovie.mkv"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("room\troom2"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("setready\tbob"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek\t1:30"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
     }
