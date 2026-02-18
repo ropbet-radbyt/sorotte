@@ -1523,6 +1523,40 @@ fn emit_playlist_listing_for_current_room(
     Ok(())
 }
 
+fn playlist_index_in_bounds_legacy_compatible(session: &ClientSession, index: i64) -> bool {
+    if index < 0 {
+        return false;
+    }
+    let Ok(index) = usize::try_from(index) else {
+        return false;
+    };
+    session
+        .current_room_playlist()
+        .is_some_and(|playlist| index < playlist.files.len())
+}
+
+fn run_local_playlist_select_index_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    index: i64,
+) -> anyhow::Result<bool> {
+    if !playlist_index_in_bounds_legacy_compatible(runtime.session(), index) {
+        emit_local_error_message_legacy_compatible(PLAYLIST_INVALID_INDEX_ERROR_LEGACY)?;
+        return Ok(false);
+    }
+    Ok(runtime.run_set_playlist_index(index)?)
+}
+
+fn run_local_playlist_delete_index_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    index: i64,
+) -> anyhow::Result<bool> {
+    if !playlist_index_in_bounds_legacy_compatible(runtime.session(), index) {
+        emit_local_error_message_legacy_compatible(PLAYLIST_INVALID_INDEX_ERROR_LEGACY)?;
+        return Ok(false);
+    }
+    Ok(runtime.run_delete_playlist_index(index)?)
+}
+
 fn flush_chat_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -1831,7 +1865,7 @@ where
                             false
                         }
                         LocalInputCommand::SelectPlaylistIndex(index) => {
-                            runtime.run_set_playlist_index(index)?
+                            run_local_playlist_select_index_legacy_compatible(runtime, index)?
                         }
                         LocalInputCommand::NextPlaylistItem => runtime.run_advance_playlist_index()?,
                         LocalInputCommand::QueuePlaylistItem {
@@ -1839,7 +1873,7 @@ where
                             select_after_queue,
                         } => runtime.run_queue_playlist_item(file_name, select_after_queue)?,
                         LocalInputCommand::DeletePlaylistIndex(index) => {
-                            runtime.run_delete_playlist_index(index)?
+                            run_local_playlist_delete_index_legacy_compatible(runtime, index)?
                         }
                         LocalInputCommand::UndoPlaylistChange => {
                             runtime.run_undo_playlist_change()?
@@ -2048,18 +2082,21 @@ mod tests {
         parse_env_non_negative_f64_legacy_compatible, parse_env_port_legacy_compatible,
         parse_env_string_list_legacy_compatible, parse_local_input_chat_message,
         parse_local_input_command, parse_unpause_action_mode_legacy_compatible,
-        playlist_listing_message_legacy_compatible, reconnect_transition_notification_message,
-        run_client_network_loop, run_connected_client_session,
+        playlist_index_in_bounds_legacy_compatible, playlist_listing_message_legacy_compatible,
+        reconnect_transition_notification_message, run_client_network_loop,
+        run_connected_client_session, run_local_playlist_delete_index_legacy_compatible,
+        run_local_playlist_select_index_legacy_compatible,
         user_change_notification_hidden_from_osd, user_change_notification_message,
     };
     use std::time::Duration;
     use syncplay_client_core::{
-        AutoplayCountdownNotification, ChatNotification, ClientSession,
+        AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
         ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-        ReadinessAutoplayConfig, ReconnectTransitionNotification, UnpauseActionMode,
-        UserChangeNotification,
+        QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectTransitionNotification,
+        UnpauseActionMode, UserChangeNotification,
     };
     use syncplay_player_api::PlayerAdapter;
+    use syncplay_player_mpv::MpvAdapter;
     use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
@@ -2247,6 +2284,79 @@ mod tests {
         assert_eq!(
             playlist_listing_message_legacy_compatible(&session),
             "Playlist is currently empty."
+        );
+    }
+
+    #[test]
+    fn playlist_index_in_bounds_legacy_compatible_checks_current_room_bounds() {
+        let mut session = ClientSession::default();
+        assert!(!playlist_index_in_bounds_legacy_compatible(&session, 0));
+        assert!(!playlist_index_in_bounds_legacy_compatible(&session, -1));
+
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        assert!(playlist_index_in_bounds_legacy_compatible(&session, 0));
+        assert!(!playlist_index_in_bounds_legacy_compatible(&session, 1));
+    }
+
+    #[test]
+    fn run_local_playlist_index_helpers_suppress_out_of_range_and_dispatch_in_range() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = MpvAdapter::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            !run_local_playlist_select_index_legacy_compatible(&mut runtime, 3)
+                .expect("out-of-range select should not fail"),
+            "out-of-range select should be suppressed with legacy local error"
+        );
+        assert!(
+            !run_local_playlist_delete_index_legacy_compatible(&mut runtime, 3)
+                .expect("out-of-range delete should not fail"),
+            "out-of-range delete should be suppressed with legacy local error"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            0,
+            "out-of-range playlist commands should not emit outbound protocol messages"
+        );
+
+        assert!(
+            run_local_playlist_select_index_legacy_compatible(&mut runtime, 0)
+                .expect("in-range select should not fail"),
+            "in-range select should dispatch protocol updates"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            1,
+            "in-range select should emit exactly one playlist index update"
         );
     }
 
@@ -8567,8 +8677,14 @@ mod tests {
                 .send("select".to_owned())
                 .expect("select command should queue");
             sender
+                .send("select 999".to_owned())
+                .expect("out-of-range select command should queue");
+            sender
                 .send("delete".to_owned())
                 .expect("delete command should queue");
+            sender
+                .send("delete 999".to_owned())
+                .expect("out-of-range delete command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
