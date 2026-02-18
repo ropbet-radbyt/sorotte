@@ -2221,21 +2221,15 @@ impl ClientSession {
         if self.username.is_none() {
             return Vec::new();
         }
-        let room = room.trim();
         if room.is_empty() {
             return Vec::new();
         }
         let password = Self::normalize_control_password_legacy_compatible(&password);
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
-                ControllerAuthTransitionNotification::Attempting {
-                    room: room.to_owned(),
-                },
+                ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ),
-            ClientRuntimeAction::RequestControllerAuth {
-                room: room.to_owned(),
-                password,
-            },
+            ClientRuntimeAction::RequestControllerAuth { room, password },
         ]
     }
 
@@ -8206,12 +8200,15 @@ mod tests {
             .controller_auth
             .as_ref()
             .expect("Set message should contain controllerAuth payload");
-        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(
+            controller_auth.room.as_deref(),
+            Some(" +room:ABCDEF123456 ")
+        );
         assert_eq!(controller_auth.password.as_deref(), Some("AB123-456"));
         assert_eq!(
             control.controller_auth_notifications(),
             &[ControllerAuthTransitionNotification::Attempting {
-                room: "+room:ABCDEF123456".to_owned()
+                room: " +room:ABCDEF123456 ".to_owned()
             }]
         );
     }
@@ -8243,12 +8240,52 @@ mod tests {
             .controller_auth
             .as_ref()
             .expect("Set message should contain controllerAuth payload");
-        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(
+            controller_auth.room.as_deref(),
+            Some(" +room:ABCDEF123456 ")
+        );
         assert_eq!(controller_auth.password.as_deref(), Some(""));
         assert_eq!(
             control.controller_auth_notifications(),
             &[ControllerAuthTransitionNotification::Attempting {
-                room: "+room:ABCDEF123456".to_owned()
+                room: " +room:ABCDEF123456 ".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn client_runtime_request_controller_auth_dispatches_for_whitespace_only_room() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_request_controller_auth(" ", "AB-123-456")
+                .expect("controller auth request should not fail"),
+            "controller auth request should preserve whitespace-only room names"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.controllerAuth protocol message");
+        };
+        let controller_auth = set_message
+            .set
+            .controller_auth
+            .as_ref()
+            .expect("Set message should contain controllerAuth payload");
+        assert_eq!(controller_auth.room.as_deref(), Some(" "));
+        assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+        assert_eq!(
+            control.controller_auth_notifications(),
+            &[ControllerAuthTransitionNotification::Attempting {
+                room: " ".to_owned()
             }]
         );
     }
