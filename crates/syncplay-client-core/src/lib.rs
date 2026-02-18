@@ -2199,7 +2199,6 @@ impl ClientSession {
         if self.username.is_none() || self.server_readiness_supported == Some(false) {
             return Vec::new();
         }
-        let username = username.trim();
         if username.is_empty() {
             return vec![ClientRuntimeAction::SetReady {
                 ready,
@@ -2209,7 +2208,7 @@ impl ClientSession {
         vec![ClientRuntimeAction::SetReadyForUser {
             ready,
             manually_initiated,
-            username: username.to_owned(),
+            username,
         }]
     }
 
@@ -8155,6 +8154,39 @@ mod tests {
         assert!(!ready.is_ready);
         assert_eq!(ready.manually_initiated, Some(true));
         assert_eq!(ready.username.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn client_runtime_set_ready_for_whitespace_username_preserves_payload() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_ready_for_user(" ", true, true)
+                .expect("set ready for whitespace username should not fail"),
+            "set ready for whitespace username should emit outbound Set.ready with username"
+        );
+        let (_, _, control) = runtime.into_parts();
+
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.ready protocol message");
+        };
+        let ready = set_message
+            .set
+            .ready
+            .as_ref()
+            .expect("Set message should contain ready payload");
+        assert!(ready.is_ready);
+        assert_eq!(ready.manually_initiated, Some(true));
+        assert_eq!(ready.username.as_deref(), Some(" "));
     }
 
     #[test]
