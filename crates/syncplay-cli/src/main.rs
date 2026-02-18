@@ -447,6 +447,9 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
     if is_known_local_command_token_legacy_compatible(command_token) {
         return None;
     }
+    if input.chars().any(|ch| ch.is_whitespace() && ch != ' ') {
+        return None;
+    }
 
     Some(trimmed.to_owned())
 }
@@ -1057,6 +1060,9 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
         return None;
     }
     if trimmed.starts_with('/') {
+        return Some(LocalInputCommand::ShowUnknownCommandHelp);
+    }
+    if input.chars().any(|ch| ch.is_whitespace() && ch != ' ') {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
     None
@@ -2486,6 +2492,10 @@ mod tests {
             parse_local_input_chat_message("/msg   hello everyone  "),
             Some("  hello everyone  ".to_owned())
         );
+        assert_eq!(
+            parse_local_input_chat_message("chat hello\teveryone"),
+            Some("hello\teveryone".to_owned())
+        );
     }
 
     #[test]
@@ -2517,6 +2527,7 @@ mod tests {
             Some("  ".to_owned())
         );
         assert_eq!(parse_local_input_chat_message("chat\thello"), None);
+        assert_eq!(parse_local_input_chat_message("hello\teveryone"), None);
         assert_eq!(parse_local_input_chat_message("help\tplease"), None);
         assert_eq!(parse_local_input_chat_message("/unknown hello"), None);
     }
@@ -3576,6 +3587,10 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/unknown hello"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("hello\teveryone"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(parse_local_input_command(" hello everyone"), None);
@@ -5016,6 +5031,130 @@ mod tests {
             sender
                 .send("create\u{000B}locked-room".to_owned())
                 .expect("create command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_unknown_token_with_non_space_delimiter_does_not_chat_fallback()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let maybe_outbound =
+                tokio::time::timeout(Duration::from_millis(350), lines.next_line()).await;
+            if let Ok(Ok(Some(line))) = maybe_outbound {
+                let message = decode_message_line(&line).expect("line should decode");
+                assert!(
+                    !matches!(message, ProtocolMessage::Chat(_)),
+                    "unknown token with non-space delimiter should not emit outbound chat"
+                );
+                assert!(
+                    !matches!(message, ProtocolMessage::State(_)),
+                    "unknown token with non-space delimiter should not emit outbound state"
+                );
+                assert!(
+                    !matches!(message, ProtocolMessage::List(_)),
+                    "unknown token with non-space delimiter should not emit outbound list requests"
+                );
+                if let ProtocolMessage::Set(ref payload) = message {
+                    assert!(
+                        payload.set.room.is_none()
+                            && payload.set.ready.is_none()
+                            && payload.set.playlist_change.is_none()
+                            && payload.set.playlist_index.is_none()
+                            && payload.set.controller_auth.is_none(),
+                        "unknown token with non-space delimiter should not emit local command set messages: {payload:?}"
+                    );
+                }
+            }
+
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: Some(false),
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .send("hello\u{000B}world".to_owned())
+                .expect("unknown token with non-space delimiter should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
