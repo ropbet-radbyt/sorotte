@@ -575,20 +575,39 @@ fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
         return None;
     }
 
-    if !value.contains(':') {
-        let seconds = value.parse::<f64>().ok()?;
-        return seconds.is_finite().then_some(seconds);
+    let mut parts: Vec<&str> = Vec::with_capacity(3);
+    let mut start = 0usize;
+    for (idx, ch) in value.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' {
+            continue;
+        }
+        if idx == start {
+            return None;
+        }
+        parts.push(&value[start..idx]);
+        start = idx + ch.len_utf8();
+    }
+    if start >= value.len() {
+        return None;
+    }
+    parts.push(&value[start..]);
+
+    if parts.len() > 3 {
+        return None;
     }
 
-    let parts: Vec<&str> = value.split(':').collect();
     let seconds = match parts.as_slice() {
+        [seconds] => seconds.parse::<f64>().ok()?,
         [minutes, seconds] => {
-            minutes.parse::<u64>().ok()? as f64 * 60.0 + seconds.parse::<f64>().ok()?
+            let minutes = minutes.parse::<u64>().ok()?;
+            let seconds = seconds.parse::<f64>().ok()?;
+            minutes as f64 * 60.0 + seconds
         }
         [hours, minutes, seconds] => {
-            hours.parse::<u64>().ok()? as f64 * 3600.0
-                + minutes.parse::<u64>().ok()? as f64 * 60.0
-                + seconds.parse::<f64>().ok()?
+            let hours = hours.parse::<u64>().ok()?;
+            let minutes = minutes.parse::<u64>().ok()?;
+            let seconds = seconds.parse::<f64>().ok()?;
+            hours as f64 * 3600.0 + minutes as f64 * 60.0 + seconds
         }
         _ => return None,
     };
@@ -3170,6 +3189,18 @@ mod tests {
             Some(LocalInputCommand::SeekAbsolute(90.0))
         );
         assert_eq!(
+            parse_local_input_command("s 1 30"),
+            Some(LocalInputCommand::SeekAbsolute(90.0))
+        );
+        assert_eq!(
+            parse_local_input_command("seek 1h02m03"),
+            Some(LocalInputCommand::SeekAbsolute(3723.0))
+        );
+        assert_eq!(
+            parse_local_input_command("+1-30"),
+            Some(LocalInputCommand::SeekRelative(90.0))
+        );
+        assert_eq!(
             parse_local_input_command("seek"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
@@ -3187,6 +3218,10 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("seek 90 "),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
+            parse_local_input_command("seek 1::30"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
@@ -3219,6 +3254,24 @@ mod tests {
             parse_local_input_command("offset /0:30"),
             Some(LocalInputCommand::SetUserOffset(
                 LocalOffsetCommand::RelativeFromCurrentPositionMinus(30.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("o 1 30"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Absolute(90.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("offset +1-30"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::Relative(90.0)
+            ))
+        );
+        assert_eq!(
+            parse_local_input_command("offset /1h2m3"),
+            Some(LocalInputCommand::SetUserOffset(
+                LocalOffsetCommand::RelativeFromCurrentPositionMinus(3723.0)
             ))
         );
         assert_eq!(
