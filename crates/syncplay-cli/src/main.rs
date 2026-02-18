@@ -902,46 +902,37 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if let Some(index) = trimmed
         .strip_prefix("select ")
         .or_else(|| trimmed.strip_prefix("qs "))
-        .or_else(|| trimmed.strip_prefix("/select "))
-        .or_else(|| trimmed.strip_prefix("/qs "))
     {
         return parse_playlist_index_parameter_legacy_compatible(index)
             .map(LocalInputCommand::SelectPlaylistIndex)
             .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
     }
-    if matches!(trimmed, "select" | "qs" | "/select" | "/qs") {
+    if matches!(trimmed, "select" | "qs") {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
     if matches_local_command_alias_legacy_compatible(trimmed, &["next", "qn"]) {
         return Some(LocalInputCommand::NextPlaylistItem);
     }
-    if let Some(command) = parse_queue_command_legacy_compatible(
-        input,
-        &["queueandselect", "qas", "/queueandselect", "/qas"],
-        true,
-    ) {
+    if let Some(command) =
+        parse_queue_command_legacy_compatible(input, &["queueandselect", "qas"], true)
+    {
         return Some(command);
     }
-    if let Some(command) = parse_queue_command_legacy_compatible(
-        input,
-        &["queue", "qa", "add", "/queue", "/qa", "/add"],
-        false,
-    ) {
+    if let Some(command) =
+        parse_queue_command_legacy_compatible(input, &["queue", "qa", "add"], false)
+    {
         return Some(command);
     }
     if let Some(index) = trimmed
         .strip_prefix("delete ")
         .or_else(|| trimmed.strip_prefix("d "))
         .or_else(|| trimmed.strip_prefix("qd "))
-        .or_else(|| trimmed.strip_prefix("/delete "))
-        .or_else(|| trimmed.strip_prefix("/d "))
-        .or_else(|| trimmed.strip_prefix("/qd "))
     {
         return parse_playlist_index_parameter_legacy_compatible(index)
             .map(LocalInputCommand::DeletePlaylistIndex)
             .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
     }
-    if matches!(trimmed, "delete" | "d" | "qd" | "/delete" | "/d" | "/qd") {
+    if matches!(trimmed, "delete" | "d" | "qd") {
         return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
     }
     if let Some(command) = parse_user_ready_command_legacy_compatible(
@@ -3042,11 +3033,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/select 3"),
-            Some(LocalInputCommand::SelectPlaylistIndex(2))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/qs 4"),
-            Some(LocalInputCommand::SelectPlaylistIndex(3))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("select"),
@@ -3058,11 +3049,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/select"),
-            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/qs"),
-            Some(LocalInputCommand::ShowPlaylistInvalidIndexError)
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("select 0"),
@@ -3129,10 +3120,7 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/queue episode4.mkv"),
-            Some(LocalInputCommand::QueuePlaylistItem {
-                file_name: "episode4.mkv".to_owned(),
-                select_after_queue: false
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("queue"),
@@ -3184,17 +3172,11 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/queueandselect episode3.mkv"),
-            Some(LocalInputCommand::QueuePlaylistItem {
-                file_name: "episode3.mkv".to_owned(),
-                select_after_queue: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/qas episode4.mkv"),
-            Some(LocalInputCommand::QueuePlaylistItem {
-                file_name: "episode4.mkv".to_owned(),
-                select_after_queue: true
-            })
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("queueandselect"),
@@ -3226,15 +3208,15 @@ mod tests {
         );
         assert_eq!(
             parse_local_input_command("/delete 4"),
-            Some(LocalInputCommand::DeletePlaylistIndex(3))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/d 5"),
-            Some(LocalInputCommand::DeletePlaylistIndex(4))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("/qd 6"),
-            Some(LocalInputCommand::DeletePlaylistIndex(5))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("delete"),
