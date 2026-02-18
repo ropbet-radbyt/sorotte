@@ -62,6 +62,7 @@ struct LegacyClientArgOverrides {
     controlled_room_password_override: Option<String>,
     show_help: bool,
     show_version: bool,
+    unknown_options: Vec<String>,
 }
 
 impl LegacyClientArgOverrides {
@@ -260,6 +261,9 @@ where
             "-v" | "--version" => {
                 overrides.show_version = true;
             }
+            "-psn" => {
+                let _ = iter.next();
+            }
             "--no-gui" => {
                 overrides.connect_requested = true;
             }
@@ -289,7 +293,11 @@ where
                 overrides.controlled_room_password_override =
                     take_next_non_flag_arg_legacy_compatible(&mut iter);
             }
-            _ => {}
+            _ => {
+                if arg.starts_with('-') {
+                    overrides.unknown_options.push(arg);
+                }
+            }
         }
     }
 
@@ -2170,6 +2178,11 @@ async fn main() -> anyhow::Result<()> {
         print_legacy_client_help();
         return Ok(());
     }
+    if !client_arg_overrides.unknown_options.is_empty() {
+        let unknown_options = client_arg_overrides.unknown_options.join(" ");
+        eprintln!("error: unrecognized arguments: {unknown_options}");
+        return Err(anyhow!("unrecognized arguments"));
+    }
     if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
         let mut config = build_client_loop_config_from_env();
         apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
@@ -2354,6 +2367,7 @@ mod tests {
                 controlled_room_password_override: Some("AB-123-456".to_owned()),
                 show_help: false,
                 show_version: false,
+                unknown_options: vec![],
             }
         );
         assert!(overrides.should_connect_client());
@@ -2374,6 +2388,7 @@ mod tests {
                 controlled_room_password_override: None,
                 show_help: false,
                 show_version: false,
+                unknown_options: vec![],
             }
         );
     }
@@ -2392,6 +2407,7 @@ mod tests {
                 controlled_room_password_override: None,
                 show_help: true,
                 show_version: true,
+                unknown_options: vec![],
             }
         );
         assert!(!overrides.should_connect_client());
@@ -2419,6 +2435,45 @@ mod tests {
                 controlled_room_password_override: None,
                 show_help: false,
                 show_version: false,
+                unknown_options: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
+        let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--wat", "-x", "value"]);
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: true,
+                host: None,
+                port: None,
+                username: None,
+                room: None,
+                controlled_room_password_override: None,
+                show_help: false,
+                show_version: false,
+                unknown_options: vec!["--wat".to_owned(), "-x".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_ignores_legacy_psn_arg() {
+        let overrides = parse_legacy_client_arg_overrides(["-psn", "0_12345", "--no-gui"]);
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: true,
+                host: None,
+                port: None,
+                username: None,
+                room: None,
+                controlled_room_password_override: None,
+                show_help: false,
+                show_version: false,
+                unknown_options: vec![],
             }
         );
     }
@@ -2435,6 +2490,7 @@ mod tests {
             controlled_room_password_override: None,
             show_help: false,
             show_version: false,
+            unknown_options: vec![],
         };
 
         apply_legacy_client_arg_overrides(&mut config, &overrides);
@@ -2461,6 +2517,7 @@ mod tests {
             controlled_room_password_override: Some("CD-987-654".to_owned()),
             show_help: false,
             show_version: false,
+            unknown_options: vec![],
         };
 
         apply_legacy_client_arg_overrides(&mut config, &overrides);
