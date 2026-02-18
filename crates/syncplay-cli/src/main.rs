@@ -250,6 +250,9 @@ where
         .peekable();
 
     while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
         match arg.as_str() {
             "-h" | "--help" => {
                 overrides.show_help = true;
@@ -2392,6 +2395,32 @@ mod tests {
             }
         );
         assert!(!overrides.should_connect_client());
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash() {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--no-gui",
+            "--",
+            "--host",
+            "example.org:12345",
+            "-n",
+            "alice",
+        ]);
+
+        assert_eq!(
+            overrides,
+            LegacyClientArgOverrides {
+                connect_requested: true,
+                host: None,
+                port: None,
+                username: None,
+                room: None,
+                controlled_room_password_override: None,
+                show_help: false,
+                show_version: false,
+            }
+        );
     }
 
     #[test]
