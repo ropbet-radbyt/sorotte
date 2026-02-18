@@ -3590,6 +3590,10 @@ mod tests {
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
+            parse_local_input_command("/unknown\thello"),
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
+        );
+        assert_eq!(
             parse_local_input_command("hello\teveryone"),
             Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
@@ -5016,21 +5020,30 @@ mod tests {
         let (sender, mut receiver) = unbounded_channel::<String>();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
-            sender
-                .send("chat\u{000B}hello room".to_owned())
-                .expect("chat command should queue");
-            sender
-                .send("queue\u{000B}movie.mkv".to_owned())
-                .expect("queue command should queue");
-            sender
-                .send("room\u{000B}other-room".to_owned())
-                .expect("room command should queue");
-            sender
-                .send("auth\u{000B}AB-123-456".to_owned())
-                .expect("auth command should queue");
-            sender
-                .send("create\u{000B}locked-room".to_owned())
-                .expect("create command should queue");
+            for delimiter in ["\u{000B}", "\u{000C}"] {
+                for (token, payload) in [
+                    ("chat", "hello room"),
+                    ("queue", "movie.mkv"),
+                    ("room", "other-room"),
+                    ("auth", "AB-123-456"),
+                    ("create", "locked-room"),
+                    ("/chat", "hello room"),
+                    ("/queue", "movie.mkv"),
+                    ("/room", "other-room"),
+                    ("/auth", "AB-123-456"),
+                    ("/create", "locked-room"),
+                    ("/help", "please"),
+                    ("/list", "all"),
+                    ("/toggle", "now"),
+                    ("/setready", "bob"),
+                    ("/seek", "1:30"),
+                    ("/offset", "1:30"),
+                ] {
+                    sender
+                        .send(format!("{token}{delimiter}{payload}"))
+                        .expect("non-space-delimited command should queue");
+                }
+            }
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
@@ -5087,9 +5100,18 @@ mod tests {
                 .await
                 .expect("server hello write should succeed");
 
-            let maybe_outbound =
-                tokio::time::timeout(Duration::from_millis(350), lines.next_line()).await;
-            if let Ok(Ok(Some(line))) = maybe_outbound {
+            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+            loop {
+                let remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+
+                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Ok(Ok(Some(line))) = next_line else {
+                    break;
+                };
                 let message = decode_message_line(&line).expect("line should decode");
                 assert!(
                     !matches!(message, ProtocolMessage::Chat(_)),
@@ -5155,6 +5177,9 @@ mod tests {
             sender
                 .send("hello\u{000B}world".to_owned())
                 .expect("unknown token with non-space delimiter should queue");
+            sender
+                .send("/unknown\u{000C}world".to_owned())
+                .expect("unknown slash token with non-space delimiter should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
