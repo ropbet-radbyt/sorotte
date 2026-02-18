@@ -439,19 +439,7 @@ fn parse_local_input_chat_message(input: &str) -> Option<String> {
         return Some(message.to_owned());
     }
 
-    if trimmed.starts_with('/') {
-        return None;
-    }
-
-    let command_token = trimmed.split_whitespace().next().unwrap_or_default();
-    if is_known_local_command_token_legacy_compatible(command_token) {
-        return None;
-    }
-    if input.chars().any(|ch| ch.is_whitespace() && ch != ' ') {
-        return None;
-    }
-
-    Some(trimmed.to_owned())
+    None
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1065,7 +1053,10 @@ fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
     if input.chars().any(|ch| ch.is_whitespace() && ch != ' ') {
         return Some(LocalInputCommand::ShowUnknownCommandHelp);
     }
-    None
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(LocalInputCommand::ShowUnknownCommandHelp)
 }
 
 fn spawn_local_input_receiver_if_enabled() -> Option<UnboundedReceiver<String>> {
@@ -2571,10 +2562,6 @@ mod tests {
     #[test]
     fn parse_local_input_chat_message_handles_plain_and_prefixed_inputs() {
         assert_eq!(
-            parse_local_input_chat_message("hello everyone"),
-            Some("hello everyone".to_owned())
-        );
-        assert_eq!(
             parse_local_input_chat_message("chat hello everyone"),
             Some("hello everyone".to_owned())
         );
@@ -2612,6 +2599,7 @@ mod tests {
     fn parse_local_input_chat_message_handles_empty_chat_aliases_and_ignores_unknown_commands() {
         assert_eq!(parse_local_input_chat_message(""), None);
         assert_eq!(parse_local_input_chat_message("   "), None);
+        assert_eq!(parse_local_input_chat_message("hello everyone"), None);
         assert_eq!(parse_local_input_chat_message(" hello everyone"), None);
         assert_eq!(parse_local_input_chat_message("\thello everyone"), None);
         assert_eq!(
@@ -3661,7 +3649,7 @@ mod tests {
     fn parse_local_input_command_parses_chat_and_unknown_slash_command_help() {
         assert_eq!(
             parse_local_input_command("hello everyone"),
-            Some(LocalInputCommand::Chat("hello everyone".to_owned()))
+            Some(LocalInputCommand::ShowUnknownCommandHelp)
         );
         assert_eq!(
             parse_local_input_command("chat hello everyone"),
@@ -8503,12 +8491,16 @@ mod tests {
                     break;
                 };
                 let message = decode_message_line(&line).expect("line should decode");
+                assert!(
+                    !matches!(message, ProtocolMessage::Chat(_)),
+                    "unknown command help should not emit outbound chat messages"
+                );
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
                 assert!(
                     payload.set.playlist_change.is_none() && payload.set.playlist_index.is_none(),
-                    "unknown slash command help should not emit outbound playlist set messages"
+                    "unknown command help should not emit outbound playlist set messages"
                 );
             }
             writer
@@ -8551,6 +8543,9 @@ mod tests {
             sender
                 .send("/unknown hello".to_owned())
                 .expect("unknown command should queue");
+            sender
+                .send("hello everyone".to_owned())
+                .expect("plain unknown command should queue");
         });
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
