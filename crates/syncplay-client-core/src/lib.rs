@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use syncplay_core::SyncDomain;
-use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerError};
+use syncplay_player_api::{
+    LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
+};
 use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
     PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
@@ -39,6 +41,17 @@ const LEGACY_SHOW_NONCONTROLLER_OSD: bool = false;
 const LEGACY_SHOW_DIFFERENT_ROOM_OSD: bool = false;
 const LEGACY_ONLY_SWITCH_TO_TRUSTED_DOMAINS: bool = true;
 const LEGACY_DEFAULT_TRUSTED_DOMAINS: [&str; 2] = ["youtube.com", "youtu.be"];
+const DEFAULT_RECONNECT_STATE_RESTORE_AUTOCORRECT: bool = true;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_COOLDOWN_TICKS: u32 = 1;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_EXPONENTIAL_BACKOFF: bool = false;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_MAX_COOLDOWN_TICKS: u32 = 8;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BACKOFF: bool = false;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET: bool = false;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET_MIN_ATTEMPTS: u32 = 0;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCHES: u32 = 0;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCH_DECAY_ON_SUCCESS: u32 = 0;
+const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RECOVERY_COOLDOWN_RECONNECT_CYCLES: u32 = 0;
 const ROUND_HALF_EPSILON: f64 = 1e-12;
 const PRIVACY_HIDDEN_FILENAME: &str = "**Hidden filename**";
 const MUSIC_FORMATS: [&str; 8] = [
@@ -54,10 +67,37 @@ pub struct AutoplayCountdownNotification {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReconnectTransitionNotification {
-    Attempting { retries: u32, delay_seconds: f64 },
+    Attempting {
+        retries: u32,
+        delay_seconds: f64,
+    },
     Connected,
     Disconnected,
     RestoringState,
+    StateRestoreValidationMismatch {
+        local_paused: bool,
+        room_paused: bool,
+        local_position: f64,
+        room_position: f64,
+        position_diff_seconds: f64,
+    },
+    StateRestoreValidationCorrectionRetryScheduled {
+        attempt: u32,
+        max_attempts: u32,
+        cooldown_ticks: u32,
+    },
+    StateRestoreValidationCorrectionRetriesExhausted {
+        attempts: u32,
+        max_attempts: u32,
+    },
+    StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+        consecutive_mismatch_cycles: u32,
+        disable_after_mismatch_cycles: u32,
+    },
+    StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+        remaining_reconnect_cycles_after_this_cycle: u32,
+    },
+    StateRestoreValidationCorrectionRecoveryCooldownReenabled,
     RestoringPlaylist,
 }
 
@@ -203,6 +243,48 @@ pub struct ReconnectRetryDecision {
     pub should_reset_state: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconnectStateRestoreCorrectionPolicyMode {
+    AutoCorrect,
+    NotifyOnly,
+    WarnOnlyOnExhaustion,
+    DisableAfterNMismatches,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReconnectStateRestoreCorrectionMetrics {
+    pub validation_cycles_started: u64,
+    pub validation_cycles_completed_without_mismatch: u64,
+    pub validation_cycles_completed_with_successful_correction: u64,
+    pub mismatch_cycles_detected: u64,
+    pub mismatch_notifications_emitted: u64,
+    pub correction_actions_attempted: u64,
+    pub correction_actions_succeeded: u64,
+    pub correction_action_failures: u64,
+    pub correction_retries_scheduled: u64,
+    pub correction_retry_exhaustions: u64,
+    pub correction_disables_after_repeated_mismatches: u64,
+    pub correction_recovery_cooldown_suppressed_cycles: u64,
+    pub correction_recovery_cooldown_reenabled_cycles: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReconnectStateRestoreCorrectionStateSnapshot {
+    pub validation_pending: bool,
+    pub retry_attempts: u32,
+    pub retry_cooldown_ticks: u32,
+    pub mismatch_notified_in_cycle: bool,
+    pub mismatch_seen_in_cycle: bool,
+    pub effective_policy_mode: ReconnectStateRestoreCorrectionPolicyMode,
+    pub position_tolerance_seconds: f64,
+    pub effective_retry_max_attempts: u32,
+    pub consecutive_mismatch_cycles: u32,
+    pub consecutive_retry_exhaustions: u32,
+    pub recovery_cooldown_reconnect_cycles_remaining: u32,
+    pub correction_suppressed_for_recovery_cycle: bool,
+    pub correction_reenabled_for_recovery_cycle: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionBehaviorConfig {
     pub pause_on_leave: bool,
@@ -214,6 +296,20 @@ pub struct SessionBehaviorConfig {
     pub loop_single_files: bool,
     pub only_switch_to_trusted_domains: bool,
     pub trusted_domains: Vec<String>,
+    pub reconnect_state_restore_auto_correct: bool,
+    pub reconnect_state_restore_correction_policy_mode_override:
+        Option<ReconnectStateRestoreCorrectionPolicyMode>,
+    pub reconnect_state_restore_position_tolerance_seconds: f64,
+    pub reconnect_state_restore_correction_retry_max_attempts: u32,
+    pub reconnect_state_restore_correction_retry_cooldown_ticks: u32,
+    pub reconnect_state_restore_correction_retry_exponential_backoff: bool,
+    pub reconnect_state_restore_correction_retry_max_cooldown_ticks: u32,
+    pub reconnect_state_restore_correction_retry_adaptive_cycle_backoff: bool,
+    pub reconnect_state_restore_correction_retry_adaptive_cycle_budget: bool,
+    pub reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts: u32,
+    pub reconnect_state_restore_correction_disable_after_mismatch_cycles: u32,
+    pub reconnect_state_restore_correction_disable_after_mismatch_decay_on_success: u32,
+    pub reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: u32,
 }
 
 impl Default for SessionBehaviorConfig {
@@ -231,6 +327,29 @@ impl Default for SessionBehaviorConfig {
                 .iter()
                 .map(|domain| (*domain).to_owned())
                 .collect(),
+            reconnect_state_restore_auto_correct: DEFAULT_RECONNECT_STATE_RESTORE_AUTOCORRECT,
+            reconnect_state_restore_correction_policy_mode_override: None,
+            reconnect_state_restore_position_tolerance_seconds: SEEK_THRESHOLD_SECONDS,
+            reconnect_state_restore_correction_retry_max_attempts:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS,
+            reconnect_state_restore_correction_retry_cooldown_ticks:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_COOLDOWN_TICKS,
+            reconnect_state_restore_correction_retry_exponential_backoff:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_EXPONENTIAL_BACKOFF,
+            reconnect_state_restore_correction_retry_max_cooldown_ticks:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_MAX_COOLDOWN_TICKS,
+            reconnect_state_restore_correction_retry_adaptive_cycle_backoff:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BACKOFF,
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET,
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET_MIN_ATTEMPTS,
+            reconnect_state_restore_correction_disable_after_mismatch_cycles:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCHES,
+            reconnect_state_restore_correction_disable_after_mismatch_decay_on_success:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCH_DECAY_ON_SUCCESS,
+            reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles:
+                DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RECOVERY_COOLDOWN_RECONNECT_CYCLES,
         }
     }
 }
@@ -589,6 +708,7 @@ pub struct ClientRuntime<P, C> {
     session: ClientSession,
     player: P,
     control: C,
+    pending_player_playback_telemetry_updates: Vec<PlayerPlaybackTelemetryUpdate>,
 }
 
 impl<P, C> ClientRuntime<P, C>
@@ -601,6 +721,7 @@ where
             session,
             player,
             control,
+            pending_player_playback_telemetry_updates: Vec::new(),
         }
     }
 
@@ -610,6 +731,19 @@ where
 
     pub fn session_mut(&mut self) -> &mut ClientSession {
         &mut self.session
+    }
+
+    pub fn reconnect_state_restore_correction_metrics(
+        &self,
+    ) -> &ReconnectStateRestoreCorrectionMetrics {
+        self.session.reconnect_state_restore_correction_metrics()
+    }
+
+    pub fn reconnect_state_restore_correction_state_snapshot(
+        &self,
+    ) -> ReconnectStateRestoreCorrectionStateSnapshot {
+        self.session
+            .reconnect_state_restore_correction_state_snapshot()
     }
 
     pub fn control(&self) -> &C {
@@ -635,6 +769,7 @@ where
         local_can_control: bool,
         is_playing_music: bool,
     ) -> Result<(), PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.runtime_actions_for_readiness_unpause_attempt(
             now_seconds,
             readiness_supported,
@@ -651,6 +786,7 @@ where
         is_playing_music: bool,
         recently_advanced: bool,
     ) {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         self.session.autoplay_check(
             readiness_supported,
             local_can_control,
@@ -666,6 +802,7 @@ where
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> Result<(), PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.autoplay_countdown_tick(
             readiness_supported,
             local_can_control,
@@ -713,6 +850,77 @@ where
             .session
             .runtime_actions_for_reconnect_state_restore_if_needed();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+    }
+
+    pub fn run_reconnect_state_restore_validation_if_needed(&mut self) -> Result<(), PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        let actions = self
+            .session
+            .runtime_actions_for_reconnect_state_restore_validation_if_needed();
+        if actions.is_empty() {
+            return Ok(());
+        }
+
+        let mut attempted_correction = false;
+        for action in &actions {
+            let is_correction_action = matches!(
+                action,
+                ClientRuntimeAction::SetPaused(_) | ClientRuntimeAction::SetPosition(_)
+            );
+            attempted_correction |= is_correction_action;
+            if is_correction_action {
+                self.session
+                    .reconnect_state_restore_correction_metrics
+                    .correction_actions_attempted = self
+                    .session
+                    .reconnect_state_restore_correction_metrics
+                    .correction_actions_attempted
+                    .saturating_add(1);
+            }
+
+            if let Err(err) = ClientSession::dispatch_runtime_actions(
+                std::slice::from_ref(action),
+                &mut self.player,
+                &mut self.control,
+            ) {
+                if is_correction_action {
+                    self.session
+                        .reconnect_state_restore_correction_metrics
+                        .correction_action_failures = self
+                        .session
+                        .reconnect_state_restore_correction_metrics
+                        .correction_action_failures
+                        .saturating_add(1);
+                    if let Some(notification) = self
+                        .session
+                        .defer_reconnect_state_restore_validation_after_correction_failure()
+                    {
+                        self.control.notify_reconnect_transition(notification);
+                    }
+                    return Ok(());
+                }
+                return Err(err);
+            }
+
+            if is_correction_action {
+                self.session
+                    .reconnect_state_restore_correction_metrics
+                    .correction_actions_succeeded = self
+                    .session
+                    .reconnect_state_restore_correction_metrics
+                    .correction_actions_succeeded
+                    .saturating_add(1);
+            }
+            self.session
+                .apply_successful_reconnect_state_restore_validation_action(action);
+        }
+
+        if attempted_correction {
+            self.session
+                .complete_reconnect_state_restore_validation_after_success();
+        }
+
+        Ok(())
     }
 
     pub fn run_reconnect_playlist_restore_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -803,6 +1011,7 @@ where
     }
 
     pub fn run_toggle_pause(&mut self) -> Result<bool, PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.runtime_actions_for_local_pause_toggle();
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -880,6 +1089,7 @@ where
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -887,6 +1097,7 @@ where
     }
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self
             .session
             .runtime_actions_for_local_seek_offset(offset_seconds);
@@ -896,6 +1107,7 @@ where
     }
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.runtime_actions_for_local_seek_undo();
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
@@ -903,6 +1115,7 @@ where
     }
 
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
         let actions = self.session.handle_disconnect(now_seconds);
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }
@@ -958,6 +1171,13 @@ where
         }
         Value::Object(payload)
     }
+
+    fn sync_player_playback_telemetry_into_session_and_buffer(&mut self) {
+        while let Some(update) = self.player.take_playback_telemetry_update() {
+            self.session.apply_player_playback_telemetry_update(&update);
+            self.pending_player_playback_telemetry_updates.push(update);
+        }
+    }
 }
 
 impl<P> ClientRuntime<P, QueuedRuntimeControl>
@@ -1000,6 +1220,13 @@ where
 
     pub fn drain_reconnect_notifications(&mut self) -> Vec<ReconnectTransitionNotification> {
         self.control.drain_reconnect_notifications()
+    }
+
+    pub fn drain_player_playback_telemetry_updates(
+        &mut self,
+    ) -> Vec<PlayerPlaybackTelemetryUpdate> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        std::mem::take(&mut self.pending_player_playback_telemetry_updates)
     }
 
     pub fn flush_queued_protocol_lines_to_transport<F>(
@@ -1084,6 +1311,19 @@ where
         }
         Ok(())
     }
+
+    pub fn drain_player_playback_telemetry_updates_to_sink<F, E>(
+        &mut self,
+        mut notify: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(&PlayerPlaybackTelemetryUpdate) -> Result<(), E>,
+    {
+        for update in self.drain_player_playback_telemetry_updates() {
+            notify(&update)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1139,6 +1379,18 @@ pub struct ClientSession {
     reconnect_controller_restore_snapshot: Option<bool>,
     reconnect_playlist_restore_snapshot: Option<ReconnectPlaylistRestoreIntent>,
     reconnect_playlist_restore_intent: Option<ReconnectPlaylistRestoreIntent>,
+    reconnect_state_restore_validation_pending: bool,
+    reconnect_state_restore_validation_retry_attempts: u32,
+    reconnect_state_restore_validation_retry_cooldown_ticks: u32,
+    reconnect_state_restore_validation_mismatch_notified: bool,
+    reconnect_state_restore_validation_mismatch_seen_in_cycle: bool,
+    reconnect_state_restore_correction_consecutive_mismatch_cycles: u32,
+    reconnect_state_restore_correction_consecutive_retry_exhaustions: u32,
+    reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining: u32,
+    reconnect_state_restore_correction_recovery_suppressed_this_cycle: bool,
+    reconnect_state_restore_correction_recovery_reenable_notification_pending: bool,
+    reconnect_state_restore_correction_recovery_reenabled_this_cycle: bool,
+    reconnect_state_restore_correction_metrics: ReconnectStateRestoreCorrectionMetrics,
     pending_chat_notifications: Vec<ChatNotification>,
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
@@ -1190,6 +1442,19 @@ impl Default for ClientSession {
             reconnect_controller_restore_snapshot: None,
             reconnect_playlist_restore_snapshot: None,
             reconnect_playlist_restore_intent: None,
+            reconnect_state_restore_validation_pending: false,
+            reconnect_state_restore_validation_retry_attempts: 0,
+            reconnect_state_restore_validation_retry_cooldown_ticks: 0,
+            reconnect_state_restore_validation_mismatch_notified: false,
+            reconnect_state_restore_validation_mismatch_seen_in_cycle: false,
+            reconnect_state_restore_correction_consecutive_mismatch_cycles: 0,
+            reconnect_state_restore_correction_consecutive_retry_exhaustions: 0,
+            reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining: 0,
+            reconnect_state_restore_correction_recovery_suppressed_this_cycle: false,
+            reconnect_state_restore_correction_recovery_reenable_notification_pending: false,
+            reconnect_state_restore_correction_recovery_reenabled_this_cycle: false,
+            reconnect_state_restore_correction_metrics:
+                ReconnectStateRestoreCorrectionMetrics::default(),
             pending_chat_notifications: Vec::new(),
             pending_controller_auth_notifications: Vec::new(),
             pending_user_change_notifications: Vec::new(),
@@ -1213,6 +1478,256 @@ impl Default for ClientSession {
 }
 
 impl ClientSession {
+    pub fn apply_player_playback_telemetry_update(
+        &mut self,
+        update: &PlayerPlaybackTelemetryUpdate,
+    ) {
+        if let Some(paused) = update.paused {
+            self.local_paused = Some(paused);
+        }
+        if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {
+            self.local_position = Some(position_seconds);
+        }
+    }
+
+    fn clear_reconnect_state_restore_validation_state(&mut self) {
+        self.reconnect_state_restore_validation_pending = false;
+        self.reconnect_state_restore_validation_retry_attempts = 0;
+        self.reconnect_state_restore_validation_retry_cooldown_ticks = 0;
+        self.reconnect_state_restore_validation_mismatch_notified = false;
+        self.reconnect_state_restore_validation_mismatch_seen_in_cycle = false;
+        self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = false;
+        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+    }
+
+    fn reconnect_state_restore_correction_policy_mode(
+        &self,
+    ) -> ReconnectStateRestoreCorrectionPolicyMode {
+        self.behavior_config
+            .reconnect_state_restore_correction_policy_mode_override
+            .unwrap_or(
+                if self.behavior_config.reconnect_state_restore_auto_correct {
+                    ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect
+                } else {
+                    ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly
+                },
+            )
+    }
+
+    fn reconnect_state_restore_position_tolerance_seconds_effective(&self) -> f64 {
+        let position_tolerance_seconds = self
+            .behavior_config
+            .reconnect_state_restore_position_tolerance_seconds;
+        if position_tolerance_seconds.is_finite() && position_tolerance_seconds >= 0.0 {
+            position_tolerance_seconds
+        } else {
+            SEEK_THRESHOLD_SECONDS
+        }
+    }
+
+    fn reconnect_state_restore_correction_retry_cooldown_for_failed_attempt(
+        &self,
+        failed_attempts: u32,
+    ) -> u32 {
+        let base_cooldown_ticks = self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_cooldown_ticks;
+        if base_cooldown_ticks == 0 {
+            return base_cooldown_ticks;
+        }
+        let use_exponential_backoff = self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_exponential_backoff;
+        let adaptive_cycle_backoff_shift = if self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_adaptive_cycle_backoff
+        {
+            self.reconnect_state_restore_correction_consecutive_retry_exhaustions
+        } else {
+            0
+        };
+        if !use_exponential_backoff && adaptive_cycle_backoff_shift == 0 {
+            return base_cooldown_ticks;
+        }
+
+        let max_cooldown_ticks = self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_max_cooldown_ticks
+            .max(base_cooldown_ticks);
+        let per_attempt_shift = if use_exponential_backoff {
+            failed_attempts.saturating_sub(1)
+        } else {
+            0
+        };
+        let shift = per_attempt_shift
+            .saturating_add(adaptive_cycle_backoff_shift)
+            .min(63);
+        let multiplier = 1_u64 << shift;
+        let scaled_cooldown_ticks = u64::from(base_cooldown_ticks).saturating_mul(multiplier);
+        scaled_cooldown_ticks.min(u64::from(max_cooldown_ticks)) as u32
+    }
+
+    fn reconnect_state_restore_correction_effective_retry_max_attempts(&self) -> u32 {
+        let configured_max_attempts = self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_max_attempts;
+        if !self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget
+        {
+            return configured_max_attempts;
+        }
+
+        let min_attempts = self
+            .behavior_config
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts
+            .min(configured_max_attempts);
+        configured_max_attempts
+            .saturating_sub(self.reconnect_state_restore_correction_consecutive_retry_exhaustions)
+            .max(min_attempts)
+    }
+
+    fn note_reconnect_state_restore_correction_retry_exhaustion(&mut self) {
+        self.reconnect_state_restore_correction_consecutive_retry_exhaustions = self
+            .reconnect_state_restore_correction_consecutive_retry_exhaustions
+            .saturating_add(1);
+    }
+
+    fn reset_reconnect_state_restore_correction_retry_exhaustions(&mut self) {
+        self.reconnect_state_restore_correction_consecutive_retry_exhaustions = 0;
+    }
+
+    fn activate_reconnect_state_restore_correction_recovery_cooldown_if_configured(
+        &mut self,
+    ) -> bool {
+        let recovery_cooldown_reconnect_cycles = self
+            .behavior_config
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles;
+        if recovery_cooldown_reconnect_cycles == 0 {
+            return false;
+        }
+        self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining =
+            recovery_cooldown_reconnect_cycles;
+        self.reconnect_state_restore_correction_recovery_reenable_notification_pending = true;
+        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+        true
+    }
+
+    fn begin_reconnect_state_restore_validation_cycle(&mut self) {
+        self.reconnect_state_restore_correction_metrics
+            .validation_cycles_started = self
+            .reconnect_state_restore_correction_metrics
+            .validation_cycles_started
+            .saturating_add(1);
+        self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = false;
+        self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+        if self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining > 0
+        {
+            self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = self
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining
+                .saturating_sub(1);
+            self.reconnect_state_restore_correction_recovery_suppressed_this_cycle = true;
+            return;
+        }
+        if self.reconnect_state_restore_correction_recovery_reenable_notification_pending {
+            self.reconnect_state_restore_correction_recovery_reenabled_this_cycle = true;
+            self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+        }
+    }
+
+    fn defer_reconnect_state_restore_validation_after_correction_failure(
+        &mut self,
+    ) -> Option<ReconnectTransitionNotification> {
+        if !self.reconnect_state_restore_validation_pending {
+            return None;
+        }
+
+        let retry_max_attempts =
+            self.reconnect_state_restore_correction_effective_retry_max_attempts();
+        let correction_policy_mode = self.reconnect_state_restore_correction_policy_mode();
+        self.reconnect_state_restore_validation_retry_attempts = self
+            .reconnect_state_restore_validation_retry_attempts
+            .saturating_add(1);
+        let failed_attempts = self.reconnect_state_restore_validation_retry_attempts;
+        if failed_attempts > retry_max_attempts {
+            self.note_reconnect_state_restore_correction_retry_exhaustion();
+            self.reconnect_state_restore_correction_metrics
+                .correction_retry_exhaustions = self
+                .reconnect_state_restore_correction_metrics
+                .correction_retry_exhaustions
+                .saturating_add(1);
+            self.activate_reconnect_state_restore_correction_recovery_cooldown_if_configured();
+            self.clear_reconnect_state_restore_validation_state();
+            return Some(
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: failed_attempts,
+                    max_attempts: retry_max_attempts,
+                },
+            );
+        }
+
+        let cooldown_ticks = self
+            .reconnect_state_restore_correction_retry_cooldown_for_failed_attempt(failed_attempts);
+        self.reconnect_state_restore_validation_retry_cooldown_ticks = cooldown_ticks;
+        self.reconnect_state_restore_correction_metrics
+            .correction_retries_scheduled = self
+            .reconnect_state_restore_correction_metrics
+            .correction_retries_scheduled
+            .saturating_add(1);
+        if matches!(
+            correction_policy_mode,
+            ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion
+        ) {
+            return None;
+        }
+        Some(
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                attempt: failed_attempts,
+                max_attempts: retry_max_attempts,
+                cooldown_ticks,
+            },
+        )
+    }
+
+    fn complete_reconnect_state_restore_validation_after_success(&mut self) {
+        self.reconnect_state_restore_correction_metrics
+            .validation_cycles_completed_with_successful_correction = self
+            .reconnect_state_restore_correction_metrics
+            .validation_cycles_completed_with_successful_correction
+            .saturating_add(1);
+        if self.reconnect_state_restore_validation_mismatch_seen_in_cycle {
+            let decay = self
+                .behavior_config
+                .reconnect_state_restore_correction_disable_after_mismatch_decay_on_success;
+            if decay > 0 {
+                self.reconnect_state_restore_correction_consecutive_mismatch_cycles = self
+                    .reconnect_state_restore_correction_consecutive_mismatch_cycles
+                    .saturating_sub(decay);
+            }
+        }
+        self.reset_reconnect_state_restore_correction_retry_exhaustions();
+        self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 0;
+        self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+        self.clear_reconnect_state_restore_validation_state();
+    }
+
+    fn apply_successful_reconnect_state_restore_validation_action(
+        &mut self,
+        action: &ClientRuntimeAction,
+    ) {
+        match action {
+            ClientRuntimeAction::SetPaused(paused) => {
+                self.local_paused = Some(*paused);
+            }
+            ClientRuntimeAction::SetPosition(position_seconds) => {
+                if position_seconds.is_finite() {
+                    self.local_position = Some(*position_seconds);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn dispatch_runtime_actions<P, C>(
         actions: &[ClientRuntimeAction],
         player: &mut P,
@@ -1572,6 +2087,39 @@ impl ClientSession {
 
     pub fn behavior_config_mut(&mut self) -> &mut SessionBehaviorConfig {
         &mut self.behavior_config
+    }
+
+    pub fn reconnect_state_restore_correction_metrics(
+        &self,
+    ) -> &ReconnectStateRestoreCorrectionMetrics {
+        &self.reconnect_state_restore_correction_metrics
+    }
+
+    pub fn reconnect_state_restore_correction_state_snapshot(
+        &self,
+    ) -> ReconnectStateRestoreCorrectionStateSnapshot {
+        ReconnectStateRestoreCorrectionStateSnapshot {
+            validation_pending: self.reconnect_state_restore_validation_pending,
+            retry_attempts: self.reconnect_state_restore_validation_retry_attempts,
+            retry_cooldown_ticks: self.reconnect_state_restore_validation_retry_cooldown_ticks,
+            mismatch_notified_in_cycle: self.reconnect_state_restore_validation_mismatch_notified,
+            mismatch_seen_in_cycle: self.reconnect_state_restore_validation_mismatch_seen_in_cycle,
+            effective_policy_mode: self.reconnect_state_restore_correction_policy_mode(),
+            position_tolerance_seconds: self
+                .reconnect_state_restore_position_tolerance_seconds_effective(),
+            effective_retry_max_attempts: self
+                .reconnect_state_restore_correction_effective_retry_max_attempts(),
+            consecutive_mismatch_cycles: self
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            consecutive_retry_exhaustions: self
+                .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            recovery_cooldown_reconnect_cycles_remaining: self
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            correction_suppressed_for_recovery_cycle: self
+                .reconnect_state_restore_correction_recovery_suppressed_this_cycle,
+            correction_reenabled_for_recovery_cycle: self
+                .reconnect_state_restore_correction_recovery_reenabled_this_cycle,
+        }
     }
 
     pub fn readiness_autoplay_config(&self) -> &ReadinessAutoplayConfig {
@@ -2111,6 +2659,12 @@ impl ClientSession {
         }
 
         if !actions.is_empty() {
+            self.reconnect_state_restore_validation_pending = true;
+            self.reconnect_state_restore_validation_retry_attempts = 0;
+            self.reconnect_state_restore_validation_retry_cooldown_ticks = 0;
+            self.reconnect_state_restore_validation_mismatch_notified = false;
+            self.reconnect_state_restore_validation_mismatch_seen_in_cycle = false;
+            self.begin_reconnect_state_restore_validation_cycle();
             actions.insert(
                 0,
                 ClientRuntimeAction::NotifyReconnectTransition(
@@ -2119,6 +2673,167 @@ impl ClientSession {
             );
         }
 
+        actions
+    }
+
+    pub fn runtime_actions_for_reconnect_state_restore_validation_if_needed(
+        &mut self,
+    ) -> Vec<ClientRuntimeAction> {
+        if !self.reconnect_state_restore_validation_pending {
+            return Vec::new();
+        }
+        if self.reconnect_state_restore_validation_retry_cooldown_ticks > 0 {
+            self.reconnect_state_restore_validation_retry_cooldown_ticks = self
+                .reconnect_state_restore_validation_retry_cooldown_ticks
+                .saturating_sub(1);
+            return Vec::new();
+        }
+
+        let Some(room_playstate) = self.current_room_playstate() else {
+            return Vec::new();
+        };
+        let (Some(room_paused), Some(room_position)) =
+            (room_playstate.paused, room_playstate.position)
+        else {
+            return Vec::new();
+        };
+        let (Some(local_paused), Some(local_position)) = (self.local_paused, self.local_position)
+        else {
+            return Vec::new();
+        };
+
+        let position_diff_seconds = (local_position - room_position).abs();
+        let pause_matches = local_paused == room_paused;
+        let position_tolerance_seconds =
+            self.reconnect_state_restore_position_tolerance_seconds_effective();
+        let position_matches = position_diff_seconds <= position_tolerance_seconds;
+        if pause_matches && position_matches {
+            self.reconnect_state_restore_correction_metrics
+                .validation_cycles_completed_without_mismatch = self
+                .reconnect_state_restore_correction_metrics
+                .validation_cycles_completed_without_mismatch
+                .saturating_add(1);
+            self.reconnect_state_restore_correction_consecutive_mismatch_cycles = 0;
+            self.reset_reconnect_state_restore_correction_retry_exhaustions();
+            self.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining =
+                0;
+            self.reconnect_state_restore_correction_recovery_reenable_notification_pending = false;
+            self.clear_reconnect_state_restore_validation_state();
+            return Vec::new();
+        }
+
+        let correction_policy_mode = self.reconnect_state_restore_correction_policy_mode();
+        let correction_suppressed_for_recovery_cycle =
+            self.reconnect_state_restore_correction_recovery_suppressed_this_cycle;
+        let correction_reenabled_for_this_cycle =
+            self.reconnect_state_restore_correction_recovery_reenabled_this_cycle;
+        if !self.reconnect_state_restore_validation_mismatch_seen_in_cycle
+            && !correction_suppressed_for_recovery_cycle
+        {
+            self.reconnect_state_restore_validation_mismatch_seen_in_cycle = true;
+            self.reconnect_state_restore_correction_metrics
+                .mismatch_cycles_detected = self
+                .reconnect_state_restore_correction_metrics
+                .mismatch_cycles_detected
+                .saturating_add(1);
+            self.reconnect_state_restore_correction_consecutive_mismatch_cycles = self
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles
+                .saturating_add(1);
+        }
+        let consecutive_mismatch_cycles =
+            self.reconnect_state_restore_correction_consecutive_mismatch_cycles;
+        let disable_after_mismatch_cycles = self
+            .behavior_config
+            .reconnect_state_restore_correction_disable_after_mismatch_cycles;
+        let disable_correction_due_to_repeated_mismatches = matches!(
+            correction_policy_mode,
+            ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches
+        ) && disable_after_mismatch_cycles > 0
+            && consecutive_mismatch_cycles >= disable_after_mismatch_cycles;
+        let mut actions = Vec::new();
+        let should_emit_mismatch_notification = !matches!(
+            correction_policy_mode,
+            ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion
+        ) && !disable_correction_due_to_repeated_mismatches;
+        if correction_reenabled_for_this_cycle {
+            self.reconnect_state_restore_correction_metrics
+                .correction_recovery_cooldown_reenabled_cycles = self
+                .reconnect_state_restore_correction_metrics
+                .correction_recovery_cooldown_reenabled_cycles
+                .saturating_add(1);
+            actions.push(ClientRuntimeAction::NotifyReconnectTransition(
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+            ));
+        }
+        if should_emit_mismatch_notification
+            && !self.reconnect_state_restore_validation_mismatch_notified
+        {
+            self.reconnect_state_restore_validation_mismatch_notified = true;
+            self.reconnect_state_restore_correction_metrics
+                .mismatch_notifications_emitted = self
+                .reconnect_state_restore_correction_metrics
+                .mismatch_notifications_emitted
+                .saturating_add(1);
+            actions.push(ClientRuntimeAction::NotifyReconnectTransition(
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused,
+                    room_paused,
+                    local_position,
+                    room_position,
+                    position_diff_seconds,
+                },
+            ));
+        }
+
+        if correction_suppressed_for_recovery_cycle {
+            self.reconnect_state_restore_correction_metrics
+                .correction_recovery_cooldown_suppressed_cycles = self
+                .reconnect_state_restore_correction_metrics
+                .correction_recovery_cooldown_suppressed_cycles
+                .saturating_add(1);
+            actions.push(ClientRuntimeAction::NotifyReconnectTransition(
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: self
+                        .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+                },
+            ));
+            self.clear_reconnect_state_restore_validation_state();
+            return actions;
+        }
+
+        if disable_correction_due_to_repeated_mismatches {
+            if self.activate_reconnect_state_restore_correction_recovery_cooldown_if_configured() {
+                self.reconnect_state_restore_correction_consecutive_mismatch_cycles = 0;
+            }
+            self.reconnect_state_restore_correction_metrics
+                .correction_disables_after_repeated_mismatches = self
+                .reconnect_state_restore_correction_metrics
+                .correction_disables_after_repeated_mismatches
+                .saturating_add(1);
+            self.clear_reconnect_state_restore_validation_state();
+            actions.push(ClientRuntimeAction::NotifyReconnectTransition(
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                    consecutive_mismatch_cycles,
+                    disable_after_mismatch_cycles,
+                },
+            ));
+            return actions;
+        }
+
+        if matches!(
+            correction_policy_mode,
+            ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly
+        ) {
+            self.clear_reconnect_state_restore_validation_state();
+            return actions;
+        }
+
+        if !pause_matches {
+            actions.push(ClientRuntimeAction::SetPaused(room_paused));
+        }
+        if !position_matches {
+            actions.push(ClientRuntimeAction::SetPosition(room_position));
+        }
         actions
     }
 
@@ -2995,6 +3710,7 @@ impl ClientSession {
         });
         self.reconnect_playlist_restore_intent = None;
         self.reconnect_connected_intent = false;
+        self.clear_reconnect_state_restore_validation_state();
         self.pending_chat_notifications.clear();
         self.pending_controller_auth_notifications.clear();
         self.pending_user_change_notifications.clear();
@@ -4154,6 +4870,7 @@ impl ClientSession {
 #[cfg(test)]
 mod tests {
     use crate::PRIVACY_HIDDEN_FILENAME;
+    use crate::SEEK_THRESHOLD_SECONDS;
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::fs;
@@ -4165,10 +4882,13 @@ mod tests {
         ControllerAuthTransitionNotification, DesyncCorrectionAction, FileDifferenceSummary,
         LEGACY_CHAT_MAX_MESSAGE_LENGTH, LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
         LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, PrivacyMode, QueuedRuntimeControl,
-        ReadinessAutoplayConfig, ReconnectTransitionNotification, UnpauseActionMode,
-        UserChangeNotification,
+        ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
+        ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification,
+        RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
     };
-    use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerError};
+    use syncplay_player_api::{
+        LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
+    };
     use syncplay_protocol::{
         ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PlaystatePayload, ProtocolMessage,
         StatePayload, decode_line, decode_message_line,
@@ -4228,6 +4948,7 @@ mod tests {
         playback_rate: Option<f64>,
         fail_set_position: bool,
         pending_local_file_update: Option<LocalFileUpdate>,
+        pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
     }
 
     impl PlayerAdapter for RecordingPlayer {
@@ -4255,6 +4976,10 @@ mod tests {
 
         fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
             self.pending_local_file_update.take()
+        }
+
+        fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
+            self.pending_playback_telemetry_update.take()
         }
     }
 
@@ -7677,6 +8402,1742 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification_and_corrects()
+    {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("reconnect state restore telemetry validation should not fail");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ]
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "validation mismatch policy should issue a corrective pause command toward room state"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "validation mismatch policy should issue a corrective seek toward room state"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(false),
+            "session local pause state should be updated to the corrective target"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(120.0),
+            "session local position should be updated to the corrective target"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "validation should preserve telemetry updates for later diagnostics drains"
+        );
+        assert!(runtime.drain_reconnect_notifications().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should wait when telemetry is incomplete");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no reconnect validation notification should emit until position is known"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![PlayerPlaybackTelemetryUpdate::default().with_paused(false)]
+        );
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "pending validation should remain set until complete local/global playstate is available"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_notify_only_mode_skips_correction() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_auto_correct = false;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("notify-only validation should not fail");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ]
+        );
+        assert_eq!(runtime.player().paused, None);
+        assert_eq!(runtime.player().position, None);
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(true),
+            "notify-only mode should leave telemetry-refreshed local state unchanged"
+        );
+        assert_eq!(runtime.session().local_position, Some(117.5));
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_honors_custom_position_tolerance() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_position_tolerance_seconds = 3.0;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should respect custom tolerance");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "2.5s diff should be tolerated when reconnect correction tolerance is 3.0s"
+        );
+        assert_eq!(runtime.player().paused, None);
+        assert_eq!(runtime.player().position, None);
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_retries_correction_after_failure() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("transient correction failure should be swallowed and retried later");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 3,
+                    cooldown_ticks: 1,
+                },
+            ],
+            "mismatch and retry-scheduled notifications should emit on the first correction failure"
+        );
+        assert_eq!(runtime.player().position, None);
+        assert!(runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_attempts,
+            1
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            1
+        );
+
+        runtime.player_mut().fail_set_position = false;
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first retry cycle should be throttled");
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "cooldown should defer retry by one validation invocation"
+        );
+        assert!(runtime.drain_reconnect_notifications().is_empty());
+        assert!(runtime.session().reconnect_state_restore_validation_pending);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("retry after cooldown should succeed");
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert!(runtime.drain_reconnect_notifications().is_empty());
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "telemetry should remain available for later diagnostics despite retry handling"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first correction failure should schedule retry within configured budget");
+        assert!(runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_attempts,
+            1
+        );
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 1,
+                    cooldown_ticks: 0,
+                },
+            ]
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure should give up after configured retry budget");
+
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "retry budget should clear pending validation after a repeated correction failure"
+        );
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 2,
+                    max_attempts: 1,
+                }
+            ],
+            "retry exhaustion should emit a give-up notification without duplicating mismatch details"
+        );
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "failed correction should not claim success before retry budget is exhausted"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldown() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 2;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 2;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first correction failure should be swallowed");
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            2
+        );
+        runtime.player_mut().fail_set_position = false;
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first cooldown tick should defer retry");
+        assert_eq!(runtime.player().position, None);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            1
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second cooldown tick should still defer retry");
+        assert_eq!(runtime.player().position, None);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            0
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("retry should run after configured cooldown expires");
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_backoff_cap() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 3;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_exponential_backoff = true;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_cooldown_ticks = 2;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first failure should schedule retry with base cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 3,
+                    cooldown_ticks: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            1
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("cooldown tick should defer second retry attempt");
+        assert!(runtime.drain_reconnect_notifications().is_empty());
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            0
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure should use exponential cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 2,
+                    max_attempts: 3,
+                    cooldown_ticks: 2,
+                },
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            2
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first cooldown tick after second failure should defer retry");
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second cooldown tick after second failure should defer retry");
+        assert!(runtime.drain_reconnect_notifications().is_empty());
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            0
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("third failure should apply capped exponential cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 3,
+                    max_attempts: 3,
+                    cooldown_ticks: 2,
+                },
+            ],
+            "third exponential cooldown would be 4 ticks but should clamp to configured max"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            2
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_adaptive_retry_backoff_scales_after_prior_exhaustion()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_backoff = true;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first correction failure should exhaust retry budget");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 1,
+                    max_attempts: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            1
+        );
+
+        runtime
+            .session_mut()
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(117.5);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("adaptive retry backoff should schedule a retry in the next restore cycle");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 1,
+                    cooldown_ticks: 2,
+                },
+            ],
+            "one prior retry-exhausted restore cycle should double the first retry cooldown when adaptive cycle backoff is enabled"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_cooldown_ticks,
+            2
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_reduces_after_prior_exhaustion()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget = true;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first correction failure should exhaust zero retry budget");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 1,
+                    max_attempts: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            1
+        );
+
+        runtime
+            .session_mut()
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 2;
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(117.5);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second restore cycle should use reduced adaptive retry budget");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 1,
+                    cooldown_ticks: 0,
+                },
+            ],
+            "one prior retry-exhausted restore cycle should reduce the effective retry budget by one attempt when adaptive budget is enabled"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure in reduced budget cycle should exhaust retries");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 2,
+                    max_attempts: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_adaptive_retry_budget_honors_min_attempt_floor()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 3;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget = true;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts = 2;
+        session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 5;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("adaptive retry budget floor should still allow retries");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 2,
+                    cooldown_ticks: 0,
+                },
+            ],
+            "adaptive retry budget floor should cap reductions so the effective retry budget does not fall below the configured minimum"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_recovery_cooldown_suppresses_cycle_after_retry_exhaustion_then_reenables()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first reconnect correction failure should exhaust retries");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 1,
+                    max_attempts: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            1
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown should suppress correction for one reconnect cycle");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 125.0,
+                    room_position: 130.0,
+                    position_diff_seconds: 5.0,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ],
+            "suppressed recovery cycle should emit mismatch visibility but skip corrective actions"
+        );
+        assert_eq!(runtime.player().position, None);
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            0
+        );
+
+        runtime.player_mut().fail_set_position = false;
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("correction should re-enable after recovery cooldown cycle completes");
+        assert_eq!(runtime.player().position, Some(140.0));
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 135.0,
+                    room_position: 140.0,
+                    position_diff_seconds: 5.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_success_resets_adaptive_retry_backoff_history()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_backoff = true;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 2;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("successful correction should complete reconnect validation");
+
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_retry_exhaustions,
+            0,
+            "adaptive retry backoff history should reset after a successful correction"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_warn_only_on_exhaustion_suppresses_early_notifications()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("warn-only-on-exhaustion policy should still attempt correction");
+
+        assert!(runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_validation_retry_attempts,
+            1
+        );
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "warn-only-on-exhaustion should suppress mismatch and retry notifications before exhaustion"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure should exhaust retry budget and emit a single warning");
+
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 2,
+                    max_attempts: 1,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_stops_correction_on_threshold()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_disable_after_mismatch_cycles = 2;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first mismatch cycle should still auto-correct before threshold");
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            1
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime.player_mut().pending_playback_telemetry_update = Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(125.0),
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect(
+                "threshold-reaching mismatch cycle should disable correction instead of correcting",
+            );
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                    consecutive_mismatch_cycles: 2,
+                    disable_after_mismatch_cycles: 2,
+                }
+            ]
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "no corrective seek should be issued once disable-after-N-mismatches threshold is reached"
+        );
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            2
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_decays_counter_after_successful_correction_when_configured()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_disable_after_mismatch_cycles = 2;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_disable_after_mismatch_decay_on_success = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first restore mismatch should be corrected");
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "first reconnect mismatch should still auto-correct"
+        );
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            0,
+            "configured decay-on-success should recover the repeated-mismatch counter after successful correction"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect(
+                "second restore mismatch should still correct instead of hitting disable threshold",
+            );
+        assert_eq!(
+            runtime.player().position,
+            Some(130.0),
+            "decay-on-success should prevent threshold accumulation across successful correction cycles"
+        );
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 125.0,
+                    room_position: 130.0,
+                    position_diff_seconds: 5.0,
+                }
+            ]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            0
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_recovery_cooldown_reenables_correction()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_disable_after_mismatch_cycles = 2;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first mismatch should correct and increment mismatch-cycle counter");
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            1
+        );
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ]
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second mismatch should trigger disable-after-N and start recovery cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                consecutive_mismatch_cycles: 2,
+                disable_after_mismatch_cycles: 2,
+            }]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            1
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            0,
+            "disable path should reset mismatch-cycle counter when recovery cooldown is activated"
+        );
+        assert_eq!(runtime.player().position, Some(120.0));
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown cycle should suppress correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 135.0,
+                    room_position: 140.0,
+                    position_diff_seconds: 5.0,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ]
+        );
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            0
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_consecutive_mismatch_cycles,
+            0
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(150.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(145.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("correction should re-enable after recovery cooldown cycle");
+        assert_eq!(runtime.player().position, Some(150.0));
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 145.0,
+                    room_position: 150.0,
+                    position_diff_seconds: 5.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reconnect_state_restore_correction_state_snapshot_reports_effective_policy_and_retry_budget()
+    {
+        let mut session = ClientSession::default();
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_position_tolerance_seconds = -5.0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 5;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget = true;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts = 2;
+        session.reconnect_state_restore_validation_pending = true;
+        session.reconnect_state_restore_validation_retry_attempts = 2;
+        session.reconnect_state_restore_validation_retry_cooldown_ticks = 4;
+        session.reconnect_state_restore_validation_mismatch_notified = true;
+        session.reconnect_state_restore_validation_mismatch_seen_in_cycle = true;
+        session.reconnect_state_restore_correction_consecutive_mismatch_cycles = 3;
+        session.reconnect_state_restore_correction_consecutive_retry_exhaustions = 4;
+        session.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining = 2;
+        session.reconnect_state_restore_correction_recovery_suppressed_this_cycle = true;
+        session.reconnect_state_restore_correction_recovery_reenabled_this_cycle = false;
+
+        let snapshot = session.reconnect_state_restore_correction_state_snapshot();
+        assert!(snapshot.validation_pending);
+        assert_eq!(snapshot.retry_attempts, 2);
+        assert_eq!(snapshot.retry_cooldown_ticks, 4);
+        assert!(snapshot.mismatch_notified_in_cycle);
+        assert!(snapshot.mismatch_seen_in_cycle);
+        assert_eq!(
+            snapshot.effective_policy_mode,
+            ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches
+        );
+        assert_eq!(
+            snapshot.position_tolerance_seconds, SEEK_THRESHOLD_SECONDS,
+            "invalid tolerance should normalize to the default seek threshold in snapshots"
+        );
+        assert_eq!(
+            snapshot.effective_retry_max_attempts, 2,
+            "adaptive retry budget snapshot should respect the configured minimum floor"
+        );
+        assert_eq!(snapshot.consecutive_mismatch_cycles, 3);
+        assert_eq!(snapshot.consecutive_retry_exhaustions, 4);
+        assert_eq!(snapshot.recovery_cooldown_reconnect_cycles_remaining, 2);
+        assert!(snapshot.correction_suppressed_for_recovery_cycle);
+        assert!(!snapshot.correction_reenabled_for_recovery_cycle);
+
+        assert_eq!(
+            *session.reconnect_state_restore_correction_metrics(),
+            ReconnectStateRestoreCorrectionMetrics::default(),
+            "metrics should start at zero until reconnect validation cycles execute"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_metrics_and_state_snapshot_track_retry_and_recovery_progress()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 0;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+        session.reconnect_state_restore_validation_pending = true;
+        session.begin_reconnect_state_restore_validation_cycle();
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first failure should exhaust zero retry budget and start recovery cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 1,
+                    max_attempts: 0,
+                },
+            ]
+        );
+        let snapshot_after_exhaustion = runtime.reconnect_state_restore_correction_state_snapshot();
+        assert!(!snapshot_after_exhaustion.validation_pending);
+        assert_eq!(
+            snapshot_after_exhaustion.recovery_cooldown_reconnect_cycles_remaining,
+            1
+        );
+        assert_eq!(snapshot_after_exhaustion.consecutive_retry_exhaustions, 1);
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown cycle should suppress correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 125.0,
+                    room_position: 130.0,
+                    position_diff_seconds: 5.0,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ]
+        );
+
+        runtime.player_mut().fail_set_position = false;
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("correction should re-enable and succeed after recovery cooldown");
+        assert_eq!(runtime.player().position, Some(140.0));
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 135.0,
+                    room_position: 140.0,
+                    position_diff_seconds: 5.0,
+                },
+            ]
+        );
+
+        let metrics = *runtime.reconnect_state_restore_correction_metrics();
+        assert_eq!(metrics.validation_cycles_started, 3);
+        assert_eq!(metrics.validation_cycles_completed_without_mismatch, 0);
+        assert_eq!(
+            metrics.validation_cycles_completed_with_successful_correction,
+            1
+        );
+        assert_eq!(metrics.mismatch_cycles_detected, 2);
+        assert_eq!(metrics.mismatch_notifications_emitted, 3);
+        assert_eq!(metrics.correction_actions_attempted, 2);
+        assert_eq!(metrics.correction_actions_succeeded, 1);
+        assert_eq!(metrics.correction_action_failures, 1);
+        assert_eq!(metrics.correction_retries_scheduled, 0);
+        assert_eq!(metrics.correction_retry_exhaustions, 1);
+        assert_eq!(metrics.correction_disables_after_repeated_mismatches, 0);
+        assert_eq!(metrics.correction_recovery_cooldown_suppressed_cycles, 1);
+        assert_eq!(metrics.correction_recovery_cooldown_reenabled_cycles, 1);
+
+        let final_snapshot = runtime.reconnect_state_restore_correction_state_snapshot();
+        assert!(!final_snapshot.validation_pending);
+        assert_eq!(final_snapshot.retry_attempts, 0);
+        assert_eq!(final_snapshot.retry_cooldown_ticks, 0);
+        assert_eq!(final_snapshot.consecutive_retry_exhaustions, 0);
+        assert_eq!(
+            final_snapshot.recovery_cooldown_reconnect_cycles_remaining,
+            0
+        );
+        assert!(!final_snapshot.correction_suppressed_for_recovery_cycle);
+        assert!(!final_snapshot.correction_reenabled_for_recovery_cycle);
+    }
+
+    #[test]
     fn client_runtime_controller_reidentify_dispatches_controller_auth_message() {
         let mut session = ClientSession::default();
         session.remember_control_password_for_room("+room:ABCDEF123456", "ab-123-456");
@@ -10045,6 +12506,143 @@ mod tests {
             }]
         );
         assert!(runtime.drain_chat_notifications().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_callback() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(12.5)
+                    .with_playback_rate(0.95),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let mut captured = Vec::new();
+        runtime
+            .drain_player_playback_telemetry_updates_to_sink(|update| {
+                captured.push(update.clone());
+                Ok::<(), ()>(())
+            })
+            .expect("playback telemetry sink dispatch should succeed");
+
+        assert_eq!(
+            captured,
+            vec![PlayerPlaybackTelemetryUpdate {
+                paused: Some(true),
+                position_seconds: Some(12.5),
+                playback_rate: Some(0.95),
+            }]
+        );
+        assert!(runtime.drain_player_playback_telemetry_updates().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_drain_player_playback_telemetry_updates_refreshes_local_state() {
+        let mut session = ClientSession::default();
+        session.local_paused = Some(true);
+        session.local_position = Some(1.0);
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(12.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let updates = runtime.drain_player_playback_telemetry_updates();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(runtime.session().local_paused, Some(false));
+        assert_eq!(runtime.session().local_position, Some(12.5));
+
+        assert!(
+            runtime
+                .run_toggle_pause()
+                .expect("toggle pause should use telemetry-refreshed local paused state"),
+            "toggle pause should emit a local SetPaused action"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(true),
+            "toggle should invert the telemetry-confirmed paused=false state"
+        );
+    }
+
+    #[test]
+    fn client_runtime_toggle_pause_pre_syncs_pending_telemetry_and_preserves_drain() {
+        let mut session = ClientSession::default();
+        session.local_paused = Some(true);
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_toggle_pause()
+                .expect("toggle pause should pre-sync pending telemetry"),
+            "toggle pause should emit a local SetPaused action"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(true),
+            "toggle should invert telemetry-confirmed paused=false, not stale local_paused=true"
+        );
+
+        let drained = runtime.drain_player_playback_telemetry_updates();
+        assert_eq!(
+            drained,
+            vec![PlayerPlaybackTelemetryUpdate::default().with_paused(false)]
+        );
+    }
+
+    #[test]
+    fn client_runtime_seek_by_offset_pre_syncs_pending_telemetry_position() {
+        let mut session = ClientSession::default();
+        session.local_position = Some(1.0);
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default().with_position_seconds(12.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_seek_by_offset(2.0)
+                .expect("seek-by-offset should pre-sync pending telemetry position"),
+            "seek-by-offset should emit a local SetPosition action"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(14.5),
+            "offset seek should use telemetry-confirmed local position as the baseline"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(14.5),
+            "local session state should reflect the commanded seek target after applying telemetry baseline"
+        );
+
+        let drained = runtime.drain_player_playback_telemetry_updates();
+        assert_eq!(
+            drained,
+            vec![PlayerPlaybackTelemetryUpdate::default().with_position_seconds(12.5)]
+        );
     }
 
     #[test]

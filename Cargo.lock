@@ -518,6 +518,7 @@ name = "syncplay-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "syncplay-client-core",
  "syncplay-player-api",
  "syncplay-player-mpv",
@@ -571,6 +572,7 @@ name = "syncplay-player-mpv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "syncplay-player-api",
 ]
 

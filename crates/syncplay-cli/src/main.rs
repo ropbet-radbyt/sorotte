@@ -1,14 +1,19 @@
 use std::env;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
+use serde_json::{Map, Value, json};
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
     ClientSession, ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-    QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectTransitionNotification,
-    UnpauseActionMode, UserChangeNotification,
+    QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
+    ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
+    ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
 };
+use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{ProtocolMessage, encode_message_line};
 use syncplay_server::ServerApp;
@@ -24,6 +29,7 @@ const UNKNOWN_COMMAND_MESSAGE_LEGACY: &str = "Unrecognized command";
 const PLAYLIST_INVALID_INDEX_ERROR_LEGACY: &str = "Invalid playlist index";
 const QUEUE_MISSING_FILE_ERROR_LEGACY: &str = "No file/url given";
 const PROJECT_URL_LEGACY: &str = "https://syncplay.pl/";
+const PLAYER_DRIFT_DIAGNOSTIC_THRESHOLD_SECONDS: f64 = 1.0;
 static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -91,6 +97,20 @@ struct ClientBehaviorOverrides {
     loop_single_files: Option<bool>,
     only_switch_to_trusted_domains: Option<bool>,
     trusted_domains: Option<Vec<String>>,
+    reconnect_state_restore_auto_correct: Option<bool>,
+    reconnect_state_restore_correction_policy_mode_override:
+        Option<ReconnectStateRestoreCorrectionPolicyMode>,
+    reconnect_state_restore_position_tolerance_seconds: Option<f64>,
+    reconnect_state_restore_correction_retry_max_attempts: Option<u32>,
+    reconnect_state_restore_correction_retry_cooldown_ticks: Option<u32>,
+    reconnect_state_restore_correction_retry_exponential_backoff: Option<bool>,
+    reconnect_state_restore_correction_retry_max_cooldown_ticks: Option<u32>,
+    reconnect_state_restore_correction_retry_adaptive_cycle_backoff: Option<bool>,
+    reconnect_state_restore_correction_retry_adaptive_cycle_budget: Option<bool>,
+    reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts: Option<u32>,
+    reconnect_state_restore_correction_disable_after_mismatch_cycles: Option<u32>,
+    reconnect_state_restore_correction_disable_after_mismatch_decay_on_success: Option<u32>,
+    reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,10 +144,87 @@ struct FileDifferenceNotificationState {
     last_summary: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct ReconnectCorrectionDiagnosticsState {
+    last_metrics: Option<ReconnectStateRestoreCorrectionMetrics>,
+    last_snapshot: Option<ReconnectStateRestoreCorrectionStateSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ManagedMpvLaunchEnvConfig {
+    enabled: bool,
+    mpv_bin: Option<PathBuf>,
+    media_file: Option<PathBuf>,
+    ipc_path: Option<String>,
+    connect_timeout_ms: Option<u32>,
+    connect_poll_interval_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ReconnectCorrectionDiagnosticsAlertThresholds {
+    action_failures_delta: Option<u64>,
+    retry_exhaustions_delta: Option<u64>,
+    disables_after_repeated_mismatches_delta: Option<u64>,
+    consecutive_mismatch_cycles: Option<u32>,
+    consecutive_retry_exhaustions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconnectCorrectionDiagnosticsFormat {
+    Text,
+    Json,
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     env_trimmed(name)
         .and_then(|value| parse_env_bool_legacy_compatible(&value))
         .unwrap_or(false)
+}
+
+fn reconnect_correction_diagnostics_format_from_env() -> Option<ReconnectCorrectionDiagnosticsFormat>
+{
+    if env_flag_enabled("SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS_JSON") {
+        return Some(ReconnectCorrectionDiagnosticsFormat::Json);
+    }
+    if env_flag_enabled("SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS") {
+        return Some(ReconnectCorrectionDiagnosticsFormat::Text);
+    }
+    None
+}
+
+fn reconnect_correction_diagnostics_alert_thresholds_from_env()
+-> ReconnectCorrectionDiagnosticsAlertThresholds {
+    ReconnectCorrectionDiagnosticsAlertThresholds {
+        action_failures_delta: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_ACTION_FAILURES_DELTA_THRESHOLD",
+        )
+        .map(u64::from),
+        retry_exhaustions_delta: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_RETRY_EXHAUSTIONS_DELTA_THRESHOLD",
+        )
+        .map(u64::from),
+        disables_after_repeated_mismatches_delta: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_DISABLES_DELTA_THRESHOLD",
+        )
+        .map(u64::from),
+        consecutive_mismatch_cycles: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_MISMATCH_CYCLES_THRESHOLD",
+        ),
+        consecutive_retry_exhaustions: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_RETRY_EXHAUSTIONS_THRESHOLD",
+        ),
+    }
+}
+
+fn managed_mpv_launch_env_config_from_env() -> ManagedMpvLaunchEnvConfig {
+    ManagedMpvLaunchEnvConfig {
+        enabled: env_flag_enabled("SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH"),
+        mpv_bin: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_BIN").map(PathBuf::from),
+        media_file: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA").map(PathBuf::from),
+        ipc_path: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH"),
+        connect_timeout_ms: env_u32("SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_TIMEOUT_MS"),
+        connect_poll_interval_ms: env_u32("SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_POLL_INTERVAL_MS"),
+    }
 }
 
 fn env_trimmed(name: &str) -> Option<String> {
@@ -314,6 +411,66 @@ fn print_legacy_client_help() {
         "  -p, --password [password]",
         "  -v, --version",
         "  -h, --help",
+        "",
+        "Environment (optional mpv integration / diagnostics):",
+        "  SYNCPLAY_CLIENT_MPV_IPC_PATH=<path>",
+        "    Attach to an existing mpv JSON IPC socket/pipe (fallback: SYNCPLAY_MPV_IPC_PATH).",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH=1",
+        "    Start a managed mpv process and auto-attach its JSON IPC (ignored when explicit IPC path is set).",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_BIN=<path>",
+        "    mpv binary for managed launch (defaults to a repo-local ./mpv/mpv(.exe) when found).",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA=<path>",
+        "    Optional media file to preload when launching managed mpv.",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH=<path>",
+        "    Optional JSON IPC socket/pipe path for managed mpv (auto-generated when omitted).",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_TIMEOUT_MS=<ms>",
+        "    Max wait for managed mpv JSON IPC to become connectable (default 5000).",
+        "  SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_POLL_INTERVAL_MS=<ms>",
+        "    Poll interval while waiting for managed mpv JSON IPC (default 50).",
+        "  SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY=1",
+        "    Print raw player telemetry updates (pause/position/speed) when available.",
+        "  SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS=1",
+        "    Print read-only player-vs-room drift diagnostics (no behavior change).",
+        "  SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS=1",
+        "    Print reconnect correction metrics deltas and policy-state snapshots for diagnostics.",
+        "  SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS_JSON=1",
+        "    Emit reconnect correction diagnostics as JSON lines (implies diagnostics enabled).",
+        "  SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_ACTION_FAILURES_DELTA_THRESHOLD=<count>",
+        "    Emit reconnect diagnostics alerts when action-failure deltas meet/exceed this threshold.",
+        "  SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_RETRY_EXHAUSTIONS_DELTA_THRESHOLD=<count>",
+        "    Emit reconnect diagnostics alerts when retry-exhaustion deltas meet/exceed this threshold.",
+        "  SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_DISABLES_DELTA_THRESHOLD=<count>",
+        "    Emit reconnect diagnostics alerts when correction-disable deltas meet/exceed this threshold.",
+        "  SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_MISMATCH_CYCLES_THRESHOLD=<count>",
+        "    Emit reconnect diagnostics alerts when consecutive mismatch cycles cross this threshold.",
+        "  SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_RETRY_EXHAUSTIONS_THRESHOLD=<count>",
+        "    Emit reconnect diagnostics alerts when consecutive retry exhaustions cross this threshold.",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_AUTOCORRECT=0|1",
+        "    Control reconnect mismatch policy (default auto-correct on; set 0 for warning-only).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_POLICY=auto|notify-only|warn-only-on-exhaustion",
+        "    Explicit reconnect correction policy mode (overrides legacy AUTOCORRECT flag when set).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_POSITION_TOLERANCE_SECONDS=<seconds>",
+        "    Position mismatch tolerance for reconnect validation/correction (default 1.0).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS=<count>",
+        "    Max reconnect correction failures before giving up (default 3; 0 disables retries).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_COOLDOWN_TICKS=<ticks>",
+        "    Validation invocations to wait before retrying reconnect correction (default 1).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_EXPONENTIAL_BACKOFF=0|1",
+        "    Use exponential cooldown growth between reconnect correction retries (default 0).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_MAX_COOLDOWN_TICKS=<ticks>",
+        "    Max cooldown cap used when exponential reconnect correction retry backoff is enabled (default 8).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BACKOFF=0|1",
+        "    Scale reconnect correction retry cooldowns across reconnect cycles after retry exhaustion (default 0).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET=0|1",
+        "    Reduce reconnect correction retry budget across reconnect cycles after retry exhaustion (default 0).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET_MIN_ATTEMPTS=<count>",
+        "    Minimum retry budget preserved when adaptive cycle retry-budget reduction is enabled (default 0).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCHES=<count>",
+        "    In `disable-after-n-mismatches` mode, disable correction after this many consecutive restore mismatch cycles (default 0 = disabled).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCH_DECAY_ON_SUCCESS=<count>",
+        "    Reduce the repeated mismatch counter after a successful reconnect correction (default 0 = no decay).",
+        "  SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RECOVERY_COOLDOWN_RECONNECT_CYCLES=<count>",
+        "    After correction give-up/disable, suppress correction for this many reconnect restore cycles before re-enabling (default 0).",
     ];
     for line in help_lines {
         println!("{line}");
@@ -355,6 +512,48 @@ fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
             "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
         ),
         trusted_domains: env_string_list("SYNCPLAY_CLIENT_TRUSTED_DOMAINS"),
+        reconnect_state_restore_auto_correct: env_flag_override(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_AUTOCORRECT",
+        ),
+        reconnect_state_restore_correction_policy_mode_override: env_trimmed(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_POLICY",
+        )
+        .and_then(|value| {
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(&value)
+        }),
+        reconnect_state_restore_position_tolerance_seconds: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_POSITION_TOLERANCE_SECONDS",
+        ),
+        reconnect_state_restore_correction_retry_max_attempts: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS",
+        ),
+        reconnect_state_restore_correction_retry_cooldown_ticks: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_COOLDOWN_TICKS",
+        ),
+        reconnect_state_restore_correction_retry_exponential_backoff: env_flag_override(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_EXPONENTIAL_BACKOFF",
+        ),
+        reconnect_state_restore_correction_retry_max_cooldown_ticks: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_MAX_COOLDOWN_TICKS",
+        ),
+        reconnect_state_restore_correction_retry_adaptive_cycle_backoff: env_flag_override(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BACKOFF",
+        ),
+        reconnect_state_restore_correction_retry_adaptive_cycle_budget: env_flag_override(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET",
+        ),
+        reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_ADAPTIVE_CYCLE_BUDGET_MIN_ATTEMPTS",
+        ),
+        reconnect_state_restore_correction_disable_after_mismatch_cycles: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCHES",
+        ),
+        reconnect_state_restore_correction_disable_after_mismatch_decay_on_success: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_DISABLE_AFTER_MISMATCH_DECAY_ON_SUCCESS",
+        ),
+        reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: env_u32(
+            "SYNCPLAY_CLIENT_RECONNECT_RESTORE_CORRECTION_RECOVERY_COOLDOWN_RECONNECT_CYCLES",
+        ),
     }
 }
 
@@ -371,6 +570,31 @@ fn parse_unpause_action_mode_legacy_compatible(value: &str) -> Option<UnpauseAct
             Some(UnpauseActionMode::IfMinUsersReady)
         }
         "always" => Some(UnpauseActionMode::Always),
+        _ => None,
+    }
+}
+
+fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
+    value: &str,
+) -> Option<ReconnectStateRestoreCorrectionPolicyMode> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "auto" | "autocorrect" | "auto_correct" | "auto-correct" => {
+            Some(ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect)
+        }
+        "notifyonly" | "notify_only" | "notify-only" | "warning_only" | "warning-only" => {
+            Some(ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly)
+        }
+        "warnonlyonexhaustion"
+        | "warn_only_on_exhaustion"
+        | "warn-only-on-exhaustion"
+        | "warning_only_on_exhaustion"
+        | "warning-only-on-exhaustion" => {
+            Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion)
+        }
+        "disableafternmismatches" | "disable_after_n_mismatches" | "disable-after-n-mismatches" => {
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches)
+        }
         _ => None,
     }
 }
@@ -464,6 +688,87 @@ fn apply_client_behavior_overrides(
     }
     if let Some(trusted_domains) = overrides.trusted_domains.clone() {
         behavior.trusted_domains = trusted_domains;
+    }
+    if let Some(reconnect_state_restore_auto_correct) =
+        overrides.reconnect_state_restore_auto_correct
+    {
+        behavior.reconnect_state_restore_auto_correct = reconnect_state_restore_auto_correct;
+    }
+    if let Some(reconnect_state_restore_correction_policy_mode_override) =
+        overrides.reconnect_state_restore_correction_policy_mode_override
+    {
+        behavior.reconnect_state_restore_correction_policy_mode_override =
+            Some(reconnect_state_restore_correction_policy_mode_override);
+        behavior.reconnect_state_restore_auto_correct = !matches!(
+            reconnect_state_restore_correction_policy_mode_override,
+            ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly
+        );
+    }
+    if let Some(reconnect_state_restore_position_tolerance_seconds) =
+        overrides.reconnect_state_restore_position_tolerance_seconds
+    {
+        behavior.reconnect_state_restore_position_tolerance_seconds =
+            reconnect_state_restore_position_tolerance_seconds;
+    }
+    if let Some(reconnect_state_restore_correction_retry_max_attempts) =
+        overrides.reconnect_state_restore_correction_retry_max_attempts
+    {
+        behavior.reconnect_state_restore_correction_retry_max_attempts =
+            reconnect_state_restore_correction_retry_max_attempts;
+    }
+    if let Some(reconnect_state_restore_correction_retry_cooldown_ticks) =
+        overrides.reconnect_state_restore_correction_retry_cooldown_ticks
+    {
+        behavior.reconnect_state_restore_correction_retry_cooldown_ticks =
+            reconnect_state_restore_correction_retry_cooldown_ticks;
+    }
+    if let Some(reconnect_state_restore_correction_retry_exponential_backoff) =
+        overrides.reconnect_state_restore_correction_retry_exponential_backoff
+    {
+        behavior.reconnect_state_restore_correction_retry_exponential_backoff =
+            reconnect_state_restore_correction_retry_exponential_backoff;
+    }
+    if let Some(reconnect_state_restore_correction_retry_max_cooldown_ticks) =
+        overrides.reconnect_state_restore_correction_retry_max_cooldown_ticks
+    {
+        behavior.reconnect_state_restore_correction_retry_max_cooldown_ticks =
+            reconnect_state_restore_correction_retry_max_cooldown_ticks;
+    }
+    if let Some(reconnect_state_restore_correction_retry_adaptive_cycle_backoff) =
+        overrides.reconnect_state_restore_correction_retry_adaptive_cycle_backoff
+    {
+        behavior.reconnect_state_restore_correction_retry_adaptive_cycle_backoff =
+            reconnect_state_restore_correction_retry_adaptive_cycle_backoff;
+    }
+    if let Some(reconnect_state_restore_correction_retry_adaptive_cycle_budget) =
+        overrides.reconnect_state_restore_correction_retry_adaptive_cycle_budget
+    {
+        behavior.reconnect_state_restore_correction_retry_adaptive_cycle_budget =
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget;
+    }
+    if let Some(reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts) =
+        overrides.reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts
+    {
+        behavior.reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts =
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts;
+    }
+    if let Some(reconnect_state_restore_correction_disable_after_mismatch_cycles) =
+        overrides.reconnect_state_restore_correction_disable_after_mismatch_cycles
+    {
+        behavior.reconnect_state_restore_correction_disable_after_mismatch_cycles =
+            reconnect_state_restore_correction_disable_after_mismatch_cycles;
+    }
+    if let Some(reconnect_state_restore_correction_disable_after_mismatch_decay_on_success) =
+        overrides.reconnect_state_restore_correction_disable_after_mismatch_decay_on_success
+    {
+        behavior.reconnect_state_restore_correction_disable_after_mismatch_decay_on_success =
+            reconnect_state_restore_correction_disable_after_mismatch_decay_on_success;
+    }
+    if let Some(reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles) =
+        overrides.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles
+    {
+        behavior.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles =
+            reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles;
     }
 }
 
@@ -1278,6 +1583,12 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
 fn create_client_runtime(
     config: &ClientLoopConfig,
 ) -> ClientRuntime<MpvAdapter, QueuedRuntimeControl> {
+    let session = create_client_session(config);
+    let player = create_mpv_adapter_from_env();
+    ClientRuntime::new(session, player, QueuedRuntimeControl::default())
+}
+
+fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     let mut session = ClientSession::default();
     session.set_autoplay_enabled(config.autoplay_enabled);
     if let Some(control_password) = config.controlled_room_password_override.as_deref() {
@@ -1312,11 +1623,243 @@ fn create_client_runtime(
     }
     apply_chat_policy_overrides(&mut session, &chat_policy_overrides_from_env());
     session.reconnect_policy_mut().max_retries = config.max_retries;
-    ClientRuntime::new(
-        session,
-        MpvAdapter::default(),
-        QueuedRuntimeControl::default(),
-    )
+    session
+}
+
+fn create_mpv_adapter_from_env() -> MpvAdapter {
+    let ipc_path = env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH")
+        .or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"));
+    let Some(ipc_path) = ipc_path else {
+        return MpvAdapter::default();
+    };
+
+    create_mpv_adapter_from_path_or_stub(&ipc_path)
+}
+
+#[derive(Debug)]
+struct ManagedMpvProcessGuard {
+    child: Child,
+    ipc_cleanup_path: Option<PathBuf>,
+}
+
+impl Drop for ManagedMpvProcessGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(path) = self.ipc_cleanup_path.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn create_client_runtime_with_managed_mpv_support(
+    config: &ClientLoopConfig,
+) -> anyhow::Result<(
+    ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    Option<ManagedMpvProcessGuard>,
+)> {
+    let session = create_client_session(config);
+    let (player, managed_guard) = create_mpv_adapter_and_optional_managed_process_from_env()?;
+    Ok((
+        ClientRuntime::new(session, player, QueuedRuntimeControl::default()),
+        managed_guard,
+    ))
+}
+
+fn create_mpv_adapter_and_optional_managed_process_from_env()
+-> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>)> {
+    let explicit_ipc_path = env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH")
+        .or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"));
+    if let Some(ipc_path) = explicit_ipc_path {
+        return Ok((create_mpv_adapter_from_path_or_stub(&ipc_path), None));
+    }
+
+    let managed_config = managed_mpv_launch_env_config_from_env();
+    if !managed_config.enabled {
+        return Ok((MpvAdapter::default(), None));
+    }
+
+    let (adapter, guard) = spawn_managed_mpv_and_attach(managed_config)?;
+    Ok((adapter, Some(guard)))
+}
+
+fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
+    match MpvAdapter::with_json_ipc(ipc_path) {
+        Ok(adapter) => adapter,
+        Err(err) => {
+            eprintln!(
+                "warning: failed to connect mpv JSON IPC at '{}': {err}; using stub mpv adapter",
+                ipc_path
+            );
+            MpvAdapter::default()
+        }
+    }
+}
+
+fn spawn_managed_mpv_and_attach(
+    config: ManagedMpvLaunchEnvConfig,
+) -> anyhow::Result<(MpvAdapter, ManagedMpvProcessGuard)> {
+    let mpv_bin = config.mpv_bin.or_else(find_default_managed_mpv_bin).ok_or_else(|| {
+        anyhow!(
+            "managed mpv launch requested but no mpv binary was found; set SYNCPLAY_CLIENT_MPV_MANAGED_BIN"
+        )
+    })?;
+    if !mpv_bin.exists() {
+        return Err(anyhow!(
+            "managed mpv binary does not exist: {}",
+            mpv_bin.display()
+        ));
+    }
+    if let Some(media_file) = config.media_file.as_ref() {
+        if !media_file.exists() {
+            return Err(anyhow!(
+                "managed mpv media file does not exist: {}",
+                media_file.display()
+            ));
+        }
+    }
+
+    let (ipc_path, ipc_cleanup_path) = if let Some(ipc_path) = config.ipc_path {
+        let ipc_cleanup_path = ipc_cleanup_path_for_platform(&ipc_path);
+        if let Some(path) = ipc_cleanup_path.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
+        (ipc_path, ipc_cleanup_path)
+    } else {
+        generate_managed_mpv_ipc_path()?
+    };
+
+    let connect_timeout =
+        Duration::from_millis(u64::from(config.connect_timeout_ms.unwrap_or(5_000).max(1)));
+    let connect_poll_interval = Duration::from_millis(u64::from(
+        config.connect_poll_interval_ms.unwrap_or(50).max(1),
+    ));
+
+    let mut command = Command::new(&mpv_bin);
+    if let Some(parent) = mpv_bin.parent() {
+        command.current_dir(parent);
+    }
+    command
+        .arg("--pause")
+        .arg("--force-window=no")
+        .arg("--idle=yes")
+        .arg(format!("--input-ipc-server={ipc_path}"));
+    if let Some(media_file) = config.media_file.as_ref() {
+        command.arg(media_file);
+    }
+
+    let child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let guard = ManagedMpvProcessGuard {
+        child,
+        ipc_cleanup_path,
+    };
+    let adapter = connect_mpv_adapter_with_retry(&ipc_path, connect_timeout, connect_poll_interval)
+        .map_err(|err| {
+            anyhow!(
+                "managed mpv launched but JSON IPC attach failed (mpv_bin={}, ipc={}): {err}",
+                mpv_bin.display(),
+                ipc_path
+            )
+        })?;
+
+    eprintln!(
+        "info: started managed mpv and attached JSON IPC at '{}'",
+        ipc_path
+    );
+    Ok((adapter, guard))
+}
+
+fn connect_mpv_adapter_with_retry(
+    ipc_path: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> anyhow::Result<MpvAdapter> {
+    let started = std::time::Instant::now();
+    let mut last_error = None;
+    while started.elapsed() < timeout {
+        match MpvAdapter::with_json_ipc(ipc_path) {
+            Ok(adapter) => return Ok(adapter),
+            Err(err) => {
+                last_error = Some(err.to_string());
+                std::thread::sleep(poll_interval);
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "timed out after {:?} waiting for mpv JSON IPC at '{}' (poll={:?}); last error: {}",
+        timeout,
+        ipc_path,
+        poll_interval,
+        last_error.as_deref().unwrap_or("<none>")
+    ))
+}
+
+fn find_default_managed_mpv_bin() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    for ancestor in cwd.ancestors().take(6) {
+        let mpv_dir = ancestor.join("mpv");
+        #[cfg(windows)]
+        {
+            let exe = mpv_dir.join("mpv.exe");
+            if exe.exists() {
+                return Some(exe);
+            }
+            let com = mpv_dir.join("mpv.com");
+            if com.exists() {
+                return Some(com);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let bin = mpv_dir.join("mpv");
+            if bin.exists() {
+                return Some(bin);
+            }
+        }
+    }
+    None
+}
+
+fn generate_managed_mpv_ipc_path() -> anyhow::Result<(String, Option<PathBuf>)> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow!("system time should be after unix epoch: {err}"))?
+        .as_millis();
+    #[cfg(windows)]
+    {
+        Ok((
+            format!(
+                r"\\.\pipe\syncplay-rust-cli-mpv-{}-{unique}",
+                std::process::id()
+            ),
+            None,
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let path = std::env::temp_dir().join(format!(
+            "syncplay-rust-cli-mpv-{}-{unique}.sock",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        Ok((path_str, Some(path)))
+    }
+}
+
+fn ipc_cleanup_path_for_platform(path: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from(path))
+    }
 }
 
 async fn write_protocol_line(
@@ -1412,6 +1955,498 @@ where
     Ok(())
 }
 
+fn player_playback_telemetry_update_message(
+    update: &PlayerPlaybackTelemetryUpdate,
+) -> Option<String> {
+    let mut fields = Vec::new();
+    if let Some(paused) = update.paused {
+        fields.push(format!("paused={paused}"));
+    }
+    if let Some(position_seconds) = update.position_seconds {
+        fields.push(format!("position={position_seconds:.3}"));
+    }
+    if let Some(playback_rate) = update.playback_rate {
+        fields.push(format!("speed={playback_rate:.3}"));
+    }
+
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!("player telemetry: {}", fields.join(" ")))
+    }
+}
+
+fn emit_player_playback_telemetry_update(
+    update: &PlayerPlaybackTelemetryUpdate,
+) -> anyhow::Result<()> {
+    let Some(message) = player_playback_telemetry_update_message(update) else {
+        return Ok(());
+    };
+    println!("{message}");
+    Ok(())
+}
+
+fn player_playback_drift_diagnostic_messages(
+    update: &PlayerPlaybackTelemetryUpdate,
+    room_playstate: Option<&RoomPlaystateView>,
+) -> Vec<String> {
+    let Some(room_playstate) = room_playstate else {
+        return Vec::new();
+    };
+
+    let mut messages = Vec::new();
+
+    if let (Some(player_paused), Some(room_paused)) = (update.paused, room_playstate.paused) {
+        if player_paused != room_paused {
+            messages.push(format!(
+                "player drift: paused mismatch player={player_paused} room={room_paused}"
+            ));
+        }
+    }
+
+    if let (Some(player_position), Some(room_position)) =
+        (update.position_seconds, room_playstate.position)
+    {
+        let diff = (player_position - room_position).abs();
+        if diff > PLAYER_DRIFT_DIAGNOSTIC_THRESHOLD_SECONDS {
+            messages.push(format!(
+                "player drift: position mismatch player={player_position:.3} room={room_position:.3} diff={diff:.3}"
+            ));
+        }
+    }
+
+    messages
+}
+
+fn emit_player_playback_drift_diagnostic(message: &str) -> anyhow::Result<()> {
+    println!("{message}");
+    Ok(())
+}
+
+fn flush_player_playback_telemetry_diagnostics(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    log_telemetry: bool,
+    log_drift: bool,
+) -> anyhow::Result<()> {
+    if !log_telemetry && !log_drift {
+        return Ok(());
+    }
+
+    let room_playstate = runtime.session().current_room_playstate().cloned();
+    let updates = runtime.drain_player_playback_telemetry_updates();
+    for update in &updates {
+        if log_telemetry {
+            emit_player_playback_telemetry_update(update)?;
+        }
+        if log_drift {
+            for message in
+                player_playback_drift_diagnostic_messages(update, room_playstate.as_ref())
+            {
+                emit_player_playback_drift_diagnostic(&message)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn reconnect_correction_policy_mode_label(
+    mode: ReconnectStateRestoreCorrectionPolicyMode,
+) -> &'static str {
+    match mode {
+        ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect => "auto",
+        ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly => "notify-only",
+        ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion => {
+            "warn-only-on-exhaustion"
+        }
+        ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches => {
+            "disable-after-n-mismatches"
+        }
+    }
+}
+
+fn reconnect_correction_metrics_delta_message(
+    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
+    current: &ReconnectStateRestoreCorrectionMetrics,
+) -> Option<String> {
+    let baseline = previous.copied().unwrap_or_default();
+    let mut fields = Vec::new();
+
+    macro_rules! push_delta {
+        ($field:ident, $label:literal) => {
+            if current.$field != baseline.$field {
+                let delta = current.$field.saturating_sub(baseline.$field);
+                fields.push(format!("{}=+{} (total={})", $label, delta, current.$field));
+            }
+        };
+    }
+
+    push_delta!(validation_cycles_started, "cycles_started");
+    push_delta!(validation_cycles_completed_without_mismatch, "cycles_clean");
+    push_delta!(
+        validation_cycles_completed_with_successful_correction,
+        "cycles_corrected"
+    );
+    push_delta!(mismatch_cycles_detected, "mismatch_cycles");
+    push_delta!(mismatch_notifications_emitted, "mismatch_notifications");
+    push_delta!(correction_actions_attempted, "actions_attempted");
+    push_delta!(correction_actions_succeeded, "actions_succeeded");
+    push_delta!(correction_action_failures, "actions_failed");
+    push_delta!(correction_retries_scheduled, "retries_scheduled");
+    push_delta!(correction_retry_exhaustions, "retry_exhaustions");
+    push_delta!(
+        correction_disables_after_repeated_mismatches,
+        "disables_after_repeated_mismatches"
+    );
+    push_delta!(
+        correction_recovery_cooldown_suppressed_cycles,
+        "recovery_suppressed_cycles"
+    );
+    push_delta!(
+        correction_recovery_cooldown_reenabled_cycles,
+        "recovery_reenabled_cycles"
+    );
+
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "reconnect correction metrics: {}",
+            fields.join(" ")
+        ))
+    }
+}
+
+fn reconnect_correction_metrics_delta_json_line(
+    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
+    current: &ReconnectStateRestoreCorrectionMetrics,
+) -> Option<String> {
+    let baseline = previous.copied().unwrap_or_default();
+    let mut deltas = Map::new();
+
+    macro_rules! push_delta_json {
+        ($field:ident, $label:literal) => {
+            if current.$field != baseline.$field {
+                let delta = current.$field.saturating_sub(baseline.$field);
+                deltas.insert(
+                    $label.to_owned(),
+                    json!({
+                        "delta": delta,
+                        "total": current.$field,
+                    }),
+                );
+            }
+        };
+    }
+
+    push_delta_json!(validation_cycles_started, "cycles_started");
+    push_delta_json!(validation_cycles_completed_without_mismatch, "cycles_clean");
+    push_delta_json!(
+        validation_cycles_completed_with_successful_correction,
+        "cycles_corrected"
+    );
+    push_delta_json!(mismatch_cycles_detected, "mismatch_cycles");
+    push_delta_json!(mismatch_notifications_emitted, "mismatch_notifications");
+    push_delta_json!(correction_actions_attempted, "actions_attempted");
+    push_delta_json!(correction_actions_succeeded, "actions_succeeded");
+    push_delta_json!(correction_action_failures, "actions_failed");
+    push_delta_json!(correction_retries_scheduled, "retries_scheduled");
+    push_delta_json!(correction_retry_exhaustions, "retry_exhaustions");
+    push_delta_json!(
+        correction_disables_after_repeated_mismatches,
+        "disables_after_repeated_mismatches"
+    );
+    push_delta_json!(
+        correction_recovery_cooldown_suppressed_cycles,
+        "recovery_suppressed_cycles"
+    );
+    push_delta_json!(
+        correction_recovery_cooldown_reenabled_cycles,
+        "recovery_reenabled_cycles"
+    );
+
+    if deltas.is_empty() {
+        None
+    } else {
+        Some(
+            json!({
+                "type": "reconnect_correction_metrics_delta",
+                "deltas": Value::Object(deltas),
+            })
+            .to_string(),
+        )
+    }
+}
+
+fn reconnect_correction_state_snapshot_message(
+    snapshot: &ReconnectStateRestoreCorrectionStateSnapshot,
+) -> String {
+    format!(
+        "reconnect correction state: pending={} policy={} tolerance={:.3} retry_attempts={} effective_retry_max_attempts={} retry_cooldown_ticks={} mismatch_notified={} mismatch_seen={} consecutive_mismatch_cycles={} consecutive_retry_exhaustions={} recovery_cooldown_reconnect_cycles_remaining={} recovery_suppressed_this_cycle={} recovery_reenabled_this_cycle={}",
+        snapshot.validation_pending,
+        reconnect_correction_policy_mode_label(snapshot.effective_policy_mode),
+        snapshot.position_tolerance_seconds,
+        snapshot.retry_attempts,
+        snapshot.effective_retry_max_attempts,
+        snapshot.retry_cooldown_ticks,
+        snapshot.mismatch_notified_in_cycle,
+        snapshot.mismatch_seen_in_cycle,
+        snapshot.consecutive_mismatch_cycles,
+        snapshot.consecutive_retry_exhaustions,
+        snapshot.recovery_cooldown_reconnect_cycles_remaining,
+        snapshot.correction_suppressed_for_recovery_cycle,
+        snapshot.correction_reenabled_for_recovery_cycle,
+    )
+}
+
+fn reconnect_correction_state_snapshot_json_line(
+    snapshot: &ReconnectStateRestoreCorrectionStateSnapshot,
+) -> String {
+    json!({
+        "type": "reconnect_correction_state",
+        "state": {
+            "validation_pending": snapshot.validation_pending,
+            "effective_policy_mode": reconnect_correction_policy_mode_label(snapshot.effective_policy_mode),
+            "position_tolerance_seconds": snapshot.position_tolerance_seconds,
+            "retry_attempts": snapshot.retry_attempts,
+            "effective_retry_max_attempts": snapshot.effective_retry_max_attempts,
+            "retry_cooldown_ticks": snapshot.retry_cooldown_ticks,
+            "mismatch_notified_in_cycle": snapshot.mismatch_notified_in_cycle,
+            "mismatch_seen_in_cycle": snapshot.mismatch_seen_in_cycle,
+            "consecutive_mismatch_cycles": snapshot.consecutive_mismatch_cycles,
+            "consecutive_retry_exhaustions": snapshot.consecutive_retry_exhaustions,
+            "recovery_cooldown_reconnect_cycles_remaining": snapshot.recovery_cooldown_reconnect_cycles_remaining,
+            "correction_suppressed_for_recovery_cycle": snapshot.correction_suppressed_for_recovery_cycle,
+            "correction_reenabled_for_recovery_cycle": snapshot.correction_reenabled_for_recovery_cycle,
+        }
+    })
+    .to_string()
+}
+
+fn reconnect_correction_metric_delta_alert_text(
+    metric: &str,
+    delta: u64,
+    total: u64,
+    threshold: u64,
+) -> String {
+    format!(
+        "reconnect correction alert: metric={metric} delta={delta} total={total} threshold={threshold}"
+    )
+}
+
+fn reconnect_correction_metric_delta_alert_json_line(
+    metric: &str,
+    delta: u64,
+    total: u64,
+    threshold: u64,
+) -> String {
+    json!({
+        "type": "reconnect_correction_alert",
+        "alert_kind": "metric_delta_threshold",
+        "metric": metric,
+        "delta": delta,
+        "total": total,
+        "threshold": threshold,
+    })
+    .to_string()
+}
+
+fn reconnect_correction_state_threshold_alert_text(
+    metric: &str,
+    value: u32,
+    threshold: u32,
+) -> String {
+    format!("reconnect correction alert: state={metric} value={value} threshold={threshold}")
+}
+
+fn reconnect_correction_state_threshold_alert_json_line(
+    metric: &str,
+    value: u32,
+    threshold: u32,
+) -> String {
+    json!({
+        "type": "reconnect_correction_alert",
+        "alert_kind": "state_threshold_crossed",
+        "metric": metric,
+        "value": value,
+        "threshold": threshold,
+    })
+    .to_string()
+}
+
+fn reconnect_correction_metrics_delta_alert_lines(
+    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
+    current: &ReconnectStateRestoreCorrectionMetrics,
+    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
+    format: ReconnectCorrectionDiagnosticsFormat,
+) -> Vec<String> {
+    let baseline = previous.copied().unwrap_or_default();
+    let mut alerts = Vec::new();
+
+    macro_rules! push_metric_alert {
+        ($threshold_field:ident, $metric_field:ident, $metric_label:literal) => {
+            if let Some(threshold) = thresholds.$threshold_field {
+                let current_total = current.$metric_field;
+                let baseline_total = baseline.$metric_field;
+                let delta = current_total.saturating_sub(baseline_total);
+                if delta >= threshold && delta > 0 {
+                    let message = match format {
+                        ReconnectCorrectionDiagnosticsFormat::Text => {
+                            reconnect_correction_metric_delta_alert_text(
+                                $metric_label,
+                                delta,
+                                current_total,
+                                threshold,
+                            )
+                        }
+                        ReconnectCorrectionDiagnosticsFormat::Json => {
+                            reconnect_correction_metric_delta_alert_json_line(
+                                $metric_label,
+                                delta,
+                                current_total,
+                                threshold,
+                            )
+                        }
+                    };
+                    alerts.push(message);
+                }
+            }
+        };
+    }
+
+    push_metric_alert!(
+        action_failures_delta,
+        correction_action_failures,
+        "actions_failed"
+    );
+    push_metric_alert!(
+        retry_exhaustions_delta,
+        correction_retry_exhaustions,
+        "retry_exhaustions"
+    );
+    push_metric_alert!(
+        disables_after_repeated_mismatches_delta,
+        correction_disables_after_repeated_mismatches,
+        "disables_after_repeated_mismatches"
+    );
+
+    alerts
+}
+
+fn reconnect_correction_state_threshold_alert_lines(
+    previous: Option<&ReconnectStateRestoreCorrectionStateSnapshot>,
+    current: &ReconnectStateRestoreCorrectionStateSnapshot,
+    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
+    format: ReconnectCorrectionDiagnosticsFormat,
+) -> Vec<String> {
+    let mut alerts = Vec::new();
+
+    macro_rules! push_crossing_alert {
+        ($threshold_field:ident, $snapshot_field:ident, $metric_label:literal) => {
+            if let Some(threshold) = thresholds.$threshold_field {
+                let previous_value = previous
+                    .map(|snapshot| snapshot.$snapshot_field)
+                    .unwrap_or(0);
+                let current_value = current.$snapshot_field;
+                if previous_value < threshold && current_value >= threshold {
+                    let message = match format {
+                        ReconnectCorrectionDiagnosticsFormat::Text => {
+                            reconnect_correction_state_threshold_alert_text(
+                                $metric_label,
+                                current_value,
+                                threshold,
+                            )
+                        }
+                        ReconnectCorrectionDiagnosticsFormat::Json => {
+                            reconnect_correction_state_threshold_alert_json_line(
+                                $metric_label,
+                                current_value,
+                                threshold,
+                            )
+                        }
+                    };
+                    alerts.push(message);
+                }
+            }
+        };
+    }
+
+    push_crossing_alert!(
+        consecutive_mismatch_cycles,
+        consecutive_mismatch_cycles,
+        "consecutive_mismatch_cycles"
+    );
+    push_crossing_alert!(
+        consecutive_retry_exhaustions,
+        consecutive_retry_exhaustions,
+        "consecutive_retry_exhaustions"
+    );
+
+    alerts
+}
+
+fn emit_reconnect_correction_diagnostic(message: &str) -> anyhow::Result<()> {
+    println!("{message}");
+    Ok(())
+}
+
+fn flush_reconnect_correction_diagnostics_to_sink<F>(
+    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    state: &mut ReconnectCorrectionDiagnosticsState,
+    alert_thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
+    format: ReconnectCorrectionDiagnosticsFormat,
+    notify: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&str) -> anyhow::Result<()>,
+{
+    let metrics = *runtime.reconnect_state_restore_correction_metrics();
+    let metrics_message = match format {
+        ReconnectCorrectionDiagnosticsFormat::Text => {
+            reconnect_correction_metrics_delta_message(state.last_metrics.as_ref(), &metrics)
+        }
+        ReconnectCorrectionDiagnosticsFormat::Json => {
+            reconnect_correction_metrics_delta_json_line(state.last_metrics.as_ref(), &metrics)
+        }
+    };
+    if let Some(message) = metrics_message {
+        notify(&message)?;
+    }
+    for alert in reconnect_correction_metrics_delta_alert_lines(
+        state.last_metrics.as_ref(),
+        &metrics,
+        alert_thresholds,
+        format,
+    ) {
+        notify(&alert)?;
+    }
+
+    let snapshot = runtime.reconnect_state_restore_correction_state_snapshot();
+    if state.last_snapshot.as_ref() != Some(&snapshot) {
+        let message = match format {
+            ReconnectCorrectionDiagnosticsFormat::Text => {
+                reconnect_correction_state_snapshot_message(&snapshot)
+            }
+            ReconnectCorrectionDiagnosticsFormat::Json => {
+                reconnect_correction_state_snapshot_json_line(&snapshot)
+            }
+        };
+        notify(&message)?;
+    }
+    for alert in reconnect_correction_state_threshold_alert_lines(
+        state.last_snapshot.as_ref(),
+        &snapshot,
+        alert_thresholds,
+        format,
+    ) {
+        notify(&alert)?;
+    }
+
+    state.last_metrics = Some(metrics);
+    state.last_snapshot = Some(snapshot);
+    Ok(())
+}
+
 fn emit_autoplay_countdown_notification(
     notification: &AutoplayCountdownNotification,
 ) -> anyhow::Result<()> {
@@ -1448,6 +2483,42 @@ fn reconnect_transition_notification_message(
         }
         ReconnectTransitionNotification::RestoringState => {
             "Restoring local state after reconnect...".to_owned()
+        }
+        ReconnectTransitionNotification::StateRestoreValidationMismatch {
+            local_paused,
+            room_paused,
+            local_position,
+            room_position,
+            position_diff_seconds,
+        } => format!(
+            "Reconnect state restore validation mismatch; correcting local player: player(paused={local_paused}, position={local_position:.3}) room(paused={room_paused}, position={room_position:.3}) diff={position_diff_seconds:.3}"
+        ),
+        ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+            attempt,
+            max_attempts,
+            cooldown_ticks,
+        } => format!(
+            "Reconnect state restore correction failed; scheduling retry (attempt={attempt}/{max_attempts}, cooldown_ticks={cooldown_ticks})"
+        ),
+        ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+            attempts,
+            max_attempts,
+        } => format!(
+            "Reconnect state restore correction failed; retry budget exhausted (attempts={attempts}, max_attempts={max_attempts}), stopping auto-correction for this restore cycle"
+        ),
+        ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+            consecutive_mismatch_cycles,
+            disable_after_mismatch_cycles,
+        } => format!(
+            "Reconnect state restore correction disabled after repeated mismatches (consecutive_mismatch_cycles={consecutive_mismatch_cycles}, threshold={disable_after_mismatch_cycles})"
+        ),
+        ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+            remaining_reconnect_cycles_after_this_cycle,
+        } => format!(
+            "Reconnect state restore correction suppressed for recovery cooldown (remaining_reconnect_cycles_after_this_cycle={remaining_reconnect_cycles_after_this_cycle})"
+        ),
+        ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled => {
+            "Reconnect state restore correction re-enabled after recovery cooldown".to_owned()
         }
         ReconnectTransitionNotification::RestoringPlaylist => {
             "Restoring playlist on reconnect...".to_owned()
@@ -1853,6 +2924,12 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     let mut local_input_rx = local_input_rx;
+    let log_player_telemetry = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY");
+    let log_player_drift = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS");
+    let reconnect_correction_diagnostics_format =
+        reconnect_correction_diagnostics_format_from_env();
+    let reconnect_correction_diagnostics_alert_thresholds =
+        reconnect_correction_diagnostics_alert_thresholds_from_env();
     let hello_message = ProtocolMessage::hello_basic(
         config.username.clone(),
         config.room.clone(),
@@ -1874,6 +2951,7 @@ where
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
+    let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut local_user_offset_seconds = 0.0f64;
 
     loop {
@@ -1904,12 +2982,29 @@ where
                             inputs.local_can_control,
                             inputs.is_playing_music,
                         )?;
+                        runtime.run_reconnect_state_restore_validation_if_needed()?;
                         publish_pending_local_file_updates(runtime, config)?;
                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                        if log_player_telemetry || log_player_drift {
+                            flush_player_playback_telemetry_diagnostics(
+                                runtime,
+                                log_player_telemetry,
+                                log_player_drift,
+                            )?;
+                        }
                         flush_reconnect_notifications_to_sink(
                             runtime,
                             &mut emit_reconnect_transition_notification,
                         )?;
+                        if let Some(format) = reconnect_correction_diagnostics_format {
+                            flush_reconnect_correction_diagnostics_to_sink(
+                                runtime,
+                                &mut reconnect_correction_diagnostics_state,
+                                &reconnect_correction_diagnostics_alert_thresholds,
+                                format,
+                                &mut emit_reconnect_correction_diagnostic,
+                            )?;
+                        }
                         flush_controller_auth_notifications_to_sink(
                             runtime,
                             &mut emit_controller_auth_transition_notification,
@@ -1944,8 +3039,29 @@ where
                     inputs.is_playing_music,
                     inputs.recently_advanced,
                 )?;
+                runtime.run_reconnect_state_restore_validation_if_needed()?;
                 publish_pending_local_file_updates(runtime, config)?;
                 flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                if log_player_telemetry || log_player_drift {
+                    flush_player_playback_telemetry_diagnostics(
+                        runtime,
+                        log_player_telemetry,
+                        log_player_drift,
+                    )?;
+                }
+                flush_reconnect_notifications_to_sink(
+                    runtime,
+                    &mut emit_reconnect_transition_notification,
+                )?;
+                if let Some(format) = reconnect_correction_diagnostics_format {
+                    flush_reconnect_correction_diagnostics_to_sink(
+                        runtime,
+                        &mut reconnect_correction_diagnostics_state,
+                        &reconnect_correction_diagnostics_alert_thresholds,
+                        format,
+                        &mut emit_reconnect_correction_diagnostic,
+                    )?;
+                }
                 flush_autoplay_notifications_to_sink(runtime, notification_sink)?;
                 flush_file_difference_notifications_to_sink(
                     runtime,
@@ -2057,6 +3173,27 @@ where
                     if emitted {
                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
                     }
+                    runtime.run_reconnect_state_restore_validation_if_needed()?;
+                    if log_player_telemetry || log_player_drift {
+                        flush_player_playback_telemetry_diagnostics(
+                            runtime,
+                            log_player_telemetry,
+                            log_player_drift,
+                        )?;
+                    }
+                    flush_reconnect_notifications_to_sink(
+                        runtime,
+                        &mut emit_reconnect_transition_notification,
+                    )?;
+                    if let Some(format) = reconnect_correction_diagnostics_format {
+                        flush_reconnect_correction_diagnostics_to_sink(
+                            runtime,
+                            &mut reconnect_correction_diagnostics_state,
+                            &reconnect_correction_diagnostics_alert_thresholds,
+                            format,
+                            &mut emit_reconnect_correction_diagnostic,
+                        )?;
+                    }
                 }
             }
         }
@@ -2087,7 +3224,8 @@ async fn run_reconnect_backoff(
 }
 
 async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
-    let mut runtime = create_client_runtime(config);
+    let (mut runtime, _managed_mpv_process_guard) =
+        create_client_runtime_with_managed_mpv_support(config)?;
     let mut local_input_rx = spawn_local_input_receiver_if_enabled();
     let chat_message_on_connect = env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE");
     let mut notification_sink = emit_autoplay_countdown_notification;
@@ -2208,38 +3346,49 @@ mod tests {
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
         ConnectedSessionExit, LegacyClientArgOverrides, LocalInputCommand, LocalOffsetCommand,
-        ReadinessAutoplayOverrides, apply_chat_policy_overrides, apply_client_behavior_overrides,
-        apply_legacy_client_arg_overrides, apply_readiness_autoplay_overrides,
-        chat_notification_message, controlled_room_base_name_legacy_compatible,
-        controller_auth_notification_hidden_from_osd,
+        ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
+        ReconnectCorrectionDiagnosticsState, apply_chat_policy_overrides,
+        apply_client_behavior_overrides, apply_legacy_client_arg_overrides,
+        apply_readiness_autoplay_overrides, chat_notification_message,
+        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
-        flush_reconnect_notifications_to_sink, flush_user_change_notifications_to_sink,
-        format_duration_legacy, format_file_difference_summary,
-        generate_room_password_legacy_compatible,
+        flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
+        flush_user_change_notifications_to_sink, format_duration_legacy,
+        format_file_difference_summary, generate_room_password_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
-        local_command_help_lines_legacy_compatible, normalize_controlled_room_input,
-        parse_autoplay_min_users_override_legacy_compatible, parse_env_bool_legacy_compatible,
-        parse_env_non_negative_f64_legacy_compatible, parse_env_port_legacy_compatible,
-        parse_env_string_list_legacy_compatible,
+        local_command_help_lines_legacy_compatible, managed_mpv_launch_env_config_from_env,
+        normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
+        parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
+        parse_env_port_legacy_compatible, parse_env_string_list_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
         parse_legacy_client_arg_overrides, parse_local_input_chat_message,
-        parse_local_input_command, parse_unpause_action_mode_legacy_compatible,
+        parse_local_input_command,
+        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
+        parse_unpause_action_mode_legacy_compatible, player_playback_telemetry_update_message,
         playlist_index_in_bounds_legacy_compatible, playlist_listing_message_legacy_compatible,
+        reconnect_correction_diagnostics_alert_thresholds_from_env,
+        reconnect_correction_diagnostics_format_from_env,
+        reconnect_correction_metrics_delta_alert_lines,
+        reconnect_correction_metrics_delta_json_line, reconnect_correction_metrics_delta_message,
+        reconnect_correction_state_snapshot_json_line, reconnect_correction_state_snapshot_message,
+        reconnect_correction_state_threshold_alert_lines,
         reconnect_transition_notification_message, run_client_network_loop,
         run_connected_client_session, run_local_playlist_delete_index_legacy_compatible,
         run_local_playlist_select_index_legacy_compatible,
         user_change_notification_hidden_from_osd, user_change_notification_message,
     };
+    use serde_json::{Value, json};
     use std::time::Duration;
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
         ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-        QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectTransitionNotification,
-        UnpauseActionMode, UserChangeNotification,
+        QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
+        ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
+        ReconnectTransitionNotification, UnpauseActionMode, UserChangeNotification,
     };
-    use syncplay_player_api::PlayerAdapter;
+    use syncplay_player_api::{PlayerAdapter, PlayerPlaybackTelemetryUpdate};
     use syncplay_player_mpv::MpvAdapter;
     use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -2548,6 +3697,72 @@ mod tests {
             ),
             "Connection with server lost, reconnect attempts exhausted"
         );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::RestoringState
+            ),
+            "Restoring local state after reconnect..."
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ),
+            "Reconnect state restore validation mismatch; correcting local player: player(paused=true, position=117.500) room(paused=false, position=120.000) diff=2.500"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 3,
+                    cooldown_ticks: 2,
+                }
+            ),
+            "Reconnect state restore correction failed; scheduling retry (attempt=1/3, cooldown_ticks=2)"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 4,
+                    max_attempts: 3,
+                }
+            ),
+            "Reconnect state restore correction failed; retry budget exhausted (attempts=4, max_attempts=3), stopping auto-correction for this restore cycle"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                    consecutive_mismatch_cycles: 3,
+                    disable_after_mismatch_cycles: 3,
+                }
+            ),
+            "Reconnect state restore correction disabled after repeated mismatches (consecutive_mismatch_cycles=3, threshold=3)"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 1,
+                }
+            ),
+            "Reconnect state restore correction suppressed for recovery cooldown (remaining_reconnect_cycles_after_this_cycle=1)"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled
+            ),
+            "Reconnect state restore correction re-enabled after recovery cooldown"
+        );
+        assert_eq!(
+            reconnect_transition_notification_message(
+                &ReconnectTransitionNotification::RestoringPlaylist
+            ),
+            "Restoring playlist on reconnect..."
+        );
     }
 
     #[test]
@@ -2836,6 +4051,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible_accepts_known_values()
+    {
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("auto"),
+            Some(ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect)
+        );
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("notify-only"),
+            Some(ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly)
+        );
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
+                "warn-only-on-exhaustion"
+            ),
+            Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion)
+        );
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
+                "disable-after-n-mismatches"
+            ),
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches)
+        );
+    }
+
+    #[test]
+    fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible_rejects_unknown_values()
+     {
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(""),
+            None
+        );
+        assert_eq!(
+            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("retry-forever"),
+            None
+        );
+    }
+
+    #[test]
     fn parse_autoplay_min_users_override_legacy_compatible_maps_legacy_ranges() {
         assert_eq!(
             parse_autoplay_min_users_override_legacy_compatible("-1"),
@@ -2871,6 +4124,19 @@ mod tests {
                 "youtube.com".to_owned(),
                 "*.example.com/videos".to_owned(),
             ]),
+            reconnect_state_restore_auto_correct: None,
+            reconnect_state_restore_correction_policy_mode_override: None,
+            reconnect_state_restore_position_tolerance_seconds: None,
+            reconnect_state_restore_correction_retry_max_attempts: None,
+            reconnect_state_restore_correction_retry_cooldown_ticks: None,
+            reconnect_state_restore_correction_retry_exponential_backoff: None,
+            reconnect_state_restore_correction_retry_max_cooldown_ticks: None,
+            reconnect_state_restore_correction_retry_adaptive_cycle_backoff: None,
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget: None,
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts: None,
+            reconnect_state_restore_correction_disable_after_mismatch_cycles: None,
+            reconnect_state_restore_correction_disable_after_mismatch_decay_on_success: None,
+            reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: None,
         };
         apply_client_behavior_overrides(&mut session, &overrides);
 
@@ -2882,6 +4148,76 @@ mod tests {
         assert_eq!(
             behavior.trusted_domains,
             vec!["youtube.com".to_owned(), "*.example.com/videos".to_owned()]
+        );
+    }
+
+    #[test]
+    fn apply_client_behavior_overrides_updates_reconnect_restore_policy_fields() {
+        let mut session = ClientSession::default();
+        let overrides = ClientBehaviorOverrides {
+            reconnect_state_restore_auto_correct: Some(false),
+            reconnect_state_restore_correction_policy_mode_override: Some(
+                ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion,
+            ),
+            reconnect_state_restore_position_tolerance_seconds: Some(2.75),
+            reconnect_state_restore_correction_retry_max_attempts: Some(5),
+            reconnect_state_restore_correction_retry_cooldown_ticks: Some(2),
+            reconnect_state_restore_correction_retry_exponential_backoff: Some(true),
+            reconnect_state_restore_correction_retry_max_cooldown_ticks: Some(9),
+            reconnect_state_restore_correction_retry_adaptive_cycle_backoff: Some(true),
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget: Some(true),
+            reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts: Some(2),
+            reconnect_state_restore_correction_disable_after_mismatch_cycles: Some(4),
+            reconnect_state_restore_correction_disable_after_mismatch_decay_on_success: Some(2),
+            reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: Some(3),
+            ..ClientBehaviorOverrides::default()
+        };
+
+        apply_client_behavior_overrides(&mut session, &overrides);
+
+        let behavior = session.behavior_config();
+        assert!(
+            behavior.reconnect_state_restore_auto_correct,
+            "explicit correction policy override should supersede legacy auto-correct boolean"
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_policy_mode_override,
+            Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion)
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_position_tolerance_seconds,
+            2.75
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_retry_max_attempts,
+            5
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_retry_cooldown_ticks,
+            2
+        );
+        assert!(behavior.reconnect_state_restore_correction_retry_exponential_backoff);
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_retry_max_cooldown_ticks,
+            9
+        );
+        assert!(behavior.reconnect_state_restore_correction_retry_adaptive_cycle_backoff);
+        assert!(behavior.reconnect_state_restore_correction_retry_adaptive_cycle_budget);
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_retry_adaptive_cycle_budget_min_attempts,
+            2
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_disable_after_mismatch_cycles,
+            4
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_disable_after_mismatch_decay_on_success,
+            2
+        );
+        assert_eq!(
+            behavior.reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles,
+            3
         );
     }
 
@@ -10920,6 +12256,534 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].ready_user_count, 2);
         assert_eq!(captured[0].seconds_left, 3);
+    }
+
+    #[test]
+    fn player_playback_telemetry_update_message_formats_present_fields() {
+        let update = PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(true)
+            .with_position_seconds(12.5)
+            .with_playback_rate(0.95);
+
+        let message = player_playback_telemetry_update_message(&update)
+            .expect("expected telemetry message for populated update");
+        assert_eq!(
+            message,
+            "player telemetry: paused=true position=12.500 speed=0.950"
+        );
+
+        assert_eq!(
+            player_playback_telemetry_update_message(&PlayerPlaybackTelemetryUpdate::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn reconnect_correction_metrics_delta_message_formats_changed_counters() {
+        let previous = ReconnectStateRestoreCorrectionMetrics {
+            validation_cycles_started: 1,
+            mismatch_cycles_detected: 1,
+            correction_actions_attempted: 2,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let current = ReconnectStateRestoreCorrectionMetrics {
+            validation_cycles_started: 3,
+            mismatch_cycles_detected: 2,
+            correction_actions_attempted: 5,
+            correction_action_failures: 1,
+            correction_retry_exhaustions: 1,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+
+        let message = reconnect_correction_metrics_delta_message(Some(&previous), &current)
+            .expect("changed counters should produce a metrics delta message");
+        assert!(message.starts_with("reconnect correction metrics: "));
+        assert!(message.contains("cycles_started=+2 (total=3)"));
+        assert!(message.contains("mismatch_cycles=+1 (total=2)"));
+        assert!(message.contains("actions_attempted=+3 (total=5)"));
+        assert!(message.contains("actions_failed=+1 (total=1)"));
+        assert!(message.contains("retry_exhaustions=+1 (total=1)"));
+        assert_eq!(
+            reconnect_correction_metrics_delta_message(Some(&current), &current),
+            None,
+            "unchanged metrics should not emit duplicate diagnostics"
+        );
+    }
+
+    #[test]
+    fn reconnect_correction_metrics_delta_json_line_formats_changed_counters() {
+        let previous = ReconnectStateRestoreCorrectionMetrics {
+            validation_cycles_started: 1,
+            correction_actions_attempted: 2,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let current = ReconnectStateRestoreCorrectionMetrics {
+            validation_cycles_started: 3,
+            correction_actions_attempted: 5,
+            correction_retries_scheduled: 2,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+
+        let line = reconnect_correction_metrics_delta_json_line(Some(&previous), &current)
+            .expect("changed counters should produce a JSON metrics delta line");
+        let parsed: Value = serde_json::from_str(&line).expect("metrics delta line should parse");
+        assert_eq!(
+            parsed,
+            json!({
+                "type": "reconnect_correction_metrics_delta",
+                "deltas": {
+                    "cycles_started": { "delta": 2, "total": 3 },
+                    "actions_attempted": { "delta": 3, "total": 5 },
+                    "retries_scheduled": { "delta": 2, "total": 2 },
+                }
+            })
+        );
+        assert_eq!(
+            reconnect_correction_metrics_delta_json_line(Some(&current), &current),
+            None
+        );
+    }
+
+    #[test]
+    fn reconnect_correction_state_snapshot_message_formats_key_fields() {
+        let snapshot = ReconnectStateRestoreCorrectionStateSnapshot {
+            validation_pending: true,
+            retry_attempts: 2,
+            retry_cooldown_ticks: 3,
+            mismatch_notified_in_cycle: true,
+            mismatch_seen_in_cycle: true,
+            effective_policy_mode: ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion,
+            position_tolerance_seconds: 1.5,
+            effective_retry_max_attempts: 4,
+            consecutive_mismatch_cycles: 2,
+            consecutive_retry_exhaustions: 1,
+            recovery_cooldown_reconnect_cycles_remaining: 0,
+            correction_suppressed_for_recovery_cycle: false,
+            correction_reenabled_for_recovery_cycle: true,
+        };
+
+        let message = reconnect_correction_state_snapshot_message(&snapshot);
+        assert!(message.starts_with("reconnect correction state: "));
+        assert!(message.contains("pending=true"));
+        assert!(message.contains("policy=warn-only-on-exhaustion"));
+        assert!(message.contains("tolerance=1.500"));
+        assert!(message.contains("retry_attempts=2"));
+        assert!(message.contains("effective_retry_max_attempts=4"));
+        assert!(message.contains("retry_cooldown_ticks=3"));
+        assert!(message.contains("recovery_reenabled_this_cycle=true"));
+    }
+
+    #[test]
+    fn reconnect_correction_state_snapshot_json_line_formats_key_fields() {
+        let snapshot = ReconnectStateRestoreCorrectionStateSnapshot {
+            validation_pending: true,
+            retry_attempts: 2,
+            retry_cooldown_ticks: 3,
+            mismatch_notified_in_cycle: true,
+            mismatch_seen_in_cycle: true,
+            effective_policy_mode: ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion,
+            position_tolerance_seconds: 1.5,
+            effective_retry_max_attempts: 4,
+            consecutive_mismatch_cycles: 2,
+            consecutive_retry_exhaustions: 1,
+            recovery_cooldown_reconnect_cycles_remaining: 0,
+            correction_suppressed_for_recovery_cycle: false,
+            correction_reenabled_for_recovery_cycle: true,
+        };
+
+        let line = reconnect_correction_state_snapshot_json_line(&snapshot);
+        let parsed: Value = serde_json::from_str(&line).expect("state snapshot line should parse");
+        assert_eq!(
+            parsed,
+            json!({
+                "type": "reconnect_correction_state",
+                "state": {
+                    "validation_pending": true,
+                    "effective_policy_mode": "warn-only-on-exhaustion",
+                    "position_tolerance_seconds": 1.5,
+                    "retry_attempts": 2,
+                    "effective_retry_max_attempts": 4,
+                    "retry_cooldown_ticks": 3,
+                    "mismatch_notified_in_cycle": true,
+                    "mismatch_seen_in_cycle": true,
+                    "consecutive_mismatch_cycles": 2,
+                    "consecutive_retry_exhaustions": 1,
+                    "recovery_cooldown_reconnect_cycles_remaining": 0,
+                    "correction_suppressed_for_recovery_cycle": false,
+                    "correction_reenabled_for_recovery_cycle": true,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn reconnect_correction_metrics_delta_alert_lines_emit_text_and_json_when_thresholds_met() {
+        let previous = ReconnectStateRestoreCorrectionMetrics {
+            correction_action_failures: 1,
+            correction_retry_exhaustions: 1,
+            correction_disables_after_repeated_mismatches: 0,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let current = ReconnectStateRestoreCorrectionMetrics {
+            correction_action_failures: 3,
+            correction_retry_exhaustions: 2,
+            correction_disables_after_repeated_mismatches: 1,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let thresholds = super::ReconnectCorrectionDiagnosticsAlertThresholds {
+            action_failures_delta: Some(2),
+            retry_exhaustions_delta: Some(2),
+            disables_after_repeated_mismatches_delta: Some(1),
+            consecutive_mismatch_cycles: None,
+            consecutive_retry_exhaustions: None,
+        };
+
+        let text_alerts = reconnect_correction_metrics_delta_alert_lines(
+            Some(&previous),
+            &current,
+            &thresholds,
+            ReconnectCorrectionDiagnosticsFormat::Text,
+        );
+        assert_eq!(text_alerts.len(), 2);
+        assert!(text_alerts[0].contains("metric=actions_failed"));
+        assert!(text_alerts[0].contains("delta=2"));
+        assert!(text_alerts[1].contains("metric=disables_after_repeated_mismatches"));
+
+        let json_alerts = reconnect_correction_metrics_delta_alert_lines(
+            Some(&previous),
+            &current,
+            &thresholds,
+            ReconnectCorrectionDiagnosticsFormat::Json,
+        );
+        assert_eq!(json_alerts.len(), 2);
+        let first: Value =
+            serde_json::from_str(&json_alerts[0]).expect("metrics alert JSON should parse");
+        assert_eq!(first["type"], "reconnect_correction_alert");
+        assert_eq!(first["alert_kind"], "metric_delta_threshold");
+    }
+
+    #[test]
+    fn reconnect_correction_state_threshold_alert_lines_only_emit_on_threshold_crossing() {
+        let previous = ReconnectStateRestoreCorrectionStateSnapshot {
+            validation_pending: true,
+            retry_attempts: 0,
+            retry_cooldown_ticks: 0,
+            mismatch_notified_in_cycle: false,
+            mismatch_seen_in_cycle: true,
+            effective_policy_mode: ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect,
+            position_tolerance_seconds: 1.0,
+            effective_retry_max_attempts: 3,
+            consecutive_mismatch_cycles: 1,
+            consecutive_retry_exhaustions: 1,
+            recovery_cooldown_reconnect_cycles_remaining: 0,
+            correction_suppressed_for_recovery_cycle: false,
+            correction_reenabled_for_recovery_cycle: false,
+        };
+        let current = ReconnectStateRestoreCorrectionStateSnapshot {
+            consecutive_mismatch_cycles: 2,
+            consecutive_retry_exhaustions: 2,
+            ..previous
+        };
+        let thresholds = super::ReconnectCorrectionDiagnosticsAlertThresholds {
+            action_failures_delta: None,
+            retry_exhaustions_delta: None,
+            disables_after_repeated_mismatches_delta: None,
+            consecutive_mismatch_cycles: Some(2),
+            consecutive_retry_exhaustions: Some(3),
+        };
+
+        let text_alerts = reconnect_correction_state_threshold_alert_lines(
+            Some(&previous),
+            &current,
+            &thresholds,
+            ReconnectCorrectionDiagnosticsFormat::Text,
+        );
+        assert_eq!(text_alerts.len(), 1);
+        assert!(text_alerts[0].contains("state=consecutive_mismatch_cycles"));
+
+        let json_alerts = reconnect_correction_state_threshold_alert_lines(
+            Some(&previous),
+            &current,
+            &thresholds,
+            ReconnectCorrectionDiagnosticsFormat::Json,
+        );
+        assert_eq!(json_alerts.len(), 1);
+        let parsed: Value =
+            serde_json::from_str(&json_alerts[0]).expect("state alert JSON should parse");
+        assert_eq!(parsed["metric"], "consecutive_mismatch_cycles");
+        assert_eq!(parsed["threshold"], 2);
+    }
+
+    #[test]
+    fn flush_reconnect_correction_diagnostics_to_sink_dedupes_snapshot_and_emits_on_change() {
+        let config = test_client_loop_config();
+        let mut runtime = create_client_runtime(&config);
+        let mut diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
+        let mut captured = Vec::new();
+
+        flush_reconnect_correction_diagnostics_to_sink(
+            &runtime,
+            &mut diagnostics_state,
+            &super::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
+            ReconnectCorrectionDiagnosticsFormat::Text,
+            &mut |m| {
+                captured.push(m.to_owned());
+                Ok(())
+            },
+        )
+        .expect("initial reconnect correction diagnostics flush should succeed");
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].starts_with("reconnect correction state: "));
+
+        captured.clear();
+        flush_reconnect_correction_diagnostics_to_sink(
+            &runtime,
+            &mut diagnostics_state,
+            &super::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
+            ReconnectCorrectionDiagnosticsFormat::Text,
+            &mut |m| {
+                captured.push(m.to_owned());
+                Ok(())
+            },
+        )
+        .expect("deduped reconnect correction diagnostics flush should succeed");
+        assert!(
+            captured.is_empty(),
+            "unchanged reconnect correction metrics/state should not emit duplicate diagnostics"
+        );
+
+        runtime
+            .session_mut()
+            .behavior_config_mut()
+            .reconnect_state_restore_auto_correct = false;
+
+        flush_reconnect_correction_diagnostics_to_sink(
+            &runtime,
+            &mut diagnostics_state,
+            &super::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
+            ReconnectCorrectionDiagnosticsFormat::Text,
+            &mut |m| {
+                captured.push(m.to_owned());
+                Ok(())
+            },
+        )
+        .expect("snapshot change should emit reconnect correction diagnostics");
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("policy=notify-only"));
+    }
+
+    #[test]
+    fn flush_reconnect_correction_diagnostics_to_sink_emits_json_lines_when_requested() {
+        let config = test_client_loop_config();
+        let runtime = create_client_runtime(&config);
+        let mut diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
+        let mut captured = Vec::new();
+
+        flush_reconnect_correction_diagnostics_to_sink(
+            &runtime,
+            &mut diagnostics_state,
+            &super::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
+            ReconnectCorrectionDiagnosticsFormat::Json,
+            &mut |m| {
+                captured.push(m.to_owned());
+                Ok(())
+            },
+        )
+        .expect("initial JSON reconnect correction diagnostics flush should succeed");
+
+        assert_eq!(captured.len(), 1);
+        let parsed: Value = serde_json::from_str(&captured[0])
+            .expect("captured reconnect correction JSON should parse");
+        assert_eq!(parsed["type"], "reconnect_correction_state");
+        assert_eq!(parsed["state"]["effective_policy_mode"], "auto");
+    }
+
+    #[test]
+    fn reconnect_correction_diagnostics_format_from_env_prefers_json_when_enabled() {
+        let key_text = "SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS";
+        let key_json = "SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS_JSON";
+        let old_text = std::env::var(key_text).ok();
+        let old_json = std::env::var(key_json).ok();
+
+        // SAFETY: This unit test mutates process env in a short, local scope and restores it
+        // before returning; it does not spawn threads or perform concurrent env access.
+        unsafe {
+            std::env::set_var(key_text, "1");
+            std::env::remove_var(key_json);
+        }
+        assert_eq!(
+            reconnect_correction_diagnostics_format_from_env(),
+            Some(ReconnectCorrectionDiagnosticsFormat::Text)
+        );
+
+        // SAFETY: Same scoped test-only environment mutation reasoning as above.
+        unsafe {
+            std::env::set_var(key_json, "1");
+        }
+        assert_eq!(
+            reconnect_correction_diagnostics_format_from_env(),
+            Some(ReconnectCorrectionDiagnosticsFormat::Json)
+        );
+
+        // SAFETY: Same scoped test-only environment mutation reasoning as above.
+        unsafe {
+            std::env::remove_var(key_text);
+            std::env::remove_var(key_json);
+        }
+        assert_eq!(reconnect_correction_diagnostics_format_from_env(), None);
+
+        if let Some(value) = old_text {
+            // SAFETY: Restoring the original test-local env value before exiting the test.
+            unsafe {
+                std::env::set_var(key_text, value);
+            }
+        }
+        if let Some(value) = old_json {
+            // SAFETY: Restoring the original test-local env value before exiting the test.
+            unsafe {
+                std::env::set_var(key_json, value);
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_correction_diagnostics_alert_thresholds_from_env_parses_values() {
+        let key_failures =
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_ACTION_FAILURES_DELTA_THRESHOLD";
+        let key_retry =
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_RETRY_EXHAUSTIONS_DELTA_THRESHOLD";
+        let key_mismatch =
+            "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_MISMATCH_CYCLES_THRESHOLD";
+        let old_failures = std::env::var(key_failures).ok();
+        let old_retry = std::env::var(key_retry).ok();
+        let old_mismatch = std::env::var(key_mismatch).ok();
+
+        // SAFETY: Scoped unit-test env mutation with restoration before return.
+        unsafe {
+            std::env::set_var(key_failures, "2");
+            std::env::set_var(key_retry, "5");
+            std::env::set_var(key_mismatch, "3");
+        }
+
+        let thresholds = reconnect_correction_diagnostics_alert_thresholds_from_env();
+        assert_eq!(thresholds.action_failures_delta, Some(2));
+        assert_eq!(thresholds.retry_exhaustions_delta, Some(5));
+        assert_eq!(thresholds.consecutive_mismatch_cycles, Some(3));
+        assert_eq!(thresholds.disables_after_repeated_mismatches_delta, None);
+
+        // SAFETY: Scoped unit-test env restoration.
+        unsafe {
+            std::env::remove_var(key_failures);
+            std::env::remove_var(key_retry);
+            std::env::remove_var(key_mismatch);
+        }
+        if let Some(value) = old_failures {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_failures, value);
+            }
+        }
+        if let Some(value) = old_retry {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_retry, value);
+            }
+        }
+        if let Some(value) = old_mismatch {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_mismatch, value);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_mpv_launch_env_config_from_env_parses_values() {
+        let key_enabled = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let key_bin = "SYNCPLAY_CLIENT_MPV_MANAGED_BIN";
+        let key_media = "SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA";
+        let key_ipc = "SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH";
+        let key_timeout = "SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_TIMEOUT_MS";
+        let key_poll = "SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_POLL_INTERVAL_MS";
+        let old_enabled = std::env::var(key_enabled).ok();
+        let old_bin = std::env::var(key_bin).ok();
+        let old_media = std::env::var(key_media).ok();
+        let old_ipc = std::env::var(key_ipc).ok();
+        let old_timeout = std::env::var(key_timeout).ok();
+        let old_poll = std::env::var(key_poll).ok();
+
+        // SAFETY: Scoped unit-test env mutation with restoration before return.
+        unsafe {
+            std::env::set_var(key_enabled, "1");
+            std::env::set_var(key_bin, "C:\\tmp\\mpv.exe");
+            std::env::set_var(key_media, "C:\\tmp\\video.mkv");
+            std::env::set_var(key_ipc, "\\\\.\\pipe\\syncplay-test");
+            std::env::set_var(key_timeout, "7000");
+            std::env::set_var(key_poll, "25");
+        }
+
+        let config = managed_mpv_launch_env_config_from_env();
+        assert!(config.enabled);
+        assert_eq!(
+            config.mpv_bin,
+            Some(std::path::PathBuf::from("C:\\tmp\\mpv.exe"))
+        );
+        assert_eq!(
+            config.media_file,
+            Some(std::path::PathBuf::from("C:\\tmp\\video.mkv"))
+        );
+        assert_eq!(
+            config.ipc_path.as_deref(),
+            Some("\\\\.\\pipe\\syncplay-test")
+        );
+        assert_eq!(config.connect_timeout_ms, Some(7000));
+        assert_eq!(config.connect_poll_interval_ms, Some(25));
+
+        // SAFETY: Scoped unit-test env restoration.
+        unsafe {
+            std::env::remove_var(key_enabled);
+            std::env::remove_var(key_bin);
+            std::env::remove_var(key_media);
+            std::env::remove_var(key_ipc);
+            std::env::remove_var(key_timeout);
+            std::env::remove_var(key_poll);
+        }
+        if let Some(value) = old_enabled {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_enabled, value);
+            }
+        }
+        if let Some(value) = old_bin {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_bin, value);
+            }
+        }
+        if let Some(value) = old_media {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_media, value);
+            }
+        }
+        if let Some(value) = old_ipc {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_ipc, value);
+            }
+        }
+        if let Some(value) = old_timeout {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_timeout, value);
+            }
+        }
+        if let Some(value) = old_poll {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_poll, value);
+            }
+        }
     }
 
     #[test]

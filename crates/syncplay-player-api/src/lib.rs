@@ -2,6 +2,8 @@
 pub enum PlayerError {
     #[error("operation not supported: {0}")]
     Unsupported(&'static str),
+    #[error("operation failed: {0}")]
+    OperationFailed(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,30 @@ impl LocalFileUpdate {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerPlaybackTelemetryUpdate {
+    pub paused: Option<bool>,
+    pub position_seconds: Option<f64>,
+    pub playback_rate: Option<f64>,
+}
+
+impl PlayerPlaybackTelemetryUpdate {
+    pub fn with_paused(mut self, paused: bool) -> Self {
+        self.paused = Some(paused);
+        self
+    }
+
+    pub fn with_position_seconds(mut self, position_seconds: f64) -> Self {
+        self.position_seconds = Some(position_seconds);
+        self
+    }
+
+    pub fn with_playback_rate(mut self, playback_rate: f64) -> Self {
+        self.playback_rate = Some(playback_rate);
+        self
+    }
+}
+
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
@@ -55,11 +81,14 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
         None
     }
+    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalFileUpdate, PlayerAdapter, PlayerError};
+    use super::{LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
 
     struct DummyPlayer;
 
@@ -90,6 +119,7 @@ mod tests {
         );
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
+        assert_eq!(player.take_playback_telemetry_update(), None);
     }
 
     #[test]
@@ -103,5 +133,17 @@ mod tests {
         assert_eq!(update.duration_seconds, Some(95.5));
         assert_eq!(update.size_bytes, Some(123_456_789));
         assert_eq!(update.path.as_deref(), Some("C:/media/movie.mkv"));
+    }
+
+    #[test]
+    fn playback_telemetry_update_builder_sets_expected_fields() {
+        let update = PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(true)
+            .with_position_seconds(12.5)
+            .with_playback_rate(0.95);
+
+        assert_eq!(update.paused, Some(true));
+        assert_eq!(update.position_seconds, Some(12.5));
+        assert_eq!(update.playback_rate, Some(0.95));
     }
 }

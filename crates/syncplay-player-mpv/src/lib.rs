@@ -1,17 +1,102 @@
-use std::path::Path;
+use std::{
+    collections::VecDeque,
+    fmt,
+    io::{self, Read, Write},
+    path::Path,
+};
 
-use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerError};
+use serde_json::{Value, json};
+use syncplay_player_api::{
+    LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
+};
 
-#[derive(Debug, Default)]
+const MPV_COMMAND_SET_PROPERTY: &str = "set_property";
+const MPV_COMMAND_GET_PROPERTY: &str = "get_property";
+const MPV_COMMAND_OBSERVE_PROPERTY: &str = "observe_property";
+const MPV_COMMAND_LOADFILE: &str = "loadfile";
+const MPV_LOADFILE_REPLACE: &str = "replace";
+const MPV_PROPERTY_PAUSE: &str = "pause";
+const MPV_PROPERTY_TIME_POS: &str = "time-pos";
+const MPV_PROPERTY_SPEED: &str = "speed";
+const MPV_PROPERTY_PATH: &str = "path";
+const MPV_PROPERTY_DURATION: &str = "duration";
+const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
+const MPV_RESPONSE_SUCCESS: &str = "success";
+const MPV_EVENT_PROPERTY_CHANGE: &str = "property-change";
+const MPV_OBS_PATH_ID: u64 = 1;
+const MPV_OBS_DURATION_ID: u64 = 2;
+const MPV_OBS_FILE_SIZE_ID: u64 = 3;
+const MPV_OBS_PAUSE_ID: u64 = 4;
+const MPV_OBS_TIME_POS_ID: u64 = 5;
+const MPV_OBS_SPEED_ID: u64 = 6;
+
 pub struct MpvAdapter {
     paused: bool,
     position_seconds: f64,
     playback_rate: f64,
     current_path: Option<String>,
     pending_local_file_update: Option<LocalFileUpdate>,
+    pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
+    last_polled_local_file_update: Option<LocalFileUpdate>,
+    observed_state: MpvObservedState,
+    observers_registered: bool,
+    ipc_client: Option<MpvJsonIpcClient>,
+}
+
+impl fmt::Debug for MpvAdapter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MpvAdapter")
+            .field("paused", &self.paused)
+            .field("position_seconds", &self.position_seconds)
+            .field("playback_rate", &self.playback_rate)
+            .field("current_path", &self.current_path)
+            .field("pending_local_file_update", &self.pending_local_file_update)
+            .field(
+                "pending_playback_telemetry_update",
+                &self.pending_playback_telemetry_update,
+            )
+            .field(
+                "last_polled_local_file_update",
+                &self.last_polled_local_file_update,
+            )
+            .field("observed_state", &self.observed_state)
+            .field("observers_registered", &self.observers_registered)
+            .field("ipc_attached", &self.ipc_client.is_some())
+            .finish()
+    }
+}
+
+impl Default for MpvAdapter {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            position_seconds: 0.0,
+            playback_rate: 0.0,
+            current_path: None,
+            pending_local_file_update: None,
+            pending_playback_telemetry_update: None,
+            last_polled_local_file_update: None,
+            observed_state: MpvObservedState::default(),
+            observers_registered: false,
+            ipc_client: None,
+        }
+    }
 }
 
 impl MpvAdapter {
+    pub fn with_json_ipc(path: impl AsRef<Path>) -> Result<Self, PlayerError> {
+        let mut adapter = Self::default();
+        adapter.connect_json_ipc(path)?;
+        Ok(adapter)
+    }
+
+    pub fn connect_json_ipc(&mut self, path: impl AsRef<Path>) -> Result<(), PlayerError> {
+        let client =
+            MpvJsonIpcClient::connect(path.as_ref()).map_err(PlayerError::OperationFailed)?;
+        self.ipc_client = Some(client);
+        Ok(())
+    }
+
     pub fn current_path(&self) -> Option<&str> {
         self.current_path.as_deref()
     }
@@ -36,6 +121,227 @@ impl MpvAdapter {
         self.pending_local_file_update = Some(update);
     }
 
+    fn ensure_observers_registered_if_attached(&mut self) {
+        if self.observers_registered {
+            return;
+        }
+        if self.ipc_client.is_none() {
+            return;
+        }
+
+        let registrations = [
+            (MPV_OBS_PATH_ID, MPV_PROPERTY_PATH),
+            (MPV_OBS_DURATION_ID, MPV_PROPERTY_DURATION),
+            (MPV_OBS_FILE_SIZE_ID, MPV_PROPERTY_FILE_SIZE),
+            (MPV_OBS_PAUSE_ID, MPV_PROPERTY_PAUSE),
+            (MPV_OBS_TIME_POS_ID, MPV_PROPERTY_TIME_POS),
+            (MPV_OBS_SPEED_ID, MPV_PROPERTY_SPEED),
+        ];
+
+        for (observer_id, property_name) in registrations {
+            let registration_result = self
+                .ipc_client
+                .as_mut()
+                .expect("checked is_some above")
+                .observe_property(observer_id, property_name);
+            if registration_result.is_err() {
+                return;
+            }
+            self.drain_ipc_events_if_attached();
+        }
+        self.observers_registered = true;
+    }
+
+    fn poll_ipc_local_file_update_if_attached(&mut self) {
+        self.ensure_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        if self.pending_local_file_update.is_some() {
+            return;
+        }
+
+        let Some(ipc_client) = self.ipc_client.as_mut() else {
+            return;
+        };
+
+        let Ok(polled_update) = Self::poll_local_file_update_from_mpv(ipc_client) else {
+            return;
+        };
+        let Some(polled_update) = polled_update else {
+            return;
+        };
+
+        self.observed_state.path = polled_update.path.clone();
+        self.observed_state.duration_seconds = polled_update.duration_seconds;
+        self.observed_state.size_bytes = polled_update.size_bytes;
+        self.current_path = polled_update.path.clone();
+        self.record_local_file_update_if_changed(polled_update);
+        self.drain_ipc_events_if_attached();
+    }
+
+    fn poll_local_file_update_from_mpv(
+        ipc_client: &mut MpvJsonIpcClient,
+    ) -> Result<Option<LocalFileUpdate>, String> {
+        let Some(path) = ipc_client
+            .get_property_string(MPV_PROPERTY_PATH)
+            .unwrap_or(None)
+        else {
+            return Ok(None);
+        };
+
+        let mut local_file_update = Self::local_file_update_for_path(path.as_str());
+
+        if let Some(duration_seconds) = ipc_client
+            .get_property_f64(MPV_PROPERTY_DURATION)
+            .unwrap_or(None)
+        {
+            local_file_update = local_file_update.with_duration_seconds(duration_seconds);
+        }
+
+        if let Some(size_bytes) = ipc_client
+            .get_property_u64(MPV_PROPERTY_FILE_SIZE)
+            .unwrap_or(None)
+        {
+            local_file_update = local_file_update.with_size_bytes(size_bytes);
+        }
+
+        Ok(Some(local_file_update))
+    }
+
+    fn record_local_file_update_if_changed(&mut self, update: LocalFileUpdate) {
+        if self.last_polled_local_file_update.as_ref() != Some(&update) {
+            self.last_polled_local_file_update = Some(update.clone());
+            self.pending_local_file_update = Some(update);
+        }
+    }
+
+    fn queue_playback_telemetry_update(&mut self, update: PlayerPlaybackTelemetryUpdate) {
+        match self.pending_playback_telemetry_update.as_mut() {
+            Some(pending) => {
+                if let Some(paused) = update.paused {
+                    pending.paused = Some(paused);
+                }
+                if let Some(position_seconds) = update.position_seconds {
+                    pending.position_seconds = Some(position_seconds);
+                }
+                if let Some(playback_rate) = update.playback_rate {
+                    pending.playback_rate = Some(playback_rate);
+                }
+            }
+            None => {
+                self.pending_playback_telemetry_update = Some(update);
+            }
+        }
+    }
+
+    fn drain_ipc_events_if_attached(&mut self) {
+        let pending_events = match self.ipc_client.as_mut() {
+            Some(ipc_client) => ipc_client.take_pending_events(),
+            None => return,
+        };
+        for event in pending_events {
+            self.handle_ipc_event(&event);
+        }
+    }
+
+    fn handle_ipc_event(&mut self, event: &Value) {
+        let Some(event_name) = event.get("event").and_then(Value::as_str) else {
+            return;
+        };
+        if event_name != MPV_EVENT_PROPERTY_CHANGE {
+            return;
+        }
+
+        let Some(property_name) = event.get("name").and_then(Value::as_str) else {
+            return;
+        };
+        let data = event.get("data");
+
+        let file_metadata_changed = match property_name {
+            MPV_PROPERTY_PATH => {
+                let next_path = data.and_then(Value::as_str).map(ToOwned::to_owned);
+                self.current_path = next_path.clone();
+                self.observed_state.path = next_path;
+                true
+            }
+            MPV_PROPERTY_DURATION => {
+                self.observed_state.duration_seconds = data.and_then(Value::as_f64);
+                true
+            }
+            MPV_PROPERTY_FILE_SIZE => {
+                self.observed_state.size_bytes = data
+                    .and_then(|value| value.as_u64().or_else(|| value.as_i64()?.try_into().ok()));
+                true
+            }
+            MPV_PROPERTY_PAUSE => {
+                if let Some(paused) = data.and_then(Value::as_bool) {
+                    self.paused = paused;
+                    self.observed_state.paused = Some(paused);
+                    self.queue_playback_telemetry_update(
+                        PlayerPlaybackTelemetryUpdate::default().with_paused(paused),
+                    );
+                } else {
+                    self.observed_state.paused = None;
+                }
+                false
+            }
+            MPV_PROPERTY_TIME_POS => {
+                if let Some(position_seconds) = data.and_then(Value::as_f64) {
+                    self.position_seconds = position_seconds;
+                    self.observed_state.position_seconds = Some(position_seconds);
+                    self.queue_playback_telemetry_update(
+                        PlayerPlaybackTelemetryUpdate::default()
+                            .with_position_seconds(position_seconds),
+                    );
+                } else {
+                    self.observed_state.position_seconds = None;
+                }
+                false
+            }
+            MPV_PROPERTY_SPEED => {
+                if let Some(speed) = data.and_then(Value::as_f64) {
+                    self.playback_rate = speed;
+                    self.observed_state.playback_rate = Some(speed);
+                    self.queue_playback_telemetry_update(
+                        PlayerPlaybackTelemetryUpdate::default().with_playback_rate(speed),
+                    );
+                } else {
+                    self.observed_state.playback_rate = None;
+                }
+                false
+            }
+            _ => false,
+        };
+
+        if file_metadata_changed {
+            self.maybe_emit_local_file_update_from_observed_state();
+        }
+    }
+
+    fn maybe_emit_local_file_update_from_observed_state(&mut self) {
+        let Some(path) = self.observed_state.path.as_deref() else {
+            return;
+        };
+
+        let mut update = Self::local_file_update_for_path(path);
+        if let Some(duration_seconds) = self.observed_state.duration_seconds {
+            update = update.with_duration_seconds(duration_seconds);
+        }
+        if let Some(size_bytes) = self.observed_state.size_bytes {
+            update = update.with_size_bytes(size_bytes);
+        }
+        self.record_local_file_update_if_changed(update);
+    }
+
+    fn send_ipc_command_if_attached(&mut self, command: Value) -> Result<(), PlayerError> {
+        if let Some(ipc_client) = self.ipc_client.as_mut() {
+            ipc_client
+                .send_command_expect_success(command)
+                .map_err(PlayerError::OperationFailed)?;
+        }
+        self.drain_ipc_events_if_attached();
+        Ok(())
+    }
+
     fn local_file_update_for_path(path: &str) -> LocalFileUpdate {
         let name = if path.contains("://") {
             path.to_owned()
@@ -56,6 +362,24 @@ impl MpvAdapter {
             .with_size_bytes(size_bytes)
             .with_path(path.to_owned())
     }
+
+    #[cfg(test)]
+    fn with_test_transport(transport: impl MpvJsonIpcTransport + 'static) -> Self {
+        Self {
+            ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct MpvObservedState {
+    path: Option<String>,
+    duration_seconds: Option<f64>,
+    size_bytes: Option<u64>,
+    paused: Option<bool>,
+    position_seconds: Option<f64>,
+    playback_rate: Option<f64>,
 }
 
 impl PlayerAdapter for MpvAdapter {
@@ -64,36 +388,300 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_LOADFILE,
+            path,
+            MPV_LOADFILE_REPLACE
+        ]))?;
         self.current_path = Some(path.to_owned());
         self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
         Ok(())
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_PAUSE,
+            paused
+        ]))?;
         self.paused = paused;
         Ok(())
     }
 
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_TIME_POS,
+            position_seconds
+        ]))?;
         self.position_seconds = position_seconds;
         Ok(())
     }
 
     fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_SPEED,
+            rate
+        ]))?;
         self.playback_rate = rate;
         Ok(())
     }
 
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+        self.poll_ipc_local_file_update_if_attached();
         self.pending_local_file_update.take()
     }
+
+    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
+        self.ensure_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.pending_playback_telemetry_update.take()
+    }
+}
+
+trait MpvJsonIpcTransport: Send + Sync {
+    fn send_line(&mut self, line: &str) -> io::Result<()>;
+    fn read_line(&mut self, line: &mut String) -> io::Result<usize>;
+}
+
+struct MpvJsonIpcClient {
+    transport: Box<dyn MpvJsonIpcTransport>,
+    next_request_id: u64,
+    pending_events: VecDeque<Value>,
+}
+
+impl MpvJsonIpcClient {
+    fn new(transport: Box<dyn MpvJsonIpcTransport>) -> Self {
+        Self {
+            transport,
+            next_request_id: 1,
+            pending_events: VecDeque::new(),
+        }
+    }
+
+    fn connect(path: &Path) -> Result<Self, String> {
+        let transport = MpvPipeTransport::connect(path)
+            .map_err(|err| format!("failed to connect mpv IPC at {}: {err}", path.display()))?;
+        Ok(Self::new(Box::new(transport)))
+    }
+
+    fn send_command_expect_success(&mut self, command: Value) -> Result<(), String> {
+        self.send_command(command).map(|_| ())
+    }
+
+    fn observe_property(&mut self, observer_id: u64, property_name: &str) -> Result<(), String> {
+        self.send_command_expect_success(json!([
+            MPV_COMMAND_OBSERVE_PROPERTY,
+            observer_id,
+            property_name
+        ]))
+    }
+
+    fn get_property(&mut self, property_name: &str) -> Result<Option<Value>, String> {
+        let response = self.send_command(json!([MPV_COMMAND_GET_PROPERTY, property_name]))?;
+        Ok(response
+            .get("data")
+            .cloned()
+            .filter(|value| !value.is_null()))
+    }
+
+    fn get_property_string(&mut self, property_name: &str) -> Result<Option<String>, String> {
+        let value = self.get_property(property_name)?;
+        Ok(value
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned))
+    }
+
+    fn get_property_f64(&mut self, property_name: &str) -> Result<Option<f64>, String> {
+        let value = self.get_property(property_name)?;
+        Ok(value.as_ref().and_then(Value::as_f64))
+    }
+
+    fn get_property_u64(&mut self, property_name: &str) -> Result<Option<u64>, String> {
+        let value = self.get_property(property_name)?;
+        Ok(value
+            .as_ref()
+            .and_then(|value| value.as_u64().or_else(|| value.as_i64()?.try_into().ok())))
+    }
+
+    fn send_command(&mut self, command: Value) -> Result<Value, String> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+
+        let request = json!({
+            "command": command,
+            "request_id": request_id,
+        });
+        let mut line = serde_json::to_string(&request)
+            .map_err(|err| format!("failed to serialize mpv IPC request: {err}"))?;
+        line.push('\n');
+        self.transport
+            .send_line(&line)
+            .map_err(|err| format!("failed to write mpv IPC request: {err}"))?;
+
+        let mut response_line = String::new();
+        loop {
+            let bytes_read = self
+                .transport
+                .read_line(&mut response_line)
+                .map_err(|err| format!("failed to read mpv IPC response: {err}"))?;
+            if bytes_read == 0 {
+                return Err(format!(
+                    "unexpected EOF while waiting for mpv IPC response (request_id={request_id})"
+                ));
+            }
+
+            let trimmed = response_line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let parsed: Value = serde_json::from_str(trimmed)
+                .map_err(|err| format!("invalid mpv IPC JSON line '{trimmed}': {err}"))?;
+            if parsed.get("event").and_then(Value::as_str).is_some() {
+                self.pending_events.push_back(parsed);
+                continue;
+            }
+            let Some(parsed_request_id) = parsed.get("request_id").and_then(Value::as_u64) else {
+                // Ignore non-event lines without request_id while waiting for the response.
+                continue;
+            };
+            if parsed_request_id != request_id {
+                continue;
+            }
+
+            let error = parsed
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing error>");
+            if error != MPV_RESPONSE_SUCCESS {
+                return Err(format!(
+                    "mpv command failed for request_id={request_id}: {error}"
+                ));
+            }
+
+            return Ok(parsed);
+        }
+    }
+
+    fn take_pending_events(&mut self) -> Vec<Value> {
+        self.pending_events.drain(..).collect()
+    }
+}
+
+struct MpvPipeTransport {
+    stream: MpvPipeStream,
+}
+
+impl MpvPipeTransport {
+    fn connect(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::UnixStream;
+            let stream = UnixStream::connect(path)?;
+            return Ok(Self {
+                stream: MpvPipeStream::Unix(stream),
+            });
+        }
+
+        #[cfg(windows)]
+        {
+            let stream = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?;
+            return Ok(Self {
+                stream: MpvPipeStream::Windows(stream),
+            });
+        }
+
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mpv IPC transport not implemented for this platform",
+        ))
+    }
+}
+
+impl MpvJsonIpcTransport for MpvPipeTransport {
+    fn send_line(&mut self, line: &str) -> io::Result<()> {
+        match &mut self.stream {
+            #[cfg(unix)]
+            MpvPipeStream::Unix(stream) => write_line_to_stream(stream, line),
+            #[cfg(windows)]
+            MpvPipeStream::Windows(stream) => write_line_to_stream(stream, line),
+        }
+    }
+
+    fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
+        match &mut self.stream {
+            #[cfg(unix)]
+            MpvPipeStream::Unix(stream) => read_line_from_stream(stream, line),
+            #[cfg(windows)]
+            MpvPipeStream::Windows(stream) => read_line_from_stream(stream, line),
+        }
+    }
+}
+
+enum MpvPipeStream {
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+    #[cfg(windows)]
+    Windows(std::fs::File),
+}
+
+fn write_line_to_stream(stream: &mut impl Write, line: &str) -> io::Result<()> {
+    stream.write_all(line.as_bytes())?;
+    stream.flush()
+}
+
+fn read_line_from_stream(stream: &mut impl Read, line: &mut String) -> io::Result<usize> {
+    let mut bytes = Vec::new();
+    loop {
+        let mut one = [0_u8; 1];
+        match stream.read(&mut one) {
+            Ok(0) => {
+                if bytes.is_empty() {
+                    line.clear();
+                    return Ok(0);
+                }
+                break;
+            }
+            Ok(_) => {
+                bytes.push(one[0]);
+                if one[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    let decoded = String::from_utf8(bytes).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mpv IPC response was not valid UTF-8: {err}"),
+        )
+    })?;
+    line.clear();
+    line.push_str(&decoded);
+    Ok(line.len())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::MpvAdapter;
-    use std::{fs::File, io::Write};
-    use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
+    use super::{MpvAdapter, MpvJsonIpcTransport};
+    use serde_json::{Value, json};
+    use std::{
+        collections::VecDeque,
+        fs::File,
+        io,
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+    use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerPlaybackTelemetryUpdate};
 
     #[test]
     fn stores_opened_file_path() {
@@ -171,5 +759,551 @@ mod tests {
         );
 
         std::fs::remove_file(temp_path).expect("temp file should be removable");
+    }
+
+    #[test]
+    fn set_paused_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_paused(true)
+            .expect("attached mpv transport should accept pause command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let sent = &writes[0];
+        assert!(sent.ends_with('\n'), "expected newline-delimited mpv IPC");
+        let payload: Value = serde_json::from_str(sent.trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "pause", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.paused());
+    }
+
+    #[test]
+    fn set_position_waits_for_matching_response_and_ignores_async_events() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"event":"property-change","name":"pause","data":false}"#,
+            r#"{"request_id":999,"error":"success"}"#,
+            r#"{"request_id":1,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_position(24.5)
+            .expect("attached mpv transport should accept seek command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "time-pos", 24.5],
+                "request_id": 1
+            })
+        );
+        assert_eq!(adapter.position_seconds(), 24.5);
+    }
+
+    #[test]
+    fn mpv_error_response_is_reported_and_local_state_is_not_updated() {
+        let (transport, _state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"property unavailable"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        let err = adapter
+            .set_position(42.0)
+            .expect_err("mpv error response should fail operation");
+        match err {
+            syncplay_player_api::PlayerError::OperationFailed(message) => {
+                assert!(
+                    message.contains("property unavailable"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+        assert_eq!(adapter.position_seconds(), 0.0);
+    }
+
+    #[test]
+    fn open_file_sends_mpv_loadfile_replace_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .open_file("movie.mkv")
+            .expect("attached mpv transport should accept loadfile");
+
+        let writes = state.writes();
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["loadfile", "movie.mkv", "replace"],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn take_local_file_update_polls_mpv_properties_and_emits_changes_once() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+            r#"{"request_id":5,"error":"success"}"#,
+            r#"{"request_id":6,"error":"success"}"#,
+            r#"{"request_id":7,"error":"success","data":"C:/media/movie.mkv"}"#,
+            r#"{"request_id":8,"error":"success","data":1439.5}"#,
+            r#"{"request_id":9,"error":"success","data":123456}"#,
+            r#"{"request_id":10,"error":"success","data":"C:/media/movie.mkv"}"#,
+            r#"{"request_id":11,"error":"success","data":1439.5}"#,
+            r#"{"request_id":12,"error":"success","data":123456}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        let first = adapter
+            .take_local_file_update()
+            .expect("first poll should emit local file update");
+        assert_eq!(first.name, "movie.mkv");
+        assert_eq!(first.path.as_deref(), Some("C:/media/movie.mkv"));
+        assert_eq!(first.duration_seconds, Some(1439.5));
+        assert_eq!(first.size_bytes, Some(123456));
+
+        assert_eq!(
+            adapter.take_local_file_update(),
+            None,
+            "unchanged telemetry should not re-emit a file update"
+        );
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 12);
+        let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+        let third_payload: Value = serde_json::from_str(writes[2].trim_end()).expect("valid json");
+        let seventh_payload: Value =
+            serde_json::from_str(writes[6].trim_end()).expect("valid json");
+        let eighth_payload: Value = serde_json::from_str(writes[7].trim_end()).expect("valid json");
+        let ninth_payload: Value = serde_json::from_str(writes[8].trim_end()).expect("valid json");
+        assert_eq!(
+            first_payload,
+            json!({
+                "command": ["observe_property", 1, "path"],
+                "request_id": 1
+            })
+        );
+        assert_eq!(
+            second_payload,
+            json!({
+                "command": ["observe_property", 2, "duration"],
+                "request_id": 2
+            })
+        );
+        assert_eq!(
+            third_payload,
+            json!({
+                "command": ["observe_property", 3, "file-size"],
+                "request_id": 3
+            })
+        );
+        assert_eq!(
+            seventh_payload,
+            json!({
+                "command": ["get_property", "path"],
+                "request_id": 7
+            })
+        );
+        assert_eq!(
+            eighth_payload,
+            json!({
+                "command": ["get_property", "duration"],
+                "request_id": 8
+            })
+        );
+        assert_eq!(
+            ninth_payload,
+            json!({
+                "command": ["get_property", "file-size"],
+                "request_id": 9
+            })
+        );
+    }
+
+    #[test]
+    fn take_local_file_update_ignores_missing_path_until_file_is_available() {
+        let (transport, _state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+            r#"{"request_id":5,"error":"success"}"#,
+            r#"{"request_id":6,"error":"success"}"#,
+            r#"{"request_id":7,"error":"property unavailable"}"#,
+            r#"{"request_id":8,"error":"success","data":"C:/media/movie2.mkv"}"#,
+            r#"{"request_id":9,"error":"success","data":42}"#,
+            r#"{"request_id":10,"error":"success","data":1000}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        assert_eq!(adapter.take_local_file_update(), None);
+
+        let update = adapter
+            .take_local_file_update()
+            .expect("file should emit after path becomes available");
+        assert_eq!(update.name, "movie2.mkv");
+        assert_eq!(update.path.as_deref(), Some("C:/media/movie2.mkv"));
+        assert_eq!(update.duration_seconds, Some(42.0));
+        assert_eq!(update.size_bytes, Some(1000));
+    }
+
+    #[test]
+    fn async_property_change_events_from_mpv_queue_local_file_update() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+            r#"{"request_id":5,"error":"success"}"#,
+            r#"{"request_id":6,"error":"success"}"#,
+            r#"{"request_id":7,"error":"property unavailable"}"#,
+            r#"{"event":"property-change","name":"path","data":"C:/media/from-event.mkv"}"#,
+            r#"{"event":"property-change","name":"duration","data":120.0}"#,
+            r#"{"event":"property-change","name":"file-size","data":987654}"#,
+            r#"{"request_id":8,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        assert_eq!(adapter.take_local_file_update(), None);
+
+        adapter.set_paused(true).expect("command should succeed");
+
+        let update = adapter
+            .take_local_file_update()
+            .expect("async property-change events should queue a local file update");
+        assert_eq!(update.name, "from-event.mkv");
+        assert_eq!(update.path.as_deref(), Some("C:/media/from-event.mkv"));
+        assert_eq!(update.duration_seconds, Some(120.0));
+        assert_eq!(update.size_bytes, Some(987654));
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 8);
+        let last_payload: Value = serde_json::from_str(writes[7].trim_end()).expect("valid json");
+        assert_eq!(
+            last_payload,
+            json!({
+                "command": ["set_property", "pause", true],
+                "request_id": 8
+            })
+        );
+    }
+
+    #[test]
+    fn async_property_change_events_queue_playback_telemetry_update() {
+        let (transport, _state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+            r#"{"request_id":5,"error":"success"}"#,
+            r#"{"request_id":6,"error":"success"}"#,
+            r#"{"request_id":7,"error":"property unavailable"}"#,
+            r#"{"event":"property-change","name":"pause","data":true}"#,
+            r#"{"event":"property-change","name":"time-pos","data":123.25}"#,
+            r#"{"event":"property-change","name":"speed","data":1.10}"#,
+            r#"{"request_id":8,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        assert_eq!(adapter.take_local_file_update(), None);
+
+        adapter
+            .set_position(10.0)
+            .expect("command should drain and process queued events");
+
+        let telemetry = adapter
+            .take_playback_telemetry_update()
+            .expect("expected merged playback telemetry update from async events");
+        assert_eq!(
+            telemetry,
+            PlayerPlaybackTelemetryUpdate {
+                paused: Some(true),
+                position_seconds: Some(123.25),
+                playback_rate: Some(1.10),
+            }
+        );
+        assert_eq!(adapter.take_playback_telemetry_update(), None);
+        assert!(adapter.paused());
+        assert_eq!(
+            adapter.position_seconds(),
+            10.0,
+            "commanded local state currently wins over earlier async time-pos event in this slice"
+        );
+        assert_eq!(adapter.playback_rate(), 1.10);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "local smoke test; requires standalone mpv binary and media file"]
+    fn local_standalone_mpv_smoke_reports_file_metadata() {
+        use std::{
+            path::{Path, PathBuf},
+            process::{Child, Command, Stdio},
+            thread::sleep,
+            time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        };
+
+        fn repo_root() -> PathBuf {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("..")
+        }
+
+        fn default_mpv_bin(root: &Path) -> PathBuf {
+            root.join("mpv").join("mpv.exe")
+        }
+
+        fn first_media_file(media_dir: &Path) -> Option<PathBuf> {
+            let mut entries = std::fs::read_dir(media_dir).ok()?;
+            while let Some(Ok(entry)) = entries.next() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let ext = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase());
+                let Some(ext) = ext else { continue };
+                if matches!(ext.as_str(), "mkv" | "mp4" | "avi" | "webm" | "mov" | "m4v") {
+                    return Some(path);
+                }
+            }
+            None
+        }
+
+        fn env_duration_ms(name: &str, default_ms: u64) -> Duration {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or_else(|| Duration::from_millis(default_ms))
+        }
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_mpv_bin(&root));
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!(
+                "mpv binary not found at {} (override with SYNCPLAY_MPV_SMOKE_BIN)",
+                mpv_bin.display()
+            );
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-mpv-smoke-{}-{unique}",
+            std::process::id()
+        );
+        let connect_timeout = env_duration_ms("SYNCPLAY_MPV_SMOKE_CONNECT_TIMEOUT_MS", 5_000);
+        let metadata_timeout = env_duration_ms("SYNCPLAY_MPV_SMOKE_METADATA_TIMEOUT_MS", 10_000);
+        let poll_interval = env_duration_ms("SYNCPLAY_MPV_SMOKE_POLL_INTERVAL_MS", 50);
+
+        let child = MpvChildGuard(
+            Command::new(&mpv_bin)
+                .current_dir(
+                    mpv_bin
+                        .parent()
+                        .expect("mpv binary path should have a parent directory"),
+                )
+                .arg("--pause")
+                .arg("--force-window=no")
+                .arg("--idle=yes")
+                .arg(format!("--input-ipc-server={pipe_path}"))
+                .arg(&media_file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("standalone mpv should start for local smoke test"),
+        );
+
+        let mut adapter = None;
+        let connect_started = Instant::now();
+        let mut last_connect_error = None;
+        while connect_started.elapsed() < connect_timeout {
+            match MpvAdapter::with_json_ipc(&pipe_path) {
+                Ok(attached) => {
+                    adapter = Some(attached);
+                    break;
+                }
+                Err(err) => {
+                    last_connect_error = Some(err.to_string());
+                    sleep(poll_interval);
+                }
+            }
+        }
+        let mut adapter = match adapter {
+            Some(adapter) => adapter,
+            None => panic!(
+                "expected to connect to mpv JSON IPC pipe within {:?} (pipe={}, mpv_bin={}, media={}); last error: {}",
+                connect_timeout,
+                pipe_path,
+                mpv_bin.display(),
+                media_file.display(),
+                last_connect_error.as_deref().unwrap_or("<none>")
+            ),
+        };
+
+        let mut observed_update = None;
+        let mut last_update = None;
+        let mut last_telemetry = None;
+        let metadata_started = Instant::now();
+        while metadata_started.elapsed() < metadata_timeout {
+            if let Some(update) = adapter.take_local_file_update() {
+                last_update = Some(update.clone());
+                let has_duration = update
+                    .duration_seconds
+                    .is_some_and(|duration| duration > 1.0);
+                let has_path = update.path.is_some();
+                if has_path && has_duration {
+                    observed_update = Some(update);
+                    break;
+                }
+            }
+            while let Some(telemetry) = adapter.take_playback_telemetry_update() {
+                last_telemetry = Some(telemetry);
+            }
+            sleep(poll_interval);
+        }
+
+        drop(child);
+
+        let update = observed_update.unwrap_or_else(|| {
+            panic!(
+                "expected mpv telemetry-driven LocalFileUpdate within {:?} (poll_interval={:?}, pipe={}, mpv_bin={}, media={}); last_update={:?}; last_telemetry={:?}",
+                metadata_timeout,
+                poll_interval,
+                pipe_path,
+                mpv_bin.display(),
+                media_file.display(),
+                last_update,
+                last_telemetry
+            )
+        });
+        let expected_name = media_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("media file should have a UTF-8 filename");
+        assert_eq!(update.name, expected_name);
+        assert!(
+            update
+                .duration_seconds
+                .is_some_and(|duration| duration > 60.0),
+            "expected realistic media duration from mpv telemetry, got {:?}",
+            update.duration_seconds
+        );
+        assert!(
+            update.path.is_some(),
+            "expected mpv to report a path for the loaded file"
+        );
+    }
+
+    fn fake_transport_with_reads(lines: &[&str]) -> (FakeTransport, FakeTransportStateHandle) {
+        let shared = Arc::new(Mutex::new(FakeTransportState {
+            reads: lines
+                .iter()
+                .map(|line| {
+                    let mut owned = (*line).to_owned();
+                    owned.push('\n');
+                    owned
+                })
+                .collect(),
+            writes: Vec::new(),
+        }));
+        (
+            FakeTransport {
+                shared: Arc::clone(&shared),
+            },
+            FakeTransportStateHandle { shared },
+        )
+    }
+
+    #[derive(Debug)]
+    struct FakeTransport {
+        shared: Arc<Mutex<FakeTransportState>>,
+    }
+
+    impl MpvJsonIpcTransport for FakeTransport {
+        fn send_line(&mut self, line: &str) -> io::Result<()> {
+            self.shared
+                .lock()
+                .expect("fake transport mutex should not be poisoned")
+                .writes
+                .push(line.to_owned());
+            Ok(())
+        }
+
+        fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
+            let mut guard = self
+                .shared
+                .lock()
+                .expect("fake transport mutex should not be poisoned");
+            let Some(next) = guard.reads.pop_front() else {
+                line.clear();
+                return Ok(0);
+            };
+            line.clear();
+            line.push_str(&next);
+            Ok(line.len())
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeTransportState {
+        reads: VecDeque<String>,
+        writes: Vec<String>,
+    }
+
+    #[derive(Debug)]
+    struct FakeTransportStateHandle {
+        shared: Arc<Mutex<FakeTransportState>>,
+    }
+
+    impl FakeTransportStateHandle {
+        fn writes(&self) -> Vec<String> {
+            self.shared
+                .lock()
+                .expect("fake transport mutex should not be poisoned")
+                .writes
+                .clone()
+        }
     }
 }
