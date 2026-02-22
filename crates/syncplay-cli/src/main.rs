@@ -3352,8 +3352,9 @@ mod tests {
         apply_readiness_autoplay_overrides, chat_notification_message,
         controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
-        flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
-        flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
+        create_client_runtime_with_managed_mpv_support, flush_autoplay_notifications_to_sink,
+        flush_chat_notifications_to_sink, flush_controller_auth_notifications_to_sink,
+        flush_file_difference_notifications_to_sink,
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
         format_file_difference_summary, generate_room_password_legacy_compatible,
@@ -3380,6 +3381,7 @@ mod tests {
         user_change_notification_hidden_from_osd, user_change_notification_message,
     };
     use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
@@ -3469,6 +3471,36 @@ mod tests {
             show_different_room_osd_override: None,
             controlled_room_password_override: None,
         }
+    }
+
+    fn cli_smoke_repo_root() -> PathBuf {
+        let cwd = std::env::current_dir().expect("current dir should be readable");
+        for ancestor in cwd.ancestors().take(8) {
+            if ancestor.join("mpv").exists() && ancestor.join("media").exists() {
+                return ancestor.to_path_buf();
+            }
+        }
+        panic!("expected repo root with ./mpv and ./media directories");
+    }
+
+    fn first_media_file(media_dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(media_dir).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.to_ascii_lowercase());
+            let Some(ext) = ext else { continue };
+            if matches!(ext.as_str(), "mkv" | "mp4" | "avi" | "webm" | "mov" | "m4v") {
+                return Some(path);
+            }
+        }
+        None
     }
 
     #[test]
@@ -12784,6 +12816,169 @@ mod tests {
                 std::env::set_var(key_poll, value);
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    fn managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setup() {
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let key_enabled = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let key_bin = "SYNCPLAY_CLIENT_MPV_MANAGED_BIN";
+        let key_media = "SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA";
+        let key_ipc = "SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH";
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_enabled = std::env::var(key_enabled).ok();
+        let old_bin = std::env::var(key_bin).ok();
+        let old_media = std::env::var(key_media).ok();
+        let old_ipc = std::env::var(key_ipc).ok();
+        let old_client_ipc = std::env::var(key_client_ipc).ok();
+        let old_fallback_ipc = std::env::var(key_fallback_ipc).ok();
+
+        // SAFETY: Scoped ignored smoke test env mutation with restoration before return.
+        unsafe {
+            std::env::set_var(key_enabled, "1");
+            std::env::set_var(key_bin, mpv_bin.as_os_str());
+            std::env::set_var(key_media, media_file.as_os_str());
+            std::env::remove_var(key_ipc);
+            std::env::remove_var(key_client_ipc);
+            std::env::remove_var(key_fallback_ipc);
+        }
+
+        let result = (|| {
+            let config = test_client_loop_config();
+            let (mut runtime, _managed_guard) =
+                create_client_runtime_with_managed_mpv_support(&config)
+                    .expect("managed mpv runtime creation should succeed");
+
+            let expected_name = media_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("media file should have utf-8 filename")
+                .to_owned();
+            let metadata_timeout = Duration::from_secs(12);
+            let poll_interval = Duration::from_millis(50);
+            let started = std::time::Instant::now();
+            let mut published_lines = Vec::new();
+            let mut last_telemetry = None;
+
+            while started.elapsed() < metadata_timeout {
+                for telemetry in runtime.drain_player_playback_telemetry_updates() {
+                    last_telemetry = Some(telemetry);
+                }
+
+                let published = runtime
+                    .publish_pending_local_file_update_legacy_compatible(
+                        PrivacyMode::SendRaw,
+                        PrivacyMode::SendRaw,
+                    )
+                    .expect("publishing pending local file update should not fail");
+
+                if published {
+                    runtime
+                        .flush_queued_protocol_lines_to_transport(|line| {
+                            published_lines.push(line.to_owned());
+                            Ok(())
+                        })
+                        .expect("queued protocol line flush should succeed");
+                    if published_lines
+                        .iter()
+                        .any(|line| line.contains(&expected_name))
+                    {
+                        return Ok((published_lines, last_telemetry, expected_name));
+                    }
+                }
+
+                std::thread::sleep(poll_interval);
+            }
+
+            Err(anyhow::anyhow!(
+                "expected managed mpv CLI smoke to publish local file metadata within {:?} (mpv_bin={}, media={}); lines={:?}; last_telemetry={:?}",
+                metadata_timeout,
+                mpv_bin.display(),
+                media_file.display(),
+                published_lines,
+                last_telemetry
+            ))
+        })();
+
+        // SAFETY: Scoped ignored smoke test env restoration.
+        unsafe {
+            std::env::remove_var(key_enabled);
+            std::env::remove_var(key_bin);
+            std::env::remove_var(key_media);
+            std::env::remove_var(key_ipc);
+            std::env::remove_var(key_client_ipc);
+            std::env::remove_var(key_fallback_ipc);
+        }
+        if let Some(value) = old_enabled {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_enabled, value);
+            }
+        }
+        if let Some(value) = old_bin {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_bin, value);
+            }
+        }
+        if let Some(value) = old_media {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_media, value);
+            }
+        }
+        if let Some(value) = old_ipc {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_ipc, value);
+            }
+        }
+        if let Some(value) = old_client_ipc {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_client_ipc, value);
+            }
+        }
+        if let Some(value) = old_fallback_ipc {
+            // SAFETY: Restoring original env value.
+            unsafe {
+                std::env::set_var(key_fallback_ipc, value);
+            }
+        }
+
+        let (published_lines, _last_telemetry, expected_name) =
+            result.expect("managed mpv CLI smoke should publish local file metadata");
+        assert!(
+            published_lines.iter().any(|line| line.contains("\"Set\"")),
+            "expected queued Set message from local file publish, got {:?}",
+            published_lines
+        );
+        assert!(
+            published_lines
+                .iter()
+                .any(|line| line.contains(&expected_name)),
+            "expected queued local file publish to include media filename '{}'; lines={:?}",
+            expected_name,
+            published_lines
+        );
     }
 
     #[test]

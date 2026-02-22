@@ -4941,6 +4941,65 @@ mod tests {
         sessions
     }
 
+    struct DesyncRuntimeScenarioStep {
+        now_seconds: f64,
+        local_position: f64,
+        local_can_control: bool,
+        dont_slow_down_with_me: bool,
+        speed_supported: bool,
+        expected_actions: Vec<ClientRuntimeAction>,
+    }
+
+    fn run_desync_runtime_scenario(
+        session: &mut ClientSession,
+        steps: &[DesyncRuntimeScenarioStep],
+    ) {
+        for (index, step) in steps.iter().enumerate() {
+            let actions = session.runtime_actions_for_desync_correction(
+                step.now_seconds,
+                step.local_position,
+                step.local_can_control,
+                step.dont_slow_down_with_me,
+                step.speed_supported,
+            );
+            assert_eq!(
+                actions,
+                step.expected_actions,
+                "desync runtime scenario step {} actions mismatch",
+                index + 1
+            );
+        }
+    }
+
+    fn desync_session_with_remote_state(
+        global_position: f64,
+        paused: bool,
+        do_seek: bool,
+        set_by: &str,
+    ) -> ClientSession {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        let state_line = json!({
+            "State": {
+                "playstate": {
+                    "position": global_position,
+                    "paused": paused,
+                    "doSeek": do_seek,
+                    "setBy": set_by,
+                }
+            }
+        })
+        .to_string();
+        session
+            .apply_message_json(&state_line)
+            .expect("remote state should apply");
+        session
+    }
+
     #[derive(Default)]
     struct RecordingPlayer {
         paused: Option<bool>,
@@ -6344,6 +6403,57 @@ mod tests {
     }
 
     #[test]
+    fn python_trace_controlled_room_state_forced_correction_reconciles_forced_state_and_room_membership()
+     {
+        let sessions = replay_python_trace_fixture(
+            "server_runtime_controlled_room_state_forced_correction.python_trace.json",
+        );
+        let controlled_room = "+room1:CB39A19549E8";
+
+        let client_1 = sessions
+            .get("client-1")
+            .expect("forced-correction trace should include client-1 session");
+        assert_eq!(client_1.username.as_deref(), Some("alice"));
+        assert_eq!(client_1.room.as_deref(), Some(controlled_room));
+        assert_eq!(client_1.user_room("alice"), Some(controlled_room));
+        assert_eq!(client_1.user_room("bob"), Some(controlled_room));
+        let client_1_playstate = client_1
+            .current_room_playstate()
+            .expect("client-1 should track controlled room playstate");
+        assert_eq!(client_1_playstate.position, Some(0.0));
+        assert_eq!(client_1_playstate.paused, Some(true));
+        assert_eq!(client_1_playstate.do_seek, Some(true));
+        let client_1_playlist = client_1
+            .current_room_playlist()
+            .expect("client-1 should keep controlled room playlist snapshot");
+        assert!(
+            client_1_playlist.files.is_empty(),
+            "controlled room playlist should remain empty in forced-correction scenario"
+        );
+
+        let client_2 = sessions
+            .get("client-2")
+            .expect("forced-correction trace should include client-2 session");
+        assert_eq!(client_2.username.as_deref(), Some("bob"));
+        assert_eq!(client_2.room.as_deref(), Some(controlled_room));
+        assert_eq!(client_2.user_room("alice"), Some(controlled_room));
+        assert_eq!(client_2.user_room("bob"), Some(controlled_room));
+        let client_2_playstate = client_2
+            .current_room_playstate()
+            .expect("client-2 should track controlled room playstate");
+        assert_eq!(client_2_playstate.position, Some(0.0));
+        assert_eq!(client_2_playstate.paused, Some(true));
+        assert_eq!(client_2_playstate.do_seek, Some(true));
+        let client_2_playlist = client_2
+            .current_room_playlist()
+            .expect("client-2 should keep controlled room playlist snapshot");
+        assert!(
+            client_2_playlist.files.is_empty(),
+            "controlled room playlist should remain empty in forced-correction scenario"
+        );
+    }
+
+    #[test]
     fn reconcile_state_builds_client_ignore_and_waits_for_ack_before_applying_new_global_state() {
         let mut session = ClientSession::default();
         session
@@ -6595,20 +6705,92 @@ mod tests {
 
     #[test]
     fn runtime_actions_for_desync_correction_maps_slowdown_to_rate_change() {
-        let mut session = ClientSession::default();
-        session
-            .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
-            )
-            .expect("hello should apply");
-        session
-            .apply_message_json(
-                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
-            )
-            .expect("state should apply");
+        let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
 
         let actions = session.runtime_actions_for_desync_correction(0.0, 2.0, true, false, true);
         assert_eq!(actions, vec![ClientRuntimeAction::SetPlaybackRate(0.95)]);
+    }
+
+    #[test]
+    fn runtime_actions_for_desync_correction_scenario_fastforward_window_reset_and_retrigger() {
+        let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+        let steps = vec![
+            DesyncRuntimeScenarioStep {
+                now_seconds: 0.0,
+                local_position: 0.0,
+                local_can_control: false,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: Vec::new(),
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 4.0,
+                local_position: 0.0,
+                local_can_control: false,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: vec![ClientRuntimeAction::SetPosition(10.25)],
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 5.0,
+                local_position: 0.0,
+                local_can_control: false,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: Vec::new(),
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 11.0,
+                local_position: 0.0,
+                local_can_control: false,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: vec![ClientRuntimeAction::SetPosition(10.25)],
+            },
+        ];
+
+        run_desync_runtime_scenario(&mut session, &steps);
+    }
+
+    #[test]
+    fn runtime_actions_for_desync_correction_scenario_slowdown_restore_then_rewind() {
+        let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+        let steps = vec![
+            DesyncRuntimeScenarioStep {
+                now_seconds: 0.0,
+                local_position: 2.0,
+                local_can_control: true,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 0.5,
+                local_position: 0.05,
+                local_can_control: true,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: vec![ClientRuntimeAction::SetPlaybackRate(1.0)],
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 1.0,
+                local_position: 4.5,
+                local_can_control: true,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: vec![ClientRuntimeAction::SetPosition(0.0)],
+            },
+            DesyncRuntimeScenarioStep {
+                now_seconds: 1.5,
+                local_position: 0.0,
+                local_can_control: true,
+                dont_slow_down_with_me: false,
+                speed_supported: true,
+                expected_actions: Vec::new(),
+            },
+        ];
+
+        run_desync_runtime_scenario(&mut session, &steps);
     }
 
     #[test]
@@ -8513,6 +8695,93 @@ mod tests {
         assert!(
             runtime.session().reconnect_state_restore_validation_pending,
             "pending validation should remain set until complete local/global playstate is available"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_room_state() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should wait when room playstate is not yet available");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no reconnect validation notifications should emit before room playstate arrives"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(true),
+            "telemetry should still pre-sync into session local pause state while waiting"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(117.5),
+            "telemetry should still pre-sync into session local position while waiting"
+        );
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "pending validation should remain set until room playstate arrives"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "telemetry should remain available for diagnostics drains while validation is pending"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should complete once room playstate arrives");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ],
+            "delayed room state arrival should trigger validation using the cached telemetry-refreshed local state"
+        );
+        assert_eq!(runtime.player().paused, Some(false));
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "pending validation should clear after delayed room-state validation succeeds"
+        );
+        assert!(
+            runtime.drain_player_playback_telemetry_updates().is_empty(),
+            "no new telemetry should be required after room state arrival"
         );
     }
 
