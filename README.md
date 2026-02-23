@@ -29,13 +29,18 @@ Detailed continuity checkpoint:
 Install once:
 
 - `rustup component add llvm-tools-preview`
-- `cargo install cargo-llvm-cov`
+- `cargo install cargo-llvm-cov --locked`
 
 Local coverage commands (via cargo aliases in `.cargo/config.toml`):
 
 - `cargo cov-clean` (clean prior coverage artifacts)
-- `cargo cov-lcov` (writes `target/llvm-cov/lcov.info`)
-- `cargo cov-html` (writes HTML report to `target/llvm-cov/html/`)
+- `cargo cov-lcov` (writes `target/lcov.info`; accepts extra filters like `-p syncplay-client-core --lib`)
+- `cargo cov-html` (writes HTML report to `target/llvm-cov/html/`; accepts extra filters)
+
+Examples:
+
+- `cargo cov-lcov -p syncplay-client-core --lib`
+- `cargo llvm-cov test -p syncplay-client-core some_test_name -- --nocapture` (test-name filtering requires the `test` subcommand)
 
 CI:
 
