@@ -3874,6 +3874,24 @@ mod tests {
     }
 
     #[test]
+    fn chat_notification_message_preserves_whitespace_and_senderless_legacy_formatting() {
+        assert_eq!(
+            chat_notification_message(&ChatNotification::Message {
+                username: Some("bob".to_owned()),
+                message: "  padded message  ".to_owned(),
+            }),
+            "<bob>   padded message  "
+        );
+        assert_eq!(
+            chat_notification_message(&ChatNotification::Message {
+                username: None,
+                message: "  system notice  ".to_owned(),
+            }),
+            "  system notice  "
+        );
+    }
+
+    #[test]
     fn playlist_listing_message_legacy_compatible_formats_entries_and_selected_index() {
         let mut session = ClientSession::default();
         session

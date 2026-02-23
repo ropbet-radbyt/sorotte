@@ -17,10 +17,10 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use syncplay_core::{DomainError, SyncDomain};
 use syncplay_protocol::{
-    ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,
-    NewControlledRoomPayload, PingPayload, PlaylistChangePayload, PlaylistIndexPayload,
-    PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef, SetPayload,
-    StatePayload, TlsPayload, UserSetPayload, decode_message_line, encode_message_line,
+    ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
+    ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
+    PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
+    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_message_line, encode_message_line,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -1002,8 +1002,30 @@ impl ServerRuntime {
             ProtocolMessage::List(payload) => self.handle_list(client_id, payload.list),
             ProtocolMessage::State(payload) => self.handle_state(client_id, payload.state),
             ProtocolMessage::Tls(payload) => self.handle_tls(client_id, payload.tls),
-            ProtocolMessage::Chat(_) | ProtocolMessage::Error(_) => Ok(Vec::new()),
+            ProtocolMessage::Chat(payload) => self.handle_chat(client_id, payload.chat),
+            ProtocolMessage::Error(_) => Ok(Vec::new()),
         }
+    }
+
+    fn handle_chat(
+        &mut self,
+        client_id: &str,
+        chat: ChatPayload,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let session = self
+            .sessions
+            .get(client_id)
+            .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
+        let message = match chat {
+            ChatPayload::Text(message) => message,
+            ChatPayload::Message(message_payload) => message_payload.message,
+        };
+        let outbound_message = ProtocolMessage::chat_message(session.username.clone(), message);
+        Ok(self
+            .clients_in_room(&session.room)
+            .into_iter()
+            .map(|peer_client| DirectedProtocolMessage::new(&peer_client, outbound_message.clone()))
+            .collect())
     }
 
     fn handle_tls(

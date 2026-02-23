@@ -1278,7 +1278,24 @@ class FanoutBatchProbe:
                     "message": {"TLS": {"startTLS": "true" if should_start_tls else "false"}},
                 }
             ]
-        if command in ("Chat", "Error"):
+        if command == "Chat":
+            session = self.sessions.get(client_id)
+            if session is None:
+                return self._error(client_id, "not-known-server-error")
+            if isinstance(payload, str):
+                message_text = payload
+            elif isinstance(payload, dict) and isinstance(payload.get("message"), str):
+                message_text = payload.get("message")
+            else:
+                return self._error(client_id, "not-json-server-error")
+            outbound = {
+                "Chat": {"username": session["username"], "message": message_text}
+            }
+            return [
+                {"client": peer_id, "message": outbound}
+                for peer_id in self._room_client_ids(session["room"])
+            ]
+        if command == "Error":
             return []
         return self._error(client_id, "unknown-command-server-error")
 

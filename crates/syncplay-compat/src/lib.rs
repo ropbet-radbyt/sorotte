@@ -1744,8 +1744,9 @@ mod tests {
     };
     use syncplay_client_core::{ClientRuntimeAction, ClientSession, PrivacyMode};
     use syncplay_protocol::{
-        ListPayload, PlaystatePayload, ProtocolMessage, ReadyPayload, RoomRef, SetPayload,
-        StatePayload, decode_message_line, encode_message_line, extract_hello_from_message,
+        ChatPayload, ListPayload, PlaystatePayload, ProtocolMessage, ReadyPayload, RoomRef,
+        SetPayload, StatePayload, decode_message_line, encode_message_line,
+        extract_hello_from_message,
     };
     use syncplay_server::ServerRuntime;
 
@@ -1798,6 +1799,11 @@ mod tests {
     const PERMANENT_ROOMS_FILE_SCENARIO: &str = "server_runtime_permanent_rooms_file.jsonl";
     const CROSS_ROOM_PLAYLIST_SCOPING_SCENARIO: &str =
         "server_runtime_cross_room_playlist_scoping.jsonl";
+    const CHAT_ROOM_SCOPING_SCENARIO: &str = "server_runtime_chat_room_scoping.jsonl";
+    const CHAT_USERNAME_NORMALIZATION_SCENARIO: &str =
+        "server_runtime_chat_username_normalization.jsonl";
+    const CHAT_PAYLOAD_NORMALIZATION_SCENARIO: &str =
+        "server_runtime_chat_payload_normalization.jsonl";
     const PERMANENT_ROOMS_FILE_LIST: &[&str] = &["permanent-room"];
     const PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
     const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
@@ -6030,6 +6036,271 @@ mod tests {
     }
 
     #[test]
+    fn scripted_server_runtime_chat_room_scoping_scenario_validates_room_scoped_chat_fanout() {
+        let events = replay_server_runtime_scenario_fixture(CHAT_ROOM_SCOPING_SCENARIO)
+            .expect("chat room-scoping scenario fixture should replay through server runtime");
+        assert_eq!(events.len(), 8);
+
+        let step4 = events
+            .get(3)
+            .expect("step 4 room1 chat event should be present");
+        assert_eq!(step4.client_id, "client-1");
+        let step4_chat_recipients: Vec<_> = step4
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                match chat_message.chat {
+                    ChatPayload::Message(message)
+                        if message.username == "alice" && message.message == "hello room1" =>
+                    {
+                        Some(outbound.client_id.clone())
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            step4_chat_recipients,
+            vec!["client-1".to_owned(), "client-3".to_owned()],
+            "room1 chat should fan out only to room1 members (including sender)"
+        );
+
+        let step5 = events
+            .get(4)
+            .expect("step 5 room2 chat event should be present");
+        assert_eq!(step5.client_id, "client-2");
+        let step5_chat_recipients: Vec<_> = step5
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                match chat_message.chat {
+                    ChatPayload::Message(message)
+                        if message.username == "bob" && message.message == "hello room2" =>
+                    {
+                        Some(outbound.client_id.clone())
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            step5_chat_recipients,
+            vec!["client-2".to_owned()],
+            "room2 chat should initially fan out only to bob before carol moves"
+        );
+
+        let step7 = events
+            .get(6)
+            .expect("step 7 post-move room1 chat event should be present");
+        let step7_chat_recipients: Vec<_> = step7
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                match chat_message.chat {
+                    ChatPayload::Message(message)
+                        if message.username == "alice" && message.message == "still room1" =>
+                    {
+                        Some(outbound.client_id.clone())
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            step7_chat_recipients,
+            vec!["client-1".to_owned()],
+            "after carol moves, room1 chat should stay scoped to alice only"
+        );
+
+        let step8 = events
+            .get(7)
+            .expect("step 8 post-move room2 chat event should be present");
+        let step8_chat_recipients: Vec<_> = step8
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                match chat_message.chat {
+                    ChatPayload::Message(message)
+                        if message.username == "bob" && message.message == "room2 after move" =>
+                    {
+                        Some(outbound.client_id.clone())
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            step8_chat_recipients,
+            vec!["client-2".to_owned(), "client-3".to_owned()],
+            "after carol moves, room2 chat should fan out to bob and carol only"
+        );
+    }
+
+    #[test]
+    fn scripted_server_runtime_chat_username_normalization_scenario_uses_session_username() {
+        let events = replay_server_runtime_scenario_fixture(CHAT_USERNAME_NORMALIZATION_SCENARIO)
+            .expect(
+                "chat username-normalization scenario fixture should replay through server runtime",
+            );
+        assert_eq!(events.len(), 3);
+
+        let chat_event = events
+            .get(2)
+            .expect("step 3 spoofed chat event should be present");
+        assert_eq!(chat_event.client_id, "client-1");
+
+        let matching_chat_messages: Vec<_> = chat_event
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                match chat_message.chat {
+                    ChatPayload::Message(message)
+                        if message.message == "spoofed username should be ignored" =>
+                    {
+                        Some((outbound.client_id.clone(), message.username))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        let recipients: Vec<_> = matching_chat_messages
+            .iter()
+            .map(|(client_id, _)| client_id.clone())
+            .collect();
+        assert_eq!(
+            recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "spoofed chat should fan out to both room members"
+        );
+
+        let observed_usernames: Vec<_> = matching_chat_messages
+            .into_iter()
+            .map(|(_, username)| username)
+            .collect();
+        assert_eq!(
+            observed_usernames,
+            vec!["alice".to_owned(), "alice".to_owned()],
+            "server should normalize outbound chat sender username to authenticated session username"
+        );
+    }
+
+    #[test]
+    fn scripted_server_runtime_chat_payload_normalization_scenario_normalizes_format_and_order() {
+        let events = replay_server_runtime_scenario_fixture(CHAT_PAYLOAD_NORMALIZATION_SCENARIO)
+            .expect(
+                "chat payload-normalization scenario fixture should replay through server runtime",
+            );
+        assert_eq!(events.len(), 4);
+
+        let step3 = events
+            .get(2)
+            .expect("step 3 text chat event should be present");
+        let step3_outbound_chats: Vec<_> = step3
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                Some((outbound.client_id.clone(), chat_message.chat))
+            })
+            .collect();
+        assert_eq!(step3_outbound_chats.len(), 2);
+        let step3_recipients: Vec<_> = step3_outbound_chats
+            .iter()
+            .map(|(client_id, _)| client_id.clone())
+            .collect();
+        assert_eq!(
+            step3_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "text chat should fan out to sender and peer in room order"
+        );
+        for (_, chat_payload) in step3_outbound_chats {
+            match chat_payload {
+                ChatPayload::Message(message) => {
+                    assert_eq!(message.username, "alice");
+                    assert_eq!(message.message, "plain text first");
+                    assert!(
+                        message.extra.is_empty(),
+                        "outbound normalized chat payload should not preserve extra fields"
+                    );
+                }
+                other => panic!("expected normalized outbound chat message payload, got {other:?}"),
+            }
+        }
+
+        let step4 = events
+            .get(3)
+            .expect("step 4 object chat event should be present");
+        let step4_outbound_chats: Vec<_> = step4
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Chat(chat_message) =
+                    decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                Some((outbound.client_id.clone(), chat_message.chat))
+            })
+            .collect();
+        assert_eq!(step4_outbound_chats.len(), 2);
+        let step4_recipients: Vec<_> = step4_outbound_chats
+            .iter()
+            .map(|(client_id, _)| client_id.clone())
+            .collect();
+        assert_eq!(
+            step4_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "object chat should fan out to sender and peer in room order"
+        );
+        for (_, chat_payload) in step4_outbound_chats {
+            match chat_payload {
+                ChatPayload::Message(message) => {
+                    assert_eq!(
+                        message.username, "bob",
+                        "spoofed inbound username should be replaced with authenticated username"
+                    );
+                    assert_eq!(message.message, "object payload second");
+                    assert!(
+                        message.extra.is_empty(),
+                        "outbound normalized chat payload should drop inbound extra fields"
+                    );
+                }
+                other => panic!("expected normalized outbound chat message payload, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn scripted_server_runtime_controlled_room_permissions_scenario_validates_auth_and_playlist_corrections()
      {
         let events = replay_server_runtime_scenario_fixture(
@@ -6838,6 +7109,52 @@ mod tests {
             }
             Err(err) => panic!(
                 "python fanout interop for cross-room playlist scoping scenario should succeed, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn python_fanout_roundtrip_matches_server_runtime_on_chat_room_scoping_scenario() {
+        match assert_python_fanout_matches_server_runtime_for_scenario(CHAT_ROOM_SCOPING_SCENARIO) {
+            Ok(()) => {}
+            Err(InteropError::LegacySyncplayCheckoutMissing(_))
+            | Err(InteropError::PythonSpawn { .. }) => {
+                eprintln!("python fanout interop test skipped due to missing local prerequisites");
+            }
+            Err(err) => panic!(
+                "python fanout interop for chat room-scoping scenario should succeed, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn python_fanout_roundtrip_matches_server_runtime_on_chat_username_normalization_scenario() {
+        match assert_python_fanout_matches_server_runtime_for_scenario(
+            CHAT_USERNAME_NORMALIZATION_SCENARIO,
+        ) {
+            Ok(()) => {}
+            Err(InteropError::LegacySyncplayCheckoutMissing(_))
+            | Err(InteropError::PythonSpawn { .. }) => {
+                eprintln!("python fanout interop test skipped due to missing local prerequisites");
+            }
+            Err(err) => panic!(
+                "python fanout interop for chat username-normalization scenario should succeed, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn python_fanout_roundtrip_matches_server_runtime_on_chat_payload_normalization_scenario() {
+        match assert_python_fanout_matches_server_runtime_for_scenario(
+            CHAT_PAYLOAD_NORMALIZATION_SCENARIO,
+        ) {
+            Ok(()) => {}
+            Err(InteropError::LegacySyncplayCheckoutMissing(_))
+            | Err(InteropError::PythonSpawn { .. }) => {
+                eprintln!("python fanout interop test skipped due to missing local prerequisites");
+            }
+            Err(err) => panic!(
+                "python fanout interop for chat payload-normalization scenario should succeed, got: {err}"
             ),
         }
     }

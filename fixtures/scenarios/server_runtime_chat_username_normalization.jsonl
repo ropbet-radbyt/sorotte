@@ -1,0 +1,3 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"Chat":{"username":"mallory","message":"spoofed username should be ignored"}}}

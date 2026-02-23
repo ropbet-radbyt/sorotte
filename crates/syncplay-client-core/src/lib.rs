@@ -6794,6 +6794,56 @@ mod tests {
     }
 
     #[test]
+    fn runtime_actions_for_desync_correction_do_seek_resets_fastforward_detection_window() {
+        let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+        let step1 = session.runtime_actions_for_desync_correction(0.0, 0.0, false, false, true);
+        assert_eq!(
+            step1,
+            Vec::<ClientRuntimeAction>::new(),
+            "initial behind detection should only start the fastforward timer"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("doSeek state update should apply");
+        let step2 = session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
+        assert_eq!(
+            step2,
+            Vec::<ClientRuntimeAction>::new(),
+            "doSeek updates should suppress desync correction and reset behind detection timing"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-doSeek state update should apply");
+        let step3 = session.runtime_actions_for_desync_correction(4.1, 0.0, false, false, true);
+        assert_eq!(
+            step3,
+            Vec::<ClientRuntimeAction>::new(),
+            "after doSeek clears, fastforward detection window should restart from this point"
+        );
+
+        let step4 = session.runtime_actions_for_desync_correction(7.3, 0.0, false, false, true);
+        assert_eq!(
+            step4,
+            Vec::<ClientRuntimeAction>::new(),
+            "restarted fastforward window should not trigger before the threshold duration elapses again"
+        );
+
+        let step5 = session.runtime_actions_for_desync_correction(7.5, 0.0, false, false, true);
+        assert_eq!(
+            step5,
+            vec![ClientRuntimeAction::SetPosition(10.25)],
+            "fastforward should retrigger only after the post-doSeek detection window fully elapses"
+        );
+    }
+
+    #[test]
     fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
         let mut session = ClientSession::default();
         session
@@ -8786,6 +8836,99 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_telemetry() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should wait when telemetry is not yet available");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no reconnect validation notifications should emit before local telemetry arrives"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            None,
+            "session local pause should remain unknown while waiting for telemetry"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            None,
+            "session local position should remain unknown while waiting for telemetry"
+        );
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "pending validation should remain set until telemetry arrives"
+        );
+        assert!(
+            runtime.drain_player_playback_telemetry_updates().is_empty(),
+            "no telemetry should be buffered before the player reports any updates"
+        );
+
+        runtime.player_mut().pending_playback_telemetry_update = Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5),
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should complete once telemetry arrives");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ],
+            "delayed telemetry arrival should trigger validation using the cached room playstate"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "validation should issue a corrective pause command once telemetry arrives"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "validation should issue a corrective seek once telemetry arrives"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "pending validation should clear after delayed-telemetry validation succeeds"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "telemetry should remain available for diagnostics drains after delayed-telemetry validation"
+        );
+    }
+
+    #[test]
     fn client_runtime_reconnect_state_restore_validation_notify_only_mode_skips_correction() {
         let mut session = ClientSession::default();
         session.room = Some("room1".to_owned());
@@ -10583,6 +10726,78 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_chat_notifications_preserve_mixed_payload_order_across_batches() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(r#"{"Chat":"plain text first"}"#)
+            .expect("text chat should apply");
+        session
+            .apply_message_json(
+                r#"{"Chat":{"username":"bob","message":"object payload second","style":"notice"}}"#,
+            )
+            .expect("object chat with extra fields should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("first batch chat notifications should dispatch");
+
+        assert_eq!(
+            runtime.control().chat_notifications(),
+            &[
+                ChatNotification::Message {
+                    username: None,
+                    message: "plain text first".to_owned(),
+                },
+                ChatNotification::Message {
+                    username: Some("bob".to_owned()),
+                    message: "object payload second".to_owned(),
+                },
+            ]
+        );
+
+        assert_eq!(
+            runtime.drain_chat_notifications(),
+            vec![
+                ChatNotification::Message {
+                    username: None,
+                    message: "plain text first".to_owned(),
+                },
+                ChatNotification::Message {
+                    username: Some("bob".to_owned()),
+                    message: "object payload second".to_owned(),
+                },
+            ]
+        );
+        assert!(runtime.drain_chat_notifications().is_empty());
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Chat":{"username":"carol","message":"third batch message"}}"#)
+            .expect("later object chat should apply");
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("second batch chat notifications should dispatch");
+
+        assert_eq!(
+            runtime.drain_chat_notifications(),
+            vec![ChatNotification::Message {
+                username: Some("carol".to_owned()),
+                message: "third batch message".to_owned(),
+            }]
+        );
+        assert!(
+            runtime
+                .session_mut()
+                .runtime_actions_for_chat_notifications_if_needed()
+                .is_empty(),
+            "chat notification actions should be fully drained after dispatch"
+        );
+    }
+
+    #[test]
     fn client_runtime_send_chat_message_dispatches_protocol_message() {
         let mut session = ClientSession::default();
         session
@@ -10635,6 +10850,55 @@ mod tests {
             panic!("queued outbound message should be Chat");
         };
         assert_eq!(chat_message.chat, ChatPayload::Text("".to_owned()));
+    }
+
+    #[test]
+    fn client_runtime_send_chat_message_does_not_emit_local_chat_notification_before_server_echo() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_send_chat_message("hello room")
+                .expect("send chat should dispatch"),
+            "outbound chat should be queued"
+        );
+
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("chat notification dispatch should succeed with no pending notifications");
+        assert!(
+            runtime.control().chat_notifications().is_empty(),
+            "sending local chat should not produce a local notification before server echo"
+        );
+        assert!(
+            runtime.drain_chat_notifications().is_empty(),
+            "runtime chat notification queue should stay empty before server echo"
+        );
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Chat":{"username":"alice","message":"hello room"}}"#)
+            .expect("server echo chat should apply");
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("chat notifications should dispatch after server echo");
+
+        assert_eq!(
+            runtime.drain_chat_notifications(),
+            vec![ChatNotification::Message {
+                username: Some("alice".to_owned()),
+                message: "hello room".to_owned(),
+            }],
+            "chat notification should appear only after inbound server echo"
+        );
     }
 
     #[test]
