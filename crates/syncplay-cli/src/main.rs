@@ -356,9 +356,34 @@ fn legacy_configuration_getter_ini_compat_entries()
             note: "syncplay.ini parse/upsert preservation supported; GUI file-discovery and server-browser runtime behavior is not implemented in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; folder-search runtime tuning is not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.forceGuiPrompt",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI prompt/reset behavior is not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{onlySwitchToTrustedDomains,trustedDomains}",
             status: Supported,
             note: "loaded/persisted into trusted-domain playlist URL policy",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI-only behavior toggles are not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI chat layout/timeout behavior is not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI chat input/output presentation behavior is not implemented in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "gui.showDurationNotification",
@@ -371,9 +396,9 @@ fn legacy_configuration_getter_ini_compat_entries()
             note: "loaded/persisted into OSD visibility behavior toggles",
         },
         LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.* (layout/fonts/chat input/output/QSettings visual state)",
+            key: "gui.* (remaining unenumerated GUI keys / QSettings visual state)",
             status: Ignored,
-            note: "GUI-only presentation settings are not implemented in syncplay-cli",
+            note: "remaining GUI-only keys not explicitly enumerated above and non-INI GUI QSettings visual state are not implemented in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "general.language",
@@ -382,8 +407,8 @@ fn legacy_configuration_getter_ini_compat_entries()
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "general.{checkForUpdatesAutomatically,lastCheckedForUpdates}",
-            status: Ignored,
-            note: "GUI/update-check state is not implemented in syncplay-cli",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI/update-check runtime state is not implemented in syncplay-cli",
         },
     ]
 }
@@ -498,6 +523,8 @@ enum ReconnectCorrectionDiagnosticsFormat {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct StoredClientSettingsMvp {
     language: Option<String>,
+    check_for_updates_automatically: Option<bool>,
+    last_checked_for_updates: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     server_password: Option<String>,
@@ -508,6 +535,11 @@ struct StoredClientSettingsMvp {
     per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
     media_search_directories: Option<Vec<String>>,
     public_servers: Option<Vec<(String, String)>>,
+    folder_search_first_file_timeout_seconds: Option<f64>,
+    folder_search_timeout_seconds: Option<f64>,
+    folder_search_double_check_interval_seconds: Option<f64>,
+    folder_search_warning_threshold_seconds: Option<f64>,
+    force_gui_prompt: Option<bool>,
     autoplay_initial_state: Option<bool>,
     autoplay_require_same_filenames: Option<bool>,
     ready_at_start: Option<bool>,
@@ -529,10 +561,37 @@ struct StoredClientSettingsMvp {
     filename_privacy_mode: Option<PrivacyMode>,
     filesize_privacy_mode: Option<PrivacyMode>,
     show_duration_notification: Option<bool>,
+    autosave_joins_to_list: Option<bool>,
+    show_osd: Option<bool>,
+    chat_input_enabled: Option<bool>,
+    chat_input_font_underline: Option<bool>,
+    chat_input_font_family: Option<String>,
+    chat_input_relative_font_size: Option<i64>,
+    chat_input_font_weight: Option<i64>,
+    chat_input_font_color: Option<String>,
+    chat_input_position: Option<String>,
+    chat_direct_input: Option<bool>,
+    chat_output_enabled: Option<bool>,
+    chat_output_font_underline: Option<bool>,
+    chat_output_font_family: Option<String>,
+    chat_output_relative_font_size: Option<i64>,
+    chat_output_font_weight: Option<i64>,
+    chat_output_mode: Option<String>,
+    chat_move_osd: Option<bool>,
+    chat_max_lines: Option<i64>,
+    chat_top_margin: Option<i64>,
+    chat_left_margin: Option<i64>,
+    chat_bottom_margin: Option<i64>,
+    chat_osd_margin: Option<i64>,
+    notification_timeout_seconds: Option<i64>,
+    alert_timeout_seconds: Option<i64>,
+    chat_timeout_seconds: Option<i64>,
     show_same_room_osd: Option<bool>,
     show_osd_warnings: Option<bool>,
+    show_slowdown_osd: Option<bool>,
     show_noncontroller_osd: Option<bool>,
     show_different_room_osd: Option<bool>,
+    show_contact_info: Option<bool>,
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -713,6 +772,14 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
         match current_section.as_deref() {
             Some("general") => match key.as_str() {
                 "language" if !value.is_empty() => settings.language = Some(value),
+                "checkforupdatesautomatically" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.check_for_updates_automatically = Some(parsed);
+                    }
+                }
+                "lastcheckedforupdates" if !value.is_empty() => {
+                    settings.last_checked_for_updates = Some(value)
+                }
                 _ => {}
             },
             Some("server_data") => match key.as_str() {
@@ -751,6 +818,31 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                         parse_serialized_public_servers_list_legacy_compatible(&value)
                     {
                         settings.public_servers = Some(parsed);
+                    }
+                }
+                "foldersearchfirstfiletimeout" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.folder_search_first_file_timeout_seconds = Some(parsed);
+                    }
+                }
+                "foldersearchtimeout" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.folder_search_timeout_seconds = Some(parsed);
+                    }
+                }
+                "foldersearchdoublecheckinterval" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.folder_search_double_check_interval_seconds = Some(parsed);
+                    }
+                }
+                "foldersearchwarningthreshold" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.folder_search_warning_threshold_seconds = Some(parsed);
+                    }
+                }
+                "forceguiprompt" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.force_gui_prompt = Some(parsed);
                     }
                 }
                 "autoplayinitialstate" => {
@@ -858,6 +950,121 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                 _ => {}
             },
             Some("gui") => match key.as_str() {
+                "autosavejoinstolist" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.autosave_joins_to_list = Some(parsed);
+                    }
+                }
+                "showosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_osd = Some(parsed);
+                    }
+                }
+                "chatinputenabled" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_input_enabled = Some(parsed);
+                    }
+                }
+                "chatinputfontunderline" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_input_font_underline = Some(parsed);
+                    }
+                }
+                "chatinputfontfamily" if !value.is_empty() => {
+                    settings.chat_input_font_family = Some(value);
+                }
+                "chatinputrelativefontsize" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_input_relative_font_size = Some(parsed);
+                    }
+                }
+                "chatinputfontweight" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_input_font_weight = Some(parsed);
+                    }
+                }
+                "chatinputfontcolor" if !value.is_empty() => {
+                    settings.chat_input_font_color = Some(value);
+                }
+                "chatinputposition" if !value.is_empty() => {
+                    settings.chat_input_position = Some(value);
+                }
+                "chatdirectinput" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_direct_input = Some(parsed);
+                    }
+                }
+                "chatoutputenabled" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_output_enabled = Some(parsed);
+                    }
+                }
+                "chatoutputfontunderline" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_output_font_underline = Some(parsed);
+                    }
+                }
+                "chatoutputfontfamily" if !value.is_empty() => {
+                    settings.chat_output_font_family = Some(value);
+                }
+                "chatoutputrelativefontsize" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_output_relative_font_size = Some(parsed);
+                    }
+                }
+                "chatoutputfontweight" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_output_font_weight = Some(parsed);
+                    }
+                }
+                "chatoutputmode" if !value.is_empty() => {
+                    settings.chat_output_mode = Some(value);
+                }
+                "chatmoveosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.chat_move_osd = Some(parsed);
+                    }
+                }
+                "chatmaxlines" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_max_lines = Some(parsed);
+                    }
+                }
+                "chattopmargin" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_top_margin = Some(parsed);
+                    }
+                }
+                "chatleftmargin" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_left_margin = Some(parsed);
+                    }
+                }
+                "chatbottommargin" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_bottom_margin = Some(parsed);
+                    }
+                }
+                "chatosdmargin" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_osd_margin = Some(parsed);
+                    }
+                }
+                "notificationtimeout" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.notification_timeout_seconds = Some(parsed);
+                    }
+                }
+                "alerttimeout" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.alert_timeout_seconds = Some(parsed);
+                    }
+                }
+                "chattimeout" => {
+                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
+                        settings.chat_timeout_seconds = Some(parsed);
+                    }
+                }
                 "showdurationnotification" => {
                     if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
                         settings.show_duration_notification = Some(parsed);
@@ -873,6 +1080,11 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                         settings.show_osd_warnings = Some(parsed);
                     }
                 }
+                "showslowdownosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_slowdown_osd = Some(parsed);
+                    }
+                }
                 "shownoncontrollerosd" => {
                     if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
                         settings.show_noncontroller_osd = Some(parsed);
@@ -881,6 +1093,11 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                 "showdifferentroomosd" => {
                     if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
                         settings.show_different_room_osd = Some(parsed);
+                    }
+                }
+                "showcontactinfo" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_contact_info = Some(parsed);
                     }
                 }
                 _ => {}
@@ -901,6 +1118,10 @@ fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {
 
 fn format_ini_non_negative_f64_legacy_compatible(value: f64) -> Option<String> {
     (value.is_finite() && value >= 0.0).then(|| value.to_string())
+}
+
+fn parse_ini_i64_legacy_compatible(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok()
 }
 
 fn parse_serialized_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
@@ -1345,6 +1566,54 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             &serialized,
         );
     }
+    if let Some(value) = settings.folder_search_first_file_timeout_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "folderSearchFirstFileTimeout",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.folder_search_timeout_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "folderSearchTimeout",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.folder_search_double_check_interval_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "folderSearchDoubleCheckInterval",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.folder_search_warning_threshold_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "folderSearchWarningThreshold",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.force_gui_prompt {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "forceGuiPrompt",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if let Some(value) = settings.autoplay_initial_state {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -1515,6 +1784,162 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
     if let Some(language) = settings.language.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "general", "language", language);
     }
+    if let Some(value) = settings.check_for_updates_automatically {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "general",
+            "checkForUpdatesAutomatically",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.last_checked_for_updates.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "general", "lastCheckedForUpdates", value);
+    }
+    if let Some(value) = settings.autosave_joins_to_list {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "autosaveJoinsToList",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_input_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatInputEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_input_font_underline {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatInputFontUnderline",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_input_font_family.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputFontFamily", value);
+    }
+    if let Some(value) = settings.chat_input_relative_font_size {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatInputRelativeFontSize",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.chat_input_font_weight {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatInputFontWeight",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.chat_input_font_color.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputFontColor", value);
+    }
+    if let Some(value) = settings.chat_input_position.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputPosition", value);
+    }
+    if let Some(value) = settings.chat_direct_input {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatDirectInput",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_output_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatOutputEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_output_font_underline {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatOutputFontUnderline",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_output_font_family.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOutputFontFamily", value);
+    }
+    if let Some(value) = settings.chat_output_relative_font_size {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatOutputRelativeFontSize",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.chat_output_font_weight {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatOutputFontWeight",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.chat_output_mode.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOutputMode", value);
+    }
+    if let Some(value) = settings.chat_move_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatMoveOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.chat_max_lines {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatMaxLines", &value.to_string());
+    }
+    if let Some(value) = settings.chat_top_margin {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatTopMargin", &value.to_string());
+    }
+    if let Some(value) = settings.chat_left_margin {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatLeftMargin", &value.to_string());
+    }
+    if let Some(value) = settings.chat_bottom_margin {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "chatBottomMargin",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.chat_osd_margin {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOSDMargin", &value.to_string());
+    }
+    if let Some(value) = settings.notification_timeout_seconds {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "notificationTimeout",
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = settings.alert_timeout_seconds {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "alertTimeout", &value.to_string());
+    }
+    if let Some(value) = settings.chat_timeout_seconds {
+        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatTimeout", &value.to_string());
+    }
     if let Some(value) = settings.show_duration_notification {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -1539,6 +1964,14 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             format_ini_bool_legacy_compatible(value),
         );
     }
+    if let Some(value) = settings.show_slowdown_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showSlowdownOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if let Some(value) = settings.show_noncontroller_osd {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -1552,6 +1985,14 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             &mut lines,
             "gui",
             "showDifferentRoomOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_contact_info {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showContactInfo",
             format_ini_bool_legacy_compatible(value),
         );
     }
@@ -1841,6 +2282,8 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
     };
     let settings = StoredClientSettingsMvp {
         language: None,
+        check_for_updates_automatically: None,
+        last_checked_for_updates: None,
         host: Some(config.host.clone()),
         port: Some(config.port),
         server_password: None,
@@ -1851,6 +2294,11 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         per_player_arguments: None,
         media_search_directories: None,
         public_servers: None,
+        folder_search_first_file_timeout_seconds: None,
+        folder_search_timeout_seconds: None,
+        folder_search_double_check_interval_seconds: None,
+        folder_search_warning_threshold_seconds: None,
+        force_gui_prompt: None,
         autoplay_initial_state: Some(config.autoplay_enabled),
         autoplay_require_same_filenames: Some(config.autoplay_require_same_filenames),
         ready_at_start: config.ready_at_start_override,
@@ -1872,10 +2320,37 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         filename_privacy_mode: Some(config.filename_privacy_mode),
         filesize_privacy_mode: Some(config.filesize_privacy_mode),
         show_duration_notification: config.show_duration_notification_override,
+        autosave_joins_to_list: None,
+        show_osd: None,
+        chat_input_enabled: None,
+        chat_input_font_underline: None,
+        chat_input_font_family: None,
+        chat_input_relative_font_size: None,
+        chat_input_font_weight: None,
+        chat_input_font_color: None,
+        chat_input_position: None,
+        chat_direct_input: None,
+        chat_output_enabled: None,
+        chat_output_font_underline: None,
+        chat_output_font_family: None,
+        chat_output_relative_font_size: None,
+        chat_output_font_weight: None,
+        chat_output_mode: None,
+        chat_move_osd: None,
+        chat_max_lines: None,
+        chat_top_margin: None,
+        chat_left_margin: None,
+        chat_bottom_margin: None,
+        chat_osd_margin: None,
+        notification_timeout_seconds: None,
+        alert_timeout_seconds: None,
+        chat_timeout_seconds: None,
         show_same_room_osd: config.show_same_room_osd_override,
         show_osd_warnings: config.show_osd_warnings_override,
+        show_slowdown_osd: None,
         show_noncontroller_osd: config.show_noncontroller_osd_override,
         show_different_room_osd: config.show_different_room_osd_override,
+        show_contact_info: None,
     };
     let updated_contents =
         upsert_syncplay_ini_stored_client_settings_mvp(&existing_contents, &settings);
@@ -6308,11 +6783,17 @@ mod tests {
             "client_settings.perPlayerArguments",
             "client_settings.roomList",
             "client_settings.{mediaSearchDirectories,publicServers}",
+            "client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}",
+            "client_settings.forceGuiPrompt",
             "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
             "client_settings.dontSlowDownWithMe",
+            "gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}",
+            "gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}",
+            "gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}",
             "gui.showDurationNotification",
             "gui.{showSameRoomOSD,showOSDWarnings,showNonControllerOSD,showDifferentRoomOSD}",
             "general.language",
+            "general.{checkForUpdatesAutomatically,lastCheckedForUpdates}",
         ];
 
         for expected in expected_keys {
@@ -6378,6 +6859,14 @@ mod tests {
             LegacyConfigurationGetterCompatibilityStatus::Deferred
         );
         assert_eq!(
+            entry_for("client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("client_settings.forceGuiPrompt").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
             entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
@@ -6395,12 +6884,24 @@ mod tests {
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
-            entry_for("gui.* (layout/fonts/chat input/output/QSettings visual state)").status,
+            entry_for("gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("gui.* (remaining unenumerated GUI keys / QSettings visual state)").status,
             LegacyConfigurationGetterCompatibilityStatus::Ignored
         );
         assert_eq!(
             entry_for("general.{checkForUpdatesAutomatically,lastCheckedForUpdates}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Ignored
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
         );
     }
 
@@ -6850,12 +7351,14 @@ mod tests {
 
     #[test]
     fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
-        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nroomList = ['room-1', 'room-2']\nplayerPath = C:/players/mpv.exe\nperPlayerArguments = {'C:/players/mpv.exe': ['--fs', '--profile=fast']}\nmediaSearchDirectories = ['C:/Media', 'D:/TV Shows']\npublicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\nreadyAtStart = True\nsharedPlaylistEnabled = False\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
+        let contents = "\u{feff}[general]\nlanguage = de\ncheckForUpdatesAutomatically = False\nlastCheckedForUpdates = 2026-02-23 11:22:33.444\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nroomList = ['room-1', 'room-2']\nplayerPath = C:/players/mpv.exe\nperPlayerArguments = {'C:/players/mpv.exe': ['--fs', '--profile=fast']}\nmediaSearchDirectories = ['C:/Media', 'D:/TV Shows']\npublicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\nfolderSearchFirstFileTimeout = 25.0\nfolderSearchTimeout = 20.0\nfolderSearchDoubleCheckInterval = 30.0\nfolderSearchWarningThreshold = 2.0\nforceGuiPrompt = True\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\nreadyAtStart = True\nsharedPlaylistEnabled = False\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nautosaveJoinsToList = True\nshowOSD = False\nchatInputEnabled = True\nchatInputFontUnderline = False\nchatInputFontFamily = sans-serif\nchatInputRelativeFontSize = 12\nchatInputFontWeight = 50\nchatInputFontColor = #abcdef\nchatInputPosition = Top\nchatDirectInput = False\nchatOutputEnabled = True\nchatOutputFontUnderline = False\nchatOutputFontFamily = serif\nchatOutputRelativeFontSize = 13\nchatOutputFontWeight = 75\nchatOutputMode = Chatroom\nchatMoveOSD = True\nchatMaxLines = 7\nchatTopMargin = 25\nchatLeftMargin = 20\nchatBottomMargin = 30\nchatOSDMargin = 110\nnotificationTimeout = 3\nalertTimeout = 5\nchatTimeout = 7\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowSlowdownOSD = True\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\nshowContactInfo = True\n";
         let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
         assert_eq!(
             settings,
             StoredClientSettingsMvp {
                 language: Some("de".to_owned()),
+                check_for_updates_automatically: Some(false),
+                last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
                 host: Some("example.org".to_owned()),
                 port: Some(12345),
                 server_password: Some("secret".to_owned()),
@@ -6878,6 +7381,11 @@ mod tests {
                     ),
                     ("Custom".to_owned(), "custom.example:8999".to_owned()),
                 ]),
+                folder_search_first_file_timeout_seconds: Some(25.0),
+                folder_search_timeout_seconds: Some(20.0),
+                folder_search_double_check_interval_seconds: Some(30.0),
+                folder_search_warning_threshold_seconds: Some(2.0),
+                force_gui_prompt: Some(true),
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
                 ready_at_start: Some(true),
@@ -6901,11 +7409,38 @@ mod tests {
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
                 filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                autosave_joins_to_list: Some(true),
+                show_osd: Some(false),
+                chat_input_enabled: Some(true),
+                chat_input_font_underline: Some(false),
+                chat_input_font_family: Some("sans-serif".to_owned()),
+                chat_input_relative_font_size: Some(12),
+                chat_input_font_weight: Some(50),
+                chat_input_font_color: Some("#abcdef".to_owned()),
+                chat_input_position: Some("Top".to_owned()),
+                chat_direct_input: Some(false),
+                chat_output_enabled: Some(true),
+                chat_output_font_underline: Some(false),
+                chat_output_font_family: Some("serif".to_owned()),
+                chat_output_relative_font_size: Some(13),
+                chat_output_font_weight: Some(75),
+                chat_output_mode: Some("Chatroom".to_owned()),
+                chat_move_osd: Some(true),
+                chat_max_lines: Some(7),
+                chat_top_margin: Some(25),
+                chat_left_margin: Some(20),
+                chat_bottom_margin: Some(30),
+                chat_osd_margin: Some(110),
+                notification_timeout_seconds: Some(3),
+                alert_timeout_seconds: Some(5),
+                chat_timeout_seconds: Some(7),
                 show_duration_notification: Some(false),
                 show_same_room_osd: Some(true),
                 show_osd_warnings: Some(false),
+                show_slowdown_osd: Some(true),
                 show_noncontroller_osd: Some(true),
                 show_different_room_osd: Some(false),
+                show_contact_info: Some(true),
             }
         );
     }
@@ -6918,6 +7453,8 @@ mod tests {
             existing,
             &StoredClientSettingsMvp {
                 language: None,
+                check_for_updates_automatically: Some(false),
+                last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
                 host: Some("example.org".to_owned()),
                 port: Some(8999),
                 server_password: Some("secret".to_owned()),
@@ -6940,6 +7477,11 @@ mod tests {
                     ),
                     ("Custom".to_owned(), "custom.example:8999".to_owned()),
                 ]),
+                folder_search_first_file_timeout_seconds: Some(25.0),
+                folder_search_timeout_seconds: Some(20.0),
+                folder_search_double_check_interval_seconds: Some(30.0),
+                folder_search_warning_threshold_seconds: Some(2.0),
+                force_gui_prompt: Some(true),
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
                 ready_at_start: Some(true),
@@ -6963,15 +7505,44 @@ mod tests {
                 autoplay_min_users: Some(AutoplayThresholdOverride::Disable),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
                 filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                autosave_joins_to_list: Some(true),
+                show_osd: Some(false),
+                chat_input_enabled: Some(true),
+                chat_input_font_underline: Some(false),
+                chat_input_font_family: Some("sans-serif".to_owned()),
+                chat_input_relative_font_size: Some(12),
+                chat_input_font_weight: Some(50),
+                chat_input_font_color: Some("#abcdef".to_owned()),
+                chat_input_position: Some("Top".to_owned()),
+                chat_direct_input: Some(false),
+                chat_output_enabled: Some(true),
+                chat_output_font_underline: Some(false),
+                chat_output_font_family: Some("serif".to_owned()),
+                chat_output_relative_font_size: Some(13),
+                chat_output_font_weight: Some(75),
+                chat_output_mode: Some("Chatroom".to_owned()),
+                chat_move_osd: Some(true),
+                chat_max_lines: Some(7),
+                chat_top_margin: Some(25),
+                chat_left_margin: Some(20),
+                chat_bottom_margin: Some(30),
+                chat_osd_margin: Some(110),
+                notification_timeout_seconds: Some(3),
+                alert_timeout_seconds: Some(5),
+                chat_timeout_seconds: Some(7),
                 show_duration_notification: Some(true),
                 show_same_room_osd: Some(true),
                 show_osd_warnings: Some(false),
+                show_slowdown_osd: Some(true),
                 show_noncontroller_osd: Some(false),
                 show_different_room_osd: Some(true),
+                show_contact_info: Some(true),
             },
         );
 
         assert!(updated.contains("[general]\nlanguage = en\n"));
+        assert!(updated.contains("checkForUpdatesAutomatically = False\n"));
+        assert!(updated.contains("lastCheckedForUpdates = 2026-02-23 11:22:33.444\n"));
         assert!(updated.contains("[server_data]\nhost = example.org\nport = 8999\n"));
         assert!(updated.contains("password = secret\n"));
         assert!(updated.contains("[client_settings]"));
@@ -6989,6 +7560,11 @@ mod tests {
                 "publicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\n"
             )
         );
+        assert!(updated.contains("folderSearchFirstFileTimeout = 25\n"));
+        assert!(updated.contains("folderSearchTimeout = 20\n"));
+        assert!(updated.contains("folderSearchDoubleCheckInterval = 30\n"));
+        assert!(updated.contains("folderSearchWarningThreshold = 2\n"));
+        assert!(updated.contains("forceGuiPrompt = True\n"));
         assert!(!updated.contains("publicservers = []\n"));
         assert!(updated.contains("name = alice\n"));
         assert!(updated.contains("autoplayInitialState = True\n"));
@@ -7012,8 +7588,35 @@ mod tests {
         assert!(updated.contains("filenamePrivacyMode = SendHashed\n"));
         assert!(updated.contains("filesizePrivacyMode = DoNotSend\n"));
         assert!(updated.contains("[gui]"));
+        assert!(updated.contains("autosaveJoinsToList = True\n"));
+        assert!(updated.contains("showOSD = False\n"));
+        assert!(updated.contains("chatInputEnabled = True\n"));
+        assert!(updated.contains("chatInputFontUnderline = False\n"));
+        assert!(updated.contains("chatInputFontFamily = sans-serif\n"));
+        assert!(updated.contains("chatInputRelativeFontSize = 12\n"));
+        assert!(updated.contains("chatInputFontWeight = 50\n"));
+        assert!(updated.contains("chatInputFontColor = #abcdef\n"));
+        assert!(updated.contains("chatInputPosition = Top\n"));
+        assert!(updated.contains("chatDirectInput = False\n"));
+        assert!(updated.contains("chatOutputEnabled = True\n"));
+        assert!(updated.contains("chatOutputFontUnderline = False\n"));
+        assert!(updated.contains("chatOutputFontFamily = serif\n"));
+        assert!(updated.contains("chatOutputRelativeFontSize = 13\n"));
+        assert!(updated.contains("chatOutputFontWeight = 75\n"));
+        assert!(updated.contains("chatOutputMode = Chatroom\n"));
+        assert!(updated.contains("chatMoveOSD = True\n"));
+        assert!(updated.contains("chatMaxLines = 7\n"));
+        assert!(updated.contains("chatTopMargin = 25\n"));
+        assert!(updated.contains("chatLeftMargin = 20\n"));
+        assert!(updated.contains("chatBottomMargin = 30\n"));
+        assert!(updated.contains("chatOSDMargin = 110\n"));
+        assert!(updated.contains("notificationTimeout = 3\n"));
+        assert!(updated.contains("alertTimeout = 5\n"));
+        assert!(updated.contains("chatTimeout = 7\n"));
         assert!(updated.contains("showDurationNotification = True\n"));
         assert!(updated.contains("showOSDWarnings = False\n"));
+        assert!(updated.contains("showSlowdownOSD = True\n"));
+        assert!(updated.contains("showContactInfo = True\n"));
         assert!(!updated.contains("room = old-room"));
     }
 
@@ -7102,6 +7705,8 @@ mod tests {
             &mut config,
             &StoredClientSettingsMvp {
                 language: Some("de".to_owned()),
+                check_for_updates_automatically: Some(false),
+                last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
                 host: Some("stored.example".to_owned()),
                 port: Some(4321),
                 server_password: Some("stored-secret".to_owned()),
@@ -7112,6 +7717,11 @@ mod tests {
                 per_player_arguments: None,
                 media_search_directories: None,
                 public_servers: None,
+                folder_search_first_file_timeout_seconds: None,
+                folder_search_timeout_seconds: None,
+                folder_search_double_check_interval_seconds: None,
+                folder_search_warning_threshold_seconds: None,
+                force_gui_prompt: None,
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
                 ready_at_start: Some(true),
@@ -7135,11 +7745,38 @@ mod tests {
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(4)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
                 filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                autosave_joins_to_list: None,
+                show_osd: None,
+                chat_input_enabled: None,
+                chat_input_font_underline: None,
+                chat_input_font_family: None,
+                chat_input_relative_font_size: None,
+                chat_input_font_weight: None,
+                chat_input_font_color: None,
+                chat_input_position: None,
+                chat_direct_input: None,
+                chat_output_enabled: None,
+                chat_output_font_underline: None,
+                chat_output_font_family: None,
+                chat_output_relative_font_size: None,
+                chat_output_font_weight: None,
+                chat_output_mode: None,
+                chat_move_osd: None,
+                chat_max_lines: None,
+                chat_top_margin: None,
+                chat_left_margin: None,
+                chat_bottom_margin: None,
+                chat_osd_margin: None,
+                notification_timeout_seconds: None,
+                alert_timeout_seconds: None,
+                chat_timeout_seconds: None,
                 show_duration_notification: Some(true),
                 show_same_room_osd: Some(true),
                 show_osd_warnings: Some(false),
+                show_slowdown_osd: None,
                 show_noncontroller_osd: Some(true),
                 show_different_room_osd: Some(false),
+                show_contact_info: None,
             },
         );
 
@@ -7525,6 +8162,8 @@ mod tests {
             loaded,
             StoredClientSettingsMvp {
                 language: Some("en".to_owned()),
+                check_for_updates_automatically: None,
+                last_checked_for_updates: None,
                 host: Some("stored.example".to_owned()),
                 port: Some(1234),
                 server_password: None,
@@ -7535,6 +8174,11 @@ mod tests {
                 per_player_arguments: None,
                 media_search_directories: None,
                 public_servers: None,
+                folder_search_first_file_timeout_seconds: None,
+                folder_search_timeout_seconds: None,
+                folder_search_double_check_interval_seconds: None,
+                folder_search_warning_threshold_seconds: None,
+                force_gui_prompt: None,
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
                 ready_at_start: Some(true),
@@ -7558,11 +8202,38 @@ mod tests {
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(5)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
                 filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                autosave_joins_to_list: None,
+                show_osd: None,
+                chat_input_enabled: None,
+                chat_input_font_underline: None,
+                chat_input_font_family: None,
+                chat_input_relative_font_size: None,
+                chat_input_font_weight: None,
+                chat_input_font_color: None,
+                chat_input_position: None,
+                chat_direct_input: None,
+                chat_output_enabled: None,
+                chat_output_font_underline: None,
+                chat_output_font_family: None,
+                chat_output_relative_font_size: None,
+                chat_output_font_weight: None,
+                chat_output_mode: None,
+                chat_move_osd: None,
+                chat_max_lines: None,
+                chat_top_margin: None,
+                chat_left_margin: None,
+                chat_bottom_margin: None,
+                chat_osd_margin: None,
+                notification_timeout_seconds: None,
+                alert_timeout_seconds: None,
+                chat_timeout_seconds: None,
                 show_duration_notification: Some(false),
                 show_same_room_osd: Some(true),
                 show_osd_warnings: Some(false),
+                show_slowdown_osd: None,
                 show_noncontroller_osd: Some(true),
                 show_different_room_osd: Some(false),
+                show_contact_info: None,
             }
         );
 
