@@ -8634,6 +8634,739 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_restore_starts_after_validation_tick()
+     {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"movie.mkv","size":123456789,"duration":95.5}}}}}"#,
+            )
+            .expect("local file should apply");
+
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("reconnect hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":120.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("reconnect room playstate should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation tick before restore should not fail");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "validation tick before restore should not emit reconnect notifications"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            None,
+            "validation should not issue correction commands before restore starts"
+        );
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "validation should not issue correction seeks before restore starts"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(true),
+            "pre-restore validation tick should still pre-sync telemetry into session local state"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(117.5),
+            "pre-restore validation tick should still pre-sync telemetry position into session local state"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "validation should remain disabled until restore dispatch starts the validation cycle"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "pre-restore validation tick should preserve telemetry for diagnostics drains"
+        );
+
+        runtime
+            .run_reconnect_state_restore_if_needed()
+            .expect("reconnect state restore should dispatch");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![ReconnectTransitionNotification::RestoringState],
+            "restore dispatch should emit restoring-state notification before validation/correction"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            2,
+            "restore dispatch should send ready/file restore messages"
+        );
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "restore dispatch should enable reconnect state-restore validation"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("validation should complete using cached pre-restore telemetry");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ],
+            "post-restore validation should use cached telemetry-refreshed local state against cached room playstate"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "post-restore validation should issue corrective pause command"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "post-restore validation should issue corrective seek command"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "validation pending should clear after successful post-restore correction"
+        );
+        assert!(
+            runtime.drain_player_playback_telemetry_updates().is_empty(),
+            "no additional telemetry sample should be required once cached telemetry is used"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismatch_notification()
+     {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"movie.mkv","size":123456789,"duration":95.5}}}}}"#,
+            )
+            .expect("local file should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("local playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("local playlist index should apply");
+
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("reconnect hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":120.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("reconnect room playstate should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+            .expect("empty reconnect playlist snapshot should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_if_needed()
+            .expect("reconnect state restore should dispatch");
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "state restore dispatch should enable reconnect validation"
+        );
+
+        runtime
+            .run_reconnect_playlist_restore_if_needed()
+            .expect("reconnect playlist restore should dispatch");
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "playlist restore should not clear reconnect validation pending state"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("reconnect validation should run after state+playlist restore dispatch");
+
+        assert_eq!(
+            runtime.control().reconnect_notifications(),
+            &[
+                ReconnectTransitionNotification::RestoringState,
+                ReconnectTransitionNotification::RestoringPlaylist,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+            ],
+            "reconnect notifications should preserve restore-state, restore-playlist, then validation-mismatch ordering"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            4,
+            "state restore + playlist restore should enqueue ready/file/playlist/index protocol messages"
+        );
+
+        let ProtocolMessage::Set(first_outbound) = &runtime.control().outbound_messages()[0] else {
+            panic!("first reconnect outbound message should be Set.ready");
+        };
+        assert!(first_outbound.set.ready.is_some());
+        let ProtocolMessage::Set(second_outbound) = &runtime.control().outbound_messages()[1]
+        else {
+            panic!("second reconnect outbound message should be Set.file");
+        };
+        assert!(second_outbound.set.file.is_some());
+        let ProtocolMessage::Set(third_outbound) = &runtime.control().outbound_messages()[2] else {
+            panic!("third reconnect outbound message should be Set.playlistChange");
+        };
+        assert!(third_outbound.set.playlist_change.is_some());
+        let ProtocolMessage::Set(fourth_outbound) = &runtime.control().outbound_messages()[3]
+        else {
+            panic!("fourth reconnect outbound message should be Set.playlistIndex");
+        };
+        assert!(fourth_outbound.set.playlist_index.is_some());
+
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "validation mismatch should still issue corrective pause after playlist restore dispatch"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "validation mismatch should still issue corrective seek after playlist restore dispatch"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "validation pending should clear after post-restore correction"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5)
+            ],
+            "telemetry should remain available for diagnostics drains after the ordered restore/playlist/validation sequence"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_restore_and_validation_notifications_do_not_duplicate_on_repeated_ticks()
+     {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"movie.mkv","size":123456789,"duration":95.5}}}}}"#,
+            )
+            .expect("local file should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("local playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("local playlist index should apply");
+
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("reconnect hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":120.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("reconnect room playstate should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+            .expect("empty reconnect playlist snapshot should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(117.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_if_needed()
+            .expect("reconnect state restore should dispatch");
+        runtime
+            .run_reconnect_playlist_restore_if_needed()
+            .expect("reconnect playlist restore should dispatch");
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("reconnect validation should dispatch");
+
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::RestoringState,
+                ReconnectTransitionNotification::RestoringPlaylist,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: false,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+            ],
+            "first reconnect cycle ticks should emit restore + playlist + validation notifications once"
+        );
+        let outbound_messages_after_first_sequence = runtime.control().outbound_messages().len();
+        assert_eq!(outbound_messages_after_first_sequence, 4);
+
+        runtime
+            .run_reconnect_state_restore_if_needed()
+            .expect("repeated state restore tick should be a no-op");
+        runtime
+            .run_reconnect_playlist_restore_if_needed()
+            .expect("repeated playlist restore tick should be a no-op");
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("repeated validation tick should be a no-op after success");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "repeated reconnect ticks in the same cycle should not duplicate reconnect notifications"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            outbound_messages_after_first_sequence,
+            "repeated reconnect ticks in the same cycle should not enqueue duplicate restore protocol messages"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "validation pending should remain cleared after repeated no-op ticks"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_retry_and_recovery_notifications_preserve_sequence_without_noop_duplicates()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first correction failure should schedule retry");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                    attempt: 1,
+                    max_attempts: 1,
+                    cooldown_ticks: 1,
+                },
+            ],
+            "first failure should emit mismatch then retry-scheduled"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("cooldown tick should defer retry");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "cooldown tick should not duplicate reconnect notifications"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure should exhaust retry budget and activate recovery cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 2,
+                    max_attempts: 1,
+                },
+            ],
+            "retry exhaustion should emit only give-up notification without repeating mismatch details"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "retry exhaustion should clear pending validation"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            1
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("repeated no-op tick after exhaustion should not emit notifications");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op validation tick after exhaustion should not duplicate reconnect notifications"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown cycle should suppress correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 125.0,
+                    room_position: 130.0,
+                    position_diff_seconds: 5.0,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ],
+            "suppressed recovery cycle should emit mismatch then suppression notification"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "suppressed cycle should clear pending validation"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("repeated no-op tick after suppressed cycle should not emit notifications");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op validation tick after suppressed cycle should not duplicate suppression notifications"
+        );
+
+        runtime.player_mut().fail_set_position = false;
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("correction should re-enable after recovery cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 135.0,
+                    room_position: 140.0,
+                    position_diff_seconds: 5.0,
+                },
+            ],
+            "reenabled cycle should emit reenabled notification before mismatch details"
+        );
+        assert_eq!(runtime.player().position, Some(140.0));
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("repeated no-op tick after reenabled success should not emit notifications");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op validation tick after reenabled correction should not duplicate reenabled/mismatch notifications"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_warn_only_on_exhaustion_retry_and_recovery_notifications_follow_policy_specific_sequence()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("warn-only-on-exhaustion should attempt correction but suppress early notifications");
+        assert!(
+            runtime.session().reconnect_state_restore_validation_pending,
+            "first failure should leave validation pending for retry"
+        );
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "warn-only-on-exhaustion should suppress mismatch and retry-scheduled notifications"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("cooldown tick should defer retry");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "cooldown no-op ticks should not emit notifications"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("second failure should exhaust retry budget");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                    attempts: 2,
+                    max_attempts: 1,
+                },
+            ],
+            "warn-only-on-exhaustion should emit only retries-exhausted on give-up"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "retry exhaustion should clear pending validation"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("post-exhaustion no-op tick should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "post-exhaustion no-op ticks should not duplicate exhaustion warnings"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown cycle should suppress correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ],
+            "warn-only-on-exhaustion should suppress mismatch visibility during recovery cooldown and emit only suppression notice"
+        );
+        assert_eq!(runtime.player().position, None);
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("post-suppression no-op tick should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "post-suppression no-op ticks should not duplicate suppression notices"
+        );
+
+        runtime.player_mut().fail_set_position = false;
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown re-enable cycle should correct");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+            ],
+            "warn-only-on-exhaustion should emit only reenabled notification (no mismatch detail) on the recovery re-enable cycle"
+        );
+        assert_eq!(runtime.player().position, Some(140.0));
+        assert!(!runtime.session().reconnect_state_restore_validation_pending);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("post-success no-op tick should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "post-success no-op ticks should not duplicate reenabled notifications"
+        );
+    }
+
+    #[test]
     fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification_and_corrects()
     {
         let mut session = ClientSession::default();
