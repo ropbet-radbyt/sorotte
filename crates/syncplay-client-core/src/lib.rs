@@ -59,10 +59,14 @@ const MUSIC_FORMATS: [&str; 8] = [
     ".mp3", ".m4a", ".m4p", ".wav", ".aiff", ".r", ".ogg", ".flac",
 ];
 pub const AUTOPLAY_TICK_INTERVAL_SECONDS: f64 = AUTOPLAY_COUNTDOWN_STEP_SECONDS;
+const LEGACY_PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClientPingMetricsLegacyCompatible {
     client_rtt_seconds: f64,
+    average_rtt_seconds: f64,
+    server_rtt_seconds: f64,
+    forward_delay_seconds: f64,
 }
 
 impl ClientPingMetricsLegacyCompatible {
@@ -79,19 +83,50 @@ impl ClientPingMetricsLegacyCompatible {
             return;
         };
         let sender_rtt = ping.client_rtt.unwrap_or(0.0);
-        if sender_rtt < 0.0 {
+        if !sender_rtt.is_finite() || sender_rtt < 0.0 {
+            return;
+        }
+        let server_rtt = ping.server_rtt;
+        if let Some(server_rtt_value) = server_rtt
+            && (!server_rtt_value.is_finite() || server_rtt_value < 0.0)
+        {
             return;
         }
 
         let current_rtt = now_seconds - latency_calculation;
-        if current_rtt < 0.0 {
+        if !current_rtt.is_finite() || current_rtt < 0.0 {
             return;
         }
         self.client_rtt_seconds = current_rtt;
+        if let Some(server_rtt_value) = server_rtt {
+            self.server_rtt_seconds = server_rtt_value;
+        }
+        if self.average_rtt_seconds == 0.0 {
+            self.average_rtt_seconds = current_rtt;
+        }
+        self.average_rtt_seconds = self.average_rtt_seconds * LEGACY_PING_MOVING_AVERAGE_WEIGHT
+            + current_rtt * (1.0 - LEGACY_PING_MOVING_AVERAGE_WEIGHT);
+        self.forward_delay_seconds = if let Some(server_rtt_value) = server_rtt {
+            if server_rtt_value < current_rtt {
+                self.average_rtt_seconds / 2.0 + (current_rtt - server_rtt_value)
+            } else {
+                self.average_rtt_seconds / 2.0
+            }
+        } else {
+            self.average_rtt_seconds / 2.0
+        };
     }
 
     pub fn client_rtt_seconds(self) -> f64 {
         self.client_rtt_seconds
+    }
+
+    pub fn server_rtt_seconds(self) -> f64 {
+        self.server_rtt_seconds
+    }
+
+    pub fn forward_delay_seconds(self) -> f64 {
+        self.forward_delay_seconds
     }
 
     pub fn client_latency_calculation_now(self) -> f64 {
@@ -10061,6 +10096,10 @@ mod tests {
             (0.0..2.0).contains(&client_rtt),
             "outbound ping should include a plausible clientRtt, got {client_rtt}"
         );
+        assert_eq!(
+            ping.server_rtt, None,
+            "client outbound ping should not echo serverRtt from inbound state"
+        );
     }
 
     #[test]
@@ -10077,6 +10116,38 @@ mod tests {
         assert!(
             (ping_metrics.client_rtt_seconds() - 0.2).abs() < 1e-9,
             "client RTT should be computed from now - inbound latencyCalculation"
+        );
+        assert!(
+            (ping_metrics.forward_delay_seconds() - 0.1).abs() < 1e-9,
+            "without inbound serverRtt, forward delay should default to averageRTT/2"
+        );
+    }
+
+    #[test]
+    fn client_ping_metrics_legacy_compatible_tracks_server_rtt_and_forward_delay_estimate() {
+        let mut ping_metrics = ClientPingMetricsLegacyCompatible::default();
+
+        ping_metrics.observe_inbound_state_at(
+            &StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_latency_calculation(100.0)
+                    .with_client_rtt(0.25)
+                    .with_server_rtt(0.12),
+            ),
+            100.3,
+        );
+
+        assert!(
+            (ping_metrics.client_rtt_seconds() - 0.3).abs() < 1e-9,
+            "client RTT should track now - inbound latencyCalculation"
+        );
+        assert!(
+            (ping_metrics.server_rtt_seconds() - 0.12).abs() < 1e-9,
+            "server RTT should track inbound ping.serverRtt"
+        );
+        assert!(
+            (ping_metrics.forward_delay_seconds() - 0.33).abs() < 1e-9,
+            "forward delay should use server-like formula averageRTT/2 + (clientRTT - serverRTT) when clientRTT is larger"
         );
     }
 
@@ -10103,6 +10174,15 @@ mod tests {
             20.5,
         );
         ping_metrics.observe_inbound_state_at(
+            &StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_latency_calculation(25.0)
+                    .with_client_rtt(0.1)
+                    .with_server_rtt(-1.0),
+            ),
+            25.4,
+        );
+        ping_metrics.observe_inbound_state_at(
             &StatePayload::new().with_ping(PingPayload::new().with_latency_calculation(30.0)),
             29.0,
         );
@@ -10110,7 +10190,7 @@ mod tests {
         assert_eq!(
             ping_metrics.client_rtt_seconds(),
             baseline,
-            "negative sender RTT or negative computed RTT should not overwrite the tracked RTT"
+            "invalid ping inputs should not overwrite the tracked RTT"
         );
     }
 
