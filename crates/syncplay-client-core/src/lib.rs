@@ -7263,6 +7263,138 @@ mod tests {
     }
 
     #[test]
+    fn reset_sync_state_for_reconnect_clears_fastforward_action_cooldown_window_before_post_reconnect_desync_evaluation()
+     {
+        let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+        let pre_reconnect_timer_start =
+            session.runtime_actions_for_desync_correction(0.0, 0.0, false, false, true);
+        assert_eq!(
+            pre_reconnect_timer_start,
+            Vec::<ClientRuntimeAction>::new(),
+            "precondition: initial behind detection should only start fastforward timer"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(0.0),
+            "precondition: behind timer should start at first detection time"
+        );
+
+        let pre_reconnect_fastforward =
+            session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
+        assert_eq!(
+            pre_reconnect_fastforward,
+            vec![ClientRuntimeAction::SetPosition(10.25)],
+            "precondition: non-self fastforward should trigger before reconnect"
+        );
+        assert!(
+            session
+                .behind_first_detected_at_seconds
+                .is_some_and(|t| t > 4.0),
+            "fastforward action should leave a future cooldown/suppression timer before reconnect"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "reconnect reset should clear stale fastforward action cooldown window"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect remote state should apply");
+
+        let post_reconnect_timer_restart =
+            session.runtime_actions_for_desync_correction(4.1, 0.0, false, false, true);
+        assert_eq!(
+            post_reconnect_timer_restart,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect behind detection should restart instead of inheriting stale fastforward cooldown window"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(4.1),
+            "post-reconnect behind timer should restart from new detection time"
+        );
+
+        let post_reconnect_before_threshold =
+            session.runtime_actions_for_desync_correction(7.3, 0.0, false, false, true);
+        assert_eq!(
+            post_reconnect_before_threshold,
+            Vec::<ClientRuntimeAction>::new(),
+            "restarted post-reconnect fastforward window should not trigger before threshold elapses"
+        );
+
+        let post_reconnect_after_threshold =
+            session.runtime_actions_for_desync_correction(7.5, 0.0, false, false, true);
+        assert_eq!(
+            post_reconnect_after_threshold,
+            vec![ClientRuntimeAction::SetPosition(10.25)],
+            "post-reconnect fastforward should trigger only after restarted window elapses"
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_preserves_rewind_suppression_ordering_across_self_setby_and_post_reconnect_do_seek_transition()
+     {
+        let mut session = desync_session_with_remote_state(0.0, false, false, "alice");
+
+        let pre_reconnect_self_setby_rewind_suppressed =
+            session.runtime_actions_for_desync_correction(0.0, 6.0, false, false, true);
+        assert_eq!(
+            pre_reconnect_self_setby_rewind_suppressed,
+            Vec::<ClientRuntimeAction>::new(),
+            "pre-reconnect self-attributed rewind candidate should be suppressed"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "rewind/self-setBy suppression path should not leave a behind-detection timer"
+        );
+        assert!(
+            !session.speed_changed,
+            "rewind/self-setBy suppression path should not touch slowdown state"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "reconnect reset should keep rewind-related fastforward timer state cleared"
+        );
+        assert!(
+            !session.speed_changed,
+            "reconnect reset should keep slowdown state cleared before post-reconnect rewind evaluations"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect doSeek state should apply");
+        let post_reconnect_do_seek_rewind_suppressed =
+            session.runtime_actions_for_desync_correction(1.0, 6.0, false, false, true);
+        assert_eq!(
+            post_reconnect_do_seek_rewind_suppressed,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect doSeek state should suppress rewind correction before doSeek clears"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect doSeek-clear state should apply");
+        let post_reconnect_remote_rewind =
+            session.runtime_actions_for_desync_correction(1.1, 6.0, false, false, true);
+        assert_eq!(
+            post_reconnect_remote_rewind,
+            vec![ClientRuntimeAction::SetPosition(0.0)],
+            "once post-reconnect doSeek clears and setBy is remote, rewind should trigger immediately"
+        );
+    }
+
+    #[test]
     fn reconnect_retry_policy_uses_legacy_exponential_backoff_with_cap() {
         let mut session = ClientSession::default();
 
