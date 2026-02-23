@@ -59,6 +59,9 @@ struct ClientLoopConfig {
     fastforward_on_desync_override: Option<bool>,
     slow_on_desync_override: Option<bool>,
     dont_slow_down_with_me_override: Option<bool>,
+    rewind_threshold_seconds_override: Option<f64>,
+    fastforward_threshold_seconds_override: Option<f64>,
+    slowdown_threshold_seconds_override: Option<f64>,
     unpause_action_override: Option<UnpauseActionMode>,
     auto_play_threshold_override: Option<AutoplayThresholdOverride>,
     filename_privacy_mode: PrivacyMode,
@@ -222,7 +225,7 @@ fn legacy_configuration_getter_startup_compat_entries()
         LegacyConfigurationGetterStartupCompatEntry {
             input: "_args",
             status: Deferred,
-            note: "forwarded to managed mpv and unmanaged external launch; explicit-mpv-IPC extra-arg semantics remain deferred",
+            note: "forwarded to managed mpv/unmanaged external launch; explicit-mpv-IPC supports best-effort runtime subset (--pause/--start/--speed) only",
         },
     ]
 }
@@ -319,8 +322,8 @@ fn legacy_configuration_getter_ini_compat_entries()
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}",
-            status: Deferred,
-            note: "desync threshold tuning remains env/default driven in syncplay-cli",
+            status: Supported,
+            note: "loaded/persisted into desync correction threshold tuning",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
@@ -449,6 +452,13 @@ struct ManagedMpvLaunchEnvConfig {
     connect_poll_interval_ms: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LegacyExplicitMpvIpcStartupPlayerArgs {
+    paused: Option<bool>,
+    start_position_seconds: Option<f64>,
+    playback_rate: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LegacyExternalPlayerLaunchSpec {
     program: PathBuf,
@@ -470,7 +480,7 @@ enum ReconnectCorrectionDiagnosticsFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct StoredClientSettingsMvp {
     language: Option<String>,
     host: Option<String>,
@@ -488,6 +498,9 @@ struct StoredClientSettingsMvp {
     fastforward_on_desync: Option<bool>,
     slow_on_desync: Option<bool>,
     dont_slow_down_with_me: Option<bool>,
+    rewind_threshold_seconds: Option<f64>,
+    fastforward_threshold_seconds: Option<f64>,
+    slowdown_threshold_seconds: Option<f64>,
     unpause_action: Option<UnpauseActionMode>,
     autoplay_min_users: Option<AutoplayThresholdOverride>,
     filename_privacy_mode: Option<PrivacyMode>,
@@ -746,6 +759,21 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                         settings.dont_slow_down_with_me = Some(parsed);
                     }
                 }
+                "rewindthreshold" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.rewind_threshold_seconds = Some(parsed);
+                    }
+                }
+                "fastforwardthreshold" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.fastforward_threshold_seconds = Some(parsed);
+                    }
+                }
+                "slowdownthreshold" => {
+                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
+                        settings.slowdown_threshold_seconds = Some(parsed);
+                    }
+                }
                 "unpauseaction" => {
                     if let Some(parsed) = parse_unpause_action_mode_legacy_compatible(&value) {
                         settings.unpause_action = Some(parsed);
@@ -810,6 +838,10 @@ fn escape_syncplay_ini_value_legacy_compatible(value: &str) -> String {
 
 fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {
     if value { "True" } else { "False" }
+}
+
+fn format_ini_non_negative_f64_legacy_compatible(value: f64) -> Option<String> {
+    (value.is_finite() && value >= 0.0).then(|| value.to_string())
 }
 
 fn parse_serialized_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
@@ -1045,6 +1077,36 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             format_ini_bool_legacy_compatible(value),
         );
     }
+    if let Some(value) = settings.rewind_threshold_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "rewindThreshold",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.fastforward_threshold_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "fastforwardThreshold",
+            &formatted,
+        );
+    }
+    if let Some(value) = settings.slowdown_threshold_seconds
+        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
+    {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "slowdownThreshold",
+            &formatted,
+        );
+    }
     if let Some(unpause_action) = settings.unpause_action.as_ref() {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -1235,6 +1297,21 @@ fn apply_stored_client_settings_mvp_if_env_absent(
     {
         config.dont_slow_down_with_me_override = Some(value);
     }
+    if env_trimmed("SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS").is_none()
+        && let Some(value) = settings.rewind_threshold_seconds
+    {
+        config.rewind_threshold_seconds_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_FASTFORWARD_THRESHOLD_SECONDS").is_none()
+        && let Some(value) = settings.fastforward_threshold_seconds
+    {
+        config.fastforward_threshold_seconds_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SLOWDOWN_THRESHOLD_SECONDS").is_none()
+        && let Some(value) = settings.slowdown_threshold_seconds
+    {
+        config.slowdown_threshold_seconds_override = Some(value);
+    }
     if env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION").is_none()
         && let Some(value) = settings.unpause_action.as_ref()
     {
@@ -1324,6 +1401,9 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         fastforward_on_desync: config.fastforward_on_desync_override,
         slow_on_desync: config.slow_on_desync_override,
         dont_slow_down_with_me: config.dont_slow_down_with_me_override,
+        rewind_threshold_seconds: config.rewind_threshold_seconds_override,
+        fastforward_threshold_seconds: config.fastforward_threshold_seconds_override,
+        slowdown_threshold_seconds: config.slowdown_threshold_seconds_override,
         unpause_action: config.unpause_action_override.clone(),
         autoplay_min_users: config.auto_play_threshold_override.clone(),
         filename_privacy_mode: Some(config.filename_privacy_mode),
@@ -1722,7 +1802,7 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     }
     if !overrides.player_args.is_empty() {
         eprintln!(
-            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC extra-arg semantics remain partial"
+            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC only applies a best-effort runtime subset (--pause/--no-pause, --start, --speed)"
         );
     }
 }
@@ -2797,6 +2877,15 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
         dont_slow_down_with_me_override: env_flag_override(
             "SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME",
         ),
+        rewind_threshold_seconds_override: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS",
+        ),
+        fastforward_threshold_seconds_override: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_FASTFORWARD_THRESHOLD_SECONDS",
+        ),
+        slowdown_threshold_seconds_override: env_non_negative_f64(
+            "SYNCPLAY_CLIENT_SLOWDOWN_THRESHOLD_SECONDS",
+        ),
         unpause_action_override: env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION")
             .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
         auto_play_threshold_override: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS")
@@ -2873,6 +2962,15 @@ fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     }
     if let Some(slow_on_desync) = config.slow_on_desync_override {
         session.desync_config_mut().slow_on_desync = slow_on_desync;
+    }
+    if let Some(rewind_threshold_seconds) = config.rewind_threshold_seconds_override {
+        session.desync_config_mut().rewind_threshold_seconds = rewind_threshold_seconds;
+    }
+    if let Some(fastforward_threshold_seconds) = config.fastforward_threshold_seconds_override {
+        session.desync_config_mut().fastforward_threshold_seconds = fastforward_threshold_seconds;
+    }
+    if let Some(slowdown_threshold_seconds) = config.slowdown_threshold_seconds_override {
+        session.desync_config_mut().slowdown_threshold_seconds = slowdown_threshold_seconds;
     }
     apply_client_behavior_overrides(&mut session, &behavior_overrides_from_env());
     {
@@ -3005,6 +3103,78 @@ fn legacy_external_player_launch_spec_from_overrides_legacy_compatible(
     Some(LegacyExternalPlayerLaunchSpec { program, args })
 }
 
+fn parse_positive_f64_legacy_compatible(value: &str) -> Option<f64> {
+    let parsed = value.trim().parse::<f64>().ok()?;
+    (parsed.is_finite() && parsed > 0.0).then_some(parsed)
+}
+
+fn parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
+    player_args: &[String],
+) -> LegacyExplicitMpvIpcStartupPlayerArgs {
+    let mut parsed = LegacyExplicitMpvIpcStartupPlayerArgs::default();
+    let mut index = 0;
+    while index < player_args.len() {
+        let arg = player_args[index].as_str();
+
+        if arg == "--pause" {
+            parsed.paused = Some(true);
+            index += 1;
+            continue;
+        }
+        if arg == "--no-pause" {
+            parsed.paused = Some(false);
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--pause=") {
+            if let Some(paused) = parse_env_bool_legacy_compatible(value) {
+                parsed.paused = Some(paused);
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--start=") {
+            if let Some(position_seconds) = parse_env_non_negative_f64_legacy_compatible(value) {
+                parsed.start_position_seconds = Some(position_seconds);
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--start" {
+            if let Some(next) = player_args.get(index + 1)
+                && let Some(position_seconds) = parse_env_non_negative_f64_legacy_compatible(next)
+            {
+                parsed.start_position_seconds = Some(position_seconds);
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--speed=") {
+            if let Some(playback_rate) = parse_positive_f64_legacy_compatible(value) {
+                parsed.playback_rate = Some(playback_rate);
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--speed" {
+            if let Some(next) = player_args.get(index + 1)
+                && let Some(playback_rate) = parse_positive_f64_legacy_compatible(next)
+            {
+                parsed.playback_rate = Some(playback_rate);
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+    }
+    parsed
+}
+
 fn spawn_legacy_external_player_if_requested_legacy_compatible(
     overrides: &LegacyClientArgOverrides,
 ) -> anyhow::Result<bool> {
@@ -3050,13 +3220,39 @@ where
     if explicit_mpv_ipc_path_from_env().is_none() {
         return Ok(false);
     }
-    let Some(file) = overrides.file.as_deref() else {
-        return Ok(false);
-    };
-    player.open_file(file).map_err(|error| {
-        anyhow!("failed opening legacy startup file via attached player: {error}")
-    })?;
-    Ok(true)
+    let mut applied = false;
+    if let Some(file) = overrides.file.as_deref() {
+        player.open_file(file).map_err(|error| {
+            anyhow!("failed opening legacy startup file via attached player: {error}")
+        })?;
+        applied = true;
+    }
+
+    let startup_args =
+        parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&overrides.player_args);
+    if let Some(start_position_seconds) = startup_args.start_position_seconds {
+        player
+            .set_position(start_position_seconds)
+            .map_err(|error| {
+                anyhow!(
+                    "failed applying legacy explicit-mpv-IPC startup '--start' override: {error}"
+                )
+            })?;
+        applied = true;
+    }
+    if let Some(paused) = startup_args.paused {
+        player.set_paused(paused).map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--pause' override: {error}")
+        })?;
+        applied = true;
+    }
+    if let Some(playback_rate) = startup_args.playback_rate {
+        player.set_playback_rate(playback_rate).map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--speed' override: {error}")
+        })?;
+        applied = true;
+    }
+    Ok(applied)
 }
 
 fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
@@ -4957,6 +5153,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -5423,6 +5622,11 @@ mod tests {
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
+            entry_for("client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}")
+                .status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
             entry_for("client_settings.dontSlowDownWithMe").status,
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
@@ -5559,6 +5763,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_explicit_mpv_ipc_startup_player_args_parses_supported_subset_and_last_wins() {
+        let args = vec![
+            "--fs".to_owned(),
+            "--start".to_owned(),
+            "12.5".to_owned(),
+            "--pause=no".to_owned(),
+            "--pause".to_owned(),
+            "--speed".to_owned(),
+            "1.25".to_owned(),
+            "--speed=1.5".to_owned(),
+            "--volume=50".to_owned(),
+        ];
+
+        let parsed =
+            super::parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+        assert_eq!(
+            parsed,
+            super::LegacyExplicitMpvIpcStartupPlayerArgs {
+                paused: Some(true),
+                start_position_seconds: Some(12.5),
+                playback_rate: Some(1.5),
+            }
+        );
+    }
+
+    #[test]
     fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file() {
         #[derive(Default)]
         struct RecordingPlayer {
@@ -5616,6 +5846,103 @@ mod tests {
             .expect("open_file should succeed");
         assert!(opened);
         assert_eq!(player.opened, vec!["movie.mkv".to_owned()]);
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+    }
+
+    #[test]
+    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_supported_player_args_after_open_file()
+     {
+        #[derive(Default)]
+        struct RecordingPlayer {
+            events: Vec<String>,
+        }
+        impl PlayerAdapter for RecordingPlayer {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+            fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+                self.events.push(format!("open:{path}"));
+                Ok(())
+            }
+            fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("pause:{paused}"));
+                Ok(())
+            }
+            fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
+                self.events.push(format!("seek:{position_seconds}"));
+                Ok(())
+            }
+            fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
+                self.events.push(format!("speed:{rate}"));
+                Ok(())
+            }
+        }
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        unsafe {
+            std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+            std::env::remove_var(key_fallback_ipc);
+        }
+
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: None,
+            file: Some("movie.mkv".to_owned()),
+            player_args: vec![
+                "--fs".to_owned(),
+                "--start".to_owned(),
+                "12.5".to_owned(),
+                "--pause".to_owned(),
+                "--speed=1.25".to_owned(),
+                "--volume=50".to_owned(),
+            ],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+        let mut player = RecordingPlayer::default();
+
+        let applied =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                &mut player,
+                &overrides,
+            )
+            .expect("supported explicit-mpv-IPC startup subset should apply");
+        assert!(applied);
+        assert_eq!(
+            player.events,
+            vec![
+                "open:movie.mkv".to_owned(),
+                "seek:12.5".to_owned(),
+                "pause:true".to_owned(),
+                "speed:1.25".to_owned(),
+            ]
+        );
 
         match old_client_ipc {
             Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
@@ -5759,7 +6086,7 @@ mod tests {
 
     #[test]
     fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
-        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
+        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
         let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
         assert_eq!(
             settings,
@@ -5783,6 +6110,9 @@ mod tests {
                 fastforward_on_desync: Some(true),
                 slow_on_desync: Some(false),
                 dont_slow_down_with_me: Some(true),
+                rewind_threshold_seconds: Some(1.25),
+                fastforward_threshold_seconds: Some(3.5),
+                slowdown_threshold_seconds: Some(2.25),
                 unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5822,6 +6152,9 @@ mod tests {
                 fastforward_on_desync: Some(true),
                 slow_on_desync: Some(false),
                 dont_slow_down_with_me: Some(true),
+                rewind_threshold_seconds: Some(1.25),
+                fastforward_threshold_seconds: Some(3.5),
+                slowdown_threshold_seconds: Some(2.25),
                 unpause_action: Some(UnpauseActionMode::IfOthersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Disable),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5851,6 +6184,9 @@ mod tests {
         assert!(updated.contains("fastforwardOnDesync = True\n"));
         assert!(updated.contains("slowOnDesync = False\n"));
         assert!(updated.contains("dontSlowDownWithMe = True\n"));
+        assert!(updated.contains("rewindThreshold = 1.25\n"));
+        assert!(updated.contains("fastforwardThreshold = 3.5\n"));
+        assert!(updated.contains("slowdownThreshold = 2.25\n"));
         assert!(updated.contains("unpauseAction = IfOthersReady\n"));
         assert!(updated.contains("autoplayMinUsers = 0\n"));
         assert!(updated.contains("filenamePrivacyMode = SendHashed\n"));
@@ -5871,17 +6207,20 @@ mod tests {
         let key_show_osd_warnings = "SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS";
         let key_pause_on_leave = "SYNCPLAY_CLIENT_PAUSE_ON_LEAVE";
         let key_dont_slow_down_with_me = "SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME";
+        let key_rewind_threshold = "SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS";
         let prior_host = std::env::var_os(key_host);
         let prior_name = std::env::var_os(key_name);
         let prior_show_osd_warnings = std::env::var_os(key_show_osd_warnings);
         let prior_pause_on_leave = std::env::var_os(key_pause_on_leave);
         let prior_dont_slow_down_with_me = std::env::var_os(key_dont_slow_down_with_me);
+        let prior_rewind_threshold = std::env::var_os(key_rewind_threshold);
         unsafe {
             std::env::set_var(key_host, "env.example");
             std::env::set_var(key_name, "env-user");
             std::env::set_var(key_show_osd_warnings, "true");
             std::env::set_var(key_pause_on_leave, "true");
             std::env::set_var(key_dont_slow_down_with_me, "true");
+            std::env::set_var(key_rewind_threshold, "9.5");
         }
 
         let mut config = test_client_loop_config();
@@ -5889,6 +6228,7 @@ mod tests {
         let original_username = config.username.clone();
         let original_show_osd_warnings = config.show_osd_warnings_override;
         let original_dont_slow_down_with_me = config.dont_slow_down_with_me_override;
+        let original_rewind_threshold = config.rewind_threshold_seconds_override;
         apply_stored_client_settings_mvp_if_env_absent(
             &mut config,
             &StoredClientSettingsMvp {
@@ -5911,6 +6251,9 @@ mod tests {
                 fastforward_on_desync: Some(true),
                 slow_on_desync: Some(false),
                 dont_slow_down_with_me: Some(false),
+                rewind_threshold_seconds: Some(1.25),
+                fastforward_threshold_seconds: Some(3.5),
+                slowdown_threshold_seconds: Some(2.25),
                 unpause_action: Some(UnpauseActionMode::IfOthersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(4)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5947,6 +6290,12 @@ mod tests {
             config.dont_slow_down_with_me_override,
             original_dont_slow_down_with_me
         );
+        assert_eq!(
+            config.rewind_threshold_seconds_override,
+            original_rewind_threshold
+        );
+        assert_eq!(config.fastforward_threshold_seconds_override, Some(3.5));
+        assert_eq!(config.slowdown_threshold_seconds_override, Some(2.25));
         assert_eq!(
             config.unpause_action_override,
             Some(UnpauseActionMode::IfOthersReady)
@@ -5986,14 +6335,21 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(key_dont_slow_down_with_me, value) },
             None => unsafe { std::env::remove_var(key_dont_slow_down_with_me) },
         }
+        match prior_rewind_threshold {
+            Some(value) => unsafe { std::env::set_var(key_rewind_threshold, value) },
+            None => unsafe { std::env::remove_var(key_rewind_threshold) },
+        }
     }
 
     #[test]
-    fn create_client_session_applies_desync_toggle_overrides_from_config() {
+    fn create_client_session_applies_desync_overrides_from_config() {
         let config = ClientLoopConfig {
             rewind_on_desync_override: Some(false),
             fastforward_on_desync_override: Some(false),
             slow_on_desync_override: Some(false),
+            rewind_threshold_seconds_override: Some(1.25),
+            fastforward_threshold_seconds_override: Some(3.5),
+            slowdown_threshold_seconds_override: Some(2.25),
             ..test_client_loop_config()
         };
 
@@ -6002,6 +6358,9 @@ mod tests {
         assert!(!desync.rewind_on_desync);
         assert!(!desync.fastforward_on_desync);
         assert!(!desync.slow_on_desync);
+        assert_eq!(desync.rewind_threshold_seconds, 1.25);
+        assert_eq!(desync.fastforward_threshold_seconds, 3.5);
+        assert_eq!(desync.slowdown_threshold_seconds, 2.25);
     }
 
     #[test]
@@ -6046,6 +6405,9 @@ mod tests {
             fastforward_on_desync_override: Some(true),
             slow_on_desync_override: Some(false),
             dont_slow_down_with_me_override: Some(true),
+            rewind_threshold_seconds_override: Some(1.25),
+            fastforward_threshold_seconds_override: Some(3.5),
+            slowdown_threshold_seconds_override: Some(2.25),
             unpause_action_override: Some(UnpauseActionMode::IfMinUsersReady),
             auto_play_threshold_override: Some(AutoplayThresholdOverride::Set(5)),
             filename_privacy_mode: PrivacyMode::SendHashed,
@@ -6085,6 +6447,9 @@ mod tests {
                 fastforward_on_desync: Some(true),
                 slow_on_desync: Some(false),
                 dont_slow_down_with_me: Some(true),
+                rewind_threshold_seconds: Some(1.25),
+                fastforward_threshold_seconds: Some(3.5),
+                slowdown_threshold_seconds: Some(2.25),
                 unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(5)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -6115,6 +6480,9 @@ mod tests {
         assert!(written_contents.contains("fastforwardOnDesync = True\n"));
         assert!(written_contents.contains("slowOnDesync = False\n"));
         assert!(written_contents.contains("dontSlowDownWithMe = True\n"));
+        assert!(written_contents.contains("rewindThreshold = 1.25\n"));
+        assert!(written_contents.contains("fastforwardThreshold = 3.5\n"));
+        assert!(written_contents.contains("slowdownThreshold = 2.25\n"));
         assert!(written_contents.contains("unpauseAction = IfMinUsersReady\n"));
         assert!(written_contents.contains("autoplayMinUsers = 5\n"));
         assert!(written_contents.contains("filenamePrivacyMode = SendHashed\n"));
@@ -8486,6 +8854,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8585,6 +8956,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8698,6 +9072,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8808,6 +9185,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8930,6 +9310,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9059,6 +9442,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9188,6 +9574,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9304,6 +9693,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9420,6 +9812,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9560,6 +9955,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9712,6 +10110,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9877,6 +10278,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10024,6 +10428,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10165,6 +10572,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10293,6 +10703,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10427,6 +10840,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10579,6 +10995,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10715,6 +11134,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10863,6 +11285,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10995,6 +11420,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11154,6 +11582,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11312,6 +11743,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11444,6 +11878,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11579,6 +12016,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11713,6 +12153,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11848,6 +12291,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11990,6 +12436,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12127,6 +12576,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12263,6 +12715,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12397,6 +12852,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12525,6 +12983,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12654,6 +13115,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12783,6 +13247,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12911,6 +13378,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13039,6 +13509,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13170,6 +13643,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13299,6 +13775,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13431,6 +13910,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13567,6 +14049,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13719,6 +14204,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13835,6 +14323,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13945,6 +14436,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14053,6 +14547,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14167,6 +14664,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14301,6 +14801,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14450,6 +14953,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14586,6 +15092,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14688,6 +15197,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14827,6 +15339,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14976,6 +15491,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15103,6 +15621,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15226,6 +15747,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15349,6 +15873,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15438,6 +15965,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15485,6 +16015,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15529,6 +16062,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15571,6 +16107,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15613,6 +16152,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15655,6 +16197,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15697,6 +16242,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16467,6 +17015,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16539,6 +17090,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16595,6 +17149,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16674,6 +17231,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16751,6 +17311,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16819,6 +17382,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16904,6 +17470,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16968,6 +17537,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -17061,6 +17633,9 @@ mod tests {
             fastforward_on_desync_override: None,
             slow_on_desync_override: None,
             dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
