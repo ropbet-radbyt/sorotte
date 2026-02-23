@@ -13176,6 +13176,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_client_session_inbound_state_ping_server_rtt_enables_borderline_fastforward_desync_correction()
+     {
+        async fn run_case(include_server_rtt: bool) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let target_position = 6.0_f64;
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                let inbound_latency_calculation = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs_f64())
+                    .unwrap_or(0.0)
+                    - 0.35;
+                let mut inbound_ping =
+                    PingPayload::new().with_latency_calculation(inbound_latency_calculation);
+                if include_server_rtt {
+                    inbound_ping = inbound_ping.with_server_rtt(0.05);
+                }
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new()
+                        .with_playstate(
+                            PlaystatePayload::new()
+                                .with_position(target_position)
+                                .with_paused(false)
+                                .with_do_seek(false)
+                                .with_set_by("remote-user"),
+                        )
+                        .with_ping(inbound_ping),
+                ))
+                .expect("inbound state line should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(5600)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 8.0;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(false);
+            config.fastforward_on_desync_override = Some(true);
+            config.slow_on_desync_override = Some(false);
+            config.fastforward_threshold_seconds_override = Some(6.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(0.2)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(0.2),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().position_seconds()
+        }
+
+        let without_server_rtt_position = run_case(false).await;
+        let with_server_rtt_position = run_case(true).await;
+
+        assert!(
+            without_server_rtt_position < 1.0,
+            "without serverRtt, borderline case should not fastforward-seek; position={without_server_rtt_position}"
+        );
+        assert!(
+            with_server_rtt_position > 6.0,
+            "with serverRtt, forward-delay compensation should trigger fastforward seek past target; position={with_server_rtt_position}"
+        );
+    }
+
+    #[tokio::test]
     async fn connected_client_session_leading_tab_known_aliases_do_not_emit_outbound_actions() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
