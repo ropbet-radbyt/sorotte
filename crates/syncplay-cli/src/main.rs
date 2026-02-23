@@ -55,6 +55,10 @@ struct ClientLoopConfig {
     loop_single_files_override: Option<bool>,
     only_switch_to_trusted_domains_override: Option<bool>,
     trusted_domains_override: Option<Vec<String>>,
+    rewind_on_desync_override: Option<bool>,
+    fastforward_on_desync_override: Option<bool>,
+    slow_on_desync_override: Option<bool>,
+    dont_slow_down_with_me_override: Option<bool>,
     unpause_action_override: Option<UnpauseActionMode>,
     auto_play_threshold_override: Option<AutoplayThresholdOverride>,
     filename_privacy_mode: PrivacyMode,
@@ -319,9 +323,14 @@ fn legacy_configuration_getter_ini_compat_entries()
             note: "desync threshold tuning remains env/default driven in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync,dontSlowDownWithMe}",
-            status: Deferred,
-            note: "desync feature toggles are not yet loaded/persisted from syncplay.ini",
+            key: "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
+            status: Supported,
+            note: "loaded/persisted into desync correction feature toggles",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.dontSlowDownWithMe",
+            status: Supported,
+            note: "loaded/persisted into CLI desync fast-forward gating runtime flag",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{mediaSearchDirectories,publicServers}",
@@ -475,6 +484,10 @@ struct StoredClientSettingsMvp {
     loop_single_files: Option<bool>,
     only_switch_to_trusted_domains: Option<bool>,
     trusted_domains: Option<Vec<String>>,
+    rewind_on_desync: Option<bool>,
+    fastforward_on_desync: Option<bool>,
+    slow_on_desync: Option<bool>,
+    dont_slow_down_with_me: Option<bool>,
     unpause_action: Option<UnpauseActionMode>,
     autoplay_min_users: Option<AutoplayThresholdOverride>,
     filename_privacy_mode: Option<PrivacyMode>,
@@ -711,6 +724,26 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                 "trusteddomains" => {
                     if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
                         settings.trusted_domains = Some(parsed);
+                    }
+                }
+                "rewindondesync" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.rewind_on_desync = Some(parsed);
+                    }
+                }
+                "fastforwardondesync" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.fastforward_on_desync = Some(parsed);
+                    }
+                }
+                "slowondesync" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.slow_on_desync = Some(parsed);
+                    }
+                }
+                "dontslowdownwithme" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.dont_slow_down_with_me = Some(parsed);
                     }
                 }
                 "unpauseaction" => {
@@ -980,6 +1013,38 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             &serialized,
         );
     }
+    if let Some(value) = settings.rewind_on_desync {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "rewindOnDesync",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.fastforward_on_desync {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "fastforwardOnDesync",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.slow_on_desync {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "slowOnDesync",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.dont_slow_down_with_me {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "dontSlowDownWithMe",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if let Some(unpause_action) = settings.unpause_action.as_ref() {
         upsert_ini_value_legacy_compatible(
             &mut lines,
@@ -1150,6 +1215,26 @@ fn apply_stored_client_settings_mvp_if_env_absent(
     {
         config.trusted_domains_override = Some(values.clone());
     }
+    if env_trimmed("SYNCPLAY_CLIENT_REWIND_ON_DESYNC").is_none()
+        && let Some(value) = settings.rewind_on_desync
+    {
+        config.rewind_on_desync_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_FASTFORWARD_ON_DESYNC").is_none()
+        && let Some(value) = settings.fastforward_on_desync
+    {
+        config.fastforward_on_desync_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SLOW_ON_DESYNC").is_none()
+        && let Some(value) = settings.slow_on_desync
+    {
+        config.slow_on_desync_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME").is_none()
+        && let Some(value) = settings.dont_slow_down_with_me
+    {
+        config.dont_slow_down_with_me_override = Some(value);
+    }
     if env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION").is_none()
         && let Some(value) = settings.unpause_action.as_ref()
     {
@@ -1235,6 +1320,10 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         loop_single_files: config.loop_single_files_override,
         only_switch_to_trusted_domains: config.only_switch_to_trusted_domains_override,
         trusted_domains: config.trusted_domains_override.clone(),
+        rewind_on_desync: config.rewind_on_desync_override,
+        fastforward_on_desync: config.fastforward_on_desync_override,
+        slow_on_desync: config.slow_on_desync_override,
+        dont_slow_down_with_me: config.dont_slow_down_with_me_override,
         unpause_action: config.unpause_action_override.clone(),
         autoplay_min_users: config.auto_play_threshold_override.clone(),
         filename_privacy_mode: Some(config.filename_privacy_mode),
@@ -2702,6 +2791,12 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
             "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
         ),
         trusted_domains_override: env_string_list("SYNCPLAY_CLIENT_TRUSTED_DOMAINS"),
+        rewind_on_desync_override: env_flag_override("SYNCPLAY_CLIENT_REWIND_ON_DESYNC"),
+        fastforward_on_desync_override: env_flag_override("SYNCPLAY_CLIENT_FASTFORWARD_ON_DESYNC"),
+        slow_on_desync_override: env_flag_override("SYNCPLAY_CLIENT_SLOW_ON_DESYNC"),
+        dont_slow_down_with_me_override: env_flag_override(
+            "SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME",
+        ),
         unpause_action_override: env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION")
             .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
         auto_play_threshold_override: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS")
@@ -2769,6 +2864,15 @@ fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     }
     if let Some(trusted_domains) = config.trusted_domains_override.as_ref() {
         session.behavior_config_mut().trusted_domains = trusted_domains.clone();
+    }
+    if let Some(rewind_on_desync) = config.rewind_on_desync_override {
+        session.desync_config_mut().rewind_on_desync = rewind_on_desync;
+    }
+    if let Some(fastforward_on_desync) = config.fastforward_on_desync_override {
+        session.desync_config_mut().fastforward_on_desync = fastforward_on_desync;
+    }
+    if let Some(slow_on_desync) = config.slow_on_desync_override {
+        session.desync_config_mut().slow_on_desync = slow_on_desync;
     }
     apply_client_behavior_overrides(&mut session, &behavior_overrides_from_env());
     {
@@ -4720,9 +4824,9 @@ mod tests {
         chat_notification_message, controlled_room_base_name_legacy_compatible,
         controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
-        create_client_runtime_with_managed_mpv_support, flush_autoplay_notifications_to_sink,
-        flush_chat_notifications_to_sink, flush_controller_auth_notifications_to_sink,
-        flush_file_difference_notifications_to_sink,
+        create_client_runtime_with_managed_mpv_support, create_client_session,
+        flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
+        flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
         format_file_difference_summary, generate_room_password_legacy_compatible,
@@ -4849,6 +4953,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -5261,6 +5369,8 @@ mod tests {
             "client_settings.autoplayMinUsers",
             "client_settings.playerPath",
             "client_settings.perPlayerArguments",
+            "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
+            "client_settings.dontSlowDownWithMe",
             "gui.showDurationNotification",
             "gui.{showSameRoomOSD,showOSDWarnings,showNonControllerOSD,showDifferentRoomOSD}",
             "general.language",
@@ -5306,6 +5416,14 @@ mod tests {
         );
         assert_eq!(
             entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.dontSlowDownWithMe").status,
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
@@ -5641,7 +5759,7 @@ mod tests {
 
     #[test]
     fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
-        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
+        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
         let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
         assert_eq!(
             settings,
@@ -5661,6 +5779,10 @@ mod tests {
                     "youtube.com".to_owned(),
                     "*.example.com/videos".to_owned(),
                 ]),
+                rewind_on_desync: Some(false),
+                fastforward_on_desync: Some(true),
+                slow_on_desync: Some(false),
+                dont_slow_down_with_me: Some(true),
                 unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5696,6 +5818,10 @@ mod tests {
                     "youtube.com".to_owned(),
                     "*.example.com/videos".to_owned(),
                 ]),
+                rewind_on_desync: Some(false),
+                fastforward_on_desync: Some(true),
+                slow_on_desync: Some(false),
+                dont_slow_down_with_me: Some(true),
                 unpause_action: Some(UnpauseActionMode::IfOthersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Disable),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5721,6 +5847,10 @@ mod tests {
         assert!(updated.contains("loopSingleFiles = True\n"));
         assert!(updated.contains("onlySwitchToTrustedDomains = False\n"));
         assert!(updated.contains("trustedDomains = ['youtube.com', '*.example.com/videos']\n"));
+        assert!(updated.contains("rewindOnDesync = False\n"));
+        assert!(updated.contains("fastforwardOnDesync = True\n"));
+        assert!(updated.contains("slowOnDesync = False\n"));
+        assert!(updated.contains("dontSlowDownWithMe = True\n"));
         assert!(updated.contains("unpauseAction = IfOthersReady\n"));
         assert!(updated.contains("autoplayMinUsers = 0\n"));
         assert!(updated.contains("filenamePrivacyMode = SendHashed\n"));
@@ -5740,21 +5870,25 @@ mod tests {
         let key_name = "SYNCPLAY_CLIENT_NAME";
         let key_show_osd_warnings = "SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS";
         let key_pause_on_leave = "SYNCPLAY_CLIENT_PAUSE_ON_LEAVE";
+        let key_dont_slow_down_with_me = "SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME";
         let prior_host = std::env::var_os(key_host);
         let prior_name = std::env::var_os(key_name);
         let prior_show_osd_warnings = std::env::var_os(key_show_osd_warnings);
         let prior_pause_on_leave = std::env::var_os(key_pause_on_leave);
+        let prior_dont_slow_down_with_me = std::env::var_os(key_dont_slow_down_with_me);
         unsafe {
             std::env::set_var(key_host, "env.example");
             std::env::set_var(key_name, "env-user");
             std::env::set_var(key_show_osd_warnings, "true");
             std::env::set_var(key_pause_on_leave, "true");
+            std::env::set_var(key_dont_slow_down_with_me, "true");
         }
 
         let mut config = test_client_loop_config();
         let original_host = config.host.clone();
         let original_username = config.username.clone();
         let original_show_osd_warnings = config.show_osd_warnings_override;
+        let original_dont_slow_down_with_me = config.dont_slow_down_with_me_override;
         apply_stored_client_settings_mvp_if_env_absent(
             &mut config,
             &StoredClientSettingsMvp {
@@ -5773,6 +5907,10 @@ mod tests {
                     "stored.example".to_owned(),
                     "*.video.example/path".to_owned(),
                 ]),
+                rewind_on_desync: Some(false),
+                fastforward_on_desync: Some(true),
+                slow_on_desync: Some(false),
+                dont_slow_down_with_me: Some(false),
                 unpause_action: Some(UnpauseActionMode::IfOthersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(4)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5801,6 +5939,13 @@ mod tests {
                 "stored.example".to_owned(),
                 "*.video.example/path".to_owned(),
             ])
+        );
+        assert_eq!(config.rewind_on_desync_override, Some(false));
+        assert_eq!(config.fastforward_on_desync_override, Some(true));
+        assert_eq!(config.slow_on_desync_override, Some(false));
+        assert_eq!(
+            config.dont_slow_down_with_me_override,
+            original_dont_slow_down_with_me
         );
         assert_eq!(
             config.unpause_action_override,
@@ -5837,6 +5982,26 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(key_pause_on_leave, value) },
             None => unsafe { std::env::remove_var(key_pause_on_leave) },
         }
+        match prior_dont_slow_down_with_me {
+            Some(value) => unsafe { std::env::set_var(key_dont_slow_down_with_me, value) },
+            None => unsafe { std::env::remove_var(key_dont_slow_down_with_me) },
+        }
+    }
+
+    #[test]
+    fn create_client_session_applies_desync_toggle_overrides_from_config() {
+        let config = ClientLoopConfig {
+            rewind_on_desync_override: Some(false),
+            fastforward_on_desync_override: Some(false),
+            slow_on_desync_override: Some(false),
+            ..test_client_loop_config()
+        };
+
+        let session = create_client_session(&config);
+        let desync = session.desync_config();
+        assert!(!desync.rewind_on_desync);
+        assert!(!desync.fastforward_on_desync);
+        assert!(!desync.slow_on_desync);
     }
 
     #[test]
@@ -5877,6 +6042,10 @@ mod tests {
                 "youtube.com".to_owned(),
                 "*.example.com/videos".to_owned(),
             ]),
+            rewind_on_desync_override: Some(false),
+            fastforward_on_desync_override: Some(true),
+            slow_on_desync_override: Some(false),
+            dont_slow_down_with_me_override: Some(true),
             unpause_action_override: Some(UnpauseActionMode::IfMinUsersReady),
             auto_play_threshold_override: Some(AutoplayThresholdOverride::Set(5)),
             filename_privacy_mode: PrivacyMode::SendHashed,
@@ -5912,6 +6081,10 @@ mod tests {
                     "youtube.com".to_owned(),
                     "*.example.com/videos".to_owned(),
                 ]),
+                rewind_on_desync: Some(false),
+                fastforward_on_desync: Some(true),
+                slow_on_desync: Some(false),
+                dont_slow_down_with_me: Some(true),
                 unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
                 autoplay_min_users: Some(AutoplayThresholdOverride::Set(5)),
                 filename_privacy_mode: Some(PrivacyMode::SendHashed),
@@ -5938,6 +6111,10 @@ mod tests {
         assert!(
             written_contents.contains("trustedDomains = ['youtube.com', '*.example.com/videos']\n")
         );
+        assert!(written_contents.contains("rewindOnDesync = False\n"));
+        assert!(written_contents.contains("fastforwardOnDesync = True\n"));
+        assert!(written_contents.contains("slowOnDesync = False\n"));
+        assert!(written_contents.contains("dontSlowDownWithMe = True\n"));
         assert!(written_contents.contains("unpauseAction = IfMinUsersReady\n"));
         assert!(written_contents.contains("autoplayMinUsers = 5\n"));
         assert!(written_contents.contains("filenamePrivacyMode = SendHashed\n"));
@@ -8305,6 +8482,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8400,6 +8581,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8509,6 +8694,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8615,6 +8804,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8733,6 +8926,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8858,6 +9055,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -8983,6 +9184,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9095,6 +9300,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9207,6 +9416,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9343,6 +9556,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9491,6 +9708,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9652,6 +9873,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9795,6 +10020,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -9932,6 +10161,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10056,6 +10289,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10186,6 +10423,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10334,6 +10575,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10466,6 +10711,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10610,6 +10859,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10738,6 +10991,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -10893,6 +11150,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11047,6 +11308,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11175,6 +11440,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11306,6 +11575,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11436,6 +11709,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11567,6 +11844,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11705,6 +11986,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11838,6 +12123,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -11970,6 +12259,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12100,6 +12393,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12224,6 +12521,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12349,6 +12650,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12474,6 +12779,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12598,6 +12907,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12722,6 +13035,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12849,6 +13166,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -12974,6 +13295,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13102,6 +13427,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13234,6 +13563,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13382,6 +13715,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13494,6 +13831,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13600,6 +13941,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13704,6 +14049,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13814,6 +14163,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -13944,6 +14297,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14089,6 +14446,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14221,6 +14582,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14319,6 +14684,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14454,6 +14823,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14599,6 +14972,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14722,6 +15099,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14841,6 +15222,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -14960,6 +15345,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15045,6 +15434,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15088,6 +15481,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15128,6 +15525,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15166,6 +15567,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15204,6 +15609,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15242,6 +15651,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -15280,6 +15693,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16046,6 +16463,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16114,6 +16535,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16166,6 +16591,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16241,6 +16670,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16314,6 +16747,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16378,6 +16815,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16459,6 +16900,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16519,6 +16964,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
@@ -16608,6 +17057,10 @@ mod tests {
             loop_single_files_override: None,
             only_switch_to_trusted_domains_override: None,
             trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
             unpause_action_override: None,
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
