@@ -7624,6 +7624,73 @@ mod tests {
     }
 
     #[test]
+    fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconnect_self_setby_slowdown_is_suppressed_before_near_sync()
+     {
+        let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+
+        let pre_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(0.0, 2.0, true, false, true);
+        assert_eq!(
+            pre_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "precondition: pre-reconnect ahead-state should trigger slowdown"
+        );
+        assert!(
+            session.speed_changed,
+            "precondition: slowdown should prime speed_changed before reconnect reset"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert!(
+            !session.speed_changed,
+            "reconnect reset should clear slowdown state before post-reconnect self-setBy slowdown suppression"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            )
+            .expect("post-reconnect self-setBy state should apply");
+
+        let post_reconnect_self_setby_slowdown_suppressed =
+            session.runtime_actions_for_desync_correction(1.0, 2.0, true, false, true);
+        assert_eq!(
+            post_reconnect_self_setby_slowdown_suppressed,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect self-attributed slowdown candidate should remain suppressed"
+        );
+        assert!(
+            !session.speed_changed,
+            "self-setBy slowdown suppression should not resurrect stale slowdown state"
+        );
+
+        let post_reconnect_near_sync =
+            session.runtime_actions_for_desync_correction(1.1, 0.05, true, false, true);
+        assert_eq!(
+            post_reconnect_near_sync,
+            Vec::<ClientRuntimeAction>::new(),
+            "near-sync after self-setBy slowdown suppression should not emit stale restore-speed action"
+        );
+        assert!(
+            !session.speed_changed,
+            "near-sync after self-setBy slowdown suppression should keep slowdown state cleared"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect non-self state should apply");
+        let post_reconnect_remote_slowdown =
+            session.runtime_actions_for_desync_correction(2.0, 2.0, true, false, true);
+        assert_eq!(
+            post_reconnect_remote_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "post-reconnect slowdown should still trigger normally after self-setBy slowdown suppression and near-sync from a fresh state"
+        );
+    }
+
+    #[test]
     fn reconnect_retry_policy_uses_legacy_exponential_backoff_with_cap() {
         let mut session = ClientSession::default();
 
