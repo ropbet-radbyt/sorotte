@@ -1,0 +1,10 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room2"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Set":{"playlistChange":{"files":["room2-initial-ep1.mkv"]}}}}
+{"client":"client-2","message":{"Set":{"playlistIndex":{"index":0}}}}
+{"client":"client-3","message":{"Hello":{"username":"carol","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-3","message":{"Set":{"room":{"name":"room2"}}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":["room1-after-carol-switch.mkv","room1-after-carol-switch-2.mkv"]}}}}
+{"client":"client-1","message":{"Set":{"playlistIndex":{"index":1}}}}
+{"client":"client-2","message":{"Set":{"playlistChange":{"files":["room2-after-carol-switch.mkv","room2-after-carol-switch-2.mkv"]}}}}
+{"client":"client-2","message":{"Set":{"playlistIndex":{"index":1}}}}
