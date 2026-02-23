@@ -1064,6 +1064,8 @@ where
         let Some(local_position) = self.session.local_position else {
             return Ok(());
         };
+        let local_position =
+            self.desync_local_position_with_legacy_ping_forward_delay(local_position);
 
         let actions = self.session.runtime_actions_for_desync_correction(
             now_seconds,
@@ -1073,6 +1075,24 @@ where
             speed_supported,
         );
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+    }
+
+    fn desync_local_position_with_legacy_ping_forward_delay(&self, local_position: f64) -> f64 {
+        let Some(room_playstate) = self.session.current_room_playstate() else {
+            return local_position;
+        };
+        if room_playstate.paused != Some(false) || room_playstate.do_seek == Some(true) {
+            return local_position;
+        }
+
+        let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
+        if !forward_delay.is_finite() || forward_delay <= 0.0 {
+            return local_position;
+        }
+
+        // Compare against an estimate of "room position now" by moving local position back by
+        // the inferred one-way/forward delay before evaluating threshold-based desync actions.
+        local_position - forward_delay
     }
 
     pub fn run_reconnect_playlist_restore_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -10099,6 +10119,61 @@ mod tests {
         assert_eq!(
             ping.server_rtt, None,
             "client outbound ping should not echo serverRtt from inbound state"
+        );
+    }
+
+    #[test]
+    fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_borderline_fastforward_threshold()
+     {
+        fn local_unpaused_telemetry(position_seconds: f64) -> PlayerPlaybackTelemetryUpdate {
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(position_seconds)
+                .with_paused(false)
+        }
+
+        fn runtime_fixture() -> ClientRuntime<RecordingPlayer, QueuedRuntimeControl> {
+            let session = desync_session_with_remote_state(5.0, false, false, "bob");
+            let player = RecordingPlayer {
+                pending_playback_telemetry_update: Some(local_unpaused_telemetry(0.2)),
+                ..RecordingPlayer::default()
+            };
+            let control = QueuedRuntimeControl::default();
+            ClientRuntime::new(session, player, control)
+        }
+
+        let mut baseline_runtime = runtime_fixture();
+        baseline_runtime
+            .run_desync_correction_if_needed(0.0, false, false, false)
+            .expect("initial behind detection should not fail");
+        baseline_runtime
+            .player_mut()
+            .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
+        baseline_runtime
+            .run_desync_correction_if_needed(4.0, false, false, false)
+            .expect("borderline fastforward check should not fail");
+        assert_eq!(
+            baseline_runtime.player().position,
+            None,
+            "without forward-delay compensation, local position should stay just above fastforward threshold"
+        );
+
+        let mut compensated_runtime = runtime_fixture();
+        compensated_runtime
+            .ping_metrics_legacy_compatible
+            .forward_delay_seconds = 0.35;
+        compensated_runtime
+            .run_desync_correction_if_needed(0.0, false, false, false)
+            .expect("initial behind detection with forward delay should not fail");
+        compensated_runtime
+            .player_mut()
+            .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
+        compensated_runtime
+            .run_desync_correction_if_needed(4.0, false, false, false)
+            .expect("compensated fastforward check should not fail");
+        assert_eq!(
+            compensated_runtime.player().position,
+            Some(5.25),
+            "forward-delay compensation should push a borderline behind client over the fastforward threshold"
         );
     }
 
