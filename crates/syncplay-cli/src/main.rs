@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +16,9 @@ use syncplay_client_core::{
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_player_mpv::MpvAdapter;
-use syncplay_protocol::{ProtocolMessage, encode_message_line};
+use syncplay_protocol::{
+    PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload, encode_message_line,
+};
 use syncplay_server::ServerApp;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -61,6 +64,12 @@ struct ClientLoopConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct LegacyClientArgOverrides {
     connect_requested: bool,
+    no_store: bool,
+    debug_requested: bool,
+    force_gui_prompt_requested: bool,
+    clear_gui_data_requested: bool,
+    language: Option<String>,
+    load_playlist_from_file: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     username: Option<String>,
@@ -173,6 +182,15 @@ struct ReconnectCorrectionDiagnosticsAlertThresholds {
 enum ReconnectCorrectionDiagnosticsFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StoredClientSettingsMvp {
+    language: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    room: Option<String>,
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -291,6 +309,348 @@ fn env_string_list(name: &str) -> Option<Vec<String>> {
     env_trimmed(name).and_then(|value| parse_env_string_list_legacy_compatible(&value))
 }
 
+fn syncplay_config_names_legacy_compatible() -> [&'static str; 2] {
+    [".syncplay", "syncplay.ini"]
+}
+
+fn syncplay_cli_config_path_override() -> Option<PathBuf> {
+    env_trimmed("SYNCPLAY_CLIENT_CONFIG_PATH").map(PathBuf::from)
+}
+
+fn default_syncplay_cli_config_root_legacy_compatible() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return env_trimmed("APPDATA").map(PathBuf::from);
+    }
+    if let Some(xdg_config_home) = env_trimmed("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg_config_home));
+    }
+    env_trimmed("HOME").map(|home| PathBuf::from(home).join(".config"))
+}
+
+fn resolve_syncplay_cli_config_path_legacy_compatible() -> Option<PathBuf> {
+    if let Some(path) = syncplay_cli_config_path_override() {
+        return Some(path);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        for name in syncplay_config_names_legacy_compatible() {
+            let candidate = cwd.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let root = default_syncplay_cli_config_root_legacy_compatible()?;
+    for name in syncplay_config_names_legacy_compatible() {
+        let candidate = root.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    Some(root.join("syncplay.ini"))
+}
+
+fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClientSettingsMvp {
+    let mut settings = StoredClientSettingsMvp::default();
+    let mut current_section: Option<String> = None;
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if let Some(section_name) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current_section = Some(section_name.trim().to_ascii_lowercase());
+            continue;
+        }
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim().to_ascii_lowercase();
+        let value = raw_value.trim().replace("%%", "%");
+        match current_section.as_deref() {
+            Some("general") => match key.as_str() {
+                "language" if !value.is_empty() => settings.language = Some(value),
+                _ => {}
+            },
+            Some("server_data") => match key.as_str() {
+                "host" if !value.is_empty() => settings.host = Some(value),
+                "port" => {
+                    if let Some(port) = parse_env_port_legacy_compatible(&value) {
+                        settings.port = Some(port);
+                    }
+                }
+                _ => {}
+            },
+            Some("client_settings") => match key.as_str() {
+                "name" if !value.is_empty() => settings.username = Some(value),
+                "room" if !value.is_empty() => settings.room = Some(value),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    settings
+}
+
+fn escape_syncplay_ini_value_legacy_compatible(value: &str) -> String {
+    value.replace('%', "%%")
+}
+
+fn upsert_ini_value_legacy_compatible(
+    lines: &mut Vec<String>,
+    section: &str,
+    key: &str,
+    value: &str,
+) {
+    let section_header = format!("[{section}]");
+    let mut section_start = None;
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim().eq_ignore_ascii_case(&section_header) {
+            section_start = Some(idx);
+            break;
+        }
+    }
+
+    let rendered = format!(
+        "{key} = {}",
+        escape_syncplay_ini_value_legacy_compatible(value)
+    );
+
+    if let Some(section_start_idx) = section_start {
+        let mut insert_at = lines.len();
+        let mut key_index = None;
+        for idx in (section_start_idx + 1)..lines.len() {
+            let trimmed = lines[idx].trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                insert_at = idx;
+                break;
+            }
+            if let Some((candidate_key, _)) = trimmed.split_once('=')
+                && candidate_key.trim().eq_ignore_ascii_case(key)
+            {
+                key_index = Some(idx);
+                break;
+            }
+        }
+        if let Some(idx) = key_index {
+            lines[idx] = rendered;
+        } else {
+            lines.insert(insert_at, rendered);
+        }
+        return;
+    }
+
+    if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.push(String::new());
+    }
+    lines.push(section_header);
+    lines.push(rendered);
+}
+
+fn upsert_syncplay_ini_stored_client_settings_mvp(
+    existing_contents: &str,
+    settings: &StoredClientSettingsMvp,
+) -> String {
+    let had_bom = existing_contents.starts_with('\u{feff}');
+    let mut lines = existing_contents
+        .strip_prefix('\u{feff}')
+        .unwrap_or(existing_contents)
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    if let Some(host) = settings.host.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "host", host);
+    }
+    if let Some(port) = settings.port {
+        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "port", &port.to_string());
+    }
+    if let Some(username) = settings.username.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "name", username);
+    }
+    if let Some(room) = settings.room.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "room", room);
+    }
+    if let Some(language) = settings.language.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "general", "language", language);
+    }
+
+    let mut output = lines.join("\n");
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if had_bom {
+        format!("\u{feff}{output}")
+    } else {
+        output
+    }
+}
+
+fn load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+-> anyhow::Result<Option<StoredClientSettingsMvp>> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| anyhow!("failed reading stored settings {}: {error}", path.display()))?;
+    Ok(Some(parse_syncplay_ini_stored_client_settings_mvp(
+        &contents,
+    )))
+}
+
+fn apply_stored_client_settings_mvp_if_env_absent(
+    config: &mut ClientLoopConfig,
+    settings: &StoredClientSettingsMvp,
+) {
+    if env_trimmed("SYNCPLAY_CLIENT_HOST").is_none()
+        && let Some(host) = settings.host.as_deref()
+        && !host.is_empty()
+    {
+        config.host = host.to_owned();
+    }
+    if env_port("SYNCPLAY_CLIENT_PORT").is_none()
+        && let Some(port) = settings.port
+    {
+        config.port = port;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_USERNAME").is_none()
+        && env_trimmed("SYNCPLAY_CLIENT_NAME").is_none()
+        && let Some(username) = settings.username.as_deref()
+        && !username.is_empty()
+    {
+        config.username = username.to_owned();
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_ROOM").is_none()
+        && let Some(room) = settings.room.as_deref()
+        && !room.is_empty()
+    {
+        let (normalized_room, normalized_password) =
+            normalize_controlled_room_input(room.to_owned());
+        config.room = normalized_room;
+        if config.controlled_room_password_override.is_none() {
+            config.controlled_room_password_override = normalized_password;
+        }
+    }
+}
+
+fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
+    config: &ClientLoopConfig,
+) -> anyhow::Result<()> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            anyhow!(
+                "failed creating stored settings directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let existing_contents = if path.is_file() {
+        std::fs::read_to_string(&path).map_err(|error| {
+            anyhow!("failed reading stored settings {}: {error}", path.display())
+        })?
+    } else {
+        String::new()
+    };
+    let settings = StoredClientSettingsMvp {
+        language: None,
+        host: Some(config.host.clone()),
+        port: Some(config.port),
+        username: Some(config.username.clone()),
+        room: Some(config.room.clone()),
+    };
+    let updated_contents =
+        upsert_syncplay_ini_stored_client_settings_mvp(&existing_contents, &settings);
+    std::fs::write(&path, updated_contents)
+        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+}
+
+fn persist_syncplay_cli_language_setting_legacy_compatible(language: &str) -> anyhow::Result<()> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            anyhow!(
+                "failed creating stored settings directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let existing_contents = if path.is_file() {
+        std::fs::read_to_string(&path).map_err(|error| {
+            anyhow!("failed reading stored settings {}: {error}", path.display())
+        })?
+    } else {
+        String::new()
+    };
+    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
+        &existing_contents,
+        &StoredClientSettingsMvp {
+            language: Some(language.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+    std::fs::write(&path, updated_contents)
+        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+}
+
+fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
+    path: &Path,
+) -> anyhow::Result<Vec<String>> {
+    if !path.is_file() {
+        eprintln!(
+            "warning: legacy --load-playlist-from-file skipped because file was not found: {}",
+            path.display()
+        );
+        return Ok(Vec::new());
+    }
+    let contents = std::fs::read_to_string(path)
+        .map_err(|error| anyhow!("failed reading playlist file {}: {error}", path.display()))?;
+    let files = contents.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let playlist_change_message = ProtocolMessage::set(
+        SetPayload::new().with_playlist_change(PlaylistChangePayload::new(files)),
+    );
+    let playlist_index_message =
+        ProtocolMessage::set(SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(0)));
+    Ok(vec![
+        encode_message_line(&playlist_change_message)?,
+        encode_message_line(&playlist_index_message)?,
+    ])
+}
+
+async fn emit_startup_playlist_load_from_file_legacy_compatible(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    playlist_path: &str,
+) -> anyhow::Result<bool> {
+    let lines = protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(Path::new(
+        playlist_path,
+    ))?;
+    if lines.is_empty() {
+        return Ok(false);
+    }
+    for line in &lines {
+        write_protocol_line(writer, line).await?;
+    }
+    Ok(true)
+}
+
 fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
     host_value: &str,
 ) -> (String, Option<u16>) {
@@ -358,8 +718,27 @@ where
             "-v" | "--version" => {
                 overrides.show_version = true;
             }
+            "-d" | "--debug" => {
+                overrides.debug_requested = true;
+            }
+            "-g" | "--force-gui-prompt" => {
+                overrides.force_gui_prompt_requested = true;
+            }
+            "--clear-gui-data" => {
+                overrides.clear_gui_data_requested = true;
+            }
+            "--no-store" => {
+                overrides.no_store = true;
+            }
             "-psn" => {
                 let _ = iter.next();
+            }
+            "--language" => {
+                overrides.language = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            "--load-playlist-from-file" => {
+                overrides.load_playlist_from_file =
+                    take_next_non_flag_arg_legacy_compatible(&mut iter);
             }
             "--no-gui" => {
                 overrides.connect_requested = true;
@@ -409,6 +788,12 @@ fn print_legacy_client_help() {
         "  -n, --name <username>",
         "  -r, --room [room]",
         "  -p, --password [password]",
+        "  -d, --debug",
+        "  -g, --force-gui-prompt",
+        "  --language <language>",
+        "  --clear-gui-data",
+        "  --load-playlist-from-file <path>",
+        "  --no-store",
         "  -v, --version",
         "  -h, --help",
         "",
@@ -500,6 +885,25 @@ fn apply_legacy_client_arg_overrides(
         if !password.is_empty() {
             config.controlled_room_password_override = Some(password.to_owned());
         }
+    }
+}
+
+fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOverrides) {
+    if overrides.debug_requested {
+        eprintln!(
+            "warning: legacy --debug is accepted for compatibility but ignored by syncplay-cli"
+        );
+    }
+    if overrides.force_gui_prompt_requested {
+        eprintln!("warning: legacy --force-gui-prompt is GUI-only and is ignored by syncplay-cli");
+    }
+    if overrides.clear_gui_data_requested {
+        eprintln!("warning: legacy --clear-gui-data is GUI-only and is ignored by syncplay-cli");
+    }
+    if overrides.language.is_some() {
+        eprintln!(
+            "warning: legacy --language is accepted for config compatibility, but syncplay-cli runtime localization is not implemented yet"
+        );
     }
 }
 
@@ -2923,7 +3327,37 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
+    let mut no_playlist = None;
+    let exit = run_connected_client_session_with_legacy_startup_overrides(
+        stream,
+        runtime,
+        config,
+        chat_message_on_connect,
+        &mut no_playlist,
+        local_input_rx,
+        notification_sink,
+        file_difference_sink,
+    )
+    .await?;
+    Ok(exit)
+}
+
+async fn run_connected_client_session_with_legacy_startup_overrides<F, G>(
+    stream: TcpStream,
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    config: &ClientLoopConfig,
+    chat_message_on_connect: Option<&str>,
+    startup_playlist_file_on_connect: &mut Option<String>,
+    local_input_rx: Option<&mut UnboundedReceiver<String>>,
+    notification_sink: &mut F,
+    file_difference_sink: &mut G,
+) -> anyhow::Result<ConnectedSessionExit>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
     let mut local_input_rx = local_input_rx;
+    let startup_playlist_file_on_connect = startup_playlist_file_on_connect;
     let log_player_telemetry = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY");
     let log_player_drift = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS");
     let reconnect_correction_diagnostics_format =
@@ -2985,6 +3419,13 @@ where
                         runtime.run_reconnect_state_restore_validation_if_needed()?;
                         publish_pending_local_file_updates(runtime, config)?;
                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                        if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
+                            let _ = emit_startup_playlist_load_from_file_legacy_compatible(
+                                &mut writer,
+                                &playlist_path,
+                            )
+                            .await?;
+                        }
                         if log_player_telemetry || log_player_drift {
                             flush_player_playback_telemetry_diagnostics(
                                 runtime,
@@ -3224,10 +3665,18 @@ async fn run_reconnect_backoff(
 }
 
 async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
+    run_client_network_loop_with_legacy_startup_overrides(config, None).await
+}
+
+async fn run_client_network_loop_with_legacy_startup_overrides(
+    config: &ClientLoopConfig,
+    startup_playlist_file_on_connect: Option<&str>,
+) -> anyhow::Result<()> {
     let (mut runtime, _managed_mpv_process_guard) =
         create_client_runtime_with_managed_mpv_support(config)?;
     let mut local_input_rx = spawn_local_input_receiver_if_enabled();
     let chat_message_on_connect = env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE");
+    let mut startup_playlist_file_on_connect = startup_playlist_file_on_connect.map(str::to_owned);
     let mut notification_sink = emit_autoplay_countdown_notification;
     let mut file_difference_sink = emit_file_difference_notification;
     let endpoint = format!("{}:{}", config.host, config.port);
@@ -3238,11 +3687,12 @@ async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()
         match TcpStream::connect(&endpoint).await {
             Ok(stream) => {
                 retries = 0;
-                match run_connected_client_session(
+                match run_connected_client_session_with_legacy_startup_overrides(
                     stream,
                     &mut runtime,
                     config,
                     chat_message_on_connect.as_deref(),
+                    &mut startup_playlist_file_on_connect,
                     local_input_rx.as_mut(),
                     &mut notification_sink,
                     &mut file_difference_sink,
@@ -3321,10 +3771,35 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("error: unrecognized arguments: {unknown_options}");
         return Err(anyhow!("unrecognized arguments"));
     }
+    if let Some(language) = client_arg_overrides.language.as_deref()
+        && !client_arg_overrides.no_store
+        && let Err(error) = persist_syncplay_cli_language_setting_legacy_compatible(language)
+    {
+        eprintln!("warning: failed to persist legacy --language setting: {error}");
+    }
+    emit_legacy_client_arg_compatibility_warnings(&client_arg_overrides);
     if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
         let mut config = build_client_loop_config_from_env();
+        match load_syncplay_cli_stored_settings_mvp_legacy_compatible() {
+            Ok(Some(stored_settings)) => {
+                apply_stored_client_settings_mvp_if_env_absent(&mut config, &stored_settings);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("warning: failed to load stored Syncplay settings: {error}");
+            }
+        }
         apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
-        run_client_network_loop(&config).await?;
+        if !client_arg_overrides.no_store
+            && let Err(error) = persist_syncplay_cli_stored_settings_mvp_legacy_compatible(&config)
+        {
+            eprintln!("warning: failed to persist stored Syncplay settings: {error}");
+        }
+        run_client_network_loop_with_legacy_startup_overrides(
+            &config,
+            client_arg_overrides.load_playlist_from_file.as_deref(),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -3347,10 +3822,11 @@ mod tests {
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
         ConnectedSessionExit, LegacyClientArgOverrides, LocalInputCommand, LocalOffsetCommand,
         ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
-        ReconnectCorrectionDiagnosticsState, apply_chat_policy_overrides,
+        ReconnectCorrectionDiagnosticsState, StoredClientSettingsMvp, apply_chat_policy_overrides,
         apply_client_behavior_overrides, apply_legacy_client_arg_overrides,
-        apply_readiness_autoplay_overrides, chat_notification_message,
-        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
+        apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
+        chat_notification_message, controlled_room_base_name_legacy_compatible,
+        controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         create_client_runtime_with_managed_mpv_support, flush_autoplay_notifications_to_sink,
         flush_chat_notifications_to_sink, flush_controller_auth_notifications_to_sink,
@@ -3358,6 +3834,7 @@ mod tests {
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
         format_file_difference_summary, generate_room_password_legacy_compatible,
+        load_syncplay_cli_stored_settings_mvp_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, managed_mpv_launch_env_config_from_env,
         normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
@@ -3367,8 +3844,12 @@ mod tests {
         parse_legacy_client_arg_overrides, parse_local_input_chat_message,
         parse_local_input_command,
         parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
-        parse_unpause_action_mode_legacy_compatible, player_playback_telemetry_update_message,
-        playlist_index_in_bounds_legacy_compatible, playlist_listing_message_legacy_compatible,
+        parse_syncplay_ini_stored_client_settings_mvp, parse_unpause_action_mode_legacy_compatible,
+        persist_syncplay_cli_language_setting_legacy_compatible,
+        persist_syncplay_cli_stored_settings_mvp_legacy_compatible,
+        player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
+        playlist_listing_message_legacy_compatible,
+        protocol_lines_for_startup_playlist_load_from_file_legacy_compatible,
         reconnect_correction_diagnostics_alert_thresholds_from_env,
         reconnect_correction_diagnostics_format_from_env,
         reconnect_correction_metrics_delta_alert_lines,
@@ -3376,12 +3857,15 @@ mod tests {
         reconnect_correction_state_snapshot_json_line, reconnect_correction_state_snapshot_message,
         reconnect_correction_state_threshold_alert_lines,
         reconnect_transition_notification_message, run_client_network_loop,
-        run_connected_client_session, run_local_playlist_delete_index_legacy_compatible,
+        run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
+        run_local_playlist_delete_index_legacy_compatible,
         run_local_playlist_select_index_legacy_compatible,
-        user_change_notification_hidden_from_osd, user_change_notification_message,
+        upsert_syncplay_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
+        user_change_notification_message,
     };
     use serde_json::{Value, json};
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use std::time::Duration;
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
@@ -3396,6 +3880,8 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc::unbounded_channel;
+
+    static STORED_SETTINGS_CONFIG_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn ignore_autoplay_notification(
         _notification: &AutoplayCountdownNotification,
@@ -3473,6 +3959,14 @@ mod tests {
         }
     }
 
+    fn test_client_loop_config_with_addr(addr: std::net::SocketAddr) -> ClientLoopConfig {
+        ClientLoopConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            ..test_client_loop_config()
+        }
+    }
+
     fn cli_smoke_repo_root() -> PathBuf {
         let cwd = std::env::current_dir().expect("current dir should be readable");
         for ancestor in cwd.ancestors().take(8) {
@@ -3541,6 +4035,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: Some("example.org".to_owned()),
                 port: Some(12345),
                 username: Some("alice".to_owned()),
@@ -3562,6 +4062,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: Some("[::1]".to_owned()),
                 port: None,
                 username: Some("alice".to_owned()),
@@ -3581,6 +4087,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: false,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: None,
                 port: None,
                 username: None,
@@ -3609,6 +4121,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: None,
                 port: None,
                 username: None,
@@ -3628,6 +4146,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: None,
                 port: None,
                 username: None,
@@ -3647,6 +4171,12 @@ mod tests {
             overrides,
             LegacyClientArgOverrides {
                 connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                load_playlist_from_file: None,
                 host: None,
                 port: None,
                 username: None,
@@ -3660,10 +4190,395 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_client_arg_overrides_parses_no_store_flag() {
+        let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--no-store"]);
+        assert!(overrides.connect_requested);
+        assert!(overrides.no_store);
+        assert!(overrides.unknown_options.is_empty());
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_parses_legacy_compatibility_flags_without_error() {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--debug",
+            "--force-gui-prompt",
+            "--clear-gui-data",
+            "--language",
+            "fr",
+            "--load-playlist-from-file",
+            "playlist.txt",
+        ]);
+        assert!(overrides.debug_requested);
+        assert!(overrides.force_gui_prompt_requested);
+        assert!(overrides.clear_gui_data_requested);
+        assert_eq!(overrides.language.as_deref(), Some("fr"));
+        assert_eq!(
+            overrides.load_playlist_from_file.as_deref(),
+            Some("playlist.txt")
+        );
+        assert!(overrides.unknown_options.is_empty());
+        assert!(!overrides.should_connect_client());
+    }
+
+    #[test]
+    fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
+        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\n";
+        let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
+        assert_eq!(
+            settings,
+            StoredClientSettingsMvp {
+                language: Some("de".to_owned()),
+                host: Some("example.org".to_owned()),
+                port: Some(12345),
+                username: Some("Alice%20".to_owned()),
+                room: Some("room-1".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn upsert_syncplay_ini_stored_client_settings_mvp_preserves_unrelated_entries() {
+        let existing =
+            "[general]\nlanguage = en\n\n[client_settings]\nroom = old-room\npublicservers = []\n";
+        let updated = upsert_syncplay_ini_stored_client_settings_mvp(
+            existing,
+            &StoredClientSettingsMvp {
+                language: None,
+                host: Some("example.org".to_owned()),
+                port: Some(8999),
+                username: Some("alice".to_owned()),
+                room: Some("new-room".to_owned()),
+            },
+        );
+
+        assert!(updated.contains("[general]\nlanguage = en\n"));
+        assert!(updated.contains("[server_data]\nhost = example.org\nport = 8999\n"));
+        assert!(updated.contains("[client_settings]"));
+        assert!(updated.contains("room = new-room\n"));
+        assert!(updated.contains("publicservers = []\n"));
+        assert!(updated.contains("name = alice\n"));
+        assert!(!updated.contains("room = old-room"));
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_host = "SYNCPLAY_CLIENT_HOST";
+        let key_name = "SYNCPLAY_CLIENT_NAME";
+        let prior_host = std::env::var_os(key_host);
+        let prior_name = std::env::var_os(key_name);
+        unsafe {
+            std::env::set_var(key_host, "env.example");
+            std::env::set_var(key_name, "env-user");
+        }
+
+        let mut config = test_client_loop_config();
+        let original_host = config.host.clone();
+        let original_username = config.username.clone();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                language: Some("de".to_owned()),
+                host: Some("stored.example".to_owned()),
+                port: Some(4321),
+                username: Some("stored-user".to_owned()),
+                room: Some("stored-room".to_owned()),
+            },
+        );
+
+        assert_eq!(config.host, original_host);
+        assert_eq!(config.username, original_username);
+        assert_eq!(config.port, 4321);
+        assert_eq!(config.room, "stored-room");
+
+        match prior_host {
+            Some(value) => unsafe { std::env::set_var(key_host, value) },
+            None => unsafe { std::env::remove_var(key_host) },
+        }
+        match prior_name {
+            Some(value) => unsafe { std::env::set_var(key_name, value) },
+            None => unsafe { std::env::remove_var(key_name) },
+        }
+    }
+
+    #[test]
+    fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override_path() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncplay-cli-config-test-{unique_suffix}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+
+        let seed_contents = "[general]\nlanguage = en\n";
+        std::fs::write(&config_path, seed_contents).expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        let config = ClientLoopConfig {
+            host: "stored.example".to_owned(),
+            port: 1234,
+            username: "stored-user".to_owned(),
+            room: "stored-room".to_owned(),
+            ..test_client_loop_config()
+        };
+        persist_syncplay_cli_stored_settings_mvp_legacy_compatible(&config)
+            .expect("persisted settings should succeed");
+
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        assert_eq!(
+            loaded,
+            StoredClientSettingsMvp {
+                language: Some("en".to_owned()),
+                host: Some("stored.example".to_owned()),
+                port: Some(1234),
+                username: Some("stored-user".to_owned()),
+                room: Some("stored-room".to_owned()),
+            }
+        );
+
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains("[general]\nlanguage = en\n"));
+        assert!(written_contents.contains("[server_data]\nhost = stored.example\nport = 1234\n"));
+        assert!(written_contents.contains("[client_settings]"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn persist_syncplay_cli_language_setting_legacy_compatible_updates_general_language() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncplay-cli-config-language-test-{unique_suffix}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(&config_path, "[general]\nlanguage = en\n")
+            .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_language_setting_legacy_compatible("fr")
+            .expect("language setting should persist");
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        assert_eq!(loaded.language.as_deref(), Some("fr"));
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains("[general]\nlanguage = fr\n"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible_emits_playlist_change_then_index()
+     {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncplay-cli-playlist-load-test-{unique_suffix}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let playlist_path = temp_dir.join("startup-playlist.txt");
+        std::fs::write(&playlist_path, "episode1.mkv\nepisode2.mkv\n")
+            .expect("playlist file should write");
+
+        let lines = protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
+            playlist_path.as_path(),
+        )
+        .expect("playlist file should load");
+        assert_eq!(lines.len(), 2);
+
+        let first = decode_message_line(&lines[0]).expect("playlist change line should decode");
+        let second = decode_message_line(&lines[1]).expect("playlist index line should decode");
+        let ProtocolMessage::Set(first_set) = first else {
+            panic!("first startup playlist line should be Set");
+        };
+        let ProtocolMessage::Set(second_set) = second else {
+            panic!("second startup playlist line should be Set");
+        };
+        let playlist_change = first_set
+            .set
+            .playlist_change
+            .expect("first set should contain playlistChange");
+        assert_eq!(
+            playlist_change.files,
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
+        );
+        assert!(
+            first_set.set.playlist_index.is_none(),
+            "playlistChange message should not also contain playlistIndex"
+        );
+        let playlist_index = second_set
+            .set
+            .playlist_index
+            .expect("second set should contain playlistIndex");
+        assert_eq!(playlist_index.index, 0);
+        assert!(
+            second_set.set.playlist_change.is_none(),
+            "playlistIndex message should not also contain playlistChange"
+        );
+
+        let _ = std::fs::remove_file(&playlist_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_server_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-startup-playlist-session-{unique_suffix}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let playlist_path = temp_dir.join("startup-playlist.txt");
+        std::fs::write(&playlist_path, "episode1.mkv\nepisode2.mkv\n")
+            .expect("playlist file should write");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(hello_line.contains("\"Hello\""));
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.2.255","features":{"sharedPlaylists":true}}}
+"#,
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let mut saw_playlist_change = None;
+            let mut saw_playlist_index = None;
+            for _ in 0..6 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("client line should not timeout")
+                    .expect("client line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(set_payload) = message else {
+                    continue;
+                };
+                if let Some(change) = set_payload.set.playlist_change {
+                    saw_playlist_change = Some(change.files);
+                }
+                if let Some(index) = set_payload.set.playlist_index {
+                    saw_playlist_index = Some(index.index);
+                }
+                if saw_playlist_change.is_some() && saw_playlist_index.is_some() {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                saw_playlist_change,
+                Some(vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()])
+            );
+            assert_eq!(saw_playlist_index, Some(0));
+        });
+
+        let config = test_client_loop_config_with_addr(addr);
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+        let mut startup_playlist = Some(playlist_path.to_string_lossy().into_owned());
+
+        let exit = run_connected_client_session_with_legacy_startup_overrides(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            &mut startup_playlist,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "session should either observe peer close or runtime window exit"
+        );
+        assert!(
+            startup_playlist.is_none(),
+            "startup playlist flag should be consumed after server hello"
+        );
+        server_task.await.expect("server task should join");
+
+        let _ = std::fs::remove_file(&playlist_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
     fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
         let mut config = test_client_loop_config();
         let overrides = LegacyClientArgOverrides {
             connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            load_playlist_from_file: None,
             host: Some("legacy.example".to_owned()),
             port: Some(3210),
             username: Some("legacy-user".to_owned()),
@@ -3691,6 +4606,12 @@ mod tests {
         let mut config = test_client_loop_config();
         let overrides = LegacyClientArgOverrides {
             connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            load_playlist_from_file: None,
             host: None,
             port: None,
             username: None,
