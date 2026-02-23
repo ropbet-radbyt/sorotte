@@ -6897,6 +6897,298 @@ mod tests {
     }
 
     #[test]
+    fn reset_sync_state_for_reconnect_resets_desync_transient_state_before_post_reconnect_evaluation()
+     {
+        let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+        let pre_reset_behind_detection =
+            session.runtime_actions_for_desync_correction(0.0, 0.0, false, false, true);
+        assert_eq!(
+            pre_reset_behind_detection,
+            Vec::<ClientRuntimeAction>::new(),
+            "initial behind detection should only start the fastforward timer pre-reconnect"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(0.0),
+            "precondition: reconnect reset test should prime fastforward detection timer"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "reconnect reset should clear fastforward detection timer state"
+        );
+        assert!(
+            !session.speed_changed,
+            "reconnect reset should clear slowdown state"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect remote state should apply");
+        let post_reconnect_behind_detection =
+            session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
+        assert_eq!(
+            post_reconnect_behind_detection,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect behind detection should restart fresh instead of using stale pre-reconnect timer state"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(4.0),
+            "post-reconnect fastforward timer should start from the new evaluation time"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect ahead-state update should apply");
+        let post_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(5.0, 2.0, true, false, true);
+        assert_eq!(
+            post_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "post-reconnect desync evaluation should be able to re-enter slowdown from a cleared state"
+        );
+        assert!(
+            session.speed_changed,
+            "slowdown action should set speed_changed again after reconnect reset"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "second reconnect reset should clear any restarted fastforward timer state"
+        );
+        assert!(
+            !session.speed_changed,
+            "second reconnect reset should clear the re-primed slowdown state"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-second-reconnect ahead-state update should apply");
+        let second_post_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(6.0, 2.0, true, false, true);
+        assert_eq!(
+            second_post_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "cleared slowdown state should not suppress the first post-reconnect slowdown action"
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_prevents_stale_desync_speed_restore_after_pre_reconnect_slowdown()
+     {
+        let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+
+        let pre_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(0.0, 2.0, true, false, true);
+        assert_eq!(
+            pre_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "precondition: pre-reconnect desync evaluation should trigger slowdown"
+        );
+        assert!(
+            session.speed_changed,
+            "precondition: slowdown should mark speed_changed before reconnect reset"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert!(
+            !session.speed_changed,
+            "reconnect reset should clear slowdown state so restore-speed is not emitted from stale state"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect synced remote state should apply");
+        let post_reconnect_near_sync_actions =
+            session.runtime_actions_for_desync_correction(1.0, 0.05, true, false, true);
+        assert_eq!(
+            post_reconnect_near_sync_actions,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect near-sync evaluation should not emit stale restore-speed action if slowdown state was reset"
+        );
+        assert!(
+            !session.speed_changed,
+            "near-sync evaluation should keep slowdown state cleared when no slowdown is active post-reconnect"
+        );
+
+        let post_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(2.0, 2.0, true, false, true);
+        assert_eq!(
+            post_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "post-reconnect slowdown should still trigger normally from a fresh state"
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_prevents_stale_fastforward_after_pre_reconnect_behind_detection_and_post_reconnect_do_seek_transition()
+     {
+        let mut session = desync_session_with_remote_state(10.0, false, false, "bob");
+
+        let pre_reconnect_behind_detection =
+            session.runtime_actions_for_desync_correction(0.0, 0.0, false, false, true);
+        assert_eq!(
+            pre_reconnect_behind_detection,
+            Vec::<ClientRuntimeAction>::new(),
+            "precondition: pre-reconnect behind detection should only start fastforward timer"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(0.0),
+            "precondition: pre-reconnect behind timer should be primed before reconnect reset"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "reconnect reset should clear any pre-reconnect fastforward detection timer state"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"carol"}}}"#,
+            )
+            .expect("post-reconnect doSeek state should apply");
+        let do_seek_suppressed =
+            session.runtime_actions_for_desync_correction(4.0, 0.0, false, false, true);
+        assert_eq!(
+            do_seek_suppressed,
+            Vec::<ClientRuntimeAction>::new(),
+            "post-reconnect doSeek state should suppress desync correction"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds, None,
+            "doSeek suppression after reconnect should keep fastforward timer cleared"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"dave"}}}"#,
+            )
+            .expect("post-reconnect doSeek-clear state should apply");
+        let restarted_after_do_seek_clear =
+            session.runtime_actions_for_desync_correction(4.1, 0.0, false, false, true);
+        assert_eq!(
+            restarted_after_do_seek_clear,
+            Vec::<ClientRuntimeAction>::new(),
+            "after reconnect + doSeek clears, fastforward detection should restart fresh instead of using stale pre-reconnect timing"
+        );
+        assert_eq!(
+            session.behind_first_detected_at_seconds,
+            Some(4.1),
+            "post-reconnect fastforward timer should restart from doSeek-clear evaluation time"
+        );
+
+        let before_threshold =
+            session.runtime_actions_for_desync_correction(7.3, 0.0, false, false, true);
+        assert_eq!(
+            before_threshold,
+            Vec::<ClientRuntimeAction>::new(),
+            "restarted post-reconnect fastforward window should not trigger before threshold elapses"
+        );
+
+        let after_threshold =
+            session.runtime_actions_for_desync_correction(7.5, 0.0, false, false, true);
+        assert_eq!(
+            after_threshold,
+            vec![ClientRuntimeAction::SetPosition(10.25)],
+            "fastforward should trigger only after the restarted post-reconnect window elapses"
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_prevents_stale_speed_restore_when_post_reconnect_state_resumes_paused_then_unpauses()
+     {
+        let mut session = desync_session_with_remote_state(0.0, false, false, "bob");
+
+        let pre_reconnect_slowdown =
+            session.runtime_actions_for_desync_correction(0.0, 2.0, true, false, true);
+        assert_eq!(
+            pre_reconnect_slowdown,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "precondition: pre-reconnect desync evaluation should trigger slowdown"
+        );
+        assert!(
+            session.speed_changed,
+            "precondition: slowdown should mark speed_changed before reconnect reset"
+        );
+
+        session.reset_sync_state_for_reconnect();
+        assert!(
+            !session.speed_changed,
+            "reconnect reset should clear slowdown state before post-reconnect paused/unpaused evaluations"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect paused remote state should apply");
+
+        let paused_near_sync =
+            session.runtime_actions_for_desync_correction(1.0, 0.05, true, false, true);
+        assert_eq!(
+            paused_near_sync,
+            Vec::<ClientRuntimeAction>::new(),
+            "paused post-reconnect near-sync evaluation should not emit stale restore-speed action"
+        );
+        assert!(
+            !session.speed_changed,
+            "paused post-reconnect near-sync evaluation should keep slowdown state cleared"
+        );
+
+        let paused_ahead =
+            session.runtime_actions_for_desync_correction(1.5, 2.0, true, false, true);
+        assert_eq!(
+            paused_ahead,
+            Vec::<ClientRuntimeAction>::new(),
+            "paused post-reconnect desync evaluation should not emit slowdown while room is paused"
+        );
+        assert!(
+            !session.speed_changed,
+            "paused post-reconnect desync evaluation should not re-prime slowdown state"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-reconnect unpaused remote state should apply");
+
+        let unpaused_near_sync =
+            session.runtime_actions_for_desync_correction(2.0, 0.05, true, false, true);
+        assert_eq!(
+            unpaused_near_sync,
+            Vec::<ClientRuntimeAction>::new(),
+            "unpaused post-reconnect near-sync evaluation should still not emit stale restore-speed action"
+        );
+        assert!(
+            !session.speed_changed,
+            "unpaused near-sync evaluation should keep slowdown state cleared until a real slowdown trigger"
+        );
+
+        let unpaused_ahead =
+            session.runtime_actions_for_desync_correction(3.0, 2.0, true, false, true);
+        assert_eq!(
+            unpaused_ahead,
+            vec![ClientRuntimeAction::SetPlaybackRate(0.95)],
+            "after unpause, post-reconnect desync slowdown should trigger normally from a fresh state"
+        );
+    }
+
+    #[test]
     fn reconnect_retry_policy_uses_legacy_exponential_backoff_with_cap() {
         let mut session = ClientSession::default();
 
@@ -9367,6 +9659,360 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_reconnect_notify_only_policy_keeps_retry_and_recovery_notifications_suppressed_across_cycles()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_max_attempts = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_retry_cooldown_ticks = 1;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("notify-only validation should emit mismatch without correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                },
+            ],
+            "notify-only policy should emit only mismatch details (no retry scheduling)"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "notify-only validation should complete in one tick"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            0,
+            "notify-only policy should not activate recovery cooldown state"
+        );
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "notify-only policy should not attempt corrective seeks even if correction would fail"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("repeated no-op tick should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op validation ticks should not synthesize retry/recovery notifications in notify-only mode"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("notify-only should stay mismatch-only across reconnect validation cycles");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 125.0,
+                    room_position: 130.0,
+                    position_diff_seconds: 5.0,
+                },
+            ],
+            "notify-only policy should remain mismatch-only on later reconnect validation cycles"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "notify-only validation should clear pending state on later cycles too"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            0,
+            "notify-only policy should keep recovery cooldown disabled across cycles"
+        );
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "notify-only policy should not perform corrective seeks on later cycles"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("post-cycle no-op tick should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "notify-only policy should not emit retry/recovery notifications on repeated no-op ticks across cycles"
+        );
+    }
+
+    #[test]
+    fn client_runtime_reconnect_disable_after_n_mismatches_notifications_follow_sequence_without_noop_duplicates()
+     {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_policy_mode_override =
+            Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches);
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_disable_after_mismatch_cycles = 2;
+        session
+            .behavior_config_mut()
+            .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles = 1;
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.reconnect_state_restore_validation_pending = true;
+        session.local_paused = Some(true);
+        session.local_position = Some(117.5);
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("first mismatch cycle should auto-correct before disable threshold");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 117.5,
+                    room_position: 120.0,
+                    position_diff_seconds: 2.5,
+                }
+            ],
+            "first mismatch cycle should emit mismatch details only"
+        );
+        assert_eq!(runtime.player().position, Some(120.0));
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "first cycle should complete validation after correction"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("no-op tick after first cycle should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op tick after first cycle should not duplicate mismatch notifications"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(130.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(125.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("threshold-reaching cycle should disable correction");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                consecutive_mismatch_cycles: 2,
+                disable_after_mismatch_cycles: 2,
+            }],
+            "threshold cycle should emit only disable-after-repeated-mismatches notification"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "disable threshold cycle should not issue a corrective seek"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "threshold cycle should clear pending validation"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles_remaining,
+            1,
+            "disable threshold cycle should activate recovery cooldown"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("no-op tick after disable notification should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op tick after disable notification should not duplicate notifications"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(140.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(135.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("recovery cooldown cycle should suppress correction once");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 135.0,
+                    room_position: 140.0,
+                    position_diff_seconds: 5.0,
+                },
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                    remaining_reconnect_cycles_after_this_cycle: 0,
+                },
+            ],
+            "suppressed recovery cycle should emit mismatch then recovery-cooldown-suppressed"
+        );
+        assert_eq!(
+            runtime.player().position,
+            Some(120.0),
+            "suppressed recovery cycle should not issue a corrective seek"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "suppressed recovery cycle should clear pending validation"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("no-op tick after suppressed recovery cycle should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op tick after suppressed recovery cycle should not duplicate suppression notifications"
+        );
+
+        runtime.session_mut().room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(150.0),
+                paused: Some(true),
+                ..RoomPlaystateView::default()
+            },
+        );
+        runtime.session_mut().local_paused = Some(true);
+        runtime.session_mut().local_position = Some(145.0);
+        runtime
+            .session_mut()
+            .reconnect_state_restore_validation_pending = true;
+        runtime
+            .session_mut()
+            .begin_reconnect_state_restore_validation_cycle();
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("re-enabled cycle should resume correction after cooldown");
+        assert_eq!(
+            runtime.drain_reconnect_notifications(),
+            vec![
+                ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: true,
+                    room_paused: true,
+                    local_position: 145.0,
+                    room_position: 150.0,
+                    position_diff_seconds: 5.0,
+                },
+            ],
+            "re-enabled cycle should emit recovery-cooldown-reenabled before mismatch details"
+        );
+        assert_eq!(runtime.player().position, Some(150.0));
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "re-enabled correction cycle should clear pending validation"
+        );
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("no-op tick after re-enabled cycle should remain silent");
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "no-op tick after re-enabled cycle should not duplicate reenabled or mismatch notifications"
+        );
+    }
+
+    #[test]
     fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification_and_corrects()
     {
         let mut session = ClientSession::default();
@@ -11528,6 +12174,118 @@ mod tests {
                 .is_empty(),
             "chat notification actions should be fully drained after dispatch"
         );
+    }
+
+    #[test]
+    fn client_runtime_interleaved_user_change_and_chat_notifications_preserve_order_with_independent_drains()
+     {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"controller":true}}}}"#,
+            )
+            .expect("initial bob join should apply");
+        let _ = session.runtime_actions_for_user_change_notifications_if_needed();
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"controller":true}}}}"#,
+            )
+            .expect("bob room switch should apply");
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Chat":{"username":"bob","message":"moved to room2"}}"#)
+            .expect("bob chat after room switch should apply");
+
+        runtime
+            .run_user_change_notifications_if_needed()
+            .expect("user change notifications should dispatch");
+        assert_eq!(
+            runtime.drain_user_change_notifications(),
+            vec![UserChangeNotification::Joined {
+                username: "bob".to_owned(),
+                room: "room2".to_owned(),
+                hide_from_osd: false,
+            }],
+            "room-switch notification should preserve user-change ordering before chat dispatch in first batch"
+        );
+        assert!(
+            runtime.control().chat_notifications().is_empty(),
+            "dispatching user-change notifications should not implicitly dispatch chat notifications"
+        );
+
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("chat notifications should dispatch");
+        assert_eq!(
+            runtime.drain_chat_notifications(),
+            vec![ChatNotification::Message {
+                username: Some("bob".to_owned()),
+                message: "moved to room2".to_owned(),
+            }],
+            "chat notification should remain pending until chat dispatch runs"
+        );
+        assert!(runtime.drain_user_change_notifications().is_empty());
+        assert!(runtime.drain_chat_notifications().is_empty());
+
+        runtime
+            .session_mut()
+            .apply_message_json(r#"{"Chat":{"username":"bob","message":"still in room2"}}"#)
+            .expect("second bob chat should apply");
+        runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"controller":true}}}}"#,
+            )
+            .expect("bob room switch back should apply");
+
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("chat notifications should dispatch first in second batch");
+        assert_eq!(
+            runtime.drain_chat_notifications(),
+            vec![ChatNotification::Message {
+                username: Some("bob".to_owned()),
+                message: "still in room2".to_owned(),
+            }],
+            "chat queue should preserve arrival order when dispatched before user-change notifications"
+        );
+        assert!(
+            runtime.control().user_change_notifications().is_empty(),
+            "dispatching chat notifications should not implicitly dispatch user-change notifications"
+        );
+
+        runtime
+            .run_user_change_notifications_if_needed()
+            .expect("user change notifications should dispatch after chat in second batch");
+        assert_eq!(
+            runtime.drain_user_change_notifications(),
+            vec![UserChangeNotification::Joined {
+                username: "bob".to_owned(),
+                room: "room1".to_owned(),
+                hide_from_osd: false,
+            }],
+            "user-change queue should preserve the room-switch notification independently of chat drain order"
+        );
+
+        runtime
+            .run_chat_notifications_if_needed()
+            .expect("repeated chat dispatch should be a no-op after drains");
+        runtime
+            .run_user_change_notifications_if_needed()
+            .expect("repeated user-change dispatch should be a no-op after drains");
+        assert!(runtime.drain_chat_notifications().is_empty());
+        assert!(runtime.drain_user_change_notifications().is_empty());
     }
 
     #[test]
