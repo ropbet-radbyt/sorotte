@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,7 +18,8 @@ use syncplay_client_core::{
 use syncplay_player_api::{PlayerAdapter, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{
-    PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload, encode_message_line,
+    HelloPayload, PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload,
+    decode_message_line, encode_message_line,
 };
 use syncplay_server::ServerApp;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -39,6 +41,7 @@ static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
 struct ClientLoopConfig {
     host: String,
     port: u16,
+    server_password: Option<String>,
     username: String,
     room: String,
     version: String,
@@ -50,6 +53,8 @@ struct ClientLoopConfig {
     recently_advanced_override: Option<bool>,
     autoplay_enabled: bool,
     autoplay_require_same_filenames: bool,
+    ready_at_start_override: Option<bool>,
+    shared_playlists_enabled_override: Option<bool>,
     pause_on_leave_override: Option<bool>,
     loop_at_end_of_playlist_override: Option<bool>,
     loop_single_files_override: Option<bool>,
@@ -204,13 +209,13 @@ fn legacy_configuration_getter_startup_compat_entries()
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "file",
-            status: Deferred,
-            note: "used for managed mpv preload, unmanaged external launch, and explicit-mpv-IPC startup open-file (partial semantics)",
+            status: Supported,
+            note: "startup parsing and routing supported across managed mpv, unmanaged external launch, and explicit-mpv-IPC open-file; non-startup side effects (GUI/relative-config) are tracked separately",
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "--clear-gui-data",
-            status: Ignored,
-            note: "GUI/QSettings-only flag; accepted with compatibility warning",
+            status: Deferred,
+            note: "clears syncplay.ini stored settings in syncplay-cli; GUI QSettings clearing remains unimplemented",
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "--version",
@@ -247,8 +252,8 @@ fn legacy_configuration_getter_ini_compat_entries()
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "server_data.password",
-            status: Deferred,
-            note: "server-password auth semantics are not yet mapped in syncplay-cli config loading",
+            status: Supported,
+            note: "loaded from syncplay.ini/env into outbound client Hello password field (parse/upsert preservation also supported)",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.name",
@@ -269,6 +274,16 @@ fn legacy_configuration_getter_ini_compat_entries()
             key: "client_settings.autoplayRequireSameFilenames",
             status: Supported,
             note: "loaded/persisted into readiness autoplay config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.readyAtStart",
+            status: Supported,
+            note: "loaded/persisted into connect-time readiness auto-ready behavior",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.sharedPlaylistEnabled",
+            status: Supported,
+            note: "loaded/persisted into CLI shared-playlist feature advertisement and outbound playlist action gating (GUI playlist UX semantics remain out of scope)",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.pauseOnLeave",
@@ -307,18 +322,18 @@ fn legacy_configuration_getter_ini_compat_entries()
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.playerPath",
-            status: Deferred,
-            note: "startup flag semantics exist; config-field loading/persisting still deferred",
+            status: Supported,
+            note: "loaded/persisted into legacy player startup path default (managed/unmanaged startup semantics remain partial)",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.perPlayerArguments",
-            status: Deferred,
-            note: "player-arg config loading/persisting still deferred (startup `_args` partial only)",
+            status: Supported,
+            note: "Python-serialized dict is loaded/persisted for startup player-arg defaults keyed by playerPath (startup runtime semantics remain partial)",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.roomList",
-            status: Ignored,
-            note: "GUI/history list behavior not implemented in syncplay-cli",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI/history room-list behavior is not implemented in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}",
@@ -337,8 +352,8 @@ fn legacy_configuration_getter_ini_compat_entries()
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{mediaSearchDirectories,publicServers}",
-            status: Ignored,
-            note: "GUI/file-discovery/server-browser state is out of scope for syncplay-cli",
+            status: Deferred,
+            note: "syncplay.ini parse/upsert preservation supported; GUI file-discovery and server-browser runtime behavior is not implemented in syncplay-cli",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{onlySwitchToTrustedDomains,trustedDomains}",
@@ -485,10 +500,18 @@ struct StoredClientSettingsMvp {
     language: Option<String>,
     host: Option<String>,
     port: Option<u16>,
+    server_password: Option<String>,
     username: Option<String>,
     room: Option<String>,
+    room_list: Option<Vec<String>>,
+    player_path: Option<String>,
+    per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
+    media_search_directories: Option<Vec<String>>,
+    public_servers: Option<Vec<(String, String)>>,
     autoplay_initial_state: Option<bool>,
     autoplay_require_same_filenames: Option<bool>,
+    ready_at_start: Option<bool>,
+    shared_playlist_enabled: Option<bool>,
     pause_on_leave: Option<bool>,
     loop_at_end_of_playlist: Option<bool>,
     loop_single_files: Option<bool>,
@@ -699,11 +722,37 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                         settings.port = Some(port);
                     }
                 }
+                "password" if !value.is_empty() => settings.server_password = Some(value),
                 _ => {}
             },
             Some("client_settings") => match key.as_str() {
                 "name" if !value.is_empty() => settings.username = Some(value),
                 "room" if !value.is_empty() => settings.room = Some(value),
+                "roomlist" => {
+                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
+                        settings.room_list = Some(parsed);
+                    }
+                }
+                "playerpath" if !value.is_empty() => settings.player_path = Some(value),
+                "perplayerarguments" => {
+                    if let Some(parsed) =
+                        parse_serialized_per_player_arguments_map_legacy_compatible(&value)
+                    {
+                        settings.per_player_arguments = Some(parsed);
+                    }
+                }
+                "mediasearchdirectories" => {
+                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
+                        settings.media_search_directories = Some(parsed);
+                    }
+                }
+                "publicservers" => {
+                    if let Some(parsed) =
+                        parse_serialized_public_servers_list_legacy_compatible(&value)
+                    {
+                        settings.public_servers = Some(parsed);
+                    }
+                }
                 "autoplayinitialstate" => {
                     if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
                         settings.autoplay_initial_state = Some(parsed);
@@ -712,6 +761,16 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
                 "autoplayrequiresamefilenames" => {
                     if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
                         settings.autoplay_require_same_filenames = Some(parsed);
+                    }
+                }
+                "readyatstart" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.ready_at_start = Some(parsed);
+                    }
+                }
+                "sharedplaylistenabled" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.shared_playlist_enabled = Some(parsed);
                     }
                 }
                 "pauseonleave" => {
@@ -887,6 +946,261 @@ fn format_serialized_string_list_legacy_compatible(values: &[String]) -> String 
     format!("[{rendered}]")
 }
 
+fn format_serialized_python_string_legacy_compatible(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
+}
+
+fn skip_serialized_python_whitespace_cursor_legacy_compatible(input: &str, index: &mut usize) {
+    while let Some(ch) = input.get(*index..).and_then(|rest| rest.chars().next()) {
+        if !ch.is_whitespace() {
+            break;
+        }
+        *index += ch.len_utf8();
+    }
+}
+
+fn parse_serialized_python_string_cursor_legacy_compatible(
+    input: &str,
+    index: &mut usize,
+) -> Option<String> {
+    let quote = input.get(*index..).and_then(|rest| rest.chars().next())?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    *index += quote.len_utf8();
+
+    let mut parsed = String::new();
+    while let Some(ch) = input.get(*index..).and_then(|rest| rest.chars().next()) {
+        *index += ch.len_utf8();
+        if ch == quote {
+            return Some(parsed);
+        }
+        if ch == '\\' {
+            let escaped = input.get(*index..).and_then(|rest| rest.chars().next())?;
+            *index += escaped.len_utf8();
+            match escaped {
+                '\\' => parsed.push('\\'),
+                '\'' => parsed.push('\''),
+                '"' => parsed.push('"'),
+                'n' => parsed.push('\n'),
+                'r' => parsed.push('\r'),
+                't' => parsed.push('\t'),
+                other => parsed.push(other),
+            }
+            continue;
+        }
+        parsed.push(ch);
+    }
+    None
+}
+
+fn parse_serialized_python_string_list_cursor_legacy_compatible(
+    input: &str,
+    index: &mut usize,
+) -> Option<Vec<String>> {
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    let ch = input.get(*index..).and_then(|rest| rest.chars().next())?;
+    if ch != '[' {
+        return None;
+    }
+    *index += 1;
+    let mut values = Vec::new();
+    loop {
+        skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+        let Some(next) = input.get(*index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if next == ']' {
+            *index += 1;
+            return Some(values);
+        }
+        let value = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
+        values.push(value);
+        skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+        let Some(delim) = input.get(*index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if delim == ',' {
+            *index += 1;
+            continue;
+        }
+        if delim == ']' {
+            *index += 1;
+            return Some(values);
+        }
+        return None;
+    }
+}
+
+fn parse_serialized_per_player_arguments_map_legacy_compatible(
+    value: &str,
+) -> Option<BTreeMap<String, Vec<String>>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut index = 0usize;
+    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+    if trimmed.get(index..).and_then(|rest| rest.chars().next())? != '{' {
+        return None;
+    }
+    index += 1;
+
+    let mut parsed = BTreeMap::new();
+    loop {
+        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+        let Some(next) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if next == '}' {
+            index += 1;
+            break;
+        }
+        let key = parse_serialized_python_string_cursor_legacy_compatible(trimmed, &mut index)?;
+        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+        if trimmed.get(index..).and_then(|rest| rest.chars().next())? != ':' {
+            return None;
+        }
+        index += 1;
+        let args =
+            parse_serialized_python_string_list_cursor_legacy_compatible(trimmed, &mut index)?;
+        parsed.insert(key, args);
+        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+        let Some(delim) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if delim == ',' {
+            index += 1;
+            continue;
+        }
+        if delim == '}' {
+            index += 1;
+            break;
+        }
+        return None;
+    }
+    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+    if index != trimmed.len() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn parse_serialized_python_string_pair_cursor_legacy_compatible(
+    input: &str,
+    index: &mut usize,
+) -> Option<(String, String)> {
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    let open = input.get(*index..).and_then(|rest| rest.chars().next())?;
+    let close = match open {
+        '[' => ']',
+        '(' => ')',
+        _ => return None,
+    };
+    *index += open.len_utf8();
+
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    let label = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    if input.get(*index..).and_then(|rest| rest.chars().next())? != ',' {
+        return None;
+    }
+    *index += 1;
+
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    let address = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
+    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
+    if input.get(*index..).and_then(|rest| rest.chars().next())? != close {
+        return None;
+    }
+    *index += close.len_utf8();
+
+    Some((label, address))
+}
+
+fn parse_serialized_public_servers_list_legacy_compatible(
+    value: &str,
+) -> Option<Vec<(String, String)>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut index = 0usize;
+    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+    if trimmed.get(index..).and_then(|rest| rest.chars().next())? != '[' {
+        return None;
+    }
+    index += 1;
+
+    let mut parsed = Vec::new();
+    loop {
+        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+        let Some(next) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if next == ']' {
+            index += 1;
+            break;
+        }
+        parsed.push(
+            parse_serialized_python_string_pair_cursor_legacy_compatible(trimmed, &mut index)?,
+        );
+        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+        let Some(delim) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
+            return None;
+        };
+        if delim == ',' {
+            index += 1;
+            continue;
+        }
+        if delim == ']' {
+            index += 1;
+            break;
+        }
+        return None;
+    }
+
+    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
+    if index != trimmed.len() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn format_serialized_per_player_arguments_map_legacy_compatible(
+    values: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let rendered = values
+        .iter()
+        .map(|(player_path, args)| {
+            format!(
+                "{}: {}",
+                format_serialized_python_string_legacy_compatible(player_path),
+                format_serialized_string_list_legacy_compatible(args)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{rendered}}}")
+}
+
+fn format_serialized_public_servers_list_legacy_compatible(values: &[(String, String)]) -> String {
+    let rendered = values
+        .iter()
+        .map(|(label, address)| {
+            format!(
+                "[{}, {}]",
+                format_serialized_python_string_legacy_compatible(label),
+                format_serialized_python_string_legacy_compatible(address)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{rendered}]")
+}
+
 fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {
     match mode {
         PrivacyMode::SendRaw => "SendRaw",
@@ -982,11 +1296,54 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
     if let Some(port) = settings.port {
         upsert_ini_value_legacy_compatible(&mut lines, "server_data", "port", &port.to_string());
     }
+    if let Some(server_password) = settings.server_password.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "password", server_password);
+    }
     if let Some(username) = settings.username.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "name", username);
     }
     if let Some(room) = settings.room.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "room", room);
+    }
+    if let Some(room_list) = settings.room_list.as_ref() {
+        let serialized = format_serialized_string_list_legacy_compatible(room_list);
+        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "roomList", &serialized);
+    }
+    if let Some(player_path) = settings.player_path.as_deref() {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "playerPath",
+            player_path,
+        );
+    }
+    if let Some(per_player_arguments) = settings.per_player_arguments.as_ref() {
+        let serialized =
+            format_serialized_per_player_arguments_map_legacy_compatible(per_player_arguments);
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "perPlayerArguments",
+            &serialized,
+        );
+    }
+    if let Some(media_search_directories) = settings.media_search_directories.as_ref() {
+        let serialized = format_serialized_string_list_legacy_compatible(media_search_directories);
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaSearchDirectories",
+            &serialized,
+        );
+    }
+    if let Some(public_servers) = settings.public_servers.as_ref() {
+        let serialized = format_serialized_public_servers_list_legacy_compatible(public_servers);
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "publicServers",
+            &serialized,
+        );
     }
     if let Some(value) = settings.autoplay_initial_state {
         upsert_ini_value_legacy_compatible(
@@ -1001,6 +1358,22 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
             &mut lines,
             "client_settings",
             "autoplayRequireSameFilenames",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.ready_at_start {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "readyAtStart",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.shared_playlist_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "sharedPlaylistEnabled",
             format_ini_bool_legacy_compatible(value),
         );
     }
@@ -1224,6 +1597,12 @@ fn apply_stored_client_settings_mvp_if_env_absent(
     {
         config.port = port;
     }
+    if env_trimmed("SYNCPLAY_CLIENT_SERVER_PASSWORD").is_none()
+        && let Some(password) = settings.server_password.as_deref()
+        && !password.is_empty()
+    {
+        config.server_password = Some(password.to_owned());
+    }
     if env_trimmed("SYNCPLAY_CLIENT_USERNAME").is_none()
         && env_trimmed("SYNCPLAY_CLIENT_NAME").is_none()
         && let Some(username) = settings.username.as_deref()
@@ -1251,6 +1630,16 @@ fn apply_stored_client_settings_mvp_if_env_absent(
         && let Some(value) = settings.autoplay_require_same_filenames
     {
         config.autoplay_require_same_filenames = value;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_READY_AT_START").is_none()
+        && let Some(value) = settings.ready_at_start
+    {
+        config.ready_at_start_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED").is_none()
+        && let Some(value) = settings.shared_playlist_enabled
+    {
+        config.shared_playlists_enabled_override = Some(value);
     }
     if env_trimmed("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE").is_none()
         && let Some(value) = settings.pause_on_leave
@@ -1359,6 +1748,72 @@ fn apply_stored_client_settings_mvp_if_env_absent(
     }
 }
 
+fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
+    overrides: &mut LegacyClientArgOverrides,
+    settings: &StoredClientSettingsMvp,
+) {
+    if overrides.player_path.is_none()
+        && let Some(player_path) = settings.player_path.as_deref()
+        && !player_path.is_empty()
+    {
+        overrides.player_path = Some(player_path.to_owned());
+    }
+    if overrides.player_args.is_empty()
+        && let Some(player_path) = overrides.player_path.as_deref()
+        && let Some(per_player_arguments) = settings.per_player_arguments.as_ref()
+        && let Some(args) = lookup_stored_per_player_arguments_for_player_path_legacy_compatible(
+            per_player_arguments,
+            player_path,
+        )
+    {
+        overrides.player_args = args.clone();
+    }
+}
+
+fn lookup_stored_per_player_arguments_for_player_path_legacy_compatible<'a>(
+    per_player_arguments: &'a BTreeMap<String, Vec<String>>,
+    player_path: &str,
+) -> Option<&'a Vec<String>> {
+    if let Some(args) = per_player_arguments.get(player_path) {
+        return Some(args);
+    }
+    let normalized_player_path =
+        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+            player_path,
+        )?;
+    per_player_arguments
+        .iter()
+        .find_map(|(stored_player_path, args)| {
+            let normalized_stored_player_path =
+                normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+                    stored_player_path,
+                )?;
+            (normalized_stored_player_path == normalized_player_path).then_some(args)
+        })
+}
+
+fn normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+    player_path: &str,
+) -> Option<String> {
+    let trimmed = player_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let slash_normalized = trimmed.replace('\\', "/");
+    if looks_like_windows_player_path_legacy_compatible(trimmed) {
+        return Some(slash_normalized.to_ascii_lowercase());
+    }
+    Some(slash_normalized)
+}
+
+fn looks_like_windows_player_path_legacy_compatible(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return true;
+    }
+    path.starts_with("\\\\") || path.starts_with("//") || path.contains('\\')
+}
+
 fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
     config: &ClientLoopConfig,
 ) -> anyhow::Result<()> {
@@ -1388,10 +1843,18 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         language: None,
         host: Some(config.host.clone()),
         port: Some(config.port),
+        server_password: None,
         username: Some(config.username.clone()),
         room: Some(config.room.clone()),
+        room_list: None,
+        player_path: None,
+        per_player_arguments: None,
+        media_search_directories: None,
+        public_servers: None,
         autoplay_initial_state: Some(config.autoplay_enabled),
         autoplay_require_same_filenames: Some(config.autoplay_require_same_filenames),
+        ready_at_start: config.ready_at_start_override,
+        shared_playlist_enabled: config.shared_playlists_enabled_override,
         pause_on_leave: config.pause_on_leave_override,
         loop_at_end_of_playlist: config.loop_at_end_of_playlist_override,
         loop_single_files: config.loop_single_files_override,
@@ -1451,6 +1914,123 @@ fn persist_syncplay_cli_language_setting_legacy_compatible(language: &str) -> an
     );
     std::fs::write(&path, updated_contents)
         .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+}
+
+fn persist_syncplay_cli_player_path_setting_legacy_compatible(
+    player_path: &str,
+) -> anyhow::Result<()> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            anyhow!(
+                "failed creating stored settings directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let existing_contents = if path.is_file() {
+        std::fs::read_to_string(&path).map_err(|error| {
+            anyhow!("failed reading stored settings {}: {error}", path.display())
+        })?
+    } else {
+        String::new()
+    };
+    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
+        &existing_contents,
+        &StoredClientSettingsMvp {
+            player_path: Some(player_path.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+    std::fs::write(&path, updated_contents)
+        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+}
+
+fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
+    player_path: &str,
+    player_args: &[String],
+) -> anyhow::Result<()> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            anyhow!(
+                "failed creating stored settings directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let existing_contents = if path.is_file() {
+        std::fs::read_to_string(&path).map_err(|error| {
+            anyhow!("failed reading stored settings {}: {error}", path.display())
+        })?
+    } else {
+        String::new()
+    };
+    let mut per_player_arguments =
+        parse_syncplay_ini_stored_client_settings_mvp(&existing_contents)
+            .per_player_arguments
+            .unwrap_or_default();
+    if let Some(normalized_player_path) =
+        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(player_path)
+    {
+        let duplicate_keys = per_player_arguments
+            .keys()
+            .filter(|stored_player_path| stored_player_path.as_str() != player_path)
+            .filter_map(|stored_player_path| {
+                let normalized_stored_path =
+                    normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+                        stored_player_path,
+                    )?;
+                (normalized_stored_path == normalized_player_path)
+                    .then_some(stored_player_path.clone())
+            })
+            .collect::<Vec<_>>();
+        for duplicate_key in duplicate_keys {
+            per_player_arguments.remove(&duplicate_key);
+        }
+    }
+    per_player_arguments.insert(player_path.to_owned(), player_args.to_vec());
+    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
+        &existing_contents,
+        &StoredClientSettingsMvp {
+            per_player_arguments: Some(per_player_arguments),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+    std::fs::write(&path, updated_contents)
+        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+}
+
+fn clear_syncplay_cli_stored_settings_legacy_compatible() -> anyhow::Result<bool> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !path.is_file() {
+        return Err(anyhow!(
+            "stored settings path is not a file and cannot be cleared: {}",
+            path.display()
+        ));
+    }
+    std::fs::remove_file(&path).map_err(|error| {
+        anyhow!(
+            "failed clearing stored settings {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(true)
 }
 
 fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
@@ -1555,9 +2135,19 @@ where
 
     while let Some(arg) = iter.next() {
         if arg == "--" {
-            let trailing_args = iter.collect::<Vec<_>>();
+            let mut trailing_args = iter.collect::<Vec<_>>();
             if !trailing_args.is_empty() {
                 overrides.connect_requested = true;
+                if overrides.file.is_none() {
+                    let first = trailing_args.remove(0);
+                    if first.starts_with("--") {
+                        // Python ConfigurationGetter (argparse) fills positional `file` first after `--`,
+                        // then rewrites `file="--foo"` into the player-args list.
+                        overrides.player_args.push(first);
+                    } else {
+                        overrides.file = Some(first);
+                    }
+                }
                 overrides.player_args.extend(trailing_args);
             }
             break;
@@ -1783,7 +2373,9 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
         eprintln!("warning: legacy --force-gui-prompt is GUI-only and is ignored by syncplay-cli");
     }
     if overrides.clear_gui_data_requested {
-        eprintln!("warning: legacy --clear-gui-data is GUI-only and is ignored by syncplay-cli");
+        eprintln!(
+            "warning: legacy --clear-gui-data is partially supported in syncplay-cli (syncplay.ini stored settings are cleared; GUI QSettings stores are not)"
+        );
     }
     if overrides.language.is_some() {
         eprintln!(
@@ -1797,7 +2389,7 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     }
     if overrides.file.is_some() {
         eprintln!(
-            "warning: legacy positional file is used for managed mpv preload, unmanaged external launch, and explicit mpv IPC startup open-file; parity remains partial"
+            "warning: legacy positional file is routed to managed mpv preload, unmanaged external launch, and explicit mpv IPC startup open-file; broader ConfigurationGetter side-effect semantics (for example GUI/relative-config behavior) remain unimplemented"
         );
     }
     if !overrides.player_args.is_empty() {
@@ -2844,6 +3436,7 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
     ClientLoopConfig {
         host: env_trimmed("SYNCPLAY_CLIENT_HOST").unwrap_or_else(|| "127.0.0.1".to_owned()),
         port: env_port("SYNCPLAY_CLIENT_PORT").unwrap_or(8999),
+        server_password: env_trimmed("SYNCPLAY_CLIENT_SERVER_PASSWORD"),
         username: env_trimmed("SYNCPLAY_CLIENT_USERNAME")
             .or_else(|| env_trimmed("SYNCPLAY_CLIENT_NAME"))
             .unwrap_or_else(|| "cli-user".to_owned()),
@@ -2861,6 +3454,10 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
         autoplay_enabled: env_flag_enabled("SYNCPLAY_CLIENT_AUTOPLAY"),
         autoplay_require_same_filenames: env_flag_enabled(
             "SYNCPLAY_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES",
+        ),
+        ready_at_start_override: env_flag_override("SYNCPLAY_CLIENT_READY_AT_START"),
+        shared_playlists_enabled_override: env_flag_override(
+            "SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED",
         ),
         pause_on_leave_override: env_flag_override("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE"),
         loop_at_end_of_playlist_override: env_flag_override(
@@ -4485,6 +5082,26 @@ fn derive_runtime_loop_inputs(
     }
 }
 
+fn shared_playlists_enabled_cli_legacy_compatible(config: &ClientLoopConfig) -> bool {
+    config.shared_playlists_enabled_override.unwrap_or(true)
+}
+
+fn local_input_command_uses_shared_playlists_legacy_compatible(
+    command: &LocalInputCommand,
+) -> bool {
+    matches!(
+        command,
+        LocalInputCommand::ShowPlaylist
+            | LocalInputCommand::SelectPlaylistIndex(_)
+            | LocalInputCommand::NextPlaylistItem
+            | LocalInputCommand::QueuePlaylistItem { .. }
+            | LocalInputCommand::DeletePlaylistIndex(_)
+            | LocalInputCommand::UndoPlaylistChange
+            | LocalInputCommand::ShuffleRemainingPlaylist
+            | LocalInputCommand::ShuffleEntirePlaylist
+    )
+}
+
 async fn run_connected_client_session<F, G>(
     stream: TcpStream,
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
@@ -4535,11 +5152,28 @@ where
         reconnect_correction_diagnostics_format_from_env();
     let reconnect_correction_diagnostics_alert_thresholds =
         reconnect_correction_diagnostics_alert_thresholds_from_env();
-    let hello_message = ProtocolMessage::hello_basic(
+    let mut hello_payload = HelloPayload::new(
         config.username.clone(),
         config.room.clone(),
         config.version.clone(),
     );
+    if let Some(server_password) = config.server_password.as_deref()
+        && !server_password.is_empty()
+    {
+        hello_payload.extra.insert(
+            "password".to_owned(),
+            Value::String(server_password.to_owned()),
+        );
+    }
+    if let Some(enabled) = config.shared_playlists_enabled_override {
+        let mut features = match hello_payload.features.take() {
+            Some(Value::Object(existing)) => existing,
+            Some(_) | None => Map::new(),
+        };
+        features.insert("sharedPlaylists".to_owned(), Value::Bool(enabled));
+        hello_payload.features = Some(Value::Object(features));
+    }
+    let hello_message = ProtocolMessage::hello(hello_payload);
     runtime
         .session_mut()
         .apply_protocol_message(hello_message.clone())?;
@@ -4558,6 +5192,9 @@ where
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut local_user_offset_seconds = 0.0f64;
+    let mut pending_ready_at_start_on_server_hello =
+        config.ready_at_start_override.unwrap_or(false);
+    let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
@@ -4568,8 +5205,14 @@ where
             line = reader.next_line() => {
                 match line? {
                     Some(line) => {
+                        let inbound_is_server_hello = pending_ready_at_start_on_server_hello
+                            && matches!(decode_message_line(&line), Ok(ProtocolMessage::Hello(_)));
                         let now_seconds = connected_start.elapsed().as_secs_f64();
                         runtime.session_mut().apply_message_json_at(&line, now_seconds)?;
+                        if inbound_is_server_hello {
+                            let _ = runtime.run_set_ready_for_user("", true, false)?;
+                            pending_ready_at_start_on_server_hello = false;
+                        }
                         if let Some(message) = pending_chat_message_on_connect.take() {
                             let _ = runtime.run_send_chat_message(message)?;
                         }
@@ -4579,7 +5222,9 @@ where
                         runtime.run_chat_notifications_if_needed()?;
                         runtime.run_user_change_notifications_if_needed()?;
                         runtime.run_reconnect_state_restore_if_needed()?;
-                        runtime.run_reconnect_playlist_restore_if_needed()?;
+                        if shared_playlists_enabled {
+                            runtime.run_reconnect_playlist_restore_if_needed()?;
+                        }
                         let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
                         runtime.run_readiness_unpause_attempt(
                             now_seconds,
@@ -4590,12 +5235,16 @@ where
                         runtime.run_reconnect_state_restore_validation_if_needed()?;
                         publish_pending_local_file_updates(runtime, config)?;
                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
-                        if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
+                        if shared_playlists_enabled
+                            && let Some(playlist_path) = startup_playlist_file_on_connect.take()
+                        {
                             let _ = emit_startup_playlist_load_from_file_legacy_compatible(
                                 &mut writer,
                                 &playlist_path,
                             )
                             .await?;
+                        } else if !shared_playlists_enabled {
+                            let _ = startup_playlist_file_on_connect.take();
                         }
                         if log_player_telemetry || log_player_drift {
                             flush_player_playback_telemetry_diagnostics(
@@ -4689,7 +5338,12 @@ where
 
                 if let Some(command) = parse_local_input_command(&local_line) {
                     let help_version = config.version.as_str();
-                    let emitted = match command {
+                    let emitted = if !shared_playlists_enabled
+                        && local_input_command_uses_shared_playlists_legacy_compatible(&command)
+                    {
+                        false
+                    } else {
+                        match command {
                         LocalInputCommand::Chat(chat_message) => {
                             runtime.run_send_chat_message(chat_message)?
                         }
@@ -4781,6 +5435,7 @@ where
                             runtime.run_set_room_with_legacy_fallback(config.room.clone())?
                         }
                         LocalInputCommand::SetRoom(room) => runtime.run_set_room(room)?,
+                    }
                     };
                     if emitted {
                         flush_runtime_protocol_lines(runtime, &mut writer).await?;
@@ -4938,7 +5593,7 @@ async fn main() -> anyhow::Result<()> {
         .set_stats_db_path(stats_db_file.as_deref().map(std::path::PathBuf::from))?;
     server.bootstrap_room("cli-demo");
 
-    let client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
+    let mut client_arg_overrides = parse_legacy_client_arg_overrides(std::env::args().skip(1));
     if client_arg_overrides.show_version {
         println!("syncplay-cli {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -4952,11 +5607,40 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("error: unrecognized arguments: {unknown_options}");
         return Err(anyhow!("unrecognized arguments"));
     }
+    if client_arg_overrides.clear_gui_data_requested {
+        match clear_syncplay_cli_stored_settings_legacy_compatible() {
+            Ok(true) => {
+                eprintln!(
+                    "cleared stored Syncplay settings (syncplay.ini) for legacy --clear-gui-data"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("warning: failed to clear stored Syncplay settings: {error}");
+            }
+        }
+    }
     if let Some(language) = client_arg_overrides.language.as_deref()
         && !client_arg_overrides.no_store
         && let Err(error) = persist_syncplay_cli_language_setting_legacy_compatible(language)
     {
         eprintln!("warning: failed to persist legacy --language setting: {error}");
+    }
+    if let Some(player_path) = client_arg_overrides.player_path.as_deref()
+        && !client_arg_overrides.no_store
+        && let Err(error) = persist_syncplay_cli_player_path_setting_legacy_compatible(player_path)
+    {
+        eprintln!("warning: failed to persist legacy --player-path setting: {error}");
+    }
+    if let Some(player_path) = client_arg_overrides.player_path.as_deref()
+        && !client_arg_overrides.no_store
+        && !client_arg_overrides.player_args.is_empty()
+        && let Err(error) = persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
+            player_path,
+            &client_arg_overrides.player_args,
+        )
+    {
+        eprintln!("warning: failed to persist legacy per-player arguments setting: {error}");
     }
     emit_legacy_client_arg_compatibility_warnings(&client_arg_overrides);
     if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
@@ -4964,6 +5648,10 @@ async fn main() -> anyhow::Result<()> {
         match load_syncplay_cli_stored_settings_mvp_legacy_compatible() {
             Ok(Some(stored_settings)) => {
                 apply_stored_client_settings_mvp_if_env_absent(&mut config, &stored_settings);
+                apply_stored_legacy_startup_player_defaults_if_arg_absent(
+                    &mut client_arg_overrides,
+                    &stored_settings,
+                );
             }
             Ok(None) => {}
             Err(error) => {
@@ -5017,16 +5705,19 @@ mod tests {
         apply_legacy_client_arg_overrides,
         apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
         apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
-        chat_notification_message, controlled_room_base_name_legacy_compatible,
-        controller_auth_notification_hidden_from_osd,
+        apply_stored_legacy_startup_player_defaults_if_arg_absent, chat_notification_message,
+        clear_syncplay_cli_stored_settings_legacy_compatible,
+        controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
         create_client_runtime_with_managed_mpv_support, create_client_session,
         flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
-        format_file_difference_summary, generate_room_password_legacy_compatible,
-        legacy_configuration_getter_ini_compat_entries,
+        format_file_difference_summary,
+        format_serialized_per_player_arguments_map_legacy_compatible,
+        format_serialized_public_servers_list_legacy_compatible,
+        generate_room_password_legacy_compatible, legacy_configuration_getter_ini_compat_entries,
         legacy_configuration_getter_startup_compat_entries,
         legacy_external_player_launch_spec_from_overrides_legacy_compatible,
         load_syncplay_cli_stored_settings_mvp_legacy_compatible,
@@ -5039,8 +5730,12 @@ mod tests {
         parse_legacy_client_arg_overrides, parse_local_input_chat_message,
         parse_local_input_command,
         parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
+        parse_serialized_per_player_arguments_map_legacy_compatible,
+        parse_serialized_public_servers_list_legacy_compatible,
         parse_syncplay_ini_stored_client_settings_mvp, parse_unpause_action_mode_legacy_compatible,
         persist_syncplay_cli_language_setting_legacy_compatible,
+        persist_syncplay_cli_per_player_arguments_setting_legacy_compatible,
+        persist_syncplay_cli_player_path_setting_legacy_compatible,
         persist_syncplay_cli_stored_settings_mvp_legacy_compatible,
         player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
         playlist_listing_message_legacy_compatible,
@@ -5133,6 +5828,7 @@ mod tests {
         ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -5144,6 +5840,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -5478,6 +6176,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_client_arg_overrides_double_dash_assigns_first_trailing_positional_to_file() {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--no-gui",
+            "--",
+            "movie.mkv",
+            "--fs",
+            "--speed=1.1",
+        ]);
+
+        assert!(overrides.connect_requested);
+        assert_eq!(overrides.file.as_deref(), Some("movie.mkv"));
+        assert_eq!(
+            overrides.player_args,
+            vec!["--fs".to_owned(), "--speed=1.1".to_owned()]
+        );
+        assert!(overrides.unknown_options.is_empty());
+    }
+
+    #[test]
+    fn parse_legacy_client_arg_overrides_double_dash_promotes_double_dash_prefixed_file_to_player_args()
+     {
+        let overrides =
+            parse_legacy_client_arg_overrides(["--no-gui", "--", "--start=12", "--pause"]);
+
+        assert!(overrides.connect_requested);
+        assert_eq!(overrides.file, None);
+        assert_eq!(
+            overrides.player_args,
+            vec!["--start=12".to_owned(), "--pause".to_owned()]
+        );
+        assert!(overrides.unknown_options.is_empty());
+    }
+
+    #[test]
     fn legacy_configuration_getter_startup_compat_matrix_covers_python_startup_inputs() {
         let entries = legacy_configuration_getter_startup_compat_entries();
         let expected_inputs = [
@@ -5535,7 +6267,7 @@ mod tests {
         );
         assert_eq!(
             entry_for("file").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("--language").status,
@@ -5543,6 +6275,10 @@ mod tests {
         );
         assert_eq!(
             entry_for("_args").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("--clear-gui-data").status,
             LegacyConfigurationGetterCompatibilityStatus::Deferred
         );
         assert_eq!(
@@ -5561,6 +6297,8 @@ mod tests {
             "client_settings.name",
             "client_settings.room",
             "client_settings.autoplayInitialState",
+            "client_settings.readyAtStart",
+            "client_settings.sharedPlaylistEnabled",
             "client_settings.pauseOnLeave",
             "client_settings.loopAtEndOfPlaylist",
             "client_settings.loopSingleFiles",
@@ -5568,6 +6306,8 @@ mod tests {
             "client_settings.autoplayMinUsers",
             "client_settings.playerPath",
             "client_settings.perPlayerArguments",
+            "client_settings.roomList",
+            "client_settings.{mediaSearchDirectories,publicServers}",
             "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
             "client_settings.dontSlowDownWithMe",
             "gui.showDurationNotification",
@@ -5602,7 +6342,19 @@ mod tests {
         }
 
         assert_eq!(
+            entry_for("server_data.password").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
             entry_for("client_settings.autoplayInitialState").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.readyAtStart").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.sharedPlaylistEnabled").status,
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
@@ -5611,6 +6363,18 @@ mod tests {
         );
         assert_eq!(
             entry_for("client_settings.playerPath").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.perPlayerArguments").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.roomList").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("client_settings.{mediaSearchDirectories,publicServers}").status,
             LegacyConfigurationGetterCompatibilityStatus::Deferred
         );
         assert_eq!(
@@ -6086,7 +6850,7 @@ mod tests {
 
     #[test]
     fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
-        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
+        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nroomList = ['room-1', 'room-2']\nplayerPath = C:/players/mpv.exe\nperPlayerArguments = {'C:/players/mpv.exe': ['--fs', '--profile=fast']}\nmediaSearchDirectories = ['C:/Media', 'D:/TV Shows']\npublicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\nreadyAtStart = True\nsharedPlaylistEnabled = False\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
         let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
         assert_eq!(
             settings,
@@ -6094,10 +6858,30 @@ mod tests {
                 language: Some("de".to_owned()),
                 host: Some("example.org".to_owned()),
                 port: Some(12345),
+                server_password: Some("secret".to_owned()),
                 username: Some("Alice%20".to_owned()),
                 room: Some("room-1".to_owned()),
+                room_list: Some(vec!["room-1".to_owned(), "room-2".to_owned()]),
+                player_path: Some("C:/players/mpv.exe".to_owned()),
+                per_player_arguments: Some(std::collections::BTreeMap::from([(
+                    "C:/players/mpv.exe".to_owned(),
+                    vec!["--fs".to_owned(), "--profile=fast".to_owned()],
+                )])),
+                media_search_directories: Some(vec![
+                    "C:/Media".to_owned(),
+                    "D:/TV Shows".to_owned(),
+                ]),
+                public_servers: Some(vec![
+                    (
+                        "syncplay.pl:8995 (France)".to_owned(),
+                        "syncplay.pl:8995".to_owned(),
+                    ),
+                    ("Custom".to_owned(), "custom.example:8999".to_owned()),
+                ]),
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
+                ready_at_start: Some(true),
+                shared_playlist_enabled: Some(false),
                 pause_on_leave: Some(false),
                 loop_at_end_of_playlist: Some(true),
                 loop_single_files: Some(false),
@@ -6136,10 +6920,30 @@ mod tests {
                 language: None,
                 host: Some("example.org".to_owned()),
                 port: Some(8999),
+                server_password: Some("secret".to_owned()),
                 username: Some("alice".to_owned()),
                 room: Some("new-room".to_owned()),
+                room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),
+                player_path: Some("C:/players/mpv.exe".to_owned()),
+                per_player_arguments: Some(std::collections::BTreeMap::from([(
+                    "C:/players/mpv.exe".to_owned(),
+                    vec!["--fs".to_owned(), "--profile=fast".to_owned()],
+                )])),
+                media_search_directories: Some(vec![
+                    "C:/Media".to_owned(),
+                    "D:/TV Shows".to_owned(),
+                ]),
+                public_servers: Some(vec![
+                    (
+                        "syncplay.pl:8995 (France)".to_owned(),
+                        "syncplay.pl:8995".to_owned(),
+                    ),
+                    ("Custom".to_owned(), "custom.example:8999".to_owned()),
+                ]),
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
+                ready_at_start: Some(true),
+                shared_playlist_enabled: Some(false),
                 pause_on_leave: Some(true),
                 loop_at_end_of_playlist: Some(false),
                 loop_single_files: Some(true),
@@ -6169,12 +6973,28 @@ mod tests {
 
         assert!(updated.contains("[general]\nlanguage = en\n"));
         assert!(updated.contains("[server_data]\nhost = example.org\nport = 8999\n"));
+        assert!(updated.contains("password = secret\n"));
         assert!(updated.contains("[client_settings]"));
         assert!(updated.contains("room = new-room\n"));
-        assert!(updated.contains("publicservers = []\n"));
+        assert!(updated.contains("roomList = ['room-a', 'room-b']\n"));
+        assert!(updated.contains("playerPath = C:/players/mpv.exe\n"));
+        assert!(
+            updated.contains(
+                "perPlayerArguments = {'C:/players/mpv.exe': ['--fs', '--profile=fast']}\n"
+            )
+        );
+        assert!(updated.contains("mediaSearchDirectories = ['C:/Media', 'D:/TV Shows']\n"));
+        assert!(
+            updated.contains(
+                "publicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\n"
+            )
+        );
+        assert!(!updated.contains("publicservers = []\n"));
         assert!(updated.contains("name = alice\n"));
         assert!(updated.contains("autoplayInitialState = True\n"));
         assert!(updated.contains("autoplayRequireSameFilenames = True\n"));
+        assert!(updated.contains("readyAtStart = True\n"));
+        assert!(updated.contains("sharedPlaylistEnabled = False\n"));
         assert!(updated.contains("pauseOnLeave = True\n"));
         assert!(updated.contains("loopAtEndOfPlaylist = False\n"));
         assert!(updated.contains("loopSingleFiles = True\n"));
@@ -6198,18 +7018,62 @@ mod tests {
     }
 
     #[test]
+    fn per_player_arguments_serialized_python_dict_parser_and_formatter_roundtrip() {
+        let raw = "{'C:/players/mpv.exe': ['--fs', '--profile=fast'], 'C:/players/vlc.exe': []}";
+        let parsed = parse_serialized_per_player_arguments_map_legacy_compatible(raw)
+            .expect("perPlayerArguments dict should parse");
+        assert_eq!(
+            parsed.get("C:/players/mpv.exe"),
+            Some(&vec!["--fs".to_owned(), "--profile=fast".to_owned()])
+        );
+        assert_eq!(
+            parsed.get("C:/players/vlc.exe"),
+            Some(&Vec::<String>::new())
+        );
+
+        let rendered = format_serialized_per_player_arguments_map_legacy_compatible(&parsed);
+        assert_eq!(rendered, raw);
+    }
+
+    #[test]
+    fn public_servers_serialized_python_list_parser_and_formatter_roundtrip() {
+        let raw = "[['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]";
+        let parsed = parse_serialized_public_servers_list_legacy_compatible(raw)
+            .expect("publicServers list should parse");
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    "syncplay.pl:8995 (France)".to_owned(),
+                    "syncplay.pl:8995".to_owned()
+                ),
+                ("Custom".to_owned(), "custom.example:8999".to_owned()),
+            ]
+        );
+
+        let rendered = format_serialized_public_servers_list_legacy_compatible(&parsed);
+        assert_eq!(rendered, raw);
+    }
+
+    #[test]
     fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
         let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
             .lock()
             .expect("lock poisoned");
         let key_host = "SYNCPLAY_CLIENT_HOST";
         let key_name = "SYNCPLAY_CLIENT_NAME";
+        let key_server_password = "SYNCPLAY_CLIENT_SERVER_PASSWORD";
+        let key_ready_at_start = "SYNCPLAY_CLIENT_READY_AT_START";
+        let key_shared_playlist_enabled = "SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED";
         let key_show_osd_warnings = "SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS";
         let key_pause_on_leave = "SYNCPLAY_CLIENT_PAUSE_ON_LEAVE";
         let key_dont_slow_down_with_me = "SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME";
         let key_rewind_threshold = "SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS";
         let prior_host = std::env::var_os(key_host);
         let prior_name = std::env::var_os(key_name);
+        let prior_server_password = std::env::var_os(key_server_password);
+        let prior_ready_at_start = std::env::var_os(key_ready_at_start);
+        let prior_shared_playlist_enabled = std::env::var_os(key_shared_playlist_enabled);
         let prior_show_osd_warnings = std::env::var_os(key_show_osd_warnings);
         let prior_pause_on_leave = std::env::var_os(key_pause_on_leave);
         let prior_dont_slow_down_with_me = std::env::var_os(key_dont_slow_down_with_me);
@@ -6217,6 +7081,9 @@ mod tests {
         unsafe {
             std::env::set_var(key_host, "env.example");
             std::env::set_var(key_name, "env-user");
+            std::env::set_var(key_server_password, "env-secret");
+            std::env::set_var(key_ready_at_start, "false");
+            std::env::set_var(key_shared_playlist_enabled, "true");
             std::env::set_var(key_show_osd_warnings, "true");
             std::env::set_var(key_pause_on_leave, "true");
             std::env::set_var(key_dont_slow_down_with_me, "true");
@@ -6226,6 +7093,8 @@ mod tests {
         let mut config = test_client_loop_config();
         let original_host = config.host.clone();
         let original_username = config.username.clone();
+        let original_server_password = config.server_password.clone();
+        let original_shared_playlist_enabled = config.shared_playlists_enabled_override;
         let original_show_osd_warnings = config.show_osd_warnings_override;
         let original_dont_slow_down_with_me = config.dont_slow_down_with_me_override;
         let original_rewind_threshold = config.rewind_threshold_seconds_override;
@@ -6235,10 +7104,18 @@ mod tests {
                 language: Some("de".to_owned()),
                 host: Some("stored.example".to_owned()),
                 port: Some(4321),
+                server_password: Some("stored-secret".to_owned()),
                 username: Some("stored-user".to_owned()),
                 room: Some("stored-room".to_owned()),
+                room_list: None,
+                player_path: Some("C:/players/stored-mpv.exe".to_owned()),
+                per_player_arguments: None,
+                media_search_directories: None,
+                public_servers: None,
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
+                ready_at_start: Some(true),
+                shared_playlist_enabled: Some(false),
                 pause_on_leave: Some(false),
                 loop_at_end_of_playlist: Some(true),
                 loop_single_files: Some(false),
@@ -6268,10 +7145,16 @@ mod tests {
 
         assert_eq!(config.host, original_host);
         assert_eq!(config.username, original_username);
+        assert_eq!(config.server_password, original_server_password);
         assert_eq!(config.port, 4321);
         assert_eq!(config.room, "stored-room");
         assert!(config.autoplay_enabled);
         assert!(config.autoplay_require_same_filenames);
+        assert_eq!(config.ready_at_start_override, None);
+        assert_eq!(
+            config.shared_playlists_enabled_override,
+            original_shared_playlist_enabled
+        );
         assert_eq!(config.pause_on_leave_override, None);
         assert_eq!(config.loop_at_end_of_playlist_override, Some(true));
         assert_eq!(config.loop_single_files_override, Some(false));
@@ -6323,6 +7206,18 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(key_name, value) },
             None => unsafe { std::env::remove_var(key_name) },
         }
+        match prior_server_password {
+            Some(value) => unsafe { std::env::set_var(key_server_password, value) },
+            None => unsafe { std::env::remove_var(key_server_password) },
+        }
+        match prior_ready_at_start {
+            Some(value) => unsafe { std::env::set_var(key_ready_at_start, value) },
+            None => unsafe { std::env::remove_var(key_ready_at_start) },
+        }
+        match prior_shared_playlist_enabled {
+            Some(value) => unsafe { std::env::set_var(key_shared_playlist_enabled, value) },
+            None => unsafe { std::env::remove_var(key_shared_playlist_enabled) },
+        }
         match prior_show_osd_warnings {
             Some(value) => unsafe { std::env::set_var(key_show_osd_warnings, value) },
             None => unsafe { std::env::remove_var(key_show_osd_warnings) },
@@ -6339,6 +7234,204 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(key_rewind_threshold, value) },
             None => unsafe { std::env::remove_var(key_rewind_threshold) },
         }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_applies_server_password() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_server_password = "SYNCPLAY_CLIENT_SERVER_PASSWORD";
+        let prior_server_password = std::env::var_os(key_server_password);
+        unsafe {
+            std::env::remove_var(key_server_password);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                server_password: Some("stored-secret".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.server_password.as_deref(), Some("stored-secret"));
+
+        match prior_server_password {
+            Some(value) => unsafe { std::env::set_var(key_server_password, value) },
+            None => unsafe { std::env::remove_var(key_server_password) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_applies_ready_at_start() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_ready_at_start = "SYNCPLAY_CLIENT_READY_AT_START";
+        let prior_ready_at_start = std::env::var_os(key_ready_at_start);
+        unsafe {
+            std::env::remove_var(key_ready_at_start);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                ready_at_start: Some(true),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.ready_at_start_override, Some(true));
+
+        match prior_ready_at_start {
+            Some(value) => unsafe { std::env::set_var(key_ready_at_start, value) },
+            None => unsafe { std::env::remove_var(key_ready_at_start) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_applies_shared_playlist_enabled() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_shared_playlist_enabled = "SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED";
+        let prior_shared_playlist_enabled = std::env::var_os(key_shared_playlist_enabled);
+        unsafe {
+            std::env::remove_var(key_shared_playlist_enabled);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                shared_playlist_enabled: Some(false),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.shared_playlists_enabled_override, Some(false));
+
+        match prior_shared_playlist_enabled {
+            Some(value) => unsafe { std::env::set_var(key_shared_playlist_enabled, value) },
+            None => unsafe { std::env::remove_var(key_shared_playlist_enabled) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_legacy_startup_player_defaults_if_arg_absent_uses_stored_player_path() {
+        let mut overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            ..LegacyClientArgOverrides::default()
+        };
+        let settings = StoredClientSettingsMvp {
+            player_path: Some("C:/players/stored-mpv.exe".to_owned()),
+            per_player_arguments: Some(std::collections::BTreeMap::from([(
+                "C:/players/stored-mpv.exe".to_owned(),
+                vec!["--fs".to_owned(), "--profile=fast".to_owned()],
+            )])),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+        assert_eq!(
+            overrides.player_path.as_deref(),
+            Some("C:/players/stored-mpv.exe")
+        );
+        assert_eq!(
+            overrides.player_args,
+            vec!["--fs".to_owned(), "--profile=fast".to_owned()]
+        );
+
+        let mut arg_overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            player_path: Some("C:/players/arg-mpv.exe".to_owned()),
+            ..LegacyClientArgOverrides::default()
+        };
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut arg_overrides, &settings);
+        assert_eq!(
+            arg_overrides.player_path.as_deref(),
+            Some("C:/players/arg-mpv.exe"),
+            "explicit legacy arg should take precedence over stored playerPath"
+        );
+        assert!(
+            arg_overrides.player_args.is_empty(),
+            "stored per-player args should only apply when the selected player path matches a stored entry"
+        );
+    }
+
+    #[test]
+    fn apply_stored_legacy_startup_player_defaults_if_arg_absent_matches_windows_path_case_and_slashes()
+     {
+        let mut overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            player_path: Some(r"C:\Players\MPV.EXE".to_owned()),
+            ..LegacyClientArgOverrides::default()
+        };
+        let settings = StoredClientSettingsMvp {
+            per_player_arguments: Some(std::collections::BTreeMap::from([
+                (
+                    "c:/players/mpv.exe".to_owned(),
+                    vec!["--profile=fast".to_owned()],
+                ),
+                ("C:/Players/MPV.EXE".to_owned(), vec!["--exact".to_owned()]),
+            ])),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+        assert_eq!(
+            overrides.player_args,
+            vec!["--exact".to_owned()],
+            "exact key should win before normalized fallback lookup"
+        );
+
+        let mut normalized_only_overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            player_path: Some(r"C:\Players\mpv.exe".to_owned()),
+            ..LegacyClientArgOverrides::default()
+        };
+        let normalized_only_settings = StoredClientSettingsMvp {
+            per_player_arguments: Some(std::collections::BTreeMap::from([(
+                "c:/players/MPV.EXE".to_owned(),
+                vec!["--fs".to_owned()],
+            )])),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(
+            &mut normalized_only_overrides,
+            &normalized_only_settings,
+        );
+        assert_eq!(
+            normalized_only_overrides.player_args,
+            vec!["--fs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn apply_stored_legacy_startup_player_defaults_if_arg_absent_keeps_unix_path_matching_case_sensitive()
+     {
+        let mut overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            player_path: Some("/usr/bin/MPV".to_owned()),
+            ..LegacyClientArgOverrides::default()
+        };
+        let settings = StoredClientSettingsMvp {
+            per_player_arguments: Some(std::collections::BTreeMap::from([(
+                "/usr/bin/mpv".to_owned(),
+                vec!["--fs".to_owned()],
+            )])),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+        assert!(
+            overrides.player_args.is_empty(),
+            "unix-style player paths should not match with case-only differences"
+        );
     }
 
     #[test]
@@ -6389,10 +7482,13 @@ mod tests {
         let config = ClientLoopConfig {
             host: "stored.example".to_owned(),
             port: 1234,
+            server_password: None,
             username: "stored-user".to_owned(),
             room: "stored-room".to_owned(),
             autoplay_enabled: true,
             autoplay_require_same_filenames: true,
+            ready_at_start_override: Some(true),
+            shared_playlists_enabled_override: Some(false),
             pause_on_leave_override: Some(true),
             loop_at_end_of_playlist_override: Some(false),
             loop_single_files_override: Some(true),
@@ -6431,10 +7527,18 @@ mod tests {
                 language: Some("en".to_owned()),
                 host: Some("stored.example".to_owned()),
                 port: Some(1234),
+                server_password: None,
                 username: Some("stored-user".to_owned()),
                 room: Some("stored-room".to_owned()),
+                room_list: None,
+                player_path: None,
+                per_player_arguments: None,
+                media_search_directories: None,
+                public_servers: None,
                 autoplay_initial_state: Some(true),
                 autoplay_require_same_filenames: Some(true),
+                ready_at_start: Some(true),
+                shared_playlist_enabled: Some(false),
                 pause_on_leave: Some(true),
                 loop_at_end_of_playlist: Some(false),
                 loop_single_files: Some(true),
@@ -6469,6 +7573,8 @@ mod tests {
         assert!(written_contents.contains("[client_settings]"));
         assert!(written_contents.contains("autoplayInitialState = True\n"));
         assert!(written_contents.contains("autoplayRequireSameFilenames = True\n"));
+        assert!(written_contents.contains("readyAtStart = True\n"));
+        assert!(written_contents.contains("sharedPlaylistEnabled = False\n"));
         assert!(written_contents.contains("pauseOnLeave = True\n"));
         assert!(written_contents.contains("loopAtEndOfPlaylist = False\n"));
         assert!(written_contents.contains("loopSingleFiles = True\n"));
@@ -6533,6 +7639,222 @@ mod tests {
         let written_contents =
             std::fs::read_to_string(&config_path).expect("written config should be readable");
         assert!(written_contents.contains("[general]\nlanguage = fr\n"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn persist_syncplay_cli_player_path_setting_legacy_compatible_updates_client_settings_player_path()
+     {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-config-player-path-test-{unique_suffix}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(
+            &config_path,
+            "[client_settings]\nplayerPath = C:/players/old.exe\n",
+        )
+        .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_player_path_setting_legacy_compatible("C:/players/new.exe")
+            .expect("player path setting should persist");
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        assert_eq!(loaded.player_path.as_deref(), Some("C:/players/new.exe"));
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains("playerPath = C:/players/new.exe\n"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_updates_client_settings_per_player_arguments()
+     {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-config-per-player-args-test-{unique_suffix}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(
+            &config_path,
+            "[client_settings]\nperPlayerArguments = {'C:/players/old.exe': ['--old']}\n",
+        )
+        .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
+            "C:/players/mpv.exe",
+            &["--fs".to_owned(), "--profile=fast".to_owned()],
+        )
+        .expect("per-player arguments should persist");
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        let per_player_arguments = loaded
+            .per_player_arguments
+            .expect("perPlayerArguments map should be loaded");
+        assert_eq!(
+            per_player_arguments.get("C:/players/mpv.exe"),
+            Some(&vec!["--fs".to_owned(), "--profile=fast".to_owned()])
+        );
+        assert_eq!(
+            per_player_arguments.get("C:/players/old.exe"),
+            Some(&vec!["--old".to_owned()]),
+            "persist helper should merge with existing perPlayerArguments entries"
+        );
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains("perPlayerArguments = "));
+        assert!(written_contents.contains("'C:/players/mpv.exe': ['--fs', '--profile=fast']"));
+        assert!(written_contents.contains("'C:/players/old.exe': ['--old']"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_dedupes_windows_path_variants()
+     {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-config-per-player-args-dedupe-test-{unique_suffix}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(
+            &config_path,
+            "[client_settings]\nperPlayerArguments = {'c:/players/MPV.EXE': ['--old'], 'C:/players/other.exe': ['--other']}\n",
+        )
+        .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
+            r"C:\Players\mpv.exe",
+            &["--new".to_owned()],
+        )
+        .expect("per-player arguments should persist");
+
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        let per_player_arguments = loaded
+            .per_player_arguments
+            .expect("perPlayerArguments map should be loaded");
+
+        assert_eq!(per_player_arguments.len(), 2);
+        assert_eq!(
+            per_player_arguments.get(r"C:\Players\mpv.exe"),
+            Some(&vec!["--new".to_owned()])
+        );
+        assert!(
+            !per_player_arguments.contains_key("c:/players/MPV.EXE"),
+            "normalized duplicate key should be replaced by the latest persisted player_path form"
+        );
+        assert_eq!(
+            per_player_arguments.get("C:/players/other.exe"),
+            Some(&vec!["--other".to_owned()])
+        );
+
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains(r"'C:\\Players\\mpv.exe': ['--new']"));
+        assert!(!written_contents.contains("'c:/players/MPV.EXE': ['--old']"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn clear_syncplay_cli_stored_settings_legacy_compatible_removes_config_file_via_env_override_path()
+     {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncplay-cli-config-clear-test-{unique_suffix}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(&config_path, "[server_data]\nhost = example.org\n")
+            .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        let cleared = clear_syncplay_cli_stored_settings_legacy_compatible()
+            .expect("clearing stored settings should succeed");
+        assert!(cleared, "existing config file should be cleared");
+        assert!(
+            !config_path.exists(),
+            "config file should be removed after clear-gui-data handling"
+        );
+
+        let cleared_again = clear_syncplay_cli_stored_settings_legacy_compatible()
+            .expect("clearing missing settings should be a no-op");
+        assert!(!cleared_again, "missing config file should report no-op");
 
         match prior {
             Some(value) => unsafe { std::env::set_var(key, value) },
@@ -8834,6 +10156,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -8845,6 +10168,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -8936,6 +10261,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -8947,6 +10273,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -8993,6 +10321,350 @@ mod tests {
         server_task.await.expect("server task join should succeed");
 
         assert_eq!(runtime.session().user_ready("cli-user"), Some(true));
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_sends_ready_on_server_hello_when_ready_at_start_enabled() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(hello_line.contains("\"Hello\""));
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"readiness\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let mut ready_payload = None;
+            for _ in 0..4 {
+                let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                    .await
+                    .expect("ready line read should not timeout")
+                    .expect("ready line read should succeed")
+                else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if let Some(ready) = payload.set.ready {
+                    ready_payload = Some(ready);
+                    break;
+                }
+            }
+
+            let Some(ready_payload) = ready_payload else {
+                panic!("client should emit Set.ready when readyAtStart is enabled");
+            };
+            assert!(ready_payload.is_ready);
+            assert_eq!(ready_payload.manually_initiated, Some(false));
+            assert!(
+                ready_payload.username.is_none(),
+                "auto-ready uses local Set.ready payload without explicit username"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            server_password: None,
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.5,
+            readiness_supported_override: None,
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            ready_at_start_override: Some(true),
+            shared_playlists_enabled_override: None,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_includes_shared_playlists_feature_in_hello_when_configured() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, _writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            let message = decode_message_line(&hello_line).expect("hello line should decode");
+            let ProtocolMessage::Hello(hello_message) = message else {
+                panic!("first client line should be a Hello message");
+            };
+            let shared_playlists = hello_message
+                .hello
+                .features
+                .as_ref()
+                .and_then(|features| features.get("sharedPlaylists"))
+                .and_then(Value::as_bool);
+            assert_eq!(shared_playlists, Some(false));
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.shared_playlists_enabled_override = Some(false);
+        config.max_connected_runtime_seconds = 2.0;
+
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert_eq!(exit, ConnectedSessionExit::TransportClosed);
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_suppresses_playlist_commands_when_shared_playlists_disabled()
+    {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(hello_line.contains("\"Hello\""));
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\",\"features\":{\"sharedPlaylists\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+            let mut saw_playlist_set = false;
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let maybe_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Some(line) = (match maybe_line {
+                    Ok(Ok(line)) => line,
+                    Ok(Err(err)) => panic!("client line read should succeed: {err}"),
+                    Err(_) => None,
+                }) else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::Set(payload) = message else {
+                    continue;
+                };
+                if payload.set.playlist_change.is_some() || payload.set.playlist_index.is_some() {
+                    saw_playlist_set = true;
+                    break;
+                }
+            }
+            assert!(
+                !saw_playlist_set,
+                "shared playlist commands should be suppressed when sharedPlaylistEnabled=false"
+            );
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.shared_playlists_enabled_override = Some(false);
+        config.max_connected_runtime_seconds = 0.5;
+
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .send("qa episode3.mkv".to_owned())
+                .expect("queue command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_includes_server_password_in_hello_when_configured() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, _writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            let message = decode_message_line(&hello_line).expect("hello line should decode");
+            let ProtocolMessage::Hello(hello_message) = message else {
+                panic!("first client line should be a Hello message");
+            };
+            assert_eq!(
+                hello_message.hello.extra.get("password"),
+                Some(&Value::String("server-secret".to_owned()))
+            );
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.server_password = Some("server-secret".to_owned());
+        config.max_connected_runtime_seconds = 2.0;
+
+        let mut runtime = create_client_runtime(&config);
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert_eq!(exit, ConnectedSessionExit::TransportClosed);
+        server_task.await.expect("server task join should succeed");
     }
 
     #[tokio::test]
@@ -9052,6 +10724,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9063,6 +10736,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9165,6 +10840,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9176,6 +10852,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9290,6 +10968,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9301,6 +10980,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9422,6 +11103,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9433,6 +11115,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9554,6 +11238,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9565,6 +11250,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9673,6 +11360,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9684,6 +11372,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9792,6 +11482,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9803,6 +11494,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -9935,6 +11628,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -9946,6 +11640,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10090,6 +11786,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10101,6 +11798,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10258,6 +11957,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10269,6 +11969,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10408,6 +12110,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10419,6 +12122,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10552,6 +12257,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10563,6 +12269,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10683,6 +12391,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10694,6 +12403,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10820,6 +12531,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10831,6 +12543,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -10975,6 +12689,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -10986,6 +12701,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11114,6 +12831,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11125,6 +12843,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11265,6 +12985,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11276,6 +12997,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11400,6 +13123,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11411,6 +13135,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11562,6 +13288,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11573,6 +13300,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11723,6 +13452,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11734,6 +13464,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11858,6 +13590,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -11869,6 +13602,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -11996,6 +13731,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12007,6 +13743,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12133,6 +13871,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12144,6 +13883,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12271,6 +14012,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12282,6 +14024,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12416,6 +14160,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "fallback-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12427,6 +14172,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12556,6 +14303,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "fallback-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12567,6 +14315,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12695,6 +14445,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12706,6 +14457,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12832,6 +14585,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12843,6 +14597,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -12963,6 +14719,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -12974,6 +14731,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13095,6 +14854,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13106,6 +14866,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13227,6 +14989,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13238,6 +15001,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13358,6 +15123,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13369,6 +15135,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13489,6 +15257,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "fallback-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13500,6 +15269,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13623,6 +15394,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13634,6 +15406,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13755,6 +15529,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13766,6 +15541,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -13890,6 +15667,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -13901,6 +15679,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14029,6 +15809,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14040,6 +15821,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14184,6 +15967,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14195,6 +15979,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14303,6 +16089,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14314,6 +16101,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14416,6 +16205,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14427,6 +16217,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14527,6 +16319,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14538,6 +16331,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14644,6 +16439,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14655,6 +16451,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14781,6 +16579,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14792,6 +16591,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -14933,6 +16734,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -14944,6 +16746,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15072,6 +16876,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15083,6 +16888,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15177,6 +16984,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15188,6 +16996,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15319,6 +17129,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15330,6 +17141,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15471,6 +17284,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15482,6 +17296,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15601,6 +17417,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15612,6 +17429,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15727,6 +17546,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15738,6 +17558,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15853,6 +17675,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: addr.port(),
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "cli-room".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15864,6 +17687,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15945,6 +17770,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -15956,6 +17782,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: true,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -15995,6 +17823,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16006,6 +17835,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16042,6 +17873,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16053,6 +17885,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16087,6 +17921,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16098,6 +17933,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16132,6 +17969,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16143,6 +17981,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16177,6 +18017,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16188,6 +18029,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16222,6 +18065,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -16233,6 +18077,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: true,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -16995,6 +18841,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17006,6 +18853,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17070,6 +18919,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17081,6 +18931,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17129,6 +18981,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17140,6 +18993,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17211,6 +19066,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17222,6 +19078,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17291,6 +19149,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17302,6 +19161,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17362,6 +19223,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17373,6 +19235,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17450,6 +19314,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17461,6 +19326,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17517,6 +19384,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "+room:ABCDEF123456".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17528,6 +19396,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
@@ -17613,6 +19483,7 @@ mod tests {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
             port: 8999,
+            server_password: None,
             username: "cli-user".to_owned(),
             room: "room1".to_owned(),
             version: "1.2.255".to_owned(),
@@ -17624,6 +19495,8 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
             pause_on_leave_override: None,
             loop_at_end_of_playlist_override: None,
             loop_single_files_override: None,
