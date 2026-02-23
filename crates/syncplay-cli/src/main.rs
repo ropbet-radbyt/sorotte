@@ -214,8 +214,8 @@ fn legacy_configuration_getter_startup_compat_entries()
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "--clear-gui-data",
-            status: Deferred,
-            note: "clears syncplay.ini stored settings in syncplay-cli; GUI QSettings clearing remains unimplemented",
+            status: Supported,
+            note: "clears syncplay.ini stored settings and legacy GUI QSettings stores (PlayerList, MediaBrowseDialog, MainWindow, Interface, MoreSettings)",
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "--version",
@@ -717,6 +717,10 @@ fn syncplay_config_names_legacy_compatible() -> [&'static str; 2] {
 
 fn syncplay_cli_config_path_override() -> Option<PathBuf> {
     env_trimmed("SYNCPLAY_CLIENT_CONFIG_PATH").map(PathBuf::from)
+}
+
+fn syncplay_cli_legacy_gui_qsettings_root_override() -> Option<PathBuf> {
+    env_trimmed("SYNCPLAY_CLIENT_LEGACY_QSETTINGS_ROOT").map(PathBuf::from)
 }
 
 fn default_syncplay_cli_config_root_legacy_compatible() -> Option<PathBuf> {
@@ -2508,6 +2512,129 @@ fn clear_syncplay_cli_stored_settings_legacy_compatible() -> anyhow::Result<bool
     Ok(true)
 }
 
+fn legacy_gui_qsettings_store_names_legacy_compatible() -> [&'static str; 5] {
+    [
+        "PlayerList",
+        "MediaBrowseDialog",
+        "MainWindow",
+        "Interface",
+        "MoreSettings",
+    ]
+}
+
+fn remove_file_if_exists_legacy_compatible(path: &Path, context: &str) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !path.is_file() {
+        return Err(anyhow!(
+            "{context} path is not a file and cannot be cleared: {}",
+            path.display()
+        ));
+    }
+    std::fs::remove_file(path)
+        .map_err(|error| anyhow!("failed clearing {context} {}: {error}", path.display()))?;
+    Ok(true)
+}
+
+fn clear_syncplay_cli_gui_qsettings_filesystem_legacy_compatible(
+    root: &Path,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    let syncplay_dir = root.join("Syncplay");
+    for store in legacy_gui_qsettings_store_names_legacy_compatible() {
+        for extension in [".conf", ".ini"] {
+            let candidate = syncplay_dir.join(format!("{store}{extension}"));
+            changed |= remove_file_if_exists_legacy_compatible(&candidate, "legacy GUI QSettings")?;
+        }
+    }
+    Ok(changed)
+}
+
+fn clear_windows_registry_key_tree_legacy_compatible(key: &str) -> anyhow::Result<bool> {
+    let query_status = Command::new("reg")
+        .args(["query", key])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| anyhow!("failed querying registry key {key}: {error}"))?;
+    if !query_status.success() {
+        return Ok(false);
+    }
+
+    let output = Command::new("reg")
+        .args(["delete", key, "/f"])
+        .output()
+        .map_err(|error| anyhow!("failed deleting registry key {key}: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            return Err(anyhow!("failed deleting registry key {key}"));
+        }
+        return Err(anyhow!("failed deleting registry key {key}: {stderr}"));
+    }
+    Ok(true)
+}
+
+fn clear_syncplay_cli_gui_qsettings_windows_registry_legacy_compatible() -> anyhow::Result<bool> {
+    let mut changed = false;
+    for store in legacy_gui_qsettings_store_names_legacy_compatible() {
+        let key = format!(r"HKEY_CURRENT_USER\Software\Syncplay\{store}");
+        changed |= clear_windows_registry_key_tree_legacy_compatible(&key)?;
+    }
+    Ok(changed)
+}
+
+fn clear_syncplay_cli_gui_qsettings_macos_plists_legacy_compatible(
+    preferences_dir: &Path,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    for store in legacy_gui_qsettings_store_names_legacy_compatible() {
+        for candidate_name in [
+            format!("com.Syncplay.{store}.plist"),
+            format!("org.Syncplay.{store}.plist"),
+            format!("Syncplay.{store}.plist"),
+        ] {
+            let candidate = preferences_dir.join(candidate_name);
+            changed |= remove_file_if_exists_legacy_compatible(&candidate, "legacy GUI QSettings")?;
+        }
+    }
+    Ok(changed)
+}
+
+fn clear_syncplay_cli_gui_qsettings_legacy_compatible() -> anyhow::Result<bool> {
+    if let Some(root) = syncplay_cli_legacy_gui_qsettings_root_override() {
+        return clear_syncplay_cli_gui_qsettings_filesystem_legacy_compatible(&root);
+    }
+
+    if cfg!(windows) {
+        let mut changed = clear_syncplay_cli_gui_qsettings_windows_registry_legacy_compatible()?;
+        if let Some(root) = default_syncplay_cli_config_root_legacy_compatible() {
+            changed |= clear_syncplay_cli_gui_qsettings_filesystem_legacy_compatible(&root)?;
+        }
+        return Ok(changed);
+    }
+
+    if cfg!(target_os = "macos") {
+        let mut changed = false;
+        if let Some(home) = env_trimmed("HOME") {
+            let preferences_dir = PathBuf::from(home).join("Library").join("Preferences");
+            changed |=
+                clear_syncplay_cli_gui_qsettings_macos_plists_legacy_compatible(&preferences_dir)?;
+        }
+        if let Some(root) = default_syncplay_cli_config_root_legacy_compatible() {
+            changed |= clear_syncplay_cli_gui_qsettings_filesystem_legacy_compatible(&root)?;
+        }
+        return Ok(changed);
+    }
+
+    let Some(root) = default_syncplay_cli_config_root_legacy_compatible() else {
+        return Ok(false);
+    };
+    clear_syncplay_cli_gui_qsettings_filesystem_legacy_compatible(&root)
+}
+
 fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
     path: &Path,
 ) -> anyhow::Result<Vec<String>> {
@@ -2846,11 +2973,6 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     }
     if overrides.force_gui_prompt_requested {
         eprintln!("warning: legacy --force-gui-prompt is GUI-only and is ignored by syncplay-cli");
-    }
-    if overrides.clear_gui_data_requested {
-        eprintln!(
-            "warning: legacy --clear-gui-data is partially supported in syncplay-cli (syncplay.ini stored settings are cleared; GUI QSettings stores are not)"
-        );
     }
     if overrides.language.is_some() {
         eprintln!(
@@ -6094,6 +6216,15 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("warning: failed to clear stored Syncplay settings: {error}");
             }
         }
+        match clear_syncplay_cli_gui_qsettings_legacy_compatible() {
+            Ok(true) => {
+                eprintln!("cleared legacy Syncplay GUI QSettings data for --clear-gui-data");
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("warning: failed to clear legacy Syncplay GUI QSettings: {error}");
+            }
+        }
     }
     if let Some(language) = client_arg_overrides.language.as_deref()
         && !client_arg_overrides.no_store
@@ -6181,6 +6312,7 @@ mod tests {
         apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
         apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
         apply_stored_legacy_startup_player_defaults_if_arg_absent, chat_notification_message,
+        clear_syncplay_cli_gui_qsettings_legacy_compatible,
         clear_syncplay_cli_stored_settings_legacy_compatible,
         controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
@@ -6248,6 +6380,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     static STORED_SETTINGS_CONFIG_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static LEGACY_GUI_QSETTINGS_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
     static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn ignore_autoplay_notification(
@@ -6754,7 +6887,7 @@ mod tests {
         );
         assert_eq!(
             entry_for("--clear-gui-data").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("--force-gui-prompt").status,
@@ -8533,6 +8666,70 @@ mod tests {
         }
         let _ = std::fs::remove_file(&config_path);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn clear_syncplay_cli_gui_qsettings_legacy_compatible_removes_known_store_files_via_env_override_root()
+     {
+        let _env_lock = LEGACY_GUI_QSETTINGS_ROOT_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_LEGACY_QSETTINGS_ROOT";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("syncplay-cli-qsettings-clear-test-{unique_suffix}"));
+        let syncplay_dir = temp_root.join("Syncplay");
+        std::fs::create_dir_all(&syncplay_dir).expect("qsettings root should be created");
+        let known_store_paths = [
+            syncplay_dir.join("PlayerList.conf"),
+            syncplay_dir.join("MediaBrowseDialog.conf"),
+            syncplay_dir.join("MainWindow.conf"),
+            syncplay_dir.join("Interface.conf"),
+            syncplay_dir.join("MoreSettings.conf"),
+        ];
+        for path in &known_store_paths {
+            std::fs::write(path, "[dummy]\nvalue = 1\n").expect("seed qsettings file should write");
+        }
+        let unrelated_path = syncplay_dir.join("Unrelated.conf");
+        std::fs::write(&unrelated_path, "[keep]\nvalue = 1\n")
+            .expect("unrelated qsettings file should write");
+        unsafe {
+            std::env::set_var(key, &temp_root);
+        }
+
+        let cleared = clear_syncplay_cli_gui_qsettings_legacy_compatible()
+            .expect("clearing legacy GUI QSettings should succeed");
+        assert!(cleared, "existing QSettings store files should be cleared");
+        for path in &known_store_paths {
+            assert!(
+                !path.exists(),
+                "known QSettings store file should be removed: {}",
+                path.display()
+            );
+        }
+        assert!(
+            unrelated_path.exists(),
+            "unrelated files in the QSettings root should not be removed"
+        );
+
+        let cleared_again = clear_syncplay_cli_gui_qsettings_legacy_compatible()
+            .expect("clearing missing legacy GUI QSettings should be a no-op");
+        assert!(
+            !cleared_again,
+            "missing QSettings files should report no-op"
+        );
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&unrelated_path);
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[test]
