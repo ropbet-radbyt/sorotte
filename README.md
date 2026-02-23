@@ -21,3 +21,22 @@ Detailed continuity checkpoint:
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
+
+## Coverage (cargo-llvm-cov)
+
+`cargo-llvm-cov` is the most practical coverage tool for this Rust workspace (LLVM source-based coverage, workspace-aware, CI-friendly).
+
+Install once:
+
+- `rustup component add llvm-tools-preview`
+- `cargo install cargo-llvm-cov`
+
+Local coverage commands (via cargo aliases in `.cargo/config.toml`):
+
+- `cargo cov-clean` (clean prior coverage artifacts)
+- `cargo cov-lcov` (writes `target/llvm-cov/lcov.info`)
+- `cargo cov-html` (writes HTML report to `target/llvm-cov/html/`)
+
+CI:
+
+- Manual/scheduled coverage workflow: `.github/workflows/rust-coverage.yml`
