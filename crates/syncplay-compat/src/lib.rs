@@ -1801,6 +1801,8 @@ mod tests {
         "server_runtime_cross_room_playlist_scoping.jsonl";
     const PLAYLIST_ROOM_SWITCH_PEER_TRANSITION_SCOPING_SCENARIO: &str =
         "server_runtime_playlist_room_switch_peer_transition_scoping.jsonl";
+    const PLAYLIST_DOUBLE_ROOM_SWITCH_SCOPING_SCENARIO: &str =
+        "server_runtime_playlist_double_room_switch_scoping.jsonl";
     const CHAT_ROOM_SCOPING_SCENARIO: &str = "server_runtime_chat_room_scoping.jsonl";
     const CHAT_ROOM_SWITCH_SENDER_SCOPING_SCENARIO: &str =
         "server_runtime_chat_room_switch_sender_scoping.jsonl";
@@ -6229,6 +6231,188 @@ mod tests {
     }
 
     #[test]
+    fn scripted_server_runtime_playlist_double_room_switch_scoping_uses_latest_room_membership_for_fanout()
+     {
+        let events = replay_server_runtime_scenario_fixture(
+            PLAYLIST_DOUBLE_ROOM_SWITCH_SCOPING_SCENARIO,
+        )
+        .expect(
+            "playlist double-room-switch scoping scenario fixture should replay through server runtime",
+        );
+        assert_eq!(events.len(), 11);
+
+        let step6 = events
+            .get(5)
+            .expect("step 6 room2 playlistChange after bounce should be present");
+        let step6_playlist_change_recipients: Vec<_> = step6
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_change
+                    .as_ref()
+                    .filter(|playlist_change| {
+                        playlist_change.user.as_deref() == Some("carol")
+                            && playlist_change.files
+                                == vec!["room2-no-bob-after-bounce.mkv".to_owned()]
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step6_playlist_change_recipients,
+            vec!["client-3".to_owned()],
+            "after bob bounces back to room1, room2 playlistChange should not leak to bob"
+        );
+
+        let step7 = events
+            .get(6)
+            .expect("step 7 room2 playlistIndex after bounce should be present");
+        let step7_playlist_index_recipients: Vec<_> = step7
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .filter(|playlist_index| {
+                        playlist_index.user.as_deref() == Some("carol") && playlist_index.index == 0
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step7_playlist_index_recipients,
+            vec!["client-3".to_owned()],
+            "after bob bounces back to room1, room2 playlistIndex should not leak to bob"
+        );
+
+        let step8 = events
+            .get(7)
+            .expect("step 8 room1 peer playlistChange after bounce should be present");
+        let step8_playlist_change_recipients: Vec<_> = step8
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_change
+                    .as_ref()
+                    .filter(|playlist_change| {
+                        playlist_change.user.as_deref() == Some("alice")
+                            && playlist_change.files
+                                == vec![
+                                    "room1-still-has-bob.mkv".to_owned(),
+                                    "room1-bob-back.mkv".to_owned(),
+                                ]
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step8_playlist_change_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "post-bounce room1 peer playlistChange should include bob again using final room membership"
+        );
+
+        let step9 = events
+            .get(8)
+            .expect("step 9 room1 peer playlistIndex after bounce should be present");
+        let step9_playlist_index_recipients: Vec<_> = step9
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .filter(|playlist_index| {
+                        playlist_index.user.as_deref() == Some("alice") && playlist_index.index == 1
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step9_playlist_index_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "post-bounce room1 peer playlistIndex should include bob again using final room membership"
+        );
+
+        let step10 = events
+            .get(9)
+            .expect("step 10 bob playlistChange after bounce should be present");
+        let step10_playlist_change_recipients: Vec<_> = step10
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_change
+                    .as_ref()
+                    .filter(|playlist_change| {
+                        playlist_change.user.as_deref() == Some("bob")
+                            && playlist_change.files == vec!["bob-back-room1.mkv".to_owned()]
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step10_playlist_change_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "sender playlistChange after double room switch should use final room membership (room1)"
+        );
+
+        let step11 = events
+            .get(10)
+            .expect("step 11 bob playlistIndex after bounce should be present");
+        let step11_playlist_index_recipients: Vec<_> = step11
+            .outbound_lines
+            .iter()
+            .filter_map(|outbound| {
+                let ProtocolMessage::Set(payload) = decode_message_line(&outbound.line).ok()?
+                else {
+                    return None;
+                };
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .filter(|playlist_index| {
+                        playlist_index.user.as_deref() == Some("bob") && playlist_index.index == 0
+                    })
+                    .map(|_| outbound.client_id.clone())
+            })
+            .collect();
+        assert_eq!(
+            step11_playlist_index_recipients,
+            vec!["client-1".to_owned(), "client-2".to_owned()],
+            "sender playlistIndex after double room switch should use final room membership (room1)"
+        );
+    }
+
+    #[test]
     fn scripted_server_runtime_chat_room_scoping_scenario_validates_room_scoped_chat_fanout() {
         let events = replay_server_runtime_scenario_fixture(CHAT_ROOM_SCOPING_SCENARIO)
             .expect("chat room-scoping scenario fixture should replay through server runtime");
@@ -7831,6 +8015,23 @@ mod tests {
             }
             Err(err) => panic!(
                 "python fanout interop for playlist room-switch peer-transition scoping scenario should succeed, got: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn python_fanout_roundtrip_matches_server_runtime_on_playlist_double_room_switch_scoping_scenario()
+     {
+        match assert_python_fanout_matches_server_runtime_for_scenario(
+            PLAYLIST_DOUBLE_ROOM_SWITCH_SCOPING_SCENARIO,
+        ) {
+            Ok(()) => {}
+            Err(InteropError::LegacySyncplayCheckoutMissing(_))
+            | Err(InteropError::PythonSpawn { .. }) => {
+                eprintln!("python fanout interop test skipped due to missing local prerequisites");
+            }
+            Err(err) => panic!(
+                "python fanout interop for playlist double-room-switch scoping scenario should succeed, got: {err}"
             ),
         }
     }

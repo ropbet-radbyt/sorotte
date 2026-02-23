@@ -1,0 +1,11 @@
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
+{"client":"client-3","message":{"Hello":{"username":"carol","room":{"name":"room2"},"version":"1.2.255"}}}
+{"client":"client-2","message":{"Set":{"room":{"name":"room2"}}}}
+{"client":"client-2","message":{"Set":{"room":{"name":"room1"}}}}
+{"client":"client-3","message":{"Set":{"playlistChange":{"files":["room2-no-bob-after-bounce.mkv"]}}}}
+{"client":"client-3","message":{"Set":{"playlistIndex":{"index":0}}}}
+{"client":"client-1","message":{"Set":{"playlistChange":{"files":["room1-still-has-bob.mkv","room1-bob-back.mkv"]}}}}
+{"client":"client-1","message":{"Set":{"playlistIndex":{"index":1}}}}
+{"client":"client-2","message":{"Set":{"playlistChange":{"files":["bob-back-room1.mkv"]}}}}
+{"client":"client-2","message":{"Set":{"playlistIndex":{"index":0}}}}
