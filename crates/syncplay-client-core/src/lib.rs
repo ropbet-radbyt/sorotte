@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -58,6 +59,53 @@ const MUSIC_FORMATS: [&str; 8] = [
     ".mp3", ".m4a", ".m4p", ".wav", ".aiff", ".r", ".ogg", ".flac",
 ];
 pub const AUTOPLAY_TICK_INTERVAL_SECONDS: f64 = AUTOPLAY_COUNTDOWN_STEP_SECONDS;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientPingMetricsLegacyCompatible {
+    client_rtt_seconds: f64,
+}
+
+impl ClientPingMetricsLegacyCompatible {
+    pub fn observe_inbound_state(&mut self, state: &StatePayload) {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        self.observe_inbound_state_at(state, now_seconds);
+    }
+
+    fn observe_inbound_state_at(&mut self, state: &StatePayload, now_seconds: f64) {
+        let Some(ping) = state.ping.as_ref() else {
+            return;
+        };
+        let Some(latency_calculation) = ping.latency_calculation else {
+            return;
+        };
+        let sender_rtt = ping.client_rtt.unwrap_or(0.0);
+        if sender_rtt < 0.0 {
+            return;
+        }
+
+        let current_rtt = now_seconds - latency_calculation;
+        if current_rtt < 0.0 {
+            return;
+        }
+        self.client_rtt_seconds = current_rtt;
+    }
+
+    pub fn client_rtt_seconds(self) -> f64 {
+        self.client_rtt_seconds
+    }
+
+    pub fn client_latency_calculation_now(self) -> f64 {
+        let _ = self;
+        unix_wall_clock_time_seconds_legacy_compatible()
+    }
+}
+
+fn unix_wall_clock_time_seconds_legacy_compatible() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoplayCountdownNotification {
@@ -708,6 +756,7 @@ pub struct ClientRuntime<P, C> {
     session: ClientSession,
     player: P,
     control: C,
+    ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible,
     pending_player_playback_telemetry_updates: Vec<PlayerPlaybackTelemetryUpdate>,
 }
 
@@ -721,6 +770,7 @@ where
             session,
             player,
             control,
+            ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: Vec::new(),
         }
     }
@@ -921,6 +971,73 @@ where
         }
 
         Ok(())
+    }
+
+    pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
+        // Reconnect validation owns correction immediately after reconnect state restore.
+        if self.session.reconnect_state_restore_validation_pending {
+            return Ok(());
+        }
+
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+
+        let Some(room_playstate) = self.session.current_room_playstate().cloned() else {
+            return Ok(());
+        };
+        let Some(room_paused) = room_playstate.paused else {
+            return Ok(());
+        };
+        let Some(local_paused) = self.session.local_paused else {
+            return Ok(());
+        };
+        if local_paused == room_paused {
+            return Ok(());
+        }
+        let set_by_is_self = self
+            .session
+            .username
+            .as_deref()
+            .zip(room_playstate.set_by.as_deref())
+            .is_some_and(|(username, set_by)| username == set_by);
+        if set_by_is_self {
+            return Ok(());
+        }
+
+        ClientSession::dispatch_runtime_actions(
+            &[ClientRuntimeAction::SetPaused(room_paused)],
+            &mut self.player,
+            &mut self.control,
+        )?;
+        // Mirror the expected local state to avoid duplicate correction attempts until telemetry catches up.
+        self.session.local_paused = Some(room_paused);
+        Ok(())
+    }
+
+    pub fn run_desync_correction_if_needed(
+        &mut self,
+        now_seconds: f64,
+        local_can_control: bool,
+        dont_slow_down_with_me: bool,
+        speed_supported: bool,
+    ) -> Result<(), PlayerError> {
+        // Reconnect validation owns the correction window immediately after reconnect restore.
+        if self.session.reconnect_state_restore_validation_pending {
+            return Ok(());
+        }
+
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        let Some(local_position) = self.session.local_position else {
+            return Ok(());
+        };
+
+        let actions = self.session.runtime_actions_for_desync_correction(
+            now_seconds,
+            local_position,
+            local_can_control,
+            dont_slow_down_with_me,
+            speed_supported,
+        );
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }
 
     pub fn run_reconnect_playlist_restore_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -1184,6 +1301,48 @@ impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
 {
+    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+        &mut self,
+        inbound_state: StatePayload,
+    ) -> bool {
+        self.ping_metrics_legacy_compatible
+            .observe_inbound_state(&inbound_state);
+        self.run_state_sync_reconcile_with_inbound_state(
+            inbound_state,
+            self.ping_metrics_legacy_compatible
+                .client_latency_calculation_now(),
+            self.ping_metrics_legacy_compatible.client_rtt_seconds(),
+        )
+    }
+
+    pub fn run_state_sync_reconcile_with_inbound_state(
+        &mut self,
+        inbound_state: StatePayload,
+        client_latency_calculation: f64,
+        client_rtt: f64,
+    ) -> bool {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+
+        let (Some(local_position), Some(local_paused)) =
+            (self.session.local_position, self.session.local_paused)
+        else {
+            self.session.apply_state(inbound_state);
+            return false;
+        };
+
+        let outbound_state = self.session.reconcile_state_and_build_response(
+            inbound_state,
+            local_position,
+            local_paused,
+            client_latency_calculation,
+            client_rtt,
+        );
+        self.control
+            .outbound_messages
+            .push(ProtocolMessage::state(outbound_state));
+        true
+    }
+
     pub fn flush_queued_protocol_messages(&mut self) -> Vec<ProtocolMessage> {
         self.control.drain_outbound_messages()
     }
@@ -4877,21 +5036,22 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        AutoplayCountdownNotification, ChatConfig, ChatNotification, ClientRuntime,
-        ClientRuntimeAction, ClientRuntimeControl, ClientSession,
-        ControllerAuthTransitionNotification, DesyncCorrectionAction, FileDifferenceSummary,
-        LEGACY_CHAT_MAX_MESSAGE_LENGTH, LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
-        LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, PrivacyMode, QueuedRuntimeControl,
-        ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
-        ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification,
-        RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
+        AutoplayCountdownNotification, ChatConfig, ChatNotification,
+        ClientPingMetricsLegacyCompatible, ClientRuntime, ClientRuntimeAction,
+        ClientRuntimeControl, ClientSession, ControllerAuthTransitionNotification,
+        DesyncCorrectionAction, FileDifferenceSummary, LEGACY_CHAT_MAX_MESSAGE_LENGTH,
+        LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS, LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH,
+        PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
+        ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionPolicyMode,
+        ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode,
+        UserChangeNotification, unix_wall_clock_time_seconds_legacy_compatible,
     };
     use syncplay_player_api::{
         LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
     };
     use syncplay_protocol::{
-        ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PlaystatePayload, ProtocolMessage,
-        StatePayload, decode_line, decode_message_line,
+        ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload,
+        ProtocolMessage, StatePayload, decode_line, decode_message_line,
     };
 
     fn scenario_fixture_path(name: &str) -> PathBuf {
@@ -9662,6 +9822,295 @@ mod tests {
         assert!(
             runtime.drain_player_playback_telemetry_updates().is_empty(),
             "no additional telemetry sample should be required once cached telemetry is used"
+        );
+    }
+
+    #[test]
+    fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("remote state should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_room_pause_sync_if_needed()
+            .expect("room pause sync should dispatch");
+
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "remote room playstate pause mismatch should issue player unpause"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(false),
+            "room pause sync should optimistically mirror local pause state until next telemetry sample"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![PlayerPlaybackTelemetryUpdate::default().with_paused(true)],
+            "room pause sync should preserve synced telemetry for diagnostics drains"
+        );
+    }
+
+    #[test]
+    fn client_runtime_room_pause_sync_skips_when_room_playstate_set_by_local_user() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+            )
+            .expect("self-originated state should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_room_pause_sync_if_needed()
+            .expect("room pause sync should not fail");
+
+        assert_eq!(
+            runtime.player().paused,
+            None,
+            "self-originated room playstate should not trigger local pause correction"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(true),
+            "telemetry sync should still update local paused snapshot"
+        );
+    }
+
+    #[test]
+    fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state_seen() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(12.5)
+                    .with_paused(true),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let sent = runtime.run_state_sync_reconcile_with_inbound_state(
+            StatePayload::new()
+                .with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(10.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                )
+                .with_ping(PingPayload::new().with_latency_calculation(42.0)),
+            100.0,
+            0.25,
+        );
+
+        assert!(sent, "state sync should emit after telemetry is available");
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            1,
+            "state sync should queue one outbound state message"
+        );
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0]
+        else {
+            panic!("queued message should be State");
+        };
+        assert_eq!(
+            state_message
+                .state
+                .playstate
+                .as_ref()
+                .and_then(|p| p.position),
+            Some(12.5),
+            "outbound state should report local position"
+        );
+        assert_eq!(
+            state_message
+                .state
+                .playstate
+                .as_ref()
+                .and_then(|p| p.paused),
+            Some(true),
+            "outbound state should report local paused state"
+        );
+        assert_eq!(
+            state_message
+                .state
+                .ping
+                .as_ref()
+                .and_then(|ping| ping.latency_calculation),
+            Some(42.0),
+            "outbound ping should echo inbound latencyCalculation when present"
+        );
+        assert_eq!(
+            state_message
+                .state
+                .ping
+                .as_ref()
+                .and_then(|ping| ping.client_latency_calculation),
+            Some(100.0),
+            "outbound ping should include client latency calculation"
+        );
+        assert_eq!(
+            state_message
+                .state
+                .ping
+                .as_ref()
+                .and_then(|ping| ping.client_rtt),
+            Some(0.25),
+            "outbound ping should include client RTT"
+        );
+    }
+
+    #[test]
+    fn client_runtime_state_sync_reconcile_legacy_ping_wrapper_tracks_and_emits_ping_metrics() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(12.5)
+                    .with_paused(true),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let inbound_latency_calculation = unix_wall_clock_time_seconds_legacy_compatible() - 0.05;
+        let sent = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+            StatePayload::new()
+                .with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(10.0)
+                        .with_paused(false)
+                        .with_set_by("bob"),
+                )
+                .with_ping(
+                    PingPayload::new().with_latency_calculation(inbound_latency_calculation),
+                ),
+        );
+
+        assert!(
+            sent,
+            "legacy ping wrapper should emit after telemetry is available"
+        );
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0]
+        else {
+            panic!("queued message should be State");
+        };
+        let ping = state_message
+            .state
+            .ping
+            .as_ref()
+            .expect("outbound state should include ping");
+        assert_eq!(
+            ping.latency_calculation,
+            Some(inbound_latency_calculation),
+            "outbound ping should echo inbound latencyCalculation"
+        );
+        assert!(
+            ping.client_latency_calculation.unwrap_or(0.0) > 0.0,
+            "outbound ping should include non-zero clientLatencyCalculation"
+        );
+        let client_rtt = ping
+            .client_rtt
+            .expect("outbound ping should include clientRtt");
+        assert!(
+            (0.0..2.0).contains(&client_rtt),
+            "outbound ping should include a plausible clientRtt, got {client_rtt}"
+        );
+    }
+
+    #[test]
+    fn client_ping_metrics_legacy_compatible_tracks_rtt_from_inbound_state_ping() {
+        let mut ping_metrics = ClientPingMetricsLegacyCompatible::default();
+        let inbound_state = StatePayload::new().with_ping(
+            PingPayload::new()
+                .with_latency_calculation(100.0)
+                .with_client_rtt(0.25),
+        );
+
+        ping_metrics.observe_inbound_state_at(&inbound_state, 100.2);
+
+        assert!(
+            (ping_metrics.client_rtt_seconds() - 0.2).abs() < 1e-9,
+            "client RTT should be computed from now - inbound latencyCalculation"
+        );
+    }
+
+    #[test]
+    fn client_ping_metrics_legacy_compatible_ignores_invalid_negative_ping_inputs() {
+        let mut ping_metrics = ClientPingMetricsLegacyCompatible::default();
+
+        ping_metrics.observe_inbound_state_at(
+            &StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_latency_calculation(10.0)
+                    .with_client_rtt(0.1),
+            ),
+            10.4,
+        );
+        let baseline = ping_metrics.client_rtt_seconds();
+
+        ping_metrics.observe_inbound_state_at(
+            &StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_latency_calculation(20.0)
+                    .with_client_rtt(-1.0),
+            ),
+            20.5,
+        );
+        ping_metrics.observe_inbound_state_at(
+            &StatePayload::new().with_ping(PingPayload::new().with_latency_calculation(30.0)),
+            29.0,
+        );
+
+        assert_eq!(
+            ping_metrics.client_rtt_seconds(),
+            baseline,
+            "negative sender RTT or negative computed RTT should not overwrite the tracked RTT"
         );
     }
 

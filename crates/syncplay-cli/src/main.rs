@@ -15,11 +15,11 @@ use syncplay_client_core::{
     ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
     ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
 };
-use syncplay_player_api::{PlayerAdapter, PlayerPlaybackTelemetryUpdate};
+use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{
     HelloPayload, PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload,
-    decode_message_line, encode_message_line,
+    StatePayload, decode_message_line, encode_message_line,
 };
 use syncplay_server::ServerApp;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -4380,6 +4380,17 @@ fn spawn_legacy_external_player_if_requested_legacy_compatible(
         return Ok(false);
     }
 
+    let _child = spawn_legacy_external_player_from_spec_legacy_compatible(&spec)?;
+    eprintln!(
+        "info: launched external player '{}' (legacy unmanaged startup path)",
+        spec.program.display()
+    );
+    Ok(true)
+}
+
+fn spawn_legacy_external_player_from_spec_legacy_compatible(
+    spec: &LegacyExternalPlayerLaunchSpec,
+) -> anyhow::Result<Child> {
     let mut command = Command::new(&spec.program);
     if let Some(parent) = spec.program.parent()
         && !parent.as_os_str().is_empty()
@@ -4396,12 +4407,7 @@ fn spawn_legacy_external_player_if_requested_legacy_compatible(
             spec.program.display(),
             spec.args
         )
-    })?;
-    eprintln!(
-        "info: launched external player '{}' (legacy unmanaged startup path)",
-        spec.program.display()
-    );
-    Ok(true)
+    })
 }
 
 fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible<P>(
@@ -4425,28 +4431,75 @@ where
     let startup_args =
         parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&overrides.player_args);
     if let Some(start_position_seconds) = startup_args.start_position_seconds {
-        player
-            .set_position(start_position_seconds)
-            .map_err(|error| {
-                anyhow!(
-                    "failed applying legacy explicit-mpv-IPC startup '--start' override: {error}"
-                )
-            })?;
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_position(start_position_seconds)
+        })
+        .map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--start' override: {error}")
+        })?;
         applied = true;
     }
     if let Some(paused) = startup_args.paused {
-        player.set_paused(paused).map_err(|error| {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_paused(paused)
+        })
+        .map_err(|error| {
             anyhow!("failed applying legacy explicit-mpv-IPC startup '--pause' override: {error}")
         })?;
         applied = true;
     }
     if let Some(playback_rate) = startup_args.playback_rate {
-        player.set_playback_rate(playback_rate).map_err(|error| {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_playback_rate(playback_rate)
+        })
+        .map_err(|error| {
             anyhow!("failed applying legacy explicit-mpv-IPC startup '--speed' override: {error}")
         })?;
         applied = true;
     }
     Ok(applied)
+}
+
+fn should_retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+    error: &PlayerError,
+) -> bool {
+    let PlayerError::OperationFailed(message) = error else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    lower.contains("property unavailable") || lower.contains("no file loaded")
+}
+
+fn retry_explicit_mpv_ipc_startup_player_command_legacy_compatible<F>(
+    mut operation: F,
+) -> Result<(), PlayerError>
+where
+    F: FnMut() -> Result<(), PlayerError>,
+{
+    const MAX_ATTEMPTS: usize = 20;
+    const RETRY_DELAY: Duration = Duration::from_millis(25);
+
+    let mut last_error = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match operation() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt + 1 < MAX_ATTEMPTS
+                    && should_retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+                        &error,
+                    ) =>
+            {
+                last_error = Some(error);
+                std::thread::sleep(RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        PlayerError::OperationFailed(
+            "startup command retry unexpectedly exhausted without error".to_owned(),
+        )
+    }))
 }
 
 fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
@@ -5791,7 +5844,9 @@ where
     let mut local_user_offset_seconds = 0.0f64;
     let mut pending_ready_at_start_on_server_hello =
         config.ready_at_start_override.unwrap_or(false);
+    let mut outbound_state_sync_enabled = false;
     let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
+    let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
@@ -5802,10 +5857,24 @@ where
             line = reader.next_line() => {
                 match line? {
                     Some(line) => {
+                        let decoded_inbound_message = decode_message_line(&line).ok();
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello
-                            && matches!(decode_message_line(&line), Ok(ProtocolMessage::Hello(_)));
+                            && matches!(
+                                decoded_inbound_message.as_ref(),
+                                Some(ProtocolMessage::Hello(_))
+                            );
                         let now_seconds = connected_start.elapsed().as_secs_f64();
-                        runtime.session_mut().apply_message_json_at(&line, now_seconds)?;
+                        if let Some(ProtocolMessage::State(state_message)) =
+                            decoded_inbound_message.as_ref()
+                        {
+                            outbound_state_sync_enabled = true;
+                            let _ = runtime
+                                .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                                    state_message.state.clone(),
+                                );
+                        } else {
+                            runtime.session_mut().apply_message_json_at(&line, now_seconds)?;
+                        }
                         if inbound_is_server_hello {
                             let _ = runtime.run_set_ready_for_user("", true, false)?;
                             pending_ready_at_start_on_server_hello = false;
@@ -5822,12 +5891,19 @@ where
                         if shared_playlists_enabled {
                             runtime.run_reconnect_playlist_restore_if_needed()?;
                         }
+                        runtime.run_room_pause_sync_if_needed()?;
                         let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
                         runtime.run_readiness_unpause_attempt(
                             now_seconds,
                             inputs.readiness_supported,
                             inputs.local_can_control,
                             inputs.is_playing_music,
+                        )?;
+                        runtime.run_desync_correction_if_needed(
+                            now_seconds,
+                            inputs.local_can_control,
+                            dont_slow_down_with_me,
+                            true,
                         )?;
                         runtime.run_reconnect_state_restore_validation_if_needed()?;
                         publish_pending_local_file_updates(runtime, config)?;
@@ -5884,6 +5960,7 @@ where
             }
             _ = autoplay_tick.tick() => {
                 let now_seconds = connected_start.elapsed().as_secs_f64();
+                runtime.run_room_pause_sync_if_needed()?;
                 let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
                 runtime.update_autoplay_check(
                     inputs.readiness_supported,
@@ -5897,7 +5974,19 @@ where
                     inputs.is_playing_music,
                     inputs.recently_advanced,
                 )?;
+                runtime.run_desync_correction_if_needed(
+                    now_seconds,
+                    inputs.local_can_control,
+                    dont_slow_down_with_me,
+                    true,
+                )?;
                 runtime.run_reconnect_state_restore_validation_if_needed()?;
+                if outbound_state_sync_enabled {
+                    let _ = runtime
+                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                            StatePayload::new(),
+                        );
+                }
                 publish_pending_local_file_updates(runtime, config)?;
                 flush_runtime_protocol_lines(runtime, &mut writer).await?;
                 if log_player_telemetry || log_player_drift {
@@ -6358,13 +6447,14 @@ mod tests {
         run_local_playlist_delete_index_legacy_compatible,
         run_local_playlist_select_index_legacy_compatible,
         should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
+        spawn_legacy_external_player_from_spec_legacy_compatible,
         upsert_syncplay_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
         user_change_notification_message,
     };
     use serde_json::{Value, json};
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
         ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
@@ -6374,7 +6464,10 @@ mod tests {
     };
     use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
     use syncplay_player_mpv::MpvAdapter;
-    use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
+    use syncplay_protocol::{
+        HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage, StatePayload,
+        decode_message_line, encode_message_line,
+    };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc::unbounded_channel;
@@ -12886,6 +12979,187 @@ mod tests {
             &config,
             None,
             Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_ping_updates_outbound_state_ping_metrics() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+
+            let inbound_latency_calculation = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(0.0)
+                - 0.05;
+            let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(1.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by("remote-user"),
+                    )
+                    .with_ping(
+                        PingPayload::new().with_latency_calculation(inbound_latency_calculation),
+                    ),
+            ))
+            .expect("inbound state line should encode");
+            writer
+                .write_all(format!("{inbound_state_line}\n").as_bytes())
+                .await
+                .expect("inbound state write should succeed");
+
+            let scan_deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+            let mut observed_state_ping = None;
+            while tokio::time::Instant::now() < scan_deadline {
+                let remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                let next_line = tokio::time::timeout(remaining, lines.next_line()).await;
+                let Ok(Ok(Some(line))) = next_line else {
+                    break;
+                };
+                let message = decode_message_line(&line).expect("line should decode");
+                let ProtocolMessage::State(state_message) = message else {
+                    continue;
+                };
+                observed_state_ping = state_message.state.ping;
+                if observed_state_ping.is_some() {
+                    break;
+                }
+            }
+
+            let ping = observed_state_ping.expect("client should emit outbound state with ping");
+            let echoed_latency = ping
+                .latency_calculation
+                .expect("outbound state should echo inbound latencyCalculation");
+            assert!(
+                (echoed_latency - inbound_latency_calculation).abs() < 1e-6,
+                "outbound state should echo inbound latencyCalculation exactly"
+            );
+
+            let client_latency = ping
+                .client_latency_calculation
+                .expect("outbound state should include clientLatencyCalculation");
+            assert!(
+                client_latency > 0.0,
+                "outbound state should include a non-zero clientLatencyCalculation"
+            );
+
+            let client_rtt = ping
+                .client_rtt
+                .expect("outbound state should include clientRtt");
+            assert!(
+                (0.0..2.0).contains(&client_rtt),
+                "outbound state should include a plausible clientRtt, got {client_rtt}"
+            );
+
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let config = ClientLoopConfig {
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            server_password: None,
+            username: "cli-user".to_owned(),
+            room: "cli-room".to_owned(),
+            version: "1.2.255".to_owned(),
+            max_retries: 0,
+            max_connected_runtime_seconds: 0.8,
+            readiness_supported_override: Some(false),
+            local_can_control_override: None,
+            is_playing_music_override: None,
+            recently_advanced_override: None,
+            autoplay_enabled: false,
+            autoplay_require_same_filenames: false,
+            ready_at_start_override: None,
+            shared_playlists_enabled_override: None,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            rewind_on_desync_override: None,
+            fastforward_on_desync_override: None,
+            slow_on_desync_override: None,
+            dont_slow_down_with_me_override: None,
+            rewind_threshold_seconds_override: None,
+            fastforward_threshold_seconds_override: None,
+            slowdown_threshold_seconds_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
+            filename_privacy_mode: PrivacyMode::SendRaw,
+            filesize_privacy_mode: PrivacyMode::SendRaw,
+            show_duration_notification_override: None,
+            different_duration_threshold_seconds_override: None,
+            show_same_room_osd_override: None,
+            show_osd_warnings_override: None,
+            show_noncontroller_osd_override: None,
+            show_different_room_osd_override: None,
+            controlled_room_password_override: None,
+        };
+        let mut runtime = create_client_runtime(&config);
+        runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(12.5),
+            );
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
             &mut notification_sink,
             &mut file_difference_sink,
         )
@@ -19702,6 +19976,1157 @@ mod tests {
             expected_name,
             published_lines
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args() {
+        use std::process::Child;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-cli-unmanaged-smoke-{}-{unique}",
+            std::process::id()
+        );
+
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some(mpv_bin.to_string_lossy().into_owned()),
+            file: Some(media_file.to_string_lossy().into_owned()),
+            player_args: vec![
+                "--force-window=no".to_owned(),
+                "--idle=yes".to_owned(),
+                "--pause".to_owned(),
+                format!("--input-ipc-server={pipe_path}"),
+                "--start=1.5".to_owned(),
+                "--speed=1.25".to_owned(),
+            ],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+            .expect("player-path should produce unmanaged external launch spec");
+        assert_eq!(
+            spec.program, mpv_bin,
+            "launch spec should preserve the requested external player path"
+        );
+        assert_eq!(
+            spec.args.last(),
+            Some(&media_file.to_string_lossy().into_owned()),
+            "legacy unmanaged startup should append file after player args"
+        );
+
+        let mut child = MpvChildGuard(
+            spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+                .expect("legacy unmanaged external spawn should start real mpv"),
+        );
+
+        let mut adapter = super::connect_mpv_adapter_with_retry(
+            &pipe_path,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .expect("should attach to unmanaged mpv JSON IPC provided via forwarded player args");
+
+        let expected_name = media_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("media file should have utf-8 filename")
+            .to_owned();
+        let started = Instant::now();
+        let timeout = Duration::from_secs(12);
+        let poll_interval = Duration::from_millis(50);
+        let mut saw_local_file = false;
+        let mut saw_pause_true = false;
+        let mut saw_speed = false;
+        let mut saw_position = false;
+        let mut last_update = None;
+        let mut last_telemetry = None;
+
+        while started.elapsed() < timeout {
+            if let Some(update) = adapter.take_local_file_update() {
+                if update.name == expected_name {
+                    saw_local_file = true;
+                }
+                last_update = Some(update);
+            }
+            while let Some(telemetry) = adapter.take_playback_telemetry_update() {
+                last_telemetry = Some(telemetry);
+            }
+
+            if adapter.paused() {
+                saw_pause_true = true;
+            }
+            if (adapter.playback_rate() - 1.25).abs() < 0.05 {
+                saw_speed = true;
+            }
+            if adapter.position_seconds() >= 1.0 {
+                saw_position = true;
+            }
+
+            if saw_local_file && saw_pause_true && saw_speed && saw_position {
+                return;
+            }
+            std::thread::sleep(poll_interval);
+        }
+
+        // Keep child alive until after diagnostics are captured; kill on drop.
+        let _ = &mut child;
+        panic!(
+            "expected unmanaged external mpv launch to apply file/start/pause/speed within {:?} (mpv_bin={}, media={}, pipe={}); state: saw_local_file={}, saw_pause_true={}, saw_speed={}, saw_position={}; adapter_path={:?}; paused={}; position={}; speed={}; last_update={:?}; last_telemetry={:?}",
+            timeout,
+            spec.program.display(),
+            media_file.display(),
+            pipe_path,
+            saw_local_file,
+            saw_pause_true,
+            saw_speed,
+            saw_position,
+            adapter.current_path(),
+            adapter.paused(),
+            adapter.position_seconds(),
+            adapter.playback_rate(),
+            last_update,
+            last_telemetry
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    async fn connected_client_session_real_mpv_explicit_ipc_smoke_publishes_local_file_and_applies_local_seek_command()
+     {
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-cli-e2e-smoke-{}-{unique}",
+            std::process::id()
+        );
+
+        let _mpv_child = MpvChildGuard(
+            Command::new(&mpv_bin)
+                .current_dir(
+                    mpv_bin
+                        .parent()
+                        .expect("mpv binary path should have a parent directory"),
+                )
+                .arg("--pause")
+                .arg("--force-window=no")
+                .arg("--idle=yes")
+                .arg(format!("--input-ipc-server={pipe_path}"))
+                .arg(&media_file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("standalone mpv should start for e2e explicit-IPC smoke"),
+        );
+        let _warmup_attach = super::connect_mpv_adapter_with_retry(
+            &pipe_path,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .expect("pre-runtime explicit mpv JSON IPC attach should succeed");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let expected_name = media_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("media file should have utf-8 filename")
+            .to_owned();
+        let (file_publish_tx, file_publish_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+
+            let server_hello = encode_message_line(&ProtocolMessage::hello(
+                HelloPayload::new("server", "cli-room", "1.7.5")
+                    .with_features(json!({"chat": true, "readiness": true})),
+            ))
+            .expect("server hello should encode");
+            let server_hello = format!("{server_hello}\n");
+            writer
+                .write_all(server_hello.as_bytes())
+                .await
+                .expect("server hello write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server hello flush should succeed");
+
+            let mut saw_file_publish = false;
+            let publish_wait = Duration::from_secs(8);
+            let publish_started = Instant::now();
+            while publish_started.elapsed() < publish_wait {
+                let maybe_line =
+                    tokio::time::timeout(Duration::from_millis(500), lines.next_line()).await;
+                let line = match maybe_line {
+                    Ok(Ok(Some(line))) => line,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(error)) => panic!("client line read should succeed: {error}"),
+                    Err(_) => continue,
+                };
+                let message = decode_message_line(&line).expect("client line should decode");
+                if let ProtocolMessage::Set(payload) = message
+                    && let Some(file) = payload.set.file
+                    && file.name.as_deref() == Some(expected_name.as_str())
+                {
+                    saw_file_publish = true;
+                }
+                if saw_file_publish {
+                    break;
+                }
+            }
+            assert!(
+                saw_file_publish,
+                "expected client to publish local file metadata"
+            );
+            let _ = file_publish_tx.send(());
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        let old_managed = std::env::var_os(key_managed);
+        unsafe {
+            std::env::set_var(key_client_ipc, &pipe_path);
+            std::env::remove_var(key_fallback_ipc);
+            std::env::remove_var(key_managed);
+        }
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 6.0;
+        let (mut runtime, _managed_guard) =
+            create_client_runtime_with_managed_mpv_support(&config, None)
+                .expect("runtime creation with explicit mpv IPC should succeed");
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let (sender, mut receiver) = unbounded_channel::<String>();
+        tokio::spawn(async move {
+            let _ = file_publish_rx.await;
+            sender
+                .send("seek 2".to_owned())
+                .expect("seek command should queue");
+        });
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            Some(&mut receiver),
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should observe peer close or runtime timeout"
+        );
+        server_task.await.expect("server task join should succeed");
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+        match old_managed {
+            Some(value) => unsafe { std::env::set_var(key_managed, value) },
+            None => unsafe { std::env::remove_var(key_managed) },
+        }
+        assert!(
+            runtime.player().position_seconds() >= 1.5,
+            "expected local seek command to move real mpv via runtime loop; position={}",
+            runtime.player().position_seconds()
+        );
+        assert!(
+            runtime.player().paused(),
+            "expected real mpv to remain paused after local seek command; position={}; speed={}",
+            runtime.player().position_seconds(),
+            runtime.player().playback_rate()
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    async fn connected_client_session_real_mpv_explicit_ipc_reconnect_validation_smoke_applies_server_playstate_to_real_player()
+     {
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        use syncplay_protocol::{PlaystatePayload, StatePayload};
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-cli-e2e-reconnect-smoke-{}-{unique}",
+            std::process::id()
+        );
+
+        let _mpv_child = MpvChildGuard(
+            Command::new(&mpv_bin)
+                .current_dir(
+                    mpv_bin
+                        .parent()
+                        .expect("mpv binary path should have a parent directory"),
+                )
+                .arg("--pause")
+                .arg("--force-window=no")
+                .arg("--idle=yes")
+                .arg(format!("--input-ipc-server={pipe_path}"))
+                .arg(&media_file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("standalone mpv should start for reconnect validation explicit-IPC smoke"),
+        );
+        let _warmup_attach = super::connect_mpv_adapter_with_retry(
+            &pipe_path,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .expect("pre-runtime explicit mpv JSON IPC attach should succeed");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let expected_name = media_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("media file should have utf-8 filename")
+            .to_owned();
+        let reconnect_target_position = 2.0_f64;
+
+        let server_task = tokio::spawn(async move {
+            // First connection: normal publish + disconnect to trigger reconnect path.
+            let (socket1, _) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
+                .await
+                .expect("first accept should not timeout")
+                .expect("first accept should succeed");
+            let (reader1, mut writer1) = socket1.into_split();
+            let mut lines1 = BufReader::new(reader1).lines();
+
+            let hello1 = lines1
+                .next_line()
+                .await
+                .expect("first hello line read should succeed")
+                .expect("first hello line should be present");
+            assert!(
+                hello1.contains("\"Hello\""),
+                "first client line on first connection should be Hello"
+            );
+
+            let server_hello = encode_message_line(&ProtocolMessage::hello(
+                HelloPayload::new("server", "cli-room", "1.7.5")
+                    .with_features(json!({"chat": true, "readiness": true})),
+            ))
+            .expect("server hello should encode");
+            writer1
+                .write_all(format!("{server_hello}\n").as_bytes())
+                .await
+                .expect("first server hello write should succeed");
+            writer1
+                .flush()
+                .await
+                .expect("first server hello flush should succeed");
+
+            let mut saw_first_file_publish = false;
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(8) {
+                let maybe_line =
+                    tokio::time::timeout(Duration::from_millis(500), lines1.next_line()).await;
+                let line = match maybe_line {
+                    Ok(Ok(Some(line))) => line,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(error)) => panic!("first connection client line read failed: {error}"),
+                    Err(_) => continue,
+                };
+                let message =
+                    decode_message_line(&line).expect("first connection line should decode");
+                if let ProtocolMessage::Set(payload) = message
+                    && let Some(file) = payload.set.file
+                    && file.name.as_deref() == Some(expected_name.as_str())
+                {
+                    saw_first_file_publish = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_first_file_publish,
+                "expected first connection to publish local file metadata"
+            );
+
+            writer1
+                .shutdown()
+                .await
+                .expect("first connection shutdown should succeed");
+
+            // Second connection: send room playstate after reconnect so validation corrects player.
+            let (socket2, _) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
+                .await
+                .expect("second accept should not timeout")
+                .expect("second accept should succeed");
+            let (reader2, mut writer2) = socket2.into_split();
+            let mut lines2 = BufReader::new(reader2).lines();
+
+            let hello2 = lines2
+                .next_line()
+                .await
+                .expect("second hello line read should succeed")
+                .expect("second hello line should be present");
+            assert!(
+                hello2.contains("\"Hello\""),
+                "first client line on second connection should be Hello"
+            );
+
+            writer2
+                .write_all(format!("{server_hello}\n").as_bytes())
+                .await
+                .expect("second server hello write should succeed");
+            writer2
+                .flush()
+                .await
+                .expect("second server hello flush should succeed");
+
+            let observe_started = Instant::now();
+            while observe_started.elapsed() < Duration::from_millis(500) {
+                let maybe_line =
+                    tokio::time::timeout(Duration::from_millis(300), lines2.next_line()).await;
+                let line = match maybe_line {
+                    Ok(Ok(Some(line))) => line,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(error)) => panic!("second connection client line read failed: {error}"),
+                    Err(_) => continue,
+                };
+                let _ = decode_message_line(&line).expect("second connection line should decode");
+            }
+
+            // Let the runtime hit at least one tick to sync fresh player telemetry into session
+            // before we send the reconnect room playstate. Reconnect file restore/republish
+            // timing is covered elsewhere and can race with this smoke's server pacing.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+
+            let state_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(reconnect_target_position)
+                        .with_paused(true)
+                        .with_do_seek(false)
+                        .with_set_by("remote-user"),
+                ),
+            ))
+            .expect("server state playstate should encode");
+            writer2
+                .write_all(format!("{state_line}\n").as_bytes())
+                .await
+                .expect("second server state write should succeed");
+            writer2
+                .flush()
+                .await
+                .expect("second server state flush should succeed");
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            writer2
+                .shutdown()
+                .await
+                .expect("second connection shutdown should succeed");
+        });
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        let old_managed = std::env::var_os(key_managed);
+        unsafe {
+            std::env::set_var(key_client_ipc, &pipe_path);
+            std::env::remove_var(key_fallback_ipc);
+            std::env::remove_var(key_managed);
+        }
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 8.0;
+        config.readiness_supported_override = Some(false);
+        let (mut runtime, _managed_guard) =
+            create_client_runtime_with_managed_mpv_support(&config, None)
+                .expect("runtime creation with explicit mpv IPC should succeed");
+
+        let stream1 = TcpStream::connect(addr)
+            .await
+            .expect("client should connect for first session");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+        let exit1 = run_connected_client_session(
+            stream1,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("first connected session should run");
+        assert_eq!(
+            exit1,
+            ConnectedSessionExit::TransportClosed,
+            "first session should close to trigger reconnect path"
+        );
+
+        runtime
+            .run_disconnect(0.5)
+            .expect("disconnect handling should succeed");
+        runtime
+            .run_reconnect_retry(0)
+            .expect("reconnect retry planning should succeed");
+
+        // Seed a local mismatch after reconnect reset so validation has something to correct.
+        super::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            runtime.player_mut().set_position(0.0)
+        })
+        .expect("real mpv position seed should succeed");
+        super::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            runtime.player_mut().set_paused(false)
+        })
+        .expect("real mpv pause seed should succeed");
+
+        let stream2 = TcpStream::connect(addr)
+            .await
+            .expect("client should connect for second session");
+        let exit2 = run_connected_client_session(
+            stream2,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("second connected session should run");
+        assert!(
+            matches!(
+                exit2,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "second session should observe peer close or runtime timeout"
+        );
+        server_task.await.expect("server task join should succeed");
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+        match old_managed {
+            Some(value) => unsafe { std::env::set_var(key_managed, value) },
+            None => unsafe { std::env::remove_var(key_managed) },
+        }
+
+        let final_position = runtime.player().position_seconds();
+        assert!(
+            runtime.player().paused(),
+            "expected reconnect validation to pause real mpv from server room playstate; position={final_position}; speed={}",
+            runtime.player().playback_rate()
+        );
+        assert!(
+            (final_position - reconnect_target_position).abs() <= 0.9,
+            "expected reconnect validation to seek real mpv near target from server room playstate; target={reconnect_target_position}; position={final_position}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_desync_rewind_to_real_player()
+     {
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        use syncplay_protocol::{PlaystatePayload, StatePayload};
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-cli-state-smoke-{}-{unique}",
+            std::process::id()
+        );
+
+        let _mpv_child = MpvChildGuard(
+            Command::new(&mpv_bin)
+                .current_dir(
+                    mpv_bin
+                        .parent()
+                        .expect("mpv binary path should have a parent directory"),
+                )
+                .arg("--pause")
+                .arg("--force-window=no")
+                .arg("--idle=yes")
+                .arg(format!("--input-ipc-server={pipe_path}"))
+                .arg(&media_file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("standalone mpv should start for explicit-IPC state smoke"),
+        );
+        let _warmup_attach = super::connect_mpv_adapter_with_retry(
+            &pipe_path,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .expect("pre-runtime explicit mpv JSON IPC attach should succeed");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let expected_name = media_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("media file should have utf-8 filename")
+            .to_owned();
+        let target_position = 1.0_f64;
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+
+            let server_hello = encode_message_line(&ProtocolMessage::hello(
+                HelloPayload::new("server", "cli-room", "1.7.5").with_features(json!({
+                    "chat": true,
+                    "readiness": false
+                })),
+            ))
+            .expect("server hello should encode");
+            writer
+                .write_all(format!("{server_hello}\n").as_bytes())
+                .await
+                .expect("server hello write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server hello flush should succeed");
+
+            let mut saw_file_publish = false;
+            let publish_started = Instant::now();
+            while publish_started.elapsed() < Duration::from_secs(8) {
+                let maybe_line =
+                    tokio::time::timeout(Duration::from_millis(500), lines.next_line()).await;
+                let line = match maybe_line {
+                    Ok(Ok(Some(line))) => line,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(error)) => panic!("client line read should succeed: {error}"),
+                    Err(_) => continue,
+                };
+                let message = decode_message_line(&line).expect("client line should decode");
+                if let ProtocolMessage::Set(payload) = message
+                    && let Some(file) = payload.set.file
+                    && file.name.as_deref() == Some(expected_name.as_str())
+                {
+                    saw_file_publish = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_file_publish,
+                "expected client to publish local file metadata before inbound state"
+            );
+
+            // Allow at least one runtime tick / telemetry sync before sending room playstate.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+
+            let state_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(target_position)
+                        .with_paused(false)
+                        .with_do_seek(false)
+                        .with_set_by("remote-user"),
+                ),
+            ))
+            .expect("server state should encode");
+            writer
+                .write_all(format!("{state_line}\n").as_bytes())
+                .await
+                .expect("server state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server state flush should succeed");
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        let old_managed = std::env::var_os(key_managed);
+        unsafe {
+            std::env::set_var(key_client_ipc, &pipe_path);
+            std::env::remove_var(key_fallback_ipc);
+            std::env::remove_var(key_managed);
+        }
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 6.0;
+        config.readiness_supported_override = Some(false);
+        config.rewind_on_desync_override = Some(true);
+        config.fastforward_on_desync_override = Some(false);
+        config.slow_on_desync_override = Some(false);
+        config.rewind_threshold_seconds_override = Some(0.5);
+
+        let (mut runtime, _managed_guard) =
+            create_client_runtime_with_managed_mpv_support(&config, None)
+                .expect("runtime creation with explicit mpv IPC should succeed");
+
+        // Seed a local position ahead of the room target so rewind desync correction should apply.
+        super::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            runtime.player_mut().set_paused(true)
+        })
+        .expect("real mpv pause seed should succeed");
+        super::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            runtime.player_mut().set_position(6.0)
+        })
+        .expect("real mpv position seed should succeed");
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should observe peer close or runtime timeout"
+        );
+        server_task.await.expect("server task join should succeed");
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+        match old_managed {
+            Some(value) => unsafe { std::env::set_var(key_managed, value) },
+            None => unsafe { std::env::remove_var(key_managed) },
+        }
+
+        let final_position = runtime.player().position_seconds();
+        assert!(
+            !runtime.player().paused(),
+            "expected normal-session inbound room playstate pause sync to unpause real mpv; position={final_position}; speed={}",
+            runtime.player().playback_rate()
+        );
+        assert!(
+            (final_position - target_position).abs() <= 0.9,
+            "expected normal-session inbound room playstate desync correction to rewind real mpv near target; target={target_position}; position={final_position}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires local standalone mpv binary and media asset"]
+    fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_real_mpv() {
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        struct MpvChildGuard(Child);
+
+        impl Drop for MpvChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = cli_smoke_repo_root();
+        let mpv_bin = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .or_else(super::find_default_managed_mpv_bin)
+            .expect("expected mpv binary in ./mpv or SYNCPLAY_MPV_SMOKE_BIN");
+        let media_file = std::env::var_os("SYNCPLAY_MPV_SMOKE_MEDIA")
+            .map(PathBuf::from)
+            .or_else(|| first_media_file(&root.join("media")))
+            .expect("expected media file in ./media or SYNCPLAY_MPV_SMOKE_MEDIA");
+
+        if !mpv_bin.exists() {
+            panic!("mpv binary not found at {}", mpv_bin.display());
+        }
+        if !media_file.exists() {
+            panic!("media file not found at {}", media_file.display());
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis();
+        let pipe_path = format!(
+            r"\\.\pipe\syncplay-rust-cli-explicit-ipc-smoke-{}-{unique}",
+            std::process::id()
+        );
+
+        let _child = MpvChildGuard(
+            Command::new(&mpv_bin)
+                .current_dir(
+                    mpv_bin
+                        .parent()
+                        .expect("mpv binary path should have a parent directory"),
+                )
+                .arg("--pause")
+                .arg("--force-window=no")
+                .arg("--idle=yes")
+                .arg(format!("--input-ipc-server={pipe_path}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("standalone mpv should start for explicit IPC smoke test"),
+        );
+
+        let mut adapter = super::connect_mpv_adapter_with_retry(
+            &pipe_path,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .expect("should attach to explicit mpv JSON IPC");
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        unsafe {
+            std::env::set_var(key_client_ipc, &pipe_path);
+            std::env::remove_var(key_fallback_ipc);
+        }
+
+        let result = (|| {
+            let overrides = LegacyClientArgOverrides {
+                connect_requested: true,
+                no_store: false,
+                debug_requested: false,
+                force_gui_prompt_requested: false,
+                clear_gui_data_requested: false,
+                language: None,
+                player_path: None,
+                file: Some(media_file.to_string_lossy().into_owned()),
+                player_args: vec![
+                    "--fs".to_owned(), // unsupported in explicit-IPC subset; should be ignored
+                    "--start=1.5".to_owned(),
+                    "--pause".to_owned(),
+                    "--speed=1.25".to_owned(),
+                ],
+                load_playlist_from_file: None,
+                host: None,
+                port: None,
+                username: None,
+                room: None,
+                controlled_room_password_override: None,
+                show_help: false,
+                show_version: false,
+                unknown_options: vec![],
+            };
+
+            let applied =
+                apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                    &mut adapter,
+                    &overrides,
+                )
+                .expect("explicit-mpv-IPC startup helper should succeed against real mpv");
+            assert!(
+                applied,
+                "startup helper should report that it applied actions"
+            );
+
+            let expected_name = media_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("media file should have utf-8 filename")
+                .to_owned();
+            let started = Instant::now();
+            let timeout = Duration::from_secs(12);
+            let poll_interval = Duration::from_millis(50);
+            let mut saw_local_file = false;
+            let mut saw_pause_true = false;
+            let mut saw_speed = false;
+            let mut saw_position = false;
+            let mut last_update = None;
+            let mut last_telemetry = None;
+
+            while started.elapsed() < timeout {
+                if let Some(update) = adapter.take_local_file_update() {
+                    if update.name == expected_name {
+                        saw_local_file = true;
+                    }
+                    last_update = Some(update);
+                }
+                while let Some(telemetry) = adapter.take_playback_telemetry_update() {
+                    last_telemetry = Some(telemetry);
+                }
+
+                if adapter.paused() {
+                    saw_pause_true = true;
+                }
+                if (adapter.playback_rate() - 1.25).abs() < 0.05 {
+                    saw_speed = true;
+                }
+                if adapter.position_seconds() >= 1.0 {
+                    saw_position = true;
+                }
+
+                if saw_local_file && saw_pause_true && saw_speed && saw_position {
+                    return Ok(());
+                }
+                std::thread::sleep(poll_interval);
+            }
+
+            Err(anyhow::anyhow!(
+                "expected explicit-mpv-IPC startup helper to apply file/start/pause/speed within {:?} (mpv_bin={}, media={}, pipe={}); state: saw_local_file={}, saw_pause_true={}, saw_speed={}, saw_position={}; adapter_path={:?}; paused={}; position={}; speed={}; last_update={:?}; last_telemetry={:?}",
+                timeout,
+                mpv_bin.display(),
+                media_file.display(),
+                pipe_path,
+                saw_local_file,
+                saw_pause_true,
+                saw_speed,
+                saw_position,
+                adapter.current_path(),
+                adapter.paused(),
+                adapter.position_seconds(),
+                adapter.playback_rate(),
+                last_update,
+                last_telemetry
+            ))
+        })();
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+
+        result.expect("explicit-mpv-IPC startup smoke should apply supported subset to real mpv");
     }
 
     #[test]
