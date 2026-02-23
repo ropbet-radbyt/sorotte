@@ -14,7 +14,7 @@ use syncplay_client_core::{
     ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
     ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
 };
-use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
+use syncplay_player_api::{PlayerAdapter, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{
     PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload, encode_message_line,
@@ -50,6 +50,13 @@ struct ClientLoopConfig {
     recently_advanced_override: Option<bool>,
     autoplay_enabled: bool,
     autoplay_require_same_filenames: bool,
+    pause_on_leave_override: Option<bool>,
+    loop_at_end_of_playlist_override: Option<bool>,
+    loop_single_files_override: Option<bool>,
+    only_switch_to_trusted_domains_override: Option<bool>,
+    trusted_domains_override: Option<Vec<String>>,
+    unpause_action_override: Option<UnpauseActionMode>,
+    auto_play_threshold_override: Option<AutoplayThresholdOverride>,
     filename_privacy_mode: PrivacyMode,
     filesize_privacy_mode: PrivacyMode,
     show_duration_notification_override: Option<bool>,
@@ -69,6 +76,9 @@ struct LegacyClientArgOverrides {
     force_gui_prompt_requested: bool,
     clear_gui_data_requested: bool,
     language: Option<String>,
+    player_path: Option<String>,
+    file: Option<String>,
+    player_args: Vec<String>,
     load_playlist_from_file: Option<String>,
     host: Option<String>,
     port: Option<u16>,
@@ -88,7 +98,267 @@ impl LegacyClientArgOverrides {
             || self.username.is_some()
             || self.room.is_some()
             || self.controlled_room_password_override.is_some()
+            || self.player_path.is_some()
+            || self.file.is_some()
+            || !self.player_args.is_empty()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyConfigurationGetterCompatibilityStatus {
+    Supported,
+    Deferred,
+    Ignored,
+}
+
+impl LegacyConfigurationGetterCompatibilityStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Deferred => "deferred",
+            Self::Ignored => "ignored",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegacyConfigurationGetterStartupCompatEntry {
+    input: &'static str,
+    status: LegacyConfigurationGetterCompatibilityStatus,
+    note: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegacyConfigurationGetterIniCompatEntry {
+    key: &'static str,
+    status: LegacyConfigurationGetterCompatibilityStatus,
+    note: &'static str,
+}
+
+fn legacy_configuration_getter_startup_compat_entries()
+-> &'static [LegacyConfigurationGetterStartupCompatEntry] {
+    use LegacyConfigurationGetterCompatibilityStatus::{Deferred, Ignored, Supported};
+
+    &[
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--no-gui",
+            status: Supported,
+            note: "starts client mode in syncplay-cli",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--host",
+            status: Supported,
+            note: "legacy host[:port] parsing supported",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--name",
+            status: Supported,
+            note: "legacy username override supported",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--debug",
+            status: Ignored,
+            note: "accepted with compatibility warning; no debug mode effect",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--force-gui-prompt",
+            status: Ignored,
+            note: "GUI-only flag; accepted with compatibility warning",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--no-store",
+            status: Supported,
+            note: "disables stored-settings persistence",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--room",
+            status: Supported,
+            note: "legacy room / controlled-room password parsing supported",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--password",
+            status: Supported,
+            note: "controlled-room password override supported",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--player-path",
+            status: Deferred,
+            note: "managed mpv launch supported; unmanaged external player startup is best-effort (no adapter integration)",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "-psn",
+            status: Ignored,
+            note: "macOS launcher artifact; consumed and ignored",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--language",
+            status: Deferred,
+            note: "persisted to syncplay.ini [general] only; runtime localization not implemented",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "file",
+            status: Deferred,
+            note: "used for managed mpv preload, unmanaged external launch, and explicit-mpv-IPC startup open-file (partial semantics)",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--clear-gui-data",
+            status: Ignored,
+            note: "GUI/QSettings-only flag; accepted with compatibility warning",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--version",
+            status: Supported,
+            note: "prints syncplay-cli version and exits",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "--load-playlist-from-file",
+            status: Supported,
+            note: "connect-time one-shot playlistChange + playlistIndex(0) after server Hello",
+        },
+        LegacyConfigurationGetterStartupCompatEntry {
+            input: "_args",
+            status: Deferred,
+            note: "forwarded to managed mpv and unmanaged external launch; explicit-mpv-IPC extra-arg semantics remain deferred",
+        },
+    ]
+}
+
+fn legacy_configuration_getter_ini_compat_entries()
+-> &'static [LegacyConfigurationGetterIniCompatEntry] {
+    use LegacyConfigurationGetterCompatibilityStatus::{Deferred, Ignored, Supported};
+
+    &[
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "server_data.host",
+            status: Supported,
+            note: "loaded/persisted into client host",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "server_data.port",
+            status: Supported,
+            note: "loaded/persisted into client port",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "server_data.password",
+            status: Deferred,
+            note: "server-password auth semantics are not yet mapped in syncplay-cli config loading",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.name",
+            status: Supported,
+            note: "loaded/persisted into username",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.room",
+            status: Supported,
+            note: "loaded/persisted into room (controlled-room suffix normalization preserved)",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.autoplayInitialState",
+            status: Supported,
+            note: "loaded/persisted into autoplay enabled default",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.autoplayRequireSameFilenames",
+            status: Supported,
+            note: "loaded/persisted into readiness autoplay config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.pauseOnLeave",
+            status: Supported,
+            note: "loaded/persisted into client behavior config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.loopAtEndOfPlaylist",
+            status: Supported,
+            note: "loaded/persisted into client behavior config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.loopSingleFiles",
+            status: Supported,
+            note: "loaded/persisted into client behavior config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.unpauseAction",
+            status: Supported,
+            note: "loaded/persisted into readiness autoplay config",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.autoplayMinUsers",
+            status: Supported,
+            note: "loaded/persisted into readiness autoplay threshold",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.filenamePrivacyMode",
+            status: Supported,
+            note: "loaded/persisted into filename privacy mode",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.filesizePrivacyMode",
+            status: Supported,
+            note: "loaded/persisted into filesize privacy mode",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.playerPath",
+            status: Deferred,
+            note: "startup flag semantics exist; config-field loading/persisting still deferred",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.perPlayerArguments",
+            status: Deferred,
+            note: "player-arg config loading/persisting still deferred (startup `_args` partial only)",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.roomList",
+            status: Ignored,
+            note: "GUI/history list behavior not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}",
+            status: Deferred,
+            note: "desync threshold tuning remains env/default driven in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync,dontSlowDownWithMe}",
+            status: Deferred,
+            note: "desync feature toggles are not yet loaded/persisted from syncplay.ini",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.{mediaSearchDirectories,publicServers}",
+            status: Ignored,
+            note: "GUI/file-discovery/server-browser state is out of scope for syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "client_settings.{onlySwitchToTrustedDomains,trustedDomains}",
+            status: Supported,
+            note: "loaded/persisted into trusted-domain playlist URL policy",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.showDurationNotification",
+            status: Supported,
+            note: "loaded/persisted into readiness notification behavior",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.{showSameRoomOSD,showOSDWarnings,showNonControllerOSD,showDifferentRoomOSD}",
+            status: Supported,
+            note: "loaded/persisted into OSD visibility behavior toggles",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "gui.* (layout/fonts/chat input/output/QSettings visual state)",
+            status: Ignored,
+            note: "GUI-only presentation settings are not implemented in syncplay-cli",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "general.language",
+            status: Supported,
+            note: "persisted and loaded in syncplay.ini; runtime localization remains deferred",
+        },
+        LegacyConfigurationGetterIniCompatEntry {
+            key: "general.{checkForUpdatesAutomatically,lastCheckedForUpdates}",
+            status: Ignored,
+            note: "GUI/update-check state is not implemented in syncplay-cli",
+        },
+    ]
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,9 +434,16 @@ struct ManagedMpvLaunchEnvConfig {
     enabled: bool,
     mpv_bin: Option<PathBuf>,
     media_file: Option<PathBuf>,
+    extra_args: Vec<String>,
     ipc_path: Option<String>,
     connect_timeout_ms: Option<u32>,
     connect_poll_interval_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LegacyExternalPlayerLaunchSpec {
+    program: PathBuf,
+    args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -191,6 +468,22 @@ struct StoredClientSettingsMvp {
     port: Option<u16>,
     username: Option<String>,
     room: Option<String>,
+    autoplay_initial_state: Option<bool>,
+    autoplay_require_same_filenames: Option<bool>,
+    pause_on_leave: Option<bool>,
+    loop_at_end_of_playlist: Option<bool>,
+    loop_single_files: Option<bool>,
+    only_switch_to_trusted_domains: Option<bool>,
+    trusted_domains: Option<Vec<String>>,
+    unpause_action: Option<UnpauseActionMode>,
+    autoplay_min_users: Option<AutoplayThresholdOverride>,
+    filename_privacy_mode: Option<PrivacyMode>,
+    filesize_privacy_mode: Option<PrivacyMode>,
+    show_duration_notification: Option<bool>,
+    show_same_room_osd: Option<bool>,
+    show_osd_warnings: Option<bool>,
+    show_noncontroller_osd: Option<bool>,
+    show_different_room_osd: Option<bool>,
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -239,6 +532,7 @@ fn managed_mpv_launch_env_config_from_env() -> ManagedMpvLaunchEnvConfig {
         enabled: env_flag_enabled("SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH"),
         mpv_bin: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_BIN").map(PathBuf::from),
         media_file: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA").map(PathBuf::from),
+        extra_args: Vec::new(),
         ipc_path: env_trimmed("SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH"),
         connect_timeout_ms: env_u32("SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_TIMEOUT_MS"),
         connect_poll_interval_ms: env_u32("SYNCPLAY_CLIENT_MPV_MANAGED_CONNECT_POLL_INTERVAL_MS"),
@@ -384,6 +678,91 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
             Some("client_settings") => match key.as_str() {
                 "name" if !value.is_empty() => settings.username = Some(value),
                 "room" if !value.is_empty() => settings.room = Some(value),
+                "autoplayinitialstate" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.autoplay_initial_state = Some(parsed);
+                    }
+                }
+                "autoplayrequiresamefilenames" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.autoplay_require_same_filenames = Some(parsed);
+                    }
+                }
+                "pauseonleave" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.pause_on_leave = Some(parsed);
+                    }
+                }
+                "loopatendofplaylist" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.loop_at_end_of_playlist = Some(parsed);
+                    }
+                }
+                "loopsinglefiles" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.loop_single_files = Some(parsed);
+                    }
+                }
+                "onlyswitchtotrusteddomains" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.only_switch_to_trusted_domains = Some(parsed);
+                    }
+                }
+                "trusteddomains" => {
+                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
+                        settings.trusted_domains = Some(parsed);
+                    }
+                }
+                "unpauseaction" => {
+                    if let Some(parsed) = parse_unpause_action_mode_legacy_compatible(&value) {
+                        settings.unpause_action = Some(parsed);
+                    }
+                }
+                "autoplayminusers" => {
+                    if let Some(parsed) =
+                        parse_autoplay_min_users_override_legacy_compatible(&value)
+                    {
+                        settings.autoplay_min_users = Some(parsed);
+                    }
+                }
+                "filenameprivacymode" => {
+                    if let Some(mode) = PrivacyMode::from_legacy_name(&value) {
+                        settings.filename_privacy_mode = Some(mode);
+                    }
+                }
+                "filesizeprivacymode" => {
+                    if let Some(mode) = PrivacyMode::from_legacy_name(&value) {
+                        settings.filesize_privacy_mode = Some(mode);
+                    }
+                }
+                _ => {}
+            },
+            Some("gui") => match key.as_str() {
+                "showdurationnotification" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_duration_notification = Some(parsed);
+                    }
+                }
+                "showsameroomosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_same_room_osd = Some(parsed);
+                    }
+                }
+                "showosdwarnings" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_osd_warnings = Some(parsed);
+                    }
+                }
+                "shownoncontrollerosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_noncontroller_osd = Some(parsed);
+                    }
+                }
+                "showdifferentroomosd" => {
+                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
+                        settings.show_different_room_osd = Some(parsed);
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -394,6 +773,79 @@ fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClient
 
 fn escape_syncplay_ini_value_legacy_compatible(value: &str) -> String {
     value.replace('%', "%%")
+}
+
+fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+fn parse_serialized_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let inner = inner.trim();
+        if inner.is_empty() {
+            return Some(Vec::new());
+        }
+        let values = inner
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                let unquoted = entry
+                    .strip_prefix('\'')
+                    .and_then(|s| s.strip_suffix('\''))
+                    .or_else(|| entry.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+                    .unwrap_or(entry);
+                unquoted
+                    .replace("\\\\", "\\")
+                    .replace("\\'", "'")
+                    .replace("\\\"", "\"")
+            })
+            .collect::<Vec<_>>();
+        return Some(values);
+    }
+    parse_env_string_list_legacy_compatible(trimmed)
+}
+
+fn format_serialized_string_list_legacy_compatible(values: &[String]) -> String {
+    let rendered = values
+        .iter()
+        .map(|value| {
+            let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+            format!("'{escaped}'")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{rendered}]")
+}
+
+fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {
+    match mode {
+        PrivacyMode::SendRaw => "SendRaw",
+        PrivacyMode::SendHashed => "SendHashed",
+        PrivacyMode::DoNotSend => "DoNotSend",
+    }
+}
+
+fn unpause_action_mode_legacy_name_compatible(mode: UnpauseActionMode) -> &'static str {
+    match mode {
+        UnpauseActionMode::IfAlreadyReady => "IfAlreadyReady",
+        UnpauseActionMode::IfOthersReady => "IfOthersReady",
+        UnpauseActionMode::IfMinUsersReady => "IfMinUsersReady",
+        UnpauseActionMode::Always => "Always",
+    }
+}
+
+fn autoplay_threshold_override_legacy_value_compatible(
+    value: &AutoplayThresholdOverride,
+) -> String {
+    match value {
+        AutoplayThresholdOverride::Disable => "0".to_owned(),
+        AutoplayThresholdOverride::Set(count) => count.to_string(),
+    }
 }
 
 fn upsert_ini_value_legacy_compatible(
@@ -471,8 +923,137 @@ fn upsert_syncplay_ini_stored_client_settings_mvp(
     if let Some(room) = settings.room.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "room", room);
     }
+    if let Some(value) = settings.autoplay_initial_state {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "autoplayInitialState",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.autoplay_require_same_filenames {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "autoplayRequireSameFilenames",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.pause_on_leave {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "pauseOnLeave",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.loop_at_end_of_playlist {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "loopAtEndOfPlaylist",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.loop_single_files {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "loopSingleFiles",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.only_switch_to_trusted_domains {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "onlySwitchToTrustedDomains",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(trusted_domains) = settings.trusted_domains.as_ref() {
+        let serialized = format_serialized_string_list_legacy_compatible(trusted_domains);
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "trustedDomains",
+            &serialized,
+        );
+    }
+    if let Some(unpause_action) = settings.unpause_action.as_ref() {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "unpauseAction",
+            unpause_action_mode_legacy_name_compatible(unpause_action.clone()),
+        );
+    }
+    if let Some(autoplay_min_users) = settings.autoplay_min_users.as_ref() {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "autoplayMinUsers",
+            &autoplay_threshold_override_legacy_value_compatible(autoplay_min_users),
+        );
+    }
+    if let Some(mode) = settings.filename_privacy_mode {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "filenamePrivacyMode",
+            privacy_mode_legacy_name_compatible(mode),
+        );
+    }
+    if let Some(mode) = settings.filesize_privacy_mode {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "filesizePrivacyMode",
+            privacy_mode_legacy_name_compatible(mode),
+        );
+    }
     if let Some(language) = settings.language.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "general", "language", language);
+    }
+    if let Some(value) = settings.show_duration_notification {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showDurationNotification",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_same_room_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showSameRoomOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_osd_warnings {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showOSDWarnings",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_noncontroller_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showNonControllerOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.show_different_room_osd {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "gui",
+            "showDifferentRoomOSD",
+            format_ini_bool_legacy_compatible(value),
+        );
     }
 
     let mut output = lines.join("\n");
@@ -534,6 +1115,86 @@ fn apply_stored_client_settings_mvp_if_env_absent(
             config.controlled_room_password_override = normalized_password;
         }
     }
+    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY").is_none()
+        && let Some(value) = settings.autoplay_initial_state
+    {
+        config.autoplay_enabled = value;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES").is_none()
+        && let Some(value) = settings.autoplay_require_same_filenames
+    {
+        config.autoplay_require_same_filenames = value;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE").is_none()
+        && let Some(value) = settings.pause_on_leave
+    {
+        config.pause_on_leave_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST").is_none()
+        && let Some(value) = settings.loop_at_end_of_playlist
+    {
+        config.loop_at_end_of_playlist_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES").is_none()
+        && let Some(value) = settings.loop_single_files
+    {
+        config.loop_single_files_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS").is_none()
+        && let Some(value) = settings.only_switch_to_trusted_domains
+    {
+        config.only_switch_to_trusted_domains_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_TRUSTED_DOMAINS").is_none()
+        && let Some(values) = settings.trusted_domains.as_ref()
+    {
+        config.trusted_domains_override = Some(values.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION").is_none()
+        && let Some(value) = settings.unpause_action.as_ref()
+    {
+        config.unpause_action_override = Some(value.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS").is_none()
+        && let Some(value) = settings.autoplay_min_users.as_ref()
+    {
+        config.auto_play_threshold_override = Some(value.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_FILENAME_PRIVACY_MODE").is_none()
+        && let Some(mode) = settings.filename_privacy_mode
+    {
+        config.filename_privacy_mode = mode;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_FILESIZE_PRIVACY_MODE").is_none()
+        && let Some(mode) = settings.filesize_privacy_mode
+    {
+        config.filesize_privacy_mode = mode;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHOW_DURATION_NOTIFICATION").is_none()
+        && let Some(value) = settings.show_duration_notification
+    {
+        config.show_duration_notification_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHOW_SAME_ROOM_OSD").is_none()
+        && let Some(value) = settings.show_same_room_osd
+    {
+        config.show_same_room_osd_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS").is_none()
+        && let Some(value) = settings.show_osd_warnings
+    {
+        config.show_osd_warnings_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHOW_NONCONTROLLER_OSD").is_none()
+        && let Some(value) = settings.show_noncontroller_osd
+    {
+        config.show_noncontroller_osd_override = Some(value);
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_SHOW_DIFFERENT_ROOM_OSD").is_none()
+        && let Some(value) = settings.show_different_room_osd
+    {
+        config.show_different_room_osd_override = Some(value);
+    }
 }
 
 fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
@@ -567,6 +1228,22 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         port: Some(config.port),
         username: Some(config.username.clone()),
         room: Some(config.room.clone()),
+        autoplay_initial_state: Some(config.autoplay_enabled),
+        autoplay_require_same_filenames: Some(config.autoplay_require_same_filenames),
+        pause_on_leave: config.pause_on_leave_override,
+        loop_at_end_of_playlist: config.loop_at_end_of_playlist_override,
+        loop_single_files: config.loop_single_files_override,
+        only_switch_to_trusted_domains: config.only_switch_to_trusted_domains_override,
+        trusted_domains: config.trusted_domains_override.clone(),
+        unpause_action: config.unpause_action_override.clone(),
+        autoplay_min_users: config.auto_play_threshold_override.clone(),
+        filename_privacy_mode: Some(config.filename_privacy_mode),
+        filesize_privacy_mode: Some(config.filesize_privacy_mode),
+        show_duration_notification: config.show_duration_notification_override,
+        show_same_room_osd: config.show_same_room_osd_override,
+        show_osd_warnings: config.show_osd_warnings_override,
+        show_noncontroller_osd: config.show_noncontroller_osd_override,
+        show_different_room_osd: config.show_different_room_osd_override,
     };
     let updated_contents =
         upsert_syncplay_ini_stored_client_settings_mvp(&existing_contents, &settings);
@@ -709,6 +1386,11 @@ where
 
     while let Some(arg) = iter.next() {
         if arg == "--" {
+            let trailing_args = iter.collect::<Vec<_>>();
+            if !trailing_args.is_empty() {
+                overrides.connect_requested = true;
+                overrides.player_args.extend(trailing_args);
+            }
             break;
         }
         match arg.as_str() {
@@ -735,6 +1417,10 @@ where
             }
             "--language" => {
                 overrides.language = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            "--player-path" => {
+                overrides.connect_requested = true;
+                overrides.player_path = take_next_non_flag_arg_legacy_compatible(&mut iter);
             }
             "--load-playlist-from-file" => {
                 overrides.load_playlist_from_file =
@@ -772,6 +1458,12 @@ where
             _ => {
                 if arg.starts_with('-') {
                     overrides.unknown_options.push(arg);
+                } else if overrides.file.is_none() {
+                    overrides.connect_requested = true;
+                    overrides.file = Some(arg);
+                } else {
+                    overrides.connect_requested = true;
+                    overrides.player_args.push(arg);
                 }
             }
         }
@@ -788,9 +1480,11 @@ fn print_legacy_client_help() {
         "  -n, --name <username>",
         "  -r, --room [room]",
         "  -p, --password [password]",
+        "  --player-path <path>",
         "  -d, --debug",
         "  -g, --force-gui-prompt",
         "  --language <language>",
+        "  [file] [options...]",
         "  --clear-gui-data",
         "  --load-playlist-from-file <path>",
         "  --no-store",
@@ -860,6 +1554,28 @@ fn print_legacy_client_help() {
     for line in help_lines {
         println!("{line}");
     }
+    println!();
+    println!("Legacy Python ConfigurationGetter Startup Compatibility:");
+    println!("  {:<26} {:<10} Note", "Input", "Status");
+    for entry in legacy_configuration_getter_startup_compat_entries() {
+        println!(
+            "  {:<26} {:<10} {}",
+            entry.input,
+            entry.status.as_str(),
+            entry.note
+        );
+    }
+    println!();
+    println!("Legacy Python ConfigurationGetter syncplay.ini Compatibility:");
+    println!("  {:<66} {:<10} Note", "Field", "Status");
+    for entry in legacy_configuration_getter_ini_compat_entries() {
+        println!(
+            "  {:<66} {:<10} {}",
+            entry.key,
+            entry.status.as_str(),
+            entry.note
+        );
+    }
 }
 
 fn apply_legacy_client_arg_overrides(
@@ -903,6 +1619,21 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     if overrides.language.is_some() {
         eprintln!(
             "warning: legacy --language is accepted for config compatibility, but syncplay-cli runtime localization is not implemented yet"
+        );
+    }
+    if overrides.player_path.is_some() {
+        eprintln!(
+            "warning: legacy --player-path is used for managed mpv launch (when enabled) or a best-effort unmanaged external player spawn; non-managed adapter integration remains unimplemented"
+        );
+    }
+    if overrides.file.is_some() {
+        eprintln!(
+            "warning: legacy positional file is used for managed mpv preload, unmanaged external launch, and explicit mpv IPC startup open-file; parity remains partial"
+        );
+    }
+    if !overrides.player_args.is_empty() {
+        eprintln!(
+            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC extra-arg semantics remain partial"
         );
     }
 }
@@ -1962,6 +2693,19 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
         autoplay_require_same_filenames: env_flag_enabled(
             "SYNCPLAY_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES",
         ),
+        pause_on_leave_override: env_flag_override("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE"),
+        loop_at_end_of_playlist_override: env_flag_override(
+            "SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST",
+        ),
+        loop_single_files_override: env_flag_override("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES"),
+        only_switch_to_trusted_domains_override: env_flag_override(
+            "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
+        ),
+        trusted_domains_override: env_string_list("SYNCPLAY_CLIENT_TRUSTED_DOMAINS"),
+        unpause_action_override: env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION")
+            .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
+        auto_play_threshold_override: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS")
+            .and_then(|value| parse_autoplay_min_users_override_legacy_compatible(&value)),
         filename_privacy_mode: env_privacy_mode("SYNCPLAY_CLIENT_FILENAME_PRIVACY_MODE")
             .unwrap_or(PrivacyMode::SendRaw),
         filesize_privacy_mode: env_privacy_mode("SYNCPLAY_CLIENT_FILESIZE_PRIVACY_MODE")
@@ -2010,10 +2754,35 @@ fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     if let Some(show_different_room_osd) = config.show_different_room_osd_override {
         session.behavior_config_mut().show_different_room_osd = show_different_room_osd;
     }
+    if let Some(pause_on_leave) = config.pause_on_leave_override {
+        session.behavior_config_mut().pause_on_leave = pause_on_leave;
+    }
+    if let Some(loop_at_end_of_playlist) = config.loop_at_end_of_playlist_override {
+        session.behavior_config_mut().loop_at_end_of_playlist = loop_at_end_of_playlist;
+    }
+    if let Some(loop_single_files) = config.loop_single_files_override {
+        session.behavior_config_mut().loop_single_files = loop_single_files;
+    }
+    if let Some(only_switch_to_trusted_domains) = config.only_switch_to_trusted_domains_override {
+        session.behavior_config_mut().only_switch_to_trusted_domains =
+            only_switch_to_trusted_domains;
+    }
+    if let Some(trusted_domains) = config.trusted_domains_override.as_ref() {
+        session.behavior_config_mut().trusted_domains = trusted_domains.clone();
+    }
     apply_client_behavior_overrides(&mut session, &behavior_overrides_from_env());
     {
         let readiness_config = session.readiness_autoplay_config_mut();
         readiness_config.autoplay_require_same_filenames = config.autoplay_require_same_filenames;
+        if let Some(unpause_action) = config.unpause_action_override.as_ref() {
+            readiness_config.unpause_action = unpause_action.clone();
+        }
+        if let Some(auto_play_threshold) = config.auto_play_threshold_override.as_ref() {
+            readiness_config.auto_play_threshold = match auto_play_threshold {
+                AutoplayThresholdOverride::Disable => None,
+                AutoplayThresholdOverride::Set(value) => Some(*value),
+            };
+        }
         if let Some(show_duration_notification) = config.show_duration_notification_override {
             readiness_config.show_duration_notification = show_duration_notification;
         }
@@ -2058,33 +2827,132 @@ impl Drop for ManagedMpvProcessGuard {
 
 fn create_client_runtime_with_managed_mpv_support(
     config: &ClientLoopConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
 ) -> anyhow::Result<(
     ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     Option<ManagedMpvProcessGuard>,
 )> {
     let session = create_client_session(config);
-    let (player, managed_guard) = create_mpv_adapter_and_optional_managed_process_from_env()?;
+    let (player, managed_guard) =
+        create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
     Ok((
         ClientRuntime::new(session, player, QueuedRuntimeControl::default()),
         managed_guard,
     ))
 }
 
-fn create_mpv_adapter_and_optional_managed_process_from_env()
--> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>)> {
-    let explicit_ipc_path = env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH")
-        .or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"));
+fn create_mpv_adapter_and_optional_managed_process_from_env(
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>)> {
+    let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
         return Ok((create_mpv_adapter_from_path_or_stub(&ipc_path), None));
     }
 
-    let managed_config = managed_mpv_launch_env_config_from_env();
+    let mut managed_config = managed_mpv_launch_env_config_from_env();
+    apply_legacy_client_arg_managed_mpv_overrides(&mut managed_config, legacy_overrides);
     if !managed_config.enabled {
         return Ok((MpvAdapter::default(), None));
     }
 
     let (adapter, guard) = spawn_managed_mpv_and_attach(managed_config)?;
     Ok((adapter, Some(guard)))
+}
+
+fn apply_legacy_client_arg_managed_mpv_overrides(
+    managed_config: &mut ManagedMpvLaunchEnvConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) {
+    let Some(overrides) = legacy_overrides else {
+        return;
+    };
+
+    if managed_config.mpv_bin.is_none() {
+        if let Some(player_path) = overrides.player_path.as_deref() {
+            managed_config.mpv_bin = Some(PathBuf::from(player_path));
+        }
+    }
+    if managed_config.media_file.is_none() {
+        if let Some(file) = overrides.file.as_deref() {
+            managed_config.media_file = Some(PathBuf::from(file));
+        }
+    }
+    if managed_config.extra_args.is_empty() && !overrides.player_args.is_empty() {
+        managed_config.extra_args = overrides.player_args.clone();
+    }
+}
+
+fn explicit_mpv_ipc_path_from_env() -> Option<String> {
+    env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH").or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"))
+}
+
+fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env() -> bool {
+    explicit_mpv_ipc_path_from_env().is_some() || managed_mpv_launch_env_config_from_env().enabled
+}
+
+fn legacy_external_player_launch_spec_from_overrides_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+) -> Option<LegacyExternalPlayerLaunchSpec> {
+    let program = overrides.player_path.as_deref().map(PathBuf::from)?;
+    let mut args = overrides.player_args.clone();
+    if let Some(file) = overrides.file.as_deref() {
+        args.push(file.to_owned());
+    }
+    Some(LegacyExternalPlayerLaunchSpec { program, args })
+}
+
+fn spawn_legacy_external_player_if_requested_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+) -> anyhow::Result<bool> {
+    let Some(spec) = legacy_external_player_launch_spec_from_overrides_legacy_compatible(overrides)
+    else {
+        return Ok(false);
+    };
+    if should_skip_legacy_external_player_launch_due_to_mpv_integration_env() {
+        return Ok(false);
+    }
+
+    let mut command = Command::new(&spec.program);
+    if let Some(parent) = spec.program.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        command.current_dir(parent);
+    }
+    if !spec.args.is_empty() {
+        command.args(&spec.args);
+    }
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    command.spawn().map_err(|error| {
+        anyhow!(
+            "failed to launch legacy external player '{}' with args {:?}: {error}",
+            spec.program.display(),
+            spec.args
+        )
+    })?;
+    eprintln!(
+        "info: launched external player '{}' (legacy unmanaged startup path)",
+        spec.program.display()
+    );
+    Ok(true)
+}
+
+fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible<P>(
+    player: &mut P,
+    overrides: &LegacyClientArgOverrides,
+) -> anyhow::Result<bool>
+where
+    P: PlayerAdapter,
+{
+    if explicit_mpv_ipc_path_from_env().is_none() {
+        return Ok(false);
+    }
+    let Some(file) = overrides.file.as_deref() else {
+        return Ok(false);
+    };
+    player.open_file(file).map_err(|error| {
+        anyhow!("failed opening legacy startup file via attached player: {error}")
+    })?;
+    Ok(true)
 }
 
 fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
@@ -2148,6 +3016,9 @@ fn spawn_managed_mpv_and_attach(
         .arg("--force-window=no")
         .arg("--idle=yes")
         .arg(format!("--input-ipc-server={ipc_path}"));
+    if !config.extra_args.is_empty() {
+        command.args(&config.extra_args);
+    }
     if let Some(media_file) = config.media_file.as_ref() {
         command.arg(media_file);
     }
@@ -3665,15 +4536,25 @@ async fn run_reconnect_backoff(
 }
 
 async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
-    run_client_network_loop_with_legacy_startup_overrides(config, None).await
+    run_client_network_loop_with_legacy_startup_overrides(config, None, None).await
 }
 
 async fn run_client_network_loop_with_legacy_startup_overrides(
     config: &ClientLoopConfig,
     startup_playlist_file_on_connect: Option<&str>,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
 ) -> anyhow::Result<()> {
     let (mut runtime, _managed_mpv_process_guard) =
-        create_client_runtime_with_managed_mpv_support(config)?;
+        create_client_runtime_with_managed_mpv_support(config, legacy_overrides)?;
+    if let Some(overrides) = legacy_overrides
+        && let Err(error) =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                runtime.player_mut(),
+                overrides,
+            )
+    {
+        eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
+    }
     let mut local_input_rx = spawn_local_input_receiver_if_enabled();
     let chat_message_on_connect = env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE");
     let mut startup_playlist_file_on_connect = startup_playlist_file_on_connect.map(str::to_owned);
@@ -3795,9 +4676,15 @@ async fn main() -> anyhow::Result<()> {
         {
             eprintln!("warning: failed to persist stored Syncplay settings: {error}");
         }
+        if let Err(error) =
+            spawn_legacy_external_player_if_requested_legacy_compatible(&client_arg_overrides)
+        {
+            eprintln!("warning: failed to launch legacy external player startup path: {error}");
+        }
         run_client_network_loop_with_legacy_startup_overrides(
             &config,
             client_arg_overrides.load_playlist_from_file.as_deref(),
+            Some(&client_arg_overrides),
         )
         .await?;
         return Ok(());
@@ -3820,10 +4707,15 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-        ConnectedSessionExit, LegacyClientArgOverrides, LocalInputCommand, LocalOffsetCommand,
+        ConnectedSessionExit, LegacyClientArgOverrides,
+        LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
+        LegacyConfigurationGetterStartupCompatEntry, LegacyExternalPlayerLaunchSpec,
+        LocalInputCommand, LocalOffsetCommand, ManagedMpvLaunchEnvConfig,
         ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
         ReconnectCorrectionDiagnosticsState, StoredClientSettingsMvp, apply_chat_policy_overrides,
-        apply_client_behavior_overrides, apply_legacy_client_arg_overrides,
+        apply_client_behavior_overrides, apply_legacy_client_arg_managed_mpv_overrides,
+        apply_legacy_client_arg_overrides,
+        apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
         apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
         chat_notification_message, controlled_room_base_name_legacy_compatible,
         controller_auth_notification_hidden_from_osd,
@@ -3834,6 +4726,9 @@ mod tests {
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
         format_file_difference_summary, generate_room_password_legacy_compatible,
+        legacy_configuration_getter_ini_compat_entries,
+        legacy_configuration_getter_startup_compat_entries,
+        legacy_external_player_launch_spec_from_overrides_legacy_compatible,
         load_syncplay_cli_stored_settings_mvp_legacy_compatible,
         local_command_help_footer_lines_legacy_compatible,
         local_command_help_lines_legacy_compatible, managed_mpv_launch_env_config_from_env,
@@ -3860,6 +4755,7 @@ mod tests {
         run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
         run_local_playlist_delete_index_legacy_compatible,
         run_local_playlist_select_index_legacy_compatible,
+        should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
         upsert_syncplay_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
         user_change_notification_message,
     };
@@ -3874,7 +4770,7 @@ mod tests {
         ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
         ReconnectTransitionNotification, UnpauseActionMode, UserChangeNotification,
     };
-    use syncplay_player_api::{PlayerAdapter, PlayerPlaybackTelemetryUpdate};
+    use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
     use syncplay_player_mpv::MpvAdapter;
     use syncplay_protocol::{ListPayload, ProtocolMessage, decode_message_line};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -3882,6 +4778,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     static STORED_SETTINGS_CONFIG_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn ignore_autoplay_notification(
         _notification: &AutoplayCountdownNotification,
@@ -3947,6 +4844,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -4040,6 +4944,9 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: None,
+                player_args: vec![],
                 load_playlist_from_file: None,
                 host: Some("example.org".to_owned()),
                 port: Some(12345),
@@ -4067,6 +4974,9 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: None,
+                player_args: vec![],
                 load_playlist_from_file: None,
                 host: Some("[::1]".to_owned()),
                 port: None,
@@ -4092,6 +5002,9 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: None,
+                player_args: vec![],
                 load_playlist_from_file: None,
                 host: None,
                 port: None,
@@ -4126,6 +5039,14 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: None,
+                player_args: vec![
+                    "--host".to_owned(),
+                    "example.org:12345".to_owned(),
+                    "-n".to_owned(),
+                    "alice".to_owned()
+                ],
                 load_playlist_from_file: None,
                 host: None,
                 port: None,
@@ -4151,6 +5072,9 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: Some("value".to_owned()),
+                player_args: vec![],
                 load_playlist_from_file: None,
                 host: None,
                 port: None,
@@ -4176,6 +5100,9 @@ mod tests {
                 force_gui_prompt_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
+                player_path: None,
+                file: None,
+                player_args: vec![],
                 load_playlist_from_file: None,
                 host: None,
                 port: None,
@@ -4221,8 +5148,500 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_client_arg_overrides_parses_player_path_and_positional_file_and_player_args() {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--no-gui",
+            "--player-path",
+            "/tmp/mpv",
+            "movie.mkv",
+            "--",
+            "--fs",
+            "--volume=50",
+        ]);
+
+        assert!(overrides.connect_requested);
+        assert_eq!(overrides.player_path.as_deref(), Some("/tmp/mpv"));
+        assert_eq!(overrides.file.as_deref(), Some("movie.mkv"));
+        assert_eq!(
+            overrides.player_args,
+            vec!["--fs".to_owned(), "--volume=50".to_owned()]
+        );
+        assert!(overrides.should_connect_client());
+        assert!(overrides.unknown_options.is_empty());
+    }
+
+    #[test]
+    fn legacy_configuration_getter_startup_compat_matrix_covers_python_startup_inputs() {
+        let entries = legacy_configuration_getter_startup_compat_entries();
+        let expected_inputs = [
+            "--no-gui",
+            "--host",
+            "--name",
+            "--debug",
+            "--force-gui-prompt",
+            "--no-store",
+            "--room",
+            "--password",
+            "--player-path",
+            "-psn",
+            "--language",
+            "file",
+            "--clear-gui-data",
+            "--version",
+            "--load-playlist-from-file",
+            "_args",
+        ];
+
+        for expected in expected_inputs {
+            assert!(
+                entries.iter().any(|entry| entry.input == expected),
+                "compatibility matrix should include {expected}"
+            );
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            assert!(
+                seen.insert(entry.input),
+                "compatibility matrix should not duplicate input {}",
+                entry.input
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_configuration_getter_startup_compat_matrix_classifies_deferred_and_ignored_inputs() {
+        fn entry_for(input: &str) -> LegacyConfigurationGetterStartupCompatEntry {
+            *legacy_configuration_getter_startup_compat_entries()
+                .iter()
+                .find(|entry| entry.input == input)
+                .unwrap_or_else(|| panic!("missing compatibility entry for {input}"))
+        }
+
+        assert_eq!(
+            entry_for("--load-playlist-from-file").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("--player-path").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("file").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("--language").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("_args").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("--force-gui-prompt").status,
+            LegacyConfigurationGetterCompatibilityStatus::Ignored
+        );
+    }
+
+    #[test]
+    fn legacy_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields() {
+        let entries = legacy_configuration_getter_ini_compat_entries();
+        let expected_keys = [
+            "server_data.host",
+            "server_data.port",
+            "server_data.password",
+            "client_settings.name",
+            "client_settings.room",
+            "client_settings.autoplayInitialState",
+            "client_settings.pauseOnLeave",
+            "client_settings.loopAtEndOfPlaylist",
+            "client_settings.loopSingleFiles",
+            "client_settings.unpauseAction",
+            "client_settings.autoplayMinUsers",
+            "client_settings.playerPath",
+            "client_settings.perPlayerArguments",
+            "gui.showDurationNotification",
+            "gui.{showSameRoomOSD,showOSDWarnings,showNonControllerOSD,showDifferentRoomOSD}",
+            "general.language",
+        ];
+
+        for expected in expected_keys {
+            assert!(
+                entries.iter().any(|entry| entry.key == expected),
+                "ini compatibility matrix should include {expected}"
+            );
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            assert!(
+                seen.insert(entry.key),
+                "ini compatibility matrix should not duplicate key {}",
+                entry.key
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_deferred_fields() {
+        fn entry_for(key: &str) -> LegacyConfigurationGetterIniCompatEntry {
+            *legacy_configuration_getter_ini_compat_entries()
+                .iter()
+                .find(|entry| entry.key == key)
+                .unwrap_or_else(|| panic!("missing ini compatibility entry for {key}"))
+        }
+
+        assert_eq!(
+            entry_for("client_settings.autoplayInitialState").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.unpauseAction").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.playerPath").status,
+            LegacyConfigurationGetterCompatibilityStatus::Deferred
+        );
+        assert_eq!(
+            entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("gui.* (layout/fonts/chat input/output/QSettings visual state)").status,
+            LegacyConfigurationGetterCompatibilityStatus::Ignored
+        );
+        assert_eq!(
+            entry_for("general.{checkForUpdatesAutomatically,lastCheckedForUpdates}").status,
+            LegacyConfigurationGetterCompatibilityStatus::Ignored
+        );
+    }
+
+    #[test]
+    fn legacy_external_player_launch_spec_from_overrides_orders_player_args_before_file() {
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/players/mpv.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--fs".to_owned(), "--volume=50".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+            .expect("player-path should produce a launch spec");
+        assert_eq!(
+            spec,
+            LegacyExternalPlayerLaunchSpec {
+                program: PathBuf::from("C:/players/mpv.exe"),
+                args: vec![
+                    "--fs".to_owned(),
+                    "--volume=50".to_owned(),
+                    "C:/media/movie.mkv".to_owned()
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_external_player_launch_spec_from_overrides_returns_none_without_player_path() {
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: None,
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--fs".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+        assert!(
+            legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env_respects_mpv_envs() {
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_managed = std::env::var_os(key_managed);
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+
+        // SAFETY: Scoped test-local env mutation with restoration before return.
+        unsafe {
+            std::env::remove_var(key_managed);
+            std::env::remove_var(key_client_ipc);
+            std::env::remove_var(key_fallback_ipc);
+        }
+        assert!(
+            !should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+            "no explicit IPC or managed launch env should allow legacy external spawn path"
+        );
+
+        // SAFETY: Scoped test-local env mutation with restoration before return.
+        unsafe {
+            std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+        }
+        assert!(
+            should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+            "explicit client IPC path should skip unmanaged external spawn"
+        );
+
+        // SAFETY: Scoped test-local env mutation with restoration before return.
+        unsafe {
+            std::env::remove_var(key_client_ipc);
+            std::env::set_var(key_managed, "1");
+        }
+        assert!(
+            should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+            "managed mpv launch env should skip unmanaged external spawn"
+        );
+
+        match old_managed {
+            Some(value) => unsafe { std::env::set_var(key_managed, value) },
+            None => unsafe { std::env::remove_var(key_managed) },
+        }
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+    }
+
+    #[test]
+    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file() {
+        #[derive(Default)]
+        struct RecordingPlayer {
+            opened: Vec<String>,
+        }
+        impl PlayerAdapter for RecordingPlayer {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+            fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+                self.opened.push(path.to_owned());
+                Ok(())
+            }
+        }
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        unsafe {
+            std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+            std::env::remove_var(key_fallback_ipc);
+        }
+
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: None,
+            file: Some("movie.mkv".to_owned()),
+            player_args: vec![],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+        let mut player = RecordingPlayer::default();
+
+        let opened =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                &mut player,
+                &overrides,
+            )
+            .expect("open_file should succeed");
+        assert!(opened);
+        assert_eq!(player.opened, vec!["movie.mkv".to_owned()]);
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+    }
+
+    #[test]
+    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_without_ipc_env() {
+        #[derive(Default)]
+        struct RecordingPlayer {
+            opened: Vec<String>,
+        }
+        impl PlayerAdapter for RecordingPlayer {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+            fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
+                self.opened.push(path.to_owned());
+                Ok(())
+            }
+        }
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+        unsafe {
+            std::env::remove_var(key_client_ipc);
+            std::env::remove_var(key_fallback_ipc);
+        }
+
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: None,
+            file: Some("movie.mkv".to_owned()),
+            player_args: vec![],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+        let mut player = RecordingPlayer::default();
+
+        let opened =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                &mut player,
+                &overrides,
+            )
+            .expect("helper should skip cleanly");
+        assert!(!opened);
+        assert!(player.opened.is_empty());
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+        match old_fallback_ipc {
+            Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
+            None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        }
+    }
+
+    #[test]
+    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_player_errors() {
+        struct FailingPlayer;
+        impl PlayerAdapter for FailingPlayer {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+            fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
+                Err(PlayerError::OperationFailed("boom".to_owned()))
+            }
+        }
+
+        let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
+        let old_client_ipc = std::env::var_os(key_client_ipc);
+        unsafe {
+            std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+        }
+
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: None,
+            file: Some("movie.mkv".to_owned()),
+            player_args: vec![],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+        let mut player = FailingPlayer;
+
+        let error =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                &mut player,
+                &overrides,
+            )
+            .expect_err("player error should propagate");
+        assert!(
+            error
+                .to_string()
+                .contains("failed opening legacy startup file")
+        );
+
+        match old_client_ipc {
+            Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
+            None => unsafe { std::env::remove_var(key_client_ipc) },
+        }
+    }
+
+    #[test]
     fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
-        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\n";
+        let contents = "\u{feff}[general]\nlanguage = de\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\n";
         let settings = parse_syncplay_ini_stored_client_settings_mvp(contents);
         assert_eq!(
             settings,
@@ -4232,6 +5651,25 @@ mod tests {
                 port: Some(12345),
                 username: Some("Alice%20".to_owned()),
                 room: Some("room-1".to_owned()),
+                autoplay_initial_state: Some(true),
+                autoplay_require_same_filenames: Some(true),
+                pause_on_leave: Some(false),
+                loop_at_end_of_playlist: Some(true),
+                loop_single_files: Some(false),
+                only_switch_to_trusted_domains: Some(true),
+                trusted_domains: Some(vec![
+                    "youtube.com".to_owned(),
+                    "*.example.com/videos".to_owned(),
+                ]),
+                unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+                autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification: Some(false),
+                show_same_room_osd: Some(true),
+                show_osd_warnings: Some(false),
+                show_noncontroller_osd: Some(true),
+                show_different_room_osd: Some(false),
             }
         );
     }
@@ -4248,6 +5686,25 @@ mod tests {
                 port: Some(8999),
                 username: Some("alice".to_owned()),
                 room: Some("new-room".to_owned()),
+                autoplay_initial_state: Some(true),
+                autoplay_require_same_filenames: Some(true),
+                pause_on_leave: Some(true),
+                loop_at_end_of_playlist: Some(false),
+                loop_single_files: Some(true),
+                only_switch_to_trusted_domains: Some(false),
+                trusted_domains: Some(vec![
+                    "youtube.com".to_owned(),
+                    "*.example.com/videos".to_owned(),
+                ]),
+                unpause_action: Some(UnpauseActionMode::IfOthersReady),
+                autoplay_min_users: Some(AutoplayThresholdOverride::Disable),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification: Some(true),
+                show_same_room_osd: Some(true),
+                show_osd_warnings: Some(false),
+                show_noncontroller_osd: Some(false),
+                show_different_room_osd: Some(true),
             },
         );
 
@@ -4257,6 +5714,20 @@ mod tests {
         assert!(updated.contains("room = new-room\n"));
         assert!(updated.contains("publicservers = []\n"));
         assert!(updated.contains("name = alice\n"));
+        assert!(updated.contains("autoplayInitialState = True\n"));
+        assert!(updated.contains("autoplayRequireSameFilenames = True\n"));
+        assert!(updated.contains("pauseOnLeave = True\n"));
+        assert!(updated.contains("loopAtEndOfPlaylist = False\n"));
+        assert!(updated.contains("loopSingleFiles = True\n"));
+        assert!(updated.contains("onlySwitchToTrustedDomains = False\n"));
+        assert!(updated.contains("trustedDomains = ['youtube.com', '*.example.com/videos']\n"));
+        assert!(updated.contains("unpauseAction = IfOthersReady\n"));
+        assert!(updated.contains("autoplayMinUsers = 0\n"));
+        assert!(updated.contains("filenamePrivacyMode = SendHashed\n"));
+        assert!(updated.contains("filesizePrivacyMode = DoNotSend\n"));
+        assert!(updated.contains("[gui]"));
+        assert!(updated.contains("showDurationNotification = True\n"));
+        assert!(updated.contains("showOSDWarnings = False\n"));
         assert!(!updated.contains("room = old-room"));
     }
 
@@ -4267,16 +5738,23 @@ mod tests {
             .expect("lock poisoned");
         let key_host = "SYNCPLAY_CLIENT_HOST";
         let key_name = "SYNCPLAY_CLIENT_NAME";
+        let key_show_osd_warnings = "SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS";
+        let key_pause_on_leave = "SYNCPLAY_CLIENT_PAUSE_ON_LEAVE";
         let prior_host = std::env::var_os(key_host);
         let prior_name = std::env::var_os(key_name);
+        let prior_show_osd_warnings = std::env::var_os(key_show_osd_warnings);
+        let prior_pause_on_leave = std::env::var_os(key_pause_on_leave);
         unsafe {
             std::env::set_var(key_host, "env.example");
             std::env::set_var(key_name, "env-user");
+            std::env::set_var(key_show_osd_warnings, "true");
+            std::env::set_var(key_pause_on_leave, "true");
         }
 
         let mut config = test_client_loop_config();
         let original_host = config.host.clone();
         let original_username = config.username.clone();
+        let original_show_osd_warnings = config.show_osd_warnings_override;
         apply_stored_client_settings_mvp_if_env_absent(
             &mut config,
             &StoredClientSettingsMvp {
@@ -4285,6 +5763,25 @@ mod tests {
                 port: Some(4321),
                 username: Some("stored-user".to_owned()),
                 room: Some("stored-room".to_owned()),
+                autoplay_initial_state: Some(true),
+                autoplay_require_same_filenames: Some(true),
+                pause_on_leave: Some(false),
+                loop_at_end_of_playlist: Some(true),
+                loop_single_files: Some(false),
+                only_switch_to_trusted_domains: Some(false),
+                trusted_domains: Some(vec![
+                    "stored.example".to_owned(),
+                    "*.video.example/path".to_owned(),
+                ]),
+                unpause_action: Some(UnpauseActionMode::IfOthersReady),
+                autoplay_min_users: Some(AutoplayThresholdOverride::Set(4)),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification: Some(true),
+                show_same_room_osd: Some(true),
+                show_osd_warnings: Some(false),
+                show_noncontroller_osd: Some(true),
+                show_different_room_osd: Some(false),
             },
         );
 
@@ -4292,6 +5789,37 @@ mod tests {
         assert_eq!(config.username, original_username);
         assert_eq!(config.port, 4321);
         assert_eq!(config.room, "stored-room");
+        assert!(config.autoplay_enabled);
+        assert!(config.autoplay_require_same_filenames);
+        assert_eq!(config.pause_on_leave_override, None);
+        assert_eq!(config.loop_at_end_of_playlist_override, Some(true));
+        assert_eq!(config.loop_single_files_override, Some(false));
+        assert_eq!(config.only_switch_to_trusted_domains_override, Some(false));
+        assert_eq!(
+            config.trusted_domains_override,
+            Some(vec![
+                "stored.example".to_owned(),
+                "*.video.example/path".to_owned(),
+            ])
+        );
+        assert_eq!(
+            config.unpause_action_override,
+            Some(UnpauseActionMode::IfOthersReady)
+        );
+        assert_eq!(
+            config.auto_play_threshold_override,
+            Some(AutoplayThresholdOverride::Set(4))
+        );
+        assert_eq!(config.filename_privacy_mode, PrivacyMode::SendHashed);
+        assert_eq!(config.filesize_privacy_mode, PrivacyMode::DoNotSend);
+        assert_eq!(config.show_duration_notification_override, Some(true));
+        assert_eq!(config.show_same_room_osd_override, Some(true));
+        assert_eq!(
+            config.show_osd_warnings_override,
+            original_show_osd_warnings
+        );
+        assert_eq!(config.show_noncontroller_osd_override, Some(true));
+        assert_eq!(config.show_different_room_osd_override, Some(false));
 
         match prior_host {
             Some(value) => unsafe { std::env::set_var(key_host, value) },
@@ -4300,6 +5828,14 @@ mod tests {
         match prior_name {
             Some(value) => unsafe { std::env::set_var(key_name, value) },
             None => unsafe { std::env::remove_var(key_name) },
+        }
+        match prior_show_osd_warnings {
+            Some(value) => unsafe { std::env::set_var(key_show_osd_warnings, value) },
+            None => unsafe { std::env::remove_var(key_show_osd_warnings) },
+        }
+        match prior_pause_on_leave {
+            Some(value) => unsafe { std::env::set_var(key_pause_on_leave, value) },
+            None => unsafe { std::env::remove_var(key_pause_on_leave) },
         }
     }
 
@@ -4331,6 +5867,25 @@ mod tests {
             port: 1234,
             username: "stored-user".to_owned(),
             room: "stored-room".to_owned(),
+            autoplay_enabled: true,
+            autoplay_require_same_filenames: true,
+            pause_on_leave_override: Some(true),
+            loop_at_end_of_playlist_override: Some(false),
+            loop_single_files_override: Some(true),
+            only_switch_to_trusted_domains_override: Some(false),
+            trusted_domains_override: Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned(),
+            ]),
+            unpause_action_override: Some(UnpauseActionMode::IfMinUsersReady),
+            auto_play_threshold_override: Some(AutoplayThresholdOverride::Set(5)),
+            filename_privacy_mode: PrivacyMode::SendHashed,
+            filesize_privacy_mode: PrivacyMode::DoNotSend,
+            show_duration_notification_override: Some(false),
+            show_same_room_osd_override: Some(true),
+            show_osd_warnings_override: Some(false),
+            show_noncontroller_osd_override: Some(true),
+            show_different_room_osd_override: Some(false),
             ..test_client_loop_config()
         };
         persist_syncplay_cli_stored_settings_mvp_legacy_compatible(&config)
@@ -4347,6 +5902,25 @@ mod tests {
                 port: Some(1234),
                 username: Some("stored-user".to_owned()),
                 room: Some("stored-room".to_owned()),
+                autoplay_initial_state: Some(true),
+                autoplay_require_same_filenames: Some(true),
+                pause_on_leave: Some(true),
+                loop_at_end_of_playlist: Some(false),
+                loop_single_files: Some(true),
+                only_switch_to_trusted_domains: Some(false),
+                trusted_domains: Some(vec![
+                    "youtube.com".to_owned(),
+                    "*.example.com/videos".to_owned(),
+                ]),
+                unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+                autoplay_min_users: Some(AutoplayThresholdOverride::Set(5)),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification: Some(false),
+                show_same_room_osd: Some(true),
+                show_osd_warnings: Some(false),
+                show_noncontroller_osd: Some(true),
+                show_different_room_osd: Some(false),
             }
         );
 
@@ -4355,6 +5929,25 @@ mod tests {
         assert!(written_contents.contains("[general]\nlanguage = en\n"));
         assert!(written_contents.contains("[server_data]\nhost = stored.example\nport = 1234\n"));
         assert!(written_contents.contains("[client_settings]"));
+        assert!(written_contents.contains("autoplayInitialState = True\n"));
+        assert!(written_contents.contains("autoplayRequireSameFilenames = True\n"));
+        assert!(written_contents.contains("pauseOnLeave = True\n"));
+        assert!(written_contents.contains("loopAtEndOfPlaylist = False\n"));
+        assert!(written_contents.contains("loopSingleFiles = True\n"));
+        assert!(written_contents.contains("onlySwitchToTrustedDomains = False\n"));
+        assert!(
+            written_contents.contains("trustedDomains = ['youtube.com', '*.example.com/videos']\n")
+        );
+        assert!(written_contents.contains("unpauseAction = IfMinUsersReady\n"));
+        assert!(written_contents.contains("autoplayMinUsers = 5\n"));
+        assert!(written_contents.contains("filenamePrivacyMode = SendHashed\n"));
+        assert!(written_contents.contains("filesizePrivacyMode = DoNotSend\n"));
+        assert!(written_contents.contains("[gui]"));
+        assert!(written_contents.contains("showDurationNotification = False\n"));
+        assert!(written_contents.contains("showSameRoomOSD = True\n"));
+        assert!(written_contents.contains("showOSDWarnings = False\n"));
+        assert!(written_contents.contains("showNonControllerOSD = True\n"));
+        assert!(written_contents.contains("showDifferentRoomOSD = False\n"));
 
         match prior {
             Some(value) => unsafe { std::env::set_var(key, value) },
@@ -4578,6 +6171,9 @@ mod tests {
             force_gui_prompt_requested: false,
             clear_gui_data_requested: false,
             language: None,
+            player_path: None,
+            file: None,
+            player_args: vec![],
             load_playlist_from_file: None,
             host: Some("legacy.example".to_owned()),
             port: Some(3210),
@@ -4611,6 +6207,9 @@ mod tests {
             force_gui_prompt_requested: false,
             clear_gui_data_requested: false,
             language: None,
+            player_path: None,
+            file: None,
+            player_args: vec![],
             load_playlist_from_file: None,
             host: None,
             port: None,
@@ -4716,6 +6315,92 @@ mod tests {
             ),
             "Restoring playlist on reconnect..."
         );
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_env_config_missing()
+     {
+        let mut managed = ManagedMpvLaunchEnvConfig {
+            enabled: true,
+            mpv_bin: None,
+            media_file: None,
+            extra_args: Vec::new(),
+            ipc_path: None,
+            connect_timeout_ms: None,
+            connect_poll_interval_ms: None,
+        };
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/mpv/mpv.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--fs".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+
+        assert_eq!(managed.mpv_bin, Some(PathBuf::from("C:/mpv/mpv.exe")));
+        assert_eq!(
+            managed.media_file,
+            Some(PathBuf::from("C:/media/movie.mkv"))
+        );
+        assert_eq!(managed.extra_args, vec!["--fs".to_owned()]);
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_managed_mpv_overrides_does_not_override_explicit_env_managed_config()
+    {
+        let mut managed = ManagedMpvLaunchEnvConfig {
+            enabled: true,
+            mpv_bin: Some(PathBuf::from("D:/custom/mpv.exe")),
+            media_file: Some(PathBuf::from("D:/custom/start.mkv")),
+            extra_args: vec!["--profile=fast".to_owned()],
+            ipc_path: None,
+            connect_timeout_ms: None,
+            connect_poll_interval_ms: None,
+        };
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/mpv/mpv.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec![],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+
+        assert_eq!(managed.mpv_bin, Some(PathBuf::from("D:/custom/mpv.exe")));
+        assert_eq!(
+            managed.media_file,
+            Some(PathBuf::from("D:/custom/start.mkv"))
+        );
+        assert_eq!(managed.extra_args, vec!["--profile=fast".to_owned()]);
     }
 
     #[test]
@@ -6615,6 +8300,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -6703,6 +8395,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -6805,6 +8504,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -6904,6 +8610,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7015,6 +8728,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7133,6 +8853,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7251,6 +8978,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7356,6 +9090,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7461,6 +9202,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7590,6 +9338,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7731,6 +9486,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -7885,6 +9647,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8021,6 +9790,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8151,6 +9927,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8268,6 +10051,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8391,6 +10181,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8532,6 +10329,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8657,6 +10461,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8794,6 +10605,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -8915,6 +10733,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9063,6 +10888,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9210,6 +11042,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9331,6 +11170,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9455,6 +11301,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9578,6 +11431,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9702,6 +11562,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9833,6 +11700,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -9959,6 +11833,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10084,6 +11965,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10207,6 +12095,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10324,6 +12219,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10442,6 +12344,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10560,6 +12469,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10677,6 +12593,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10794,6 +12717,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -10914,6 +12844,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11032,6 +12969,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11153,6 +13097,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11278,6 +13229,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11419,6 +13377,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11524,6 +13489,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11623,6 +13595,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11720,6 +13699,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11823,6 +13809,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -11946,6 +13939,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12084,6 +14084,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12209,6 +14216,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12300,6 +14314,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12428,6 +14449,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12566,6 +14594,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12682,6 +14717,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12794,6 +14836,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12906,6 +14955,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -12984,6 +15040,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: true,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13020,6 +15083,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: Some(false),
@@ -13053,6 +15123,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13084,6 +15161,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13115,6 +15199,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13146,6 +15237,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13177,6 +15275,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: true,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13803,7 +15908,7 @@ mod tests {
         let result = (|| {
             let config = test_client_loop_config();
             let (mut runtime, _managed_guard) =
-                create_client_runtime_with_managed_mpv_support(&config)
+                create_client_runtime_with_managed_mpv_support(&config, None)
                     .expect("managed mpv runtime creation should succeed");
 
             let expected_name = media_file
@@ -13936,6 +16041,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -13997,6 +16109,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14042,6 +16161,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14110,6 +16236,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14176,6 +16309,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14233,6 +16373,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14307,6 +16454,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14360,6 +16514,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
@@ -14442,6 +16603,13 @@ mod tests {
             recently_advanced_override: None,
             autoplay_enabled: false,
             autoplay_require_same_filenames: false,
+            pause_on_leave_override: None,
+            loop_at_end_of_playlist_override: None,
+            loop_single_files_override: None,
+            only_switch_to_trusted_domains_override: None,
+            trusted_domains_override: None,
+            unpause_action_override: None,
+            auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
             show_duration_notification_override: None,
