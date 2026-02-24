@@ -5082,6 +5082,7 @@ impl ClientSession {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use crate::PRIVACY_HIDDEN_FILENAME;
     use crate::SEEK_THRESHOLD_SECONDS;
