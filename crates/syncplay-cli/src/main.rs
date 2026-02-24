@@ -230,7 +230,7 @@ fn legacy_configuration_getter_startup_compat_entries()
         LegacyConfigurationGetterStartupCompatEntry {
             input: "_args",
             status: Deferred,
-            note: "forwarded to managed mpv/unmanaged external launch; explicit-mpv-IPC supports best-effort runtime subset (--pause/--start/--speed) only",
+            note: "forwarded to managed mpv/unmanaged external launch; explicit-mpv-IPC supports best-effort runtime subset (--pause/--start/--speed/--volume/--mute/--deinterlace/--keepaspect/--keepaspect-window/--sub-visibility/--osd-bar/--fullscreen/--ontop/--border/--force-window/--keep-open/--keep-open-pause/--cursor-autohide-fs-only/--stop-screensaver/--window-maximized/--window-minimized) only",
         },
     ]
 }
@@ -497,6 +497,37 @@ struct LegacyExplicitMpvIpcStartupPlayerArgs {
     paused: Option<bool>,
     start_position_seconds: Option<f64>,
     playback_rate: Option<f64>,
+    muted: Option<bool>,
+    volume: Option<f64>,
+    deinterlace: Option<bool>,
+    keepaspect: Option<bool>,
+    keepaspect_window: Option<bool>,
+    fullscreen: Option<bool>,
+    ontop: Option<bool>,
+    border: Option<bool>,
+    force_window: Option<bool>,
+    keep_open: Option<bool>,
+    keep_open_pause: Option<bool>,
+    cursor_autohide_fs_only: Option<bool>,
+    stop_screensaver: Option<bool>,
+    sub_visibility: Option<bool>,
+    osd_bar: Option<bool>,
+    window_maximized: Option<bool>,
+    window_minimized: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+    supported_tokens: Vec<String>,
+    recognized_but_deferred_tokens: Vec<String>,
+    malformed_tokens: Vec<String>,
+    unsupported_tokens: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LegacyExplicitMpvIpcStartupPlayerArgAnalysis {
+    parsed: LegacyExplicitMpvIpcStartupPlayerArgs,
+    diagnostics: LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2979,7 +3010,7 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     }
     if !overrides.player_args.is_empty() {
         eprintln!(
-            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC only applies a best-effort runtime subset (--pause/--no-pause, --start, --speed)"
+            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC only applies a best-effort runtime subset (--pause/--no-pause, --start, --speed, --volume, --mute/--no-mute, --deinterlace/--no-deinterlace, --keepaspect/--no-keepaspect, --keepaspect-window/--no-keepaspect-window, --sub-visibility/--no-sub-visibility, --osd-bar/--no-osd-bar, --fs/--fullscreen, --ontop/--no-ontop, --border/--no-border, --force-window/--no-force-window, --keep-open/--no-keep-open, --keep-open-pause/--no-keep-open-pause, --cursor-autohide-fs-only/--no-cursor-autohide-fs-only, --stop-screensaver/--no-stop-screensaver, --window-maximized/--no-window-maximized, --window-minimized/--no-window-minimized)"
         );
     }
 }
@@ -4292,71 +4323,598 @@ fn parse_positive_f64_legacy_compatible(value: &str) -> Option<f64> {
     (parsed.is_finite() && parsed > 0.0).then_some(parsed)
 }
 
-fn parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
+fn parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible(
+    value: &str,
+) -> Option<f64> {
+    parse_env_non_negative_f64_legacy_compatible(value)
+        .or_else(|| parse_seek_time_seconds_legacy_like(value))
+}
+
+fn is_legacy_explicit_mpv_ipc_known_deferred_flag_legacy_compatible(_arg: &str) -> bool {
+    false
+}
+
+fn format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
+    flag: &str,
+    value: &str,
+) -> String {
+    format!("{flag} {value}")
+}
+
+fn analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
     player_args: &[String],
-) -> LegacyExplicitMpvIpcStartupPlayerArgs {
-    let mut parsed = LegacyExplicitMpvIpcStartupPlayerArgs::default();
+) -> LegacyExplicitMpvIpcStartupPlayerArgAnalysis {
+    let mut analysis = LegacyExplicitMpvIpcStartupPlayerArgAnalysis::default();
     let mut index = 0;
     while index < player_args.len() {
         let arg = player_args[index].as_str();
 
         if arg == "--pause" {
-            parsed.paused = Some(true);
+            analysis.parsed.paused = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
             index += 1;
             continue;
         }
         if arg == "--no-pause" {
-            parsed.paused = Some(false);
+            analysis.parsed.paused = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
             index += 1;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--pause=") {
             if let Some(paused) = parse_env_bool_legacy_compatible(value) {
-                parsed.paused = Some(paused);
+                analysis.parsed.paused = Some(paused);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
             }
             index += 1;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--start=") {
-            if let Some(position_seconds) = parse_env_non_negative_f64_legacy_compatible(value) {
-                parsed.start_position_seconds = Some(position_seconds);
+            if let Some(position_seconds) =
+                parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible(value)
+            {
+                analysis.parsed.start_position_seconds = Some(position_seconds);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
             }
             index += 1;
             continue;
         }
         if arg == "--start" {
-            if let Some(next) = player_args.get(index + 1)
-                && let Some(position_seconds) = parse_env_non_negative_f64_legacy_compatible(next)
-            {
-                parsed.start_position_seconds = Some(position_seconds);
+            if let Some(next) = player_args.get(index + 1) {
+                if next.starts_with("--") {
+                    analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+                    index += 1;
+                    continue;
+                }
+                let combined =
+                    format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
+                        arg, next,
+                    );
+                if let Some(position_seconds) =
+                    parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible(next)
+                {
+                    analysis.parsed.start_position_seconds = Some(position_seconds);
+                    analysis.diagnostics.supported_tokens.push(combined);
+                } else {
+                    analysis.diagnostics.malformed_tokens.push(combined);
+                }
                 index += 2;
                 continue;
             }
+            analysis.diagnostics.malformed_tokens.push(arg.to_owned());
             index += 1;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--speed=") {
             if let Some(playback_rate) = parse_positive_f64_legacy_compatible(value) {
-                parsed.playback_rate = Some(playback_rate);
+                analysis.parsed.playback_rate = Some(playback_rate);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
             }
             index += 1;
             continue;
         }
         if arg == "--speed" {
-            if let Some(next) = player_args.get(index + 1)
-                && let Some(playback_rate) = parse_positive_f64_legacy_compatible(next)
-            {
-                parsed.playback_rate = Some(playback_rate);
+            if let Some(next) = player_args.get(index + 1) {
+                if next.starts_with("--") {
+                    analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+                    index += 1;
+                    continue;
+                }
+                let combined =
+                    format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
+                        arg, next,
+                    );
+                if let Some(playback_rate) = parse_positive_f64_legacy_compatible(next) {
+                    analysis.parsed.playback_rate = Some(playback_rate);
+                    analysis.diagnostics.supported_tokens.push(combined);
+                } else {
+                    analysis.diagnostics.malformed_tokens.push(combined);
+                }
                 index += 2;
                 continue;
+            }
+            analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+
+        if arg == "--mute" {
+            analysis.parsed.muted = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-mute" {
+            analysis.parsed.muted = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--mute=") {
+            if let Some(muted) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.muted = Some(muted);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--deinterlace" {
+            analysis.parsed.deinterlace = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-deinterlace" {
+            analysis.parsed.deinterlace = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--deinterlace=") {
+            if let Some(deinterlace) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.deinterlace = Some(deinterlace);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--keepaspect" {
+            analysis.parsed.keepaspect = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-keepaspect" {
+            analysis.parsed.keepaspect = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--keepaspect=") {
+            if let Some(keepaspect) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.keepaspect = Some(keepaspect);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--keepaspect-window" {
+            analysis.parsed.keepaspect_window = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-keepaspect-window" {
+            analysis.parsed.keepaspect_window = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--keepaspect-window=") {
+            if let Some(keepaspect_window) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.keepaspect_window = Some(keepaspect_window);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
             }
             index += 1;
             continue;
         }
 
+        if arg == "--fs" || arg == "--fullscreen" {
+            analysis.parsed.fullscreen = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-fs" || arg == "--no-fullscreen" {
+            analysis.parsed.fullscreen = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--fs=") {
+            if let Some(fullscreen) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.fullscreen = Some(fullscreen);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--fullscreen=") {
+            if let Some(fullscreen) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.fullscreen = Some(fullscreen);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--ontop" {
+            analysis.parsed.ontop = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-ontop" {
+            analysis.parsed.ontop = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--ontop=") {
+            if let Some(ontop) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.ontop = Some(ontop);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--border" {
+            analysis.parsed.border = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-border" {
+            analysis.parsed.border = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--border=") {
+            if let Some(border) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.border = Some(border);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--force-window" {
+            analysis.parsed.force_window = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-force-window" {
+            analysis.parsed.force_window = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--force-window=") {
+            if let Some(force_window) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.force_window = Some(force_window);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--keep-open" {
+            analysis.parsed.keep_open = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-keep-open" {
+            analysis.parsed.keep_open = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--keep-open=") {
+            if let Some(keep_open) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.keep_open = Some(keep_open);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--keep-open-pause" {
+            analysis.parsed.keep_open_pause = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-keep-open-pause" {
+            analysis.parsed.keep_open_pause = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--keep-open-pause=") {
+            if let Some(keep_open_pause) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.keep_open_pause = Some(keep_open_pause);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--cursor-autohide-fs-only" {
+            analysis.parsed.cursor_autohide_fs_only = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-cursor-autohide-fs-only" {
+            analysis.parsed.cursor_autohide_fs_only = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--cursor-autohide-fs-only=") {
+            if let Some(cursor_autohide_fs_only) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.cursor_autohide_fs_only = Some(cursor_autohide_fs_only);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--stop-screensaver" {
+            analysis.parsed.stop_screensaver = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-stop-screensaver" {
+            analysis.parsed.stop_screensaver = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--stop-screensaver=") {
+            if let Some(stop_screensaver) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.stop_screensaver = Some(stop_screensaver);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--sub-visibility" {
+            analysis.parsed.sub_visibility = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-sub-visibility" {
+            analysis.parsed.sub_visibility = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--sub-visibility=") {
+            if let Some(sub_visibility) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.sub_visibility = Some(sub_visibility);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--osd-bar" {
+            analysis.parsed.osd_bar = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-osd-bar" {
+            analysis.parsed.osd_bar = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--osd-bar=") {
+            if let Some(osd_bar) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.osd_bar = Some(osd_bar);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--window-maximized" {
+            analysis.parsed.window_maximized = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-window-maximized" {
+            analysis.parsed.window_maximized = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--window-maximized=") {
+            if let Some(window_maximized) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.window_maximized = Some(window_maximized);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--window-minimized" {
+            analysis.parsed.window_minimized = Some(true);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if arg == "--no-window-minimized" {
+            analysis.parsed.window_minimized = Some(false);
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--window-minimized=") {
+            if let Some(window_minimized) = parse_env_bool_legacy_compatible(value) {
+                analysis.parsed.window_minimized = Some(window_minimized);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+
+        if arg == "--volume" {
+            if let Some(next) = player_args.get(index + 1) {
+                if next.starts_with("--") {
+                    analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+                    index += 1;
+                    continue;
+                }
+                let combined =
+                    format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
+                        arg, next,
+                    );
+                if let Some(volume) = parse_env_non_negative_f64_legacy_compatible(next) {
+                    analysis.parsed.volume = Some(volume);
+                    analysis.diagnostics.supported_tokens.push(combined);
+                } else {
+                    analysis.diagnostics.malformed_tokens.push(combined);
+                }
+                index += 2;
+                continue;
+            }
+            analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--volume=") {
+            if let Some(volume) = parse_env_non_negative_f64_legacy_compatible(value) {
+                analysis.parsed.volume = Some(volume);
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            } else {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+
+        if is_legacy_explicit_mpv_ipc_known_deferred_flag_legacy_compatible(arg) {
+            analysis
+                .diagnostics
+                .recognized_but_deferred_tokens
+                .push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+
+        analysis.diagnostics.unsupported_tokens.push(arg.to_owned());
         index += 1;
     }
-    parsed
+    analysis
+}
+
+#[cfg(test)]
+fn parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
+    player_args: &[String],
+) -> LegacyExplicitMpvIpcStartupPlayerArgs {
+    analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(player_args).parsed
+}
+
+fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
+    diagnostics: &LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
+    applied_supported_commands: usize,
+) -> Vec<String> {
+    let ignored_count = diagnostics.recognized_but_deferred_tokens.len()
+        + diagnostics.malformed_tokens.len()
+        + diagnostics.unsupported_tokens.len();
+    if applied_supported_commands == 0 && ignored_count == 0 {
+        return Vec::new();
+    }
+    let recognized_supported_count = diagnostics.supported_tokens.len();
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "info: explicit-mpv-IPC startup _args summary: applied={applied_supported_commands} ignored={ignored_count} (recognized-supported-tokens={recognized_supported_count}, deferred={}, malformed={}, unsupported={})",
+        diagnostics.recognized_but_deferred_tokens.len(),
+        diagnostics.malformed_tokens.len(),
+        diagnostics.unsupported_tokens.len()
+    ));
+    if !diagnostics.recognized_but_deferred_tokens.is_empty() {
+        lines.push(format!(
+            "warning: explicit-mpv-IPC recognized-but-deferred _args were ignored: {}",
+            diagnostics.recognized_but_deferred_tokens.join(", ")
+        ));
+    }
+    if !diagnostics.malformed_tokens.is_empty() {
+        lines.push(format!(
+            "warning: explicit-mpv-IPC malformed _args were ignored: {}",
+            diagnostics.malformed_tokens.join(", ")
+        ));
+    }
+    if !diagnostics.unsupported_tokens.is_empty() {
+        lines.push(format!(
+            "warning: explicit-mpv-IPC unsupported _args were ignored: {}",
+            diagnostics.unsupported_tokens.join(", ")
+        ));
+    }
+    lines
+}
+
+fn emit_legacy_explicit_mpv_ipc_startup_player_arg_diagnostics_legacy_compatible(
+    diagnostics: &LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
+    applied_supported_commands: usize,
+) {
+    for line in legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
+        diagnostics,
+        applied_supported_commands,
+    ) {
+        eprintln!("{line}");
+    }
 }
 
 fn spawn_legacy_external_player_if_requested_legacy_compatible(
@@ -4418,8 +4976,12 @@ where
         applied = true;
     }
 
-    let startup_args =
-        parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&overrides.player_args);
+    let startup_arg_analysis =
+        analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
+            &overrides.player_args,
+        );
+    let startup_args = &startup_arg_analysis.parsed;
+    let mut applied_supported_commands = 0usize;
     if let Some(start_position_seconds) = startup_args.start_position_seconds {
         retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
             player.set_position(start_position_seconds)
@@ -4427,6 +4989,7 @@ where
         .map_err(|error| {
             anyhow!("failed applying legacy explicit-mpv-IPC startup '--start' override: {error}")
         })?;
+        applied_supported_commands += 1;
         applied = true;
     }
     if let Some(paused) = startup_args.paused {
@@ -4436,6 +4999,7 @@ where
         .map_err(|error| {
             anyhow!("failed applying legacy explicit-mpv-IPC startup '--pause' override: {error}")
         })?;
+        applied_supported_commands += 1;
         applied = true;
     }
     if let Some(playback_rate) = startup_args.playback_rate {
@@ -4445,8 +5009,207 @@ where
         .map_err(|error| {
             anyhow!("failed applying legacy explicit-mpv-IPC startup '--speed' override: {error}")
         })?;
+        applied_supported_commands += 1;
         applied = true;
     }
+    if let Some(volume) = startup_args.volume {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_volume(volume)
+        })
+        .map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--volume' override: {error}")
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(muted) = startup_args.muted {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| player.set_muted(muted))
+            .map_err(|error| {
+                anyhow!(
+                    "failed applying legacy explicit-mpv-IPC startup '--mute' override: {error}"
+                )
+            })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(deinterlace) = startup_args.deinterlace {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_deinterlace(deinterlace)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--deinterlace' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(keepaspect) = startup_args.keepaspect {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_keepaspect(keepaspect)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--keepaspect' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(keepaspect_window) = startup_args.keepaspect_window {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_keepaspect_window(keepaspect_window)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--keepaspect-window' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(fullscreen) = startup_args.fullscreen {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_fullscreen(fullscreen)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--fullscreen' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(ontop) = startup_args.ontop {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| player.set_ontop(ontop))
+            .map_err(|error| {
+                anyhow!(
+                    "failed applying legacy explicit-mpv-IPC startup '--ontop' override: {error}"
+                )
+            })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(border) = startup_args.border {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_border(border)
+        })
+        .map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--border' override: {error}")
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(force_window) = startup_args.force_window {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_force_window(force_window)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--force-window' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(keep_open) = startup_args.keep_open {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_keep_open(keep_open)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--keep-open' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(keep_open_pause) = startup_args.keep_open_pause {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_keep_open_pause(keep_open_pause)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--keep-open-pause' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(cursor_autohide_fs_only) = startup_args.cursor_autohide_fs_only {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_cursor_autohide_fs_only(cursor_autohide_fs_only)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--cursor-autohide-fs-only' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(stop_screensaver) = startup_args.stop_screensaver {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_stop_screensaver(stop_screensaver)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--stop-screensaver' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(sub_visibility) = startup_args.sub_visibility {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_sub_visibility(sub_visibility)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--sub-visibility' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(osd_bar) = startup_args.osd_bar {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_osd_bar(osd_bar)
+        })
+        .map_err(|error| {
+            anyhow!("failed applying legacy explicit-mpv-IPC startup '--osd-bar' override: {error}")
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(window_maximized) = startup_args.window_maximized {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_window_maximized(window_maximized)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--window-maximized' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    if let Some(window_minimized) = startup_args.window_minimized {
+        retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+            player.set_window_minimized(window_minimized)
+        })
+        .map_err(|error| {
+            anyhow!(
+                "failed applying legacy explicit-mpv-IPC startup '--window-minimized' override: {error}"
+            )
+        })?;
+        applied_supported_commands += 1;
+        applied = true;
+    }
+    emit_legacy_explicit_mpv_ipc_startup_player_arg_diagnostics_legacy_compatible(
+        &startup_arg_analysis.diagnostics,
+        applied_supported_commands,
+    );
     Ok(applied)
 }
 
@@ -7354,7 +8117,219 @@ mod tests {
                 paused: Some(true),
                 start_position_seconds: Some(12.5),
                 playback_rate: Some(1.5),
+                muted: None,
+                volume: Some(50.0),
+                deinterlace: None,
+                keepaspect: None,
+                keepaspect_window: None,
+                fullscreen: Some(true),
+                ontop: None,
+                border: None,
+                force_window: None,
+                keep_open: None,
+                keep_open_pause: None,
+                cursor_autohide_fs_only: None,
+                stop_screensaver: None,
+                sub_visibility: None,
+                osd_bar: None,
+                window_maximized: None,
+                window_minimized: None,
             }
+        );
+    }
+
+    #[test]
+    fn parse_legacy_explicit_mpv_ipc_startup_player_args_accepts_timecode_start_values() {
+        let args = vec![
+            "--start".to_owned(),
+            "01:02:03.5".to_owned(),
+            "--pause=false".to_owned(),
+        ];
+
+        let parsed =
+            super::parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+        assert_eq!(
+            parsed,
+            super::LegacyExplicitMpvIpcStartupPlayerArgs {
+                paused: Some(false),
+                start_position_seconds: Some(3723.5),
+                playback_rate: None,
+                muted: None,
+                volume: None,
+                deinterlace: None,
+                keepaspect: None,
+                keepaspect_window: None,
+                fullscreen: None,
+                ontop: None,
+                border: None,
+                force_window: None,
+                keep_open: None,
+                keep_open_pause: None,
+                cursor_autohide_fs_only: None,
+                stop_screensaver: None,
+                sub_visibility: None,
+                osd_bar: None,
+                window_maximized: None,
+                window_minimized: None,
+            }
+        );
+    }
+
+    #[test]
+    fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes() {
+        let args = vec![
+            "--start=00:01:02".to_owned(),
+            "--volume=50".to_owned(),
+            "--mute=yes".to_owned(),
+            "--deinterlace=yes".to_owned(),
+            "--keepaspect=yes".to_owned(),
+            "--keepaspect-window=yes".to_owned(),
+            "--fs".to_owned(),
+            "--ontop=false".to_owned(),
+            "--border=yes".to_owned(),
+            "--force-window=yes".to_owned(),
+            "--keep-open=no".to_owned(),
+            "--keep-open-pause=true".to_owned(),
+            "--cursor-autohide-fs-only=no".to_owned(),
+            "--stop-screensaver=yes".to_owned(),
+            "--sub-visibility=no".to_owned(),
+            "--osd-bar=yes".to_owned(),
+            "--window-maximized=true".to_owned(),
+            "--window-minimized=false".to_owned(),
+            "--pause=maybe".to_owned(),
+            "--speed".to_owned(),
+            "fast".to_owned(),
+            "--unknown".to_owned(),
+        ];
+
+        let analysis =
+            super::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+        assert_eq!(
+            analysis.parsed,
+            super::LegacyExplicitMpvIpcStartupPlayerArgs {
+                paused: None,
+                start_position_seconds: Some(62.0),
+                playback_rate: None,
+                muted: Some(true),
+                volume: Some(50.0),
+                deinterlace: Some(true),
+                keepaspect: Some(true),
+                keepaspect_window: Some(true),
+                fullscreen: Some(true),
+                ontop: Some(false),
+                border: Some(true),
+                force_window: Some(true),
+                keep_open: Some(false),
+                keep_open_pause: Some(true),
+                cursor_autohide_fs_only: Some(false),
+                stop_screensaver: Some(true),
+                sub_visibility: Some(false),
+                osd_bar: Some(true),
+                window_maximized: Some(true),
+                window_minimized: Some(false),
+            }
+        );
+        assert_eq!(
+            analysis.diagnostics,
+            super::LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+                supported_tokens: vec![
+                    "--start=00:01:02".to_owned(),
+                    "--volume=50".to_owned(),
+                    "--mute=yes".to_owned(),
+                    "--deinterlace=yes".to_owned(),
+                    "--keepaspect=yes".to_owned(),
+                    "--keepaspect-window=yes".to_owned(),
+                    "--fs".to_owned(),
+                    "--ontop=false".to_owned(),
+                    "--border=yes".to_owned(),
+                    "--force-window=yes".to_owned(),
+                    "--keep-open=no".to_owned(),
+                    "--keep-open-pause=true".to_owned(),
+                    "--cursor-autohide-fs-only=no".to_owned(),
+                    "--stop-screensaver=yes".to_owned(),
+                    "--sub-visibility=no".to_owned(),
+                    "--osd-bar=yes".to_owned(),
+                    "--window-maximized=true".to_owned(),
+                    "--window-minimized=false".to_owned(),
+                ],
+                recognized_but_deferred_tokens: vec![],
+                malformed_tokens: vec!["--pause=maybe".to_owned(), "--speed fast".to_owned()],
+                unsupported_tokens: vec!["--unknown".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn analyze_legacy_explicit_mpv_ipc_startup_player_args_missing_value_does_not_consume_next_flag()
+     {
+        let args = vec!["--start".to_owned(), "--pause".to_owned()];
+
+        let analysis =
+            super::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+        assert_eq!(
+            analysis.parsed,
+            super::LegacyExplicitMpvIpcStartupPlayerArgs {
+                paused: Some(true),
+                start_position_seconds: None,
+                playback_rate: None,
+                muted: None,
+                volume: None,
+                deinterlace: None,
+                keepaspect: None,
+                keepaspect_window: None,
+                fullscreen: None,
+                ontop: None,
+                border: None,
+                force_window: None,
+                keep_open: None,
+                keep_open_pause: None,
+                cursor_autohide_fs_only: None,
+                stop_screensaver: None,
+                sub_visibility: None,
+                osd_bar: None,
+                window_maximized: None,
+                window_minimized: None,
+            }
+        );
+        assert_eq!(
+            analysis.diagnostics.supported_tokens,
+            vec!["--pause".to_owned()]
+        );
+        assert_eq!(
+            analysis.diagnostics.malformed_tokens,
+            vec!["--start".to_owned()]
+        );
+    }
+
+    #[test]
+    fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_report_summary_and_ignored_groups()
+     {
+        let diagnostics = super::LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+            supported_tokens: vec![
+                "--start=12".to_owned(),
+                "--speed=1.25".to_owned(),
+                "--volume=50".to_owned(),
+                "--mute".to_owned(),
+                "--ontop".to_owned(),
+            ],
+            recognized_but_deferred_tokens: vec![],
+            malformed_tokens: vec!["--pause=maybe".to_owned()],
+            unsupported_tokens: vec!["--profile=fast".to_owned()],
+        };
+
+        let lines =
+            super::legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
+                &diagnostics,
+                2,
+            );
+        assert_eq!(
+            lines,
+            vec![
+                "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=5, deferred=0, malformed=1, unsupported=1)".to_owned(),
+                "warning: explicit-mpv-IPC malformed _args were ignored: --pause=maybe".to_owned(),
+                "warning: explicit-mpv-IPC unsupported _args were ignored: --profile=fast"
+                    .to_owned(),
+            ]
         );
     }
 
@@ -7454,6 +8429,86 @@ mod tests {
                 self.events.push(format!("speed:{rate}"));
                 Ok(())
             }
+            fn set_volume(&mut self, volume: f64) -> Result<(), PlayerError> {
+                self.events.push(format!("volume:{volume}"));
+                Ok(())
+            }
+            fn set_muted(&mut self, muted: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("mute:{muted}"));
+                Ok(())
+            }
+            fn set_deinterlace(&mut self, deinterlace: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("deinterlace:{deinterlace}"));
+                Ok(())
+            }
+            fn set_keepaspect(&mut self, keepaspect: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("keepaspect:{keepaspect}"));
+                Ok(())
+            }
+            fn set_keepaspect_window(
+                &mut self,
+                keepaspect_window: bool,
+            ) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("keepaspect-window:{keepaspect_window}"));
+                Ok(())
+            }
+            fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("fullscreen:{fullscreen}"));
+                Ok(())
+            }
+            fn set_ontop(&mut self, ontop: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("ontop:{ontop}"));
+                Ok(())
+            }
+            fn set_border(&mut self, border: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("border:{border}"));
+                Ok(())
+            }
+            fn set_force_window(&mut self, force_window: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("force-window:{force_window}"));
+                Ok(())
+            }
+            fn set_keep_open(&mut self, keep_open: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("keep-open:{keep_open}"));
+                Ok(())
+            }
+            fn set_keep_open_pause(&mut self, keep_open_pause: bool) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("keep-open-pause:{keep_open_pause}"));
+                Ok(())
+            }
+            fn set_cursor_autohide_fs_only(
+                &mut self,
+                cursor_autohide_fs_only: bool,
+            ) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("cursor-autohide-fs-only:{cursor_autohide_fs_only}"));
+                Ok(())
+            }
+            fn set_stop_screensaver(&mut self, stop_screensaver: bool) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("stop-screensaver:{stop_screensaver}"));
+                Ok(())
+            }
+            fn set_sub_visibility(&mut self, sub_visibility: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("sub-visibility:{sub_visibility}"));
+                Ok(())
+            }
+            fn set_osd_bar(&mut self, osd_bar: bool) -> Result<(), PlayerError> {
+                self.events.push(format!("osd-bar:{osd_bar}"));
+                Ok(())
+            }
+            fn set_window_maximized(&mut self, window_maximized: bool) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("window-maximized:{window_maximized}"));
+                Ok(())
+            }
+            fn set_window_minimized(&mut self, window_minimized: bool) -> Result<(), PlayerError> {
+                self.events
+                    .push(format!("window-minimized:{window_minimized}"));
+                Ok(())
+            }
         }
 
         let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
@@ -7484,6 +8539,37 @@ mod tests {
                 "--pause".to_owned(),
                 "--speed=1.25".to_owned(),
                 "--volume=50".to_owned(),
+                "--mute".to_owned(),
+                "--deinterlace=no".to_owned(),
+                "--deinterlace".to_owned(),
+                "--keepaspect=no".to_owned(),
+                "--keepaspect".to_owned(),
+                "--keepaspect-window=no".to_owned(),
+                "--keepaspect-window".to_owned(),
+                "--fullscreen=no".to_owned(),
+                "--fs".to_owned(),
+                "--ontop=no".to_owned(),
+                "--ontop".to_owned(),
+                "--border=no".to_owned(),
+                "--border".to_owned(),
+                "--force-window=no".to_owned(),
+                "--force-window".to_owned(),
+                "--keep-open=no".to_owned(),
+                "--keep-open".to_owned(),
+                "--keep-open-pause=no".to_owned(),
+                "--keep-open-pause".to_owned(),
+                "--cursor-autohide-fs-only=no".to_owned(),
+                "--cursor-autohide-fs-only".to_owned(),
+                "--stop-screensaver=no".to_owned(),
+                "--stop-screensaver".to_owned(),
+                "--sub-visibility=no".to_owned(),
+                "--sub-visibility".to_owned(),
+                "--osd-bar=no".to_owned(),
+                "--osd-bar".to_owned(),
+                "--window-maximized=no".to_owned(),
+                "--window-maximized".to_owned(),
+                "--window-minimized=no".to_owned(),
+                "--window-minimized".to_owned(),
             ],
             load_playlist_from_file: None,
             host: None,
@@ -7511,6 +8597,23 @@ mod tests {
                 "seek:12.5".to_owned(),
                 "pause:true".to_owned(),
                 "speed:1.25".to_owned(),
+                "volume:50".to_owned(),
+                "mute:true".to_owned(),
+                "deinterlace:true".to_owned(),
+                "keepaspect:true".to_owned(),
+                "keepaspect-window:true".to_owned(),
+                "fullscreen:true".to_owned(),
+                "ontop:true".to_owned(),
+                "border:true".to_owned(),
+                "force-window:true".to_owned(),
+                "keep-open:true".to_owned(),
+                "keep-open-pause:true".to_owned(),
+                "cursor-autohide-fs-only:true".to_owned(),
+                "stop-screensaver:true".to_owned(),
+                "sub-visibility:true".to_owned(),
+                "osd-bar:true".to_owned(),
+                "window-maximized:true".to_owned(),
+                "window-minimized:true".to_owned(),
             ]
         );
 
@@ -24866,10 +25969,25 @@ mod tests {
                 player_path: None,
                 file: Some(media_file.to_string_lossy().into_owned()),
                 player_args: vec![
-                    "--fs".to_owned(), // unsupported in explicit-IPC subset; should be ignored
+                    "--profile=fast".to_owned(), // unsupported in explicit-IPC subset; should be ignored
                     "--start=1.5".to_owned(),
                     "--pause".to_owned(),
                     "--speed=1.25".to_owned(),
+                    "--volume=33".to_owned(),
+                    "--mute".to_owned(),
+                    "--deinterlace".to_owned(),
+                    "--keepaspect".to_owned(),
+                    "--keepaspect-window".to_owned(),
+                    "--border".to_owned(),
+                    "--force-window".to_owned(),
+                    "--keep-open".to_owned(),
+                    "--keep-open-pause".to_owned(),
+                    "--cursor-autohide-fs-only".to_owned(),
+                    "--stop-screensaver".to_owned(),
+                    "--sub-visibility".to_owned(),
+                    "--osd-bar".to_owned(),
+                    "--window-maximized".to_owned(),
+                    "--window-minimized".to_owned(),
                 ],
                 load_playlist_from_file: None,
                 host: None,
@@ -24905,6 +26023,21 @@ mod tests {
             let mut saw_pause_true = false;
             let mut saw_speed = false;
             let mut saw_position = false;
+            let mut saw_volume = false;
+            let mut saw_muted = false;
+            let mut saw_deinterlace = false;
+            let mut saw_keepaspect = false;
+            let mut saw_keepaspect_window = false;
+            let mut saw_border = false;
+            let mut saw_force_window = false;
+            let mut saw_keep_open = false;
+            let mut saw_keep_open_pause = false;
+            let mut saw_cursor_autohide_fs_only = false;
+            let mut saw_stop_screensaver = false;
+            let mut saw_sub_visibility = false;
+            let mut saw_osd_bar = false;
+            let mut saw_window_maximized = false;
+            let mut saw_window_minimized = false;
             let mut last_update = None;
             let mut last_telemetry = None;
 
@@ -24928,15 +26061,79 @@ mod tests {
                 if adapter.position_seconds() >= 1.0 {
                     saw_position = true;
                 }
+                if (adapter.volume() - 33.0).abs() < 0.5 {
+                    saw_volume = true;
+                }
+                if adapter.muted() {
+                    saw_muted = true;
+                }
+                if adapter.deinterlace() {
+                    saw_deinterlace = true;
+                }
+                if adapter.keepaspect() {
+                    saw_keepaspect = true;
+                }
+                if adapter.keepaspect_window() {
+                    saw_keepaspect_window = true;
+                }
+                if adapter.border() {
+                    saw_border = true;
+                }
+                if adapter.force_window() {
+                    saw_force_window = true;
+                }
+                if adapter.keep_open() {
+                    saw_keep_open = true;
+                }
+                if adapter.keep_open_pause() {
+                    saw_keep_open_pause = true;
+                }
+                if adapter.cursor_autohide_fs_only() {
+                    saw_cursor_autohide_fs_only = true;
+                }
+                if adapter.stop_screensaver() {
+                    saw_stop_screensaver = true;
+                }
+                if adapter.sub_visibility() {
+                    saw_sub_visibility = true;
+                }
+                if adapter.osd_bar() {
+                    saw_osd_bar = true;
+                }
+                if adapter.window_maximized() {
+                    saw_window_maximized = true;
+                }
+                if adapter.window_minimized() {
+                    saw_window_minimized = true;
+                }
 
-                if saw_local_file && saw_pause_true && saw_speed && saw_position {
+                if saw_local_file
+                    && saw_pause_true
+                    && saw_speed
+                    && saw_position
+                    && saw_volume
+                    && saw_muted
+                    && saw_deinterlace
+                    && saw_keepaspect
+                    && saw_keepaspect_window
+                    && saw_border
+                    && saw_force_window
+                    && saw_keep_open
+                    && saw_keep_open_pause
+                    && saw_cursor_autohide_fs_only
+                    && saw_stop_screensaver
+                    && saw_sub_visibility
+                    && saw_osd_bar
+                    && saw_window_maximized
+                    && saw_window_minimized
+                {
                     return Ok(());
                 }
                 std::thread::sleep(poll_interval);
             }
 
             Err(anyhow::anyhow!(
-                "expected explicit-mpv-IPC startup helper to apply file/start/pause/speed within {:?} (mpv_bin={}, media={}, pipe={}); state: saw_local_file={}, saw_pause_true={}, saw_speed={}, saw_position={}; adapter_path={:?}; paused={}; position={}; speed={}; last_update={:?}; last_telemetry={:?}",
+                "expected explicit-mpv-IPC startup helper to apply file/start/pause/speed/volume/mute/deinterlace/keepaspect/keepaspect-window/border/force-window/keep-open/keep-open-pause/cursor-autohide-fs-only/stop-screensaver/sub-visibility/osd-bar/window-maximized/window-minimized within {:?} (mpv_bin={}, media={}, pipe={}); state: saw_local_file={}, saw_pause_true={}, saw_speed={}, saw_position={}, saw_volume={}, saw_muted={}, saw_deinterlace={}, saw_keepaspect={}, saw_keepaspect_window={}, saw_border={}, saw_force_window={}, saw_keep_open={}, saw_keep_open_pause={}, saw_cursor_autohide_fs_only={}, saw_stop_screensaver={}, saw_sub_visibility={}, saw_osd_bar={}, saw_window_maximized={}, saw_window_minimized={}; adapter_path={:?}; paused={}; position={}; speed={}; volume={}; muted={}; deinterlace={}; keepaspect={}; keepaspect_window={}; border={}; force_window={}; keep_open={}; keep_open_pause={}; cursor_autohide_fs_only={}; stop_screensaver={}; sub_visibility={}; osd_bar={}; window_maximized={}; window_minimized={}; last_update={:?}; last_telemetry={:?}",
                 timeout,
                 mpv_bin.display(),
                 media_file.display(),
@@ -24945,10 +26142,40 @@ mod tests {
                 saw_pause_true,
                 saw_speed,
                 saw_position,
+                saw_volume,
+                saw_muted,
+                saw_deinterlace,
+                saw_keepaspect,
+                saw_keepaspect_window,
+                saw_border,
+                saw_force_window,
+                saw_keep_open,
+                saw_keep_open_pause,
+                saw_cursor_autohide_fs_only,
+                saw_stop_screensaver,
+                saw_sub_visibility,
+                saw_osd_bar,
+                saw_window_maximized,
+                saw_window_minimized,
                 adapter.current_path(),
                 adapter.paused(),
                 adapter.position_seconds(),
                 adapter.playback_rate(),
+                adapter.volume(),
+                adapter.muted(),
+                adapter.deinterlace(),
+                adapter.keepaspect(),
+                adapter.keepaspect_window(),
+                adapter.border(),
+                adapter.force_window(),
+                adapter.keep_open(),
+                adapter.keep_open_pause(),
+                adapter.cursor_autohide_fs_only(),
+                adapter.stop_screensaver(),
+                adapter.sub_visibility(),
+                adapter.osd_bar(),
+                adapter.window_maximized(),
+                adapter.window_minimized(),
                 last_update,
                 last_telemetry
             ))

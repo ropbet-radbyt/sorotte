@@ -18,6 +18,23 @@ const MPV_LOADFILE_REPLACE: &str = "replace";
 const MPV_PROPERTY_PAUSE: &str = "pause";
 const MPV_PROPERTY_TIME_POS: &str = "time-pos";
 const MPV_PROPERTY_SPEED: &str = "speed";
+const MPV_PROPERTY_MUTE: &str = "mute";
+const MPV_PROPERTY_VOLUME: &str = "volume";
+const MPV_PROPERTY_DEINTERLACE: &str = "deinterlace";
+const MPV_PROPERTY_KEEPASPECT: &str = "keepaspect";
+const MPV_PROPERTY_KEEPASPECT_WINDOW: &str = "keepaspect-window";
+const MPV_PROPERTY_FULLSCREEN: &str = "fullscreen";
+const MPV_PROPERTY_ONTOP: &str = "ontop";
+const MPV_PROPERTY_BORDER: &str = "border";
+const MPV_PROPERTY_FORCE_WINDOW: &str = "force-window";
+const MPV_PROPERTY_KEEP_OPEN: &str = "keep-open";
+const MPV_PROPERTY_KEEP_OPEN_PAUSE: &str = "keep-open-pause";
+const MPV_PROPERTY_CURSOR_AUTOHIDE_FS_ONLY: &str = "cursor-autohide-fs-only";
+const MPV_PROPERTY_STOP_SCREENSAVER: &str = "stop-screensaver";
+const MPV_PROPERTY_SUB_VISIBILITY: &str = "sub-visibility";
+const MPV_PROPERTY_OSD_BAR: &str = "osd-bar";
+const MPV_PROPERTY_WINDOW_MAXIMIZED: &str = "window-maximized";
+const MPV_PROPERTY_WINDOW_MINIMIZED: &str = "window-minimized";
 const MPV_PROPERTY_PATH: &str = "path";
 const MPV_PROPERTY_DURATION: &str = "duration";
 const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
@@ -34,6 +51,23 @@ pub struct MpvAdapter {
     paused: bool,
     position_seconds: f64,
     playback_rate: f64,
+    muted: bool,
+    volume: Option<f64>,
+    deinterlace: bool,
+    keepaspect: bool,
+    keepaspect_window: bool,
+    fullscreen: bool,
+    ontop: bool,
+    border: bool,
+    force_window: bool,
+    keep_open: bool,
+    keep_open_pause: bool,
+    cursor_autohide_fs_only: bool,
+    stop_screensaver: bool,
+    sub_visibility: bool,
+    osd_bar: bool,
+    window_maximized: bool,
+    window_minimized: bool,
     current_path: Option<String>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
@@ -49,6 +83,23 @@ impl fmt::Debug for MpvAdapter {
             .field("paused", &self.paused)
             .field("position_seconds", &self.position_seconds)
             .field("playback_rate", &self.playback_rate)
+            .field("muted", &self.muted)
+            .field("volume", &self.volume)
+            .field("deinterlace", &self.deinterlace)
+            .field("keepaspect", &self.keepaspect)
+            .field("keepaspect_window", &self.keepaspect_window)
+            .field("fullscreen", &self.fullscreen)
+            .field("ontop", &self.ontop)
+            .field("border", &self.border)
+            .field("force_window", &self.force_window)
+            .field("keep_open", &self.keep_open)
+            .field("keep_open_pause", &self.keep_open_pause)
+            .field("cursor_autohide_fs_only", &self.cursor_autohide_fs_only)
+            .field("stop_screensaver", &self.stop_screensaver)
+            .field("sub_visibility", &self.sub_visibility)
+            .field("osd_bar", &self.osd_bar)
+            .field("window_maximized", &self.window_maximized)
+            .field("window_minimized", &self.window_minimized)
             .field("current_path", &self.current_path)
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
@@ -72,6 +123,23 @@ impl Default for MpvAdapter {
             paused: false,
             position_seconds: 0.0,
             playback_rate: 0.0,
+            muted: false,
+            volume: None,
+            deinterlace: false,
+            keepaspect: false,
+            keepaspect_window: false,
+            fullscreen: false,
+            ontop: false,
+            border: false,
+            force_window: false,
+            keep_open: false,
+            keep_open_pause: false,
+            cursor_autohide_fs_only: false,
+            stop_screensaver: false,
+            sub_visibility: false,
+            osd_bar: false,
+            window_maximized: false,
+            window_minimized: false,
             current_path: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
@@ -115,6 +183,74 @@ impl MpvAdapter {
         } else {
             self.playback_rate
         }
+    }
+
+    pub fn muted(&self) -> bool {
+        self.muted
+    }
+
+    pub fn volume(&self) -> f64 {
+        self.volume.unwrap_or(100.0)
+    }
+
+    pub fn deinterlace(&self) -> bool {
+        self.deinterlace
+    }
+
+    pub fn keepaspect(&self) -> bool {
+        self.keepaspect
+    }
+
+    pub fn keepaspect_window(&self) -> bool {
+        self.keepaspect_window
+    }
+
+    pub fn fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    pub fn ontop(&self) -> bool {
+        self.ontop
+    }
+
+    pub fn border(&self) -> bool {
+        self.border
+    }
+
+    pub fn force_window(&self) -> bool {
+        self.force_window
+    }
+
+    pub fn keep_open(&self) -> bool {
+        self.keep_open
+    }
+
+    pub fn keep_open_pause(&self) -> bool {
+        self.keep_open_pause
+    }
+
+    pub fn cursor_autohide_fs_only(&self) -> bool {
+        self.cursor_autohide_fs_only
+    }
+
+    pub fn stop_screensaver(&self) -> bool {
+        self.stop_screensaver
+    }
+
+    pub fn sub_visibility(&self) -> bool {
+        self.sub_visibility
+    }
+
+    pub fn osd_bar(&self) -> bool {
+        self.osd_bar
+    }
+
+    pub fn window_maximized(&self) -> bool {
+        self.window_maximized
+    }
+
+    pub fn window_minimized(&self) -> bool {
+        self.window_minimized
     }
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
@@ -428,6 +564,179 @@ impl PlayerAdapter for MpvAdapter {
         Ok(())
     }
 
+    fn set_muted(&mut self, muted: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_MUTE,
+            muted
+        ]))?;
+        self.muted = muted;
+        Ok(())
+    }
+
+    fn set_volume(&mut self, volume: f64) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_VOLUME,
+            volume
+        ]))?;
+        self.volume = Some(volume);
+        Ok(())
+    }
+
+    fn set_deinterlace(&mut self, deinterlace: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_DEINTERLACE,
+            deinterlace
+        ]))?;
+        self.deinterlace = deinterlace;
+        Ok(())
+    }
+
+    fn set_keepaspect(&mut self, keepaspect: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_KEEPASPECT,
+            keepaspect
+        ]))?;
+        self.keepaspect = keepaspect;
+        Ok(())
+    }
+
+    fn set_keepaspect_window(&mut self, keepaspect_window: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_KEEPASPECT_WINDOW,
+            keepaspect_window
+        ]))?;
+        self.keepaspect_window = keepaspect_window;
+        Ok(())
+    }
+
+    fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_FULLSCREEN,
+            fullscreen
+        ]))?;
+        self.fullscreen = fullscreen;
+        Ok(())
+    }
+
+    fn set_ontop(&mut self, ontop: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_ONTOP,
+            ontop
+        ]))?;
+        self.ontop = ontop;
+        Ok(())
+    }
+
+    fn set_border(&mut self, border: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_BORDER,
+            border
+        ]))?;
+        self.border = border;
+        Ok(())
+    }
+
+    fn set_force_window(&mut self, force_window: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_FORCE_WINDOW,
+            force_window
+        ]))?;
+        self.force_window = force_window;
+        Ok(())
+    }
+
+    fn set_keep_open(&mut self, keep_open: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_KEEP_OPEN,
+            keep_open
+        ]))?;
+        self.keep_open = keep_open;
+        Ok(())
+    }
+
+    fn set_keep_open_pause(&mut self, keep_open_pause: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_KEEP_OPEN_PAUSE,
+            keep_open_pause
+        ]))?;
+        self.keep_open_pause = keep_open_pause;
+        Ok(())
+    }
+
+    fn set_cursor_autohide_fs_only(
+        &mut self,
+        cursor_autohide_fs_only: bool,
+    ) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_CURSOR_AUTOHIDE_FS_ONLY,
+            cursor_autohide_fs_only
+        ]))?;
+        self.cursor_autohide_fs_only = cursor_autohide_fs_only;
+        Ok(())
+    }
+
+    fn set_stop_screensaver(&mut self, stop_screensaver: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_STOP_SCREENSAVER,
+            stop_screensaver
+        ]))?;
+        self.stop_screensaver = stop_screensaver;
+        Ok(())
+    }
+
+    fn set_sub_visibility(&mut self, sub_visibility: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_SUB_VISIBILITY,
+            sub_visibility
+        ]))?;
+        self.sub_visibility = sub_visibility;
+        Ok(())
+    }
+
+    fn set_osd_bar(&mut self, osd_bar: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_OSD_BAR,
+            osd_bar
+        ]))?;
+        self.osd_bar = osd_bar;
+        Ok(())
+    }
+
+    fn set_window_maximized(&mut self, window_maximized: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_WINDOW_MAXIMIZED,
+            window_maximized
+        ]))?;
+        self.window_maximized = window_maximized;
+        Ok(())
+    }
+
+    fn set_window_minimized(&mut self, window_minimized: bool) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([
+            MPV_COMMAND_SET_PROPERTY,
+            MPV_PROPERTY_WINDOW_MINIMIZED,
+            window_minimized
+        ]))?;
+        self.window_minimized = window_minimized;
+        Ok(())
+    }
+
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
         self.poll_ipc_local_file_update_if_attached();
         self.pending_local_file_update.take()
@@ -710,10 +1019,78 @@ mod tests {
         adapter
             .set_playback_rate(0.95)
             .expect("mpv stub should accept speed updates");
+        adapter
+            .set_muted(true)
+            .expect("mpv stub should accept mute updates");
+        adapter
+            .set_volume(50.0)
+            .expect("mpv stub should accept volume updates");
+        adapter
+            .set_deinterlace(true)
+            .expect("mpv stub should accept deinterlace updates");
+        adapter
+            .set_keepaspect(true)
+            .expect("mpv stub should accept keepaspect updates");
+        adapter
+            .set_keepaspect_window(true)
+            .expect("mpv stub should accept keepaspect-window updates");
+        adapter
+            .set_fullscreen(true)
+            .expect("mpv stub should accept fullscreen updates");
+        adapter
+            .set_ontop(true)
+            .expect("mpv stub should accept ontop updates");
+        adapter
+            .set_border(true)
+            .expect("mpv stub should accept border updates");
+        adapter
+            .set_force_window(true)
+            .expect("mpv stub should accept force-window updates");
+        adapter
+            .set_keep_open(true)
+            .expect("mpv stub should accept keep-open updates");
+        adapter
+            .set_keep_open_pause(true)
+            .expect("mpv stub should accept keep-open-pause updates");
+        adapter
+            .set_cursor_autohide_fs_only(true)
+            .expect("mpv stub should accept cursor-autohide-fs-only updates");
+        adapter
+            .set_stop_screensaver(true)
+            .expect("mpv stub should accept stop-screensaver updates");
+        adapter
+            .set_sub_visibility(true)
+            .expect("mpv stub should accept sub-visibility updates");
+        adapter
+            .set_osd_bar(true)
+            .expect("mpv stub should accept osd-bar updates");
+        adapter
+            .set_window_maximized(true)
+            .expect("mpv stub should accept window-maximized updates");
+        adapter
+            .set_window_minimized(true)
+            .expect("mpv stub should accept window-minimized updates");
 
         assert!(adapter.paused());
         assert_eq!(adapter.position_seconds(), 24.5);
         assert_eq!(adapter.playback_rate(), 0.95);
+        assert!(adapter.muted());
+        assert_eq!(adapter.volume(), 50.0);
+        assert!(adapter.deinterlace());
+        assert!(adapter.keepaspect());
+        assert!(adapter.keepaspect_window());
+        assert!(adapter.fullscreen());
+        assert!(adapter.ontop());
+        assert!(adapter.border());
+        assert!(adapter.force_window());
+        assert!(adapter.keep_open());
+        assert!(adapter.keep_open_pause());
+        assert!(adapter.cursor_autohide_fs_only());
+        assert!(adapter.stop_screensaver());
+        assert!(adapter.sub_visibility());
+        assert!(adapter.osd_bar());
+        assert!(adapter.window_maximized());
+        assert!(adapter.window_minimized());
     }
 
     #[test]
@@ -784,6 +1161,397 @@ mod tests {
             })
         );
         assert!(adapter.paused());
+    }
+
+    #[test]
+    fn set_muted_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_muted(true)
+            .expect("attached mpv transport should accept mute command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "mute", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.muted());
+    }
+
+    #[test]
+    fn set_volume_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_volume(33.5)
+            .expect("attached mpv transport should accept volume command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "volume", 33.5],
+                "request_id": 1
+            })
+        );
+        assert_eq!(adapter.volume(), 33.5);
+    }
+
+    #[test]
+    fn set_fullscreen_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_fullscreen(true)
+            .expect("attached mpv transport should accept fullscreen command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "fullscreen", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.fullscreen());
+    }
+
+    #[test]
+    fn set_ontop_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_ontop(true)
+            .expect("attached mpv transport should accept ontop command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "ontop", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.ontop());
+    }
+
+    #[test]
+    fn set_border_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_border(true)
+            .expect("attached mpv transport should accept border command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "border", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.border());
+    }
+
+    #[test]
+    fn set_keep_open_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_keep_open(true)
+            .expect("attached mpv transport should accept keep-open command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "keep-open", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.keep_open());
+    }
+
+    #[test]
+    fn set_force_window_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_force_window(true)
+            .expect("attached mpv transport should accept force-window command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "force-window", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.force_window());
+    }
+
+    #[test]
+    fn set_deinterlace_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_deinterlace(true)
+            .expect("attached mpv transport should accept deinterlace command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "deinterlace", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.deinterlace());
+    }
+
+    #[test]
+    fn set_keepaspect_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_keepaspect(true)
+            .expect("attached mpv transport should accept keepaspect command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "keepaspect", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.keepaspect());
+    }
+
+    #[test]
+    fn set_keepaspect_window_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_keepaspect_window(true)
+            .expect("attached mpv transport should accept keepaspect-window command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "keepaspect-window", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.keepaspect_window());
+    }
+
+    #[test]
+    fn set_keep_open_pause_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_keep_open_pause(true)
+            .expect("attached mpv transport should accept keep-open-pause command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "keep-open-pause", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.keep_open_pause());
+    }
+
+    #[test]
+    fn set_cursor_autohide_fs_only_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_cursor_autohide_fs_only(true)
+            .expect("attached mpv transport should accept cursor-autohide-fs-only command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "cursor-autohide-fs-only", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.cursor_autohide_fs_only());
+    }
+
+    #[test]
+    fn set_stop_screensaver_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_stop_screensaver(true)
+            .expect("attached mpv transport should accept stop-screensaver command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "stop-screensaver", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.stop_screensaver());
+    }
+
+    #[test]
+    fn set_sub_visibility_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_sub_visibility(true)
+            .expect("attached mpv transport should accept sub-visibility command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "sub-visibility", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.sub_visibility());
+    }
+
+    #[test]
+    fn set_osd_bar_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_osd_bar(true)
+            .expect("attached mpv transport should accept osd-bar command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "osd-bar", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.osd_bar());
+    }
+
+    #[test]
+    fn set_window_maximized_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_window_maximized(true)
+            .expect("attached mpv transport should accept window-maximized command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "window-maximized", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.window_maximized());
+    }
+
+    #[test]
+    fn set_window_minimized_sends_json_ipc_set_property_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_window_minimized(true)
+            .expect("attached mpv transport should accept window-minimized command");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set_property", "window-minimized", true],
+                "request_id": 1
+            })
+        );
+        assert!(adapter.window_minimized());
     }
 
     #[test]

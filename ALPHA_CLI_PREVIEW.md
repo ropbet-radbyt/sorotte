@@ -130,10 +130,59 @@ Supported explicit-IPC `_args` subset:
 - `--pause`
 - `--no-pause`
 - `--pause=<bool>`
-- `--start <seconds>` / `--start=<seconds>`
+- `--start <seconds-or-timecode>` / `--start=<seconds-or-timecode>` (for example `12.5`, `01:02`, `01:02:03.5`)
 - `--speed <rate>` / `--speed=<rate>`
+- `--volume <value>` / `--volume=<value>`
+- `--mute`
+- `--no-mute`
+- `--mute=<bool>`
+- `--deinterlace`
+- `--no-deinterlace`
+- `--deinterlace=<bool>`
+- `--keepaspect`
+- `--no-keepaspect`
+- `--keepaspect=<bool>`
+- `--keepaspect-window`
+- `--no-keepaspect-window`
+- `--keepaspect-window=<bool>`
+- `--sub-visibility`
+- `--no-sub-visibility`
+- `--sub-visibility=<bool>`
+- `--osd-bar`
+- `--no-osd-bar`
+- `--osd-bar=<bool>`
+- `--fs` / `--fullscreen`
+- `--no-fs` / `--no-fullscreen`
+- `--fs=<bool>` / `--fullscreen=<bool>`
+- `--ontop`
+- `--no-ontop`
+- `--ontop=<bool>`
+- `--border`
+- `--no-border`
+- `--border=<bool>`
+- `--force-window`
+- `--no-force-window`
+- `--force-window=<bool>`
+- `--keep-open`
+- `--no-keep-open`
+- `--keep-open=<bool>`
+- `--keep-open-pause`
+- `--no-keep-open-pause`
+- `--keep-open-pause=<bool>`
+- `--cursor-autohide-fs-only`
+- `--no-cursor-autohide-fs-only`
+- `--cursor-autohide-fs-only=<bool>`
+- `--stop-screensaver`
+- `--no-stop-screensaver`
+- `--stop-screensaver=<bool>`
+- `--window-maximized`
+- `--no-window-maximized`
+- `--window-maximized=<bool>`
+- `--window-minimized`
+- `--no-window-minimized`
+- `--window-minimized=<bool>`
 
-Unsupported `_args` are ignored in explicit-IPC mode.
+Unsupported `_args` are ignored in explicit-IPC mode (with startup summary/warning diagnostics).
 
 ## Optional: Local Server (alpha/manual testing)
 
@@ -167,4 +216,3 @@ Then point the client to `127.0.0.1:8999` as shown above.
 For local memory/soak checks:
 
 - `scripts/watch-syncplay-memory.ps1`
-
