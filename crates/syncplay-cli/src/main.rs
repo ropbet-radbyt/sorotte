@@ -6469,6 +6469,7 @@ mod tests {
         ProtocolMessage, StatePayload, decode_message_line, encode_message_line,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -6575,6 +6576,96 @@ mod tests {
             port: addr.port(),
             ..test_client_loop_config()
         }
+    }
+
+    type TestServerLines = tokio::io::Lines<BufReader<OwnedReadHalf>>;
+
+    async fn expect_client_hello_and_send_standard_test_server_hello(
+        lines: &mut TestServerLines,
+        writer: &mut OwnedWriteHalf,
+    ) {
+        let hello_line = lines
+            .next_line()
+            .await
+            .expect("hello line read should succeed")
+            .expect("hello line should be present");
+        assert!(
+            hello_line.contains("\"Hello\""),
+            "first client line should be a Hello message"
+        );
+        writer
+            .write_all(
+                b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+            )
+            .await
+            .expect("server hello write should succeed");
+        writer
+            .flush()
+            .await
+            .expect("server hello flush should succeed");
+    }
+
+    fn seed_stub_player_pause_position_telemetry(
+        runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+        paused: bool,
+        position_seconds: f64,
+    ) {
+        runtime
+            .player_mut()
+            .set_paused(paused)
+            .expect("stub player pause seed should succeed");
+        runtime
+            .player_mut()
+            .set_position(position_seconds)
+            .expect("stub player position seed should succeed");
+        runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(paused)
+                    .with_position_seconds(position_seconds),
+            );
+    }
+
+    fn seed_stub_player_playback_rate(
+        runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+        rate: f64,
+    ) {
+        runtime
+            .player_mut()
+            .set_playback_rate(rate)
+            .expect("stub player playback-rate seed should succeed");
+    }
+
+    async fn run_connected_client_session_expect_normal_exit(
+        addr: std::net::SocketAddr,
+        runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+        config: &ClientLoopConfig,
+    ) {
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            runtime,
+            config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
     }
 
     fn cli_smoke_repo_root() -> PathBuf {
@@ -13192,25 +13283,8 @@ mod tests {
                 let (reader, mut writer) = socket.into_split();
                 let mut lines = BufReader::new(reader).lines();
 
-                let hello_line = lines
-                    .next_line()
-                    .await
-                    .expect("hello line read should succeed")
-                    .expect("hello line should be present");
-                assert!(
-                    hello_line.contains("\"Hello\""),
-                    "first client line should be a Hello message"
-                );
-                writer
-                    .write_all(
-                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
-                    )
-                    .await
-                    .expect("server hello write should succeed");
-                writer
-                    .flush()
-                    .await
-                    .expect("server hello flush should succeed");
+                expect_client_hello_and_send_standard_test_server_hello(&mut lines, &mut writer)
+                    .await;
 
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -13337,25 +13411,8 @@ mod tests {
                 let (reader, mut writer) = socket.into_split();
                 let mut lines = BufReader::new(reader).lines();
 
-                let hello_line = lines
-                    .next_line()
-                    .await
-                    .expect("hello line read should succeed")
-                    .expect("hello line should be present");
-                assert!(
-                    hello_line.contains("\"Hello\""),
-                    "first client line should be a Hello message"
-                );
-                writer
-                    .write_all(
-                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
-                    )
-                    .await
-                    .expect("server hello write should succeed");
-                writer
-                    .flush()
-                    .await
-                    .expect("server hello flush should succeed");
+                expect_client_hello_and_send_standard_test_server_hello(&mut lines, &mut writer)
+                    .await;
 
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -13885,25 +13942,7 @@ mod tests {
             let (reader, mut writer) = socket.into_split();
             let mut lines = BufReader::new(reader).lines();
 
-            let hello_line = lines
-                .next_line()
-                .await
-                .expect("hello line read should succeed")
-                .expect("hello line should be present");
-            assert!(
-                hello_line.contains("\"Hello\""),
-                "first client line should be a Hello message"
-            );
-            writer
-                .write_all(
-                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
-                )
-                .await
-                .expect("server hello write should succeed");
-            writer
-                .flush()
-                .await
-                .expect("server hello flush should succeed");
+            expect_client_hello_and_send_standard_test_server_hello(&mut lines, &mut writer).await;
 
             tokio::time::sleep(Duration::from_millis(100)).await;
             let do_seek_self_line = encode_message_line(&ProtocolMessage::state(
@@ -13990,46 +14029,9 @@ mod tests {
         config.fastforward_threshold_seconds_override = Some(2.0);
 
         let mut runtime = create_client_runtime(&config);
-        runtime
-            .player_mut()
-            .set_paused(false)
-            .expect("stub player pause seed should succeed");
-        runtime
-            .player_mut()
-            .set_position(0.2)
-            .expect("stub player position seed should succeed");
-        runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(
-                &PlayerPlaybackTelemetryUpdate::default()
-                    .with_paused(false)
-                    .with_position_seconds(0.2),
-            );
+        seed_stub_player_pause_position_telemetry(&mut runtime, false, 0.2);
 
-        let stream = TcpStream::connect(addr)
-            .await
-            .expect("client should connect to test listener");
-        let mut notification_sink = ignore_autoplay_notification;
-        let mut file_difference_sink = ignore_file_difference_notification;
-
-        let exit = run_connected_client_session(
-            stream,
-            &mut runtime,
-            &config,
-            None,
-            None,
-            &mut notification_sink,
-            &mut file_difference_sink,
-        )
-        .await
-        .expect("connected session should run");
-        assert!(
-            matches!(
-                exit,
-                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
-            ),
-            "connected session should either observe peer close or exit on runtime window"
-        );
+        run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
         server_task.await.expect("server task join should succeed");
         assert!(
             runtime.player().position_seconds() > 10.0,
@@ -14168,51 +14170,10 @@ mod tests {
             config.slowdown_threshold_seconds_override = Some(1.0);
 
             let mut runtime = create_client_runtime(&config);
-            runtime
-                .player_mut()
-                .set_paused(false)
-                .expect("stub player pause seed should succeed");
-            runtime
-                .player_mut()
-                .set_playback_rate(1.0)
-                .expect("stub player playback-rate seed should succeed");
-            runtime
-                .player_mut()
-                .set_position(2.0)
-                .expect("stub player position seed should succeed");
-            runtime
-                .session_mut()
-                .apply_player_playback_telemetry_update(
-                    &PlayerPlaybackTelemetryUpdate::default()
-                        .with_paused(false)
-                        .with_position_seconds(2.0),
-                );
+            seed_stub_player_pause_position_telemetry(&mut runtime, false, 2.0);
+            seed_stub_player_playback_rate(&mut runtime, 1.0);
 
-            let stream = TcpStream::connect(addr)
-                .await
-                .expect("client should connect to test listener");
-            let mut notification_sink = ignore_autoplay_notification;
-            let mut file_difference_sink = ignore_file_difference_notification;
-
-            let exit = run_connected_client_session(
-                stream,
-                &mut runtime,
-                &config,
-                None,
-                None,
-                &mut notification_sink,
-                &mut file_difference_sink,
-            )
-            .await
-            .expect("connected session should run");
-            assert!(
-                matches!(
-                    exit,
-                    ConnectedSessionExit::TransportClosed
-                        | ConnectedSessionExit::RuntimeWindowElapsed
-                ),
-                "connected session should either observe peer close or exit on runtime window"
-            );
+            run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
             server_task.await.expect("server task join should succeed");
             runtime.player().playback_rate()
         }
@@ -14516,47 +14477,9 @@ mod tests {
             config.rewind_threshold_seconds_override = Some(1.0);
 
             let mut runtime = create_client_runtime(&config);
-            runtime
-                .player_mut()
-                .set_paused(false)
-                .expect("stub player pause seed should succeed");
-            runtime
-                .player_mut()
-                .set_position(10.0)
-                .expect("stub player position seed should succeed");
-            runtime
-                .session_mut()
-                .apply_player_playback_telemetry_update(
-                    &PlayerPlaybackTelemetryUpdate::default()
-                        .with_paused(false)
-                        .with_position_seconds(10.0),
-                );
+            seed_stub_player_pause_position_telemetry(&mut runtime, false, 10.0);
 
-            let stream = TcpStream::connect(addr)
-                .await
-                .expect("client should connect to test listener");
-            let mut notification_sink = ignore_autoplay_notification;
-            let mut file_difference_sink = ignore_file_difference_notification;
-
-            let exit = run_connected_client_session(
-                stream,
-                &mut runtime,
-                &config,
-                None,
-                None,
-                &mut notification_sink,
-                &mut file_difference_sink,
-            )
-            .await
-            .expect("connected session should run");
-            assert!(
-                matches!(
-                    exit,
-                    ConnectedSessionExit::TransportClosed
-                        | ConnectedSessionExit::RuntimeWindowElapsed
-                ),
-                "connected session should either observe peer close or exit on runtime window"
-            );
+            run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
             server_task.await.expect("server task join should succeed");
             (
                 runtime.player().paused(),
@@ -14602,25 +14525,8 @@ mod tests {
                 let (reader, mut writer) = socket.into_split();
                 let mut lines = BufReader::new(reader).lines();
 
-                let hello_line = lines
-                    .next_line()
-                    .await
-                    .expect("hello line read should succeed")
-                    .expect("hello line should be present");
-                assert!(
-                    hello_line.contains("\"Hello\""),
-                    "first client line should be a Hello message"
-                );
-                writer
-                    .write_all(
-                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
-                    )
-                    .await
-                    .expect("server hello write should succeed");
-                writer
-                    .flush()
-                    .await
-                    .expect("server hello flush should succeed");
+                expect_client_hello_and_send_standard_test_server_hello(&mut lines, &mut writer)
+                    .await;
 
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let inbound_state_line = encode_message_line(&ProtocolMessage::state(
@@ -14659,47 +14565,9 @@ mod tests {
             config.fastforward_threshold_seconds_override = Some(2.0);
 
             let mut runtime = create_client_runtime(&config);
-            runtime
-                .player_mut()
-                .set_paused(false)
-                .expect("stub player pause seed should succeed");
-            runtime
-                .player_mut()
-                .set_position(0.2)
-                .expect("stub player position seed should succeed");
-            runtime
-                .session_mut()
-                .apply_player_playback_telemetry_update(
-                    &PlayerPlaybackTelemetryUpdate::default()
-                        .with_paused(false)
-                        .with_position_seconds(0.2),
-                );
+            seed_stub_player_pause_position_telemetry(&mut runtime, false, 0.2);
 
-            let stream = TcpStream::connect(addr)
-                .await
-                .expect("client should connect to test listener");
-            let mut notification_sink = ignore_autoplay_notification;
-            let mut file_difference_sink = ignore_file_difference_notification;
-
-            let exit = run_connected_client_session(
-                stream,
-                &mut runtime,
-                &config,
-                None,
-                None,
-                &mut notification_sink,
-                &mut file_difference_sink,
-            )
-            .await
-            .expect("connected session should run");
-            assert!(
-                matches!(
-                    exit,
-                    ConnectedSessionExit::TransportClosed
-                        | ConnectedSessionExit::RuntimeWindowElapsed
-                ),
-                "connected session should either observe peer close or exit on runtime window"
-            );
+            run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
             server_task.await.expect("server task join should succeed");
             (
                 runtime.player().paused(),
@@ -14743,25 +14611,7 @@ mod tests {
             let (reader, mut writer) = socket.into_split();
             let mut lines = BufReader::new(reader).lines();
 
-            let hello_line = lines
-                .next_line()
-                .await
-                .expect("hello line read should succeed")
-                .expect("hello line should be present");
-            assert!(
-                hello_line.contains("\"Hello\""),
-                "first client line should be a Hello message"
-            );
-            writer
-                .write_all(
-                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
-                )
-                .await
-                .expect("server hello write should succeed");
-            writer
-                .flush()
-                .await
-                .expect("server hello flush should succeed");
+            expect_client_hello_and_send_standard_test_server_hello(&mut lines, &mut writer).await;
 
             tokio::time::sleep(Duration::from_millis(100)).await;
             let paused_self_line = encode_message_line(&ProtocolMessage::state(
@@ -14822,46 +14672,9 @@ mod tests {
         config.fastforward_threshold_seconds_override = Some(2.0);
 
         let mut runtime = create_client_runtime(&config);
-        runtime
-            .player_mut()
-            .set_paused(false)
-            .expect("stub player pause seed should succeed");
-        runtime
-            .player_mut()
-            .set_position(0.2)
-            .expect("stub player position seed should succeed");
-        runtime
-            .session_mut()
-            .apply_player_playback_telemetry_update(
-                &PlayerPlaybackTelemetryUpdate::default()
-                    .with_paused(false)
-                    .with_position_seconds(0.2),
-            );
+        seed_stub_player_pause_position_telemetry(&mut runtime, false, 0.2);
 
-        let stream = TcpStream::connect(addr)
-            .await
-            .expect("client should connect to test listener");
-        let mut notification_sink = ignore_autoplay_notification;
-        let mut file_difference_sink = ignore_file_difference_notification;
-
-        let exit = run_connected_client_session(
-            stream,
-            &mut runtime,
-            &config,
-            None,
-            None,
-            &mut notification_sink,
-            &mut file_difference_sink,
-        )
-        .await
-        .expect("connected session should run");
-        assert!(
-            matches!(
-                exit,
-                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
-            ),
-            "connected session should either observe peer close or exit on runtime window"
-        );
+        run_connected_client_session_expect_normal_exit(addr, &mut runtime, &config).await;
         server_task.await.expect("server task join should succeed");
         assert!(
             runtime.player().paused(),
