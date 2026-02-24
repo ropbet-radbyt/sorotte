@@ -6465,8 +6465,8 @@ mod tests {
     use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
     use syncplay_player_mpv::MpvAdapter;
     use syncplay_protocol::{
-        HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage, StatePayload,
-        decode_message_line, encode_message_line,
+        HelloPayload, IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload,
+        ProtocolMessage, StatePayload, decode_message_line, encode_message_line,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
@@ -13317,6 +13317,1728 @@ mod tests {
         assert!(
             with_server_rtt_position > 6.0,
             "with serverRtt, forward-delay compensation should trigger fastforward seek past target; position={with_server_rtt_position}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_pause_sync_applies_remote_mismatch_but_skips_self_setby()
+     {
+        async fn run_case(set_by: &str) -> bool {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let set_by = set_by.to_owned();
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(5.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by(set_by.as_str()),
+                    ),
+                ))
+                .expect("inbound state line should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.0;
+            config.readiness_supported_override = Some(false);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(true)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(5.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(true)
+                        .with_position_seconds(5.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().paused()
+        }
+
+        let remote_set_by_paused = run_case("remote-user").await;
+        let self_set_by_paused = run_case("cli-user").await;
+
+        assert!(
+            !remote_set_by_paused,
+            "remote pause mismatch should unpause local player in normal connected session"
+        );
+        assert!(
+            self_set_by_paused,
+            "self-originated inbound playstate should not trigger local pause correction"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_do_seek_suppresses_rewind_desync_until_do_seek_clears()
+     {
+        async fn run_case(send_do_seek_clear: bool) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                let do_seek_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(0.0)
+                            .with_paused(false)
+                            .with_do_seek(true)
+                            .with_set_by("remote-user"),
+                    ),
+                ))
+                .expect("doSeek state line should encode");
+                writer
+                    .write_all(format!("{do_seek_state_line}\n").as_bytes())
+                    .await
+                    .expect("doSeek state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("doSeek state flush should succeed");
+
+                if send_do_seek_clear {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    let clear_state_line = encode_message_line(&ProtocolMessage::state(
+                        StatePayload::new()
+                            .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                            .with_playstate(
+                                PlaystatePayload::new()
+                                    .with_position(0.0)
+                                    .with_paused(false)
+                                    .with_do_seek(false)
+                                    .with_set_by("remote-user"),
+                            ),
+                    ))
+                    .expect("doSeek-clear state line should encode");
+                    writer
+                        .write_all(format!("{clear_state_line}\n").as_bytes())
+                        .await
+                        .expect("doSeek-clear state write should succeed");
+                    writer
+                        .flush()
+                        .await
+                        .expect("doSeek-clear state flush should succeed");
+                }
+
+                tokio::time::sleep(Duration::from_millis(220)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.2;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(true);
+            config.fastforward_on_desync_override = Some(false);
+            config.slow_on_desync_override = Some(false);
+            config.rewind_threshold_seconds_override = Some(1.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(10.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(10.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().position_seconds()
+        }
+
+        let position_without_do_seek_clear = run_case(false).await;
+        let position_with_do_seek_clear = run_case(true).await;
+
+        assert!(
+            position_without_do_seek_clear > 5.0,
+            "doSeek state should suppress rewind correction until doSeek clears; position={position_without_do_seek_clear}"
+        );
+        assert!(
+            position_with_do_seek_clear < 1.0,
+            "after doSeek clears, rewind correction should apply in connected session; position={position_with_do_seek_clear}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_rewind_desync_skips_self_setby_but_applies_remote_setby()
+     {
+        async fn run_case(set_by: &str) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let set_by = set_by.to_owned();
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(0.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by(set_by.as_str()),
+                    ),
+                ))
+                .expect("inbound state line should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.0;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(true);
+            config.fastforward_on_desync_override = Some(false);
+            config.slow_on_desync_override = Some(false);
+            config.rewind_threshold_seconds_override = Some(1.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(10.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(10.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().position_seconds()
+        }
+
+        let remote_set_by_position = run_case("remote-user").await;
+        let self_set_by_position = run_case("cli-user").await;
+
+        assert!(
+            remote_set_by_position < 1.0,
+            "remote-originated ahead desync should rewind local player; position={remote_set_by_position}"
+        );
+        assert!(
+            self_set_by_position > 9.0,
+            "self-originated room playstate should suppress rewind desync correction; position={self_set_by_position}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_fastforward_desync_skips_self_setby_but_applies_remote_setby()
+     {
+        async fn run_case(set_by: &str) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let set_by = set_by.to_owned();
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by(set_by.as_str()),
+                    ),
+                ))
+                .expect("inbound state line should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.5;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(false);
+            config.fastforward_on_desync_override = Some(true);
+            config.slow_on_desync_override = Some(false);
+            config.fastforward_threshold_seconds_override = Some(2.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(0.2)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(0.2),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().position_seconds()
+        }
+
+        let remote_set_by_position = run_case("remote-user").await;
+        let self_set_by_position = run_case("cli-user").await;
+
+        assert!(
+            remote_set_by_position > 10.0,
+            "remote-originated behind desync should fastforward local player; position={remote_set_by_position}"
+        );
+        assert!(
+            self_set_by_position < 1.0,
+            "self-originated room playstate should suppress fastforward desync correction; position={self_set_by_position}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_fastforward_do_seek_then_self_setby_sequence_preserves_self_setby_suppression_window_for_next_remote_state()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server hello flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let do_seek_self_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(10.0)
+                        .with_paused(false)
+                        .with_do_seek(true)
+                        .with_set_by("cli-user"),
+                ),
+            ))
+            .expect("doSeek self state should encode");
+            writer
+                .write_all(format!("{do_seek_self_line}\n").as_bytes())
+                .await
+                .expect("doSeek self state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("doSeek self state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(320)).await;
+            let self_clear_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by("cli-user"),
+                    ),
+            ))
+            .expect("self doSeek-clear state should encode");
+            writer
+                .write_all(format!("{self_clear_line}\n").as_bytes())
+                .await
+                .expect("self doSeek-clear state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("self doSeek-clear state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(320)).await;
+            let remote_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by("remote-user"),
+                    ),
+            ))
+            .expect("remote state should encode");
+            writer
+                .write_all(format!("{remote_line}\n").as_bytes())
+                .await
+                .expect("remote state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("remote state flush should succeed");
+
+            // Close almost immediately after the first remote non-doSeek state. If the connected
+            // loop preserves the post-doSeek self-setBy suppression-window timing semantics from
+            // client-core, this remote state can fast-forward immediately without a fresh sustain
+            // window because the self-setBy branch leaves a future suppression-window timer.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 2.0;
+        config.readiness_supported_override = Some(false);
+        config.local_can_control_override = Some(false);
+        config.rewind_on_desync_override = Some(false);
+        config.fastforward_on_desync_override = Some(true);
+        config.slow_on_desync_override = Some(false);
+        config.fastforward_threshold_seconds_override = Some(2.0);
+
+        let mut runtime = create_client_runtime(&config);
+        runtime
+            .player_mut()
+            .set_paused(false)
+            .expect("stub player pause seed should succeed");
+        runtime
+            .player_mut()
+            .set_position(0.2)
+            .expect("stub player position seed should succeed");
+        runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(0.2),
+            );
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+        assert!(
+            runtime.player().position_seconds() > 10.0,
+            "after doSeek clears, self-setBy fastforward suppression-window timing should carry into the next remote state; position={}",
+            runtime.player().position_seconds()
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_slowdown_do_seek_and_self_setby_sequence_stays_suppressed_until_remote_case()
+     {
+        #[derive(Clone, Copy)]
+        enum CaseKind {
+            DoSeekThenSelf,
+            RemoteControl,
+        }
+
+        async fn run_case(case: CaseKind) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match case {
+                    CaseKind::DoSeekThenSelf => {
+                        let do_seek_self_line = encode_message_line(&ProtocolMessage::state(
+                            StatePayload::new().with_playstate(
+                                PlaystatePayload::new()
+                                    .with_position(0.0)
+                                    .with_paused(false)
+                                    .with_do_seek(true)
+                                    .with_set_by("cli-user"),
+                            ),
+                        ))
+                        .expect("doSeek self state should encode");
+                        writer
+                            .write_all(format!("{do_seek_self_line}\n").as_bytes())
+                            .await
+                            .expect("doSeek self state write should succeed");
+                        writer
+                            .flush()
+                            .await
+                            .expect("doSeek self state flush should succeed");
+
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        let self_clear_line = encode_message_line(&ProtocolMessage::state(
+                            StatePayload::new()
+                                .with_ignoring_on_the_fly(
+                                    IgnoringOnTheFlyPayload::new().with_client(1),
+                                )
+                                .with_playstate(
+                                    PlaystatePayload::new()
+                                        .with_position(0.0)
+                                        .with_paused(false)
+                                        .with_do_seek(false)
+                                        .with_set_by("cli-user"),
+                                ),
+                        ))
+                        .expect("self doSeek-clear state should encode");
+                        writer
+                            .write_all(format!("{self_clear_line}\n").as_bytes())
+                            .await
+                            .expect("self doSeek-clear state write should succeed");
+                        writer
+                            .flush()
+                            .await
+                            .expect("self doSeek-clear state flush should succeed");
+
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                    CaseKind::RemoteControl => {
+                        let remote_line = encode_message_line(&ProtocolMessage::state(
+                            StatePayload::new().with_playstate(
+                                PlaystatePayload::new()
+                                    .with_position(0.0)
+                                    .with_paused(false)
+                                    .with_do_seek(false)
+                                    .with_set_by("remote-user"),
+                            ),
+                        ))
+                        .expect("remote state should encode");
+                        writer
+                            .write_all(format!("{remote_line}\n").as_bytes())
+                            .await
+                            .expect("remote state write should succeed");
+                        writer
+                            .flush()
+                            .await
+                            .expect("remote state flush should succeed");
+
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                    }
+                }
+
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.5;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(true);
+            config.rewind_on_desync_override = Some(false);
+            config.fastforward_on_desync_override = Some(false);
+            config.slow_on_desync_override = Some(true);
+            config.slowdown_threshold_seconds_override = Some(1.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_playback_rate(1.0)
+                .expect("stub player playback-rate seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(2.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(2.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().playback_rate()
+        }
+
+        let suppressed_rate = run_case(CaseKind::DoSeekThenSelf).await;
+        let remote_rate = run_case(CaseKind::RemoteControl).await;
+
+        assert!(
+            (suppressed_rate - 1.0).abs() < 1e-6,
+            "doSeek+self-setBy slowdown branch sequence should remain suppressed; rate={suppressed_rate}"
+        );
+        assert!(
+            (remote_rate - 0.95).abs() < 1e-6,
+            "remote slowdown case should apply slowdown playback rate; rate={remote_rate}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_paused_self_setby_slowdown_suppresses_restore_until_unpaused_after_do_seek()
+     {
+        #[derive(Clone, Copy)]
+        enum CaseKind {
+            StopWhilePaused,
+            UnpauseAfterPaused,
+        }
+
+        async fn run_case(case: CaseKind) -> f64 {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let prime_slowdown_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(0.0)
+                            .with_paused(false)
+                            .with_do_seek(false)
+                            .with_set_by("remote-user"),
+                    ),
+                ))
+                .expect("slowdown-prime state should encode");
+                writer
+                    .write_all(format!("{prime_slowdown_line}\n").as_bytes())
+                    .await
+                    .expect("slowdown-prime state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("slowdown-prime state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                let do_seek_self_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new()
+                        .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                        .with_playstate(
+                            PlaystatePayload::new()
+                                .with_position(0.0)
+                                .with_paused(false)
+                                .with_do_seek(true)
+                                .with_set_by("cli-user"),
+                        ),
+                ))
+                .expect("doSeek self state should encode");
+                writer
+                    .write_all(format!("{do_seek_self_line}\n").as_bytes())
+                    .await
+                    .expect("doSeek self state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("doSeek self state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                let paused_self_near_sync_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new()
+                        .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                        .with_playstate(
+                            PlaystatePayload::new()
+                                .with_position(1.95)
+                                .with_paused(true)
+                                .with_do_seek(false)
+                                .with_set_by("cli-user"),
+                        ),
+                ))
+                .expect("paused self near-sync state should encode");
+                writer
+                    .write_all(format!("{paused_self_near_sync_line}\n").as_bytes())
+                    .await
+                    .expect("paused self near-sync state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("paused self near-sync state flush should succeed");
+
+                if matches!(case, CaseKind::UnpauseAfterPaused) {
+                    tokio::time::sleep(Duration::from_millis(180)).await;
+                    let unpaused_self_near_sync_line =
+                        encode_message_line(&ProtocolMessage::state(
+                            StatePayload::new()
+                                .with_ignoring_on_the_fly(
+                                    IgnoringOnTheFlyPayload::new().with_client(1),
+                                )
+                                .with_playstate(
+                                    PlaystatePayload::new()
+                                        .with_position(1.95)
+                                        .with_paused(false)
+                                        .with_do_seek(false)
+                                        .with_set_by("cli-user"),
+                                ),
+                        ))
+                        .expect("unpaused self near-sync state should encode");
+                    writer
+                        .write_all(format!("{unpaused_self_near_sync_line}\n").as_bytes())
+                        .await
+                        .expect("unpaused self near-sync state write should succeed");
+                    writer
+                        .flush()
+                        .await
+                        .expect("unpaused self near-sync state flush should succeed");
+                }
+
+                tokio::time::sleep(Duration::from_millis(220)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 2.2;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(true);
+            config.rewind_on_desync_override = Some(false);
+            config.fastforward_on_desync_override = Some(false);
+            config.slow_on_desync_override = Some(true);
+            config.slowdown_threshold_seconds_override = Some(1.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_playback_rate(1.0)
+                .expect("stub player playback-rate seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(2.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(2.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            runtime.player().playback_rate()
+        }
+
+        let paused_rate = run_case(CaseKind::StopWhilePaused).await;
+        let unpaused_rate = run_case(CaseKind::UnpauseAfterPaused).await;
+
+        assert!(
+            (paused_rate - 0.95).abs() < 1e-6,
+            "paused room playstate should suppress slowdown restore before self-setBy slowdown branch; rate={paused_rate}"
+        );
+        assert!(
+            (unpaused_rate - 1.0).abs() < 1e-6,
+            "once unpaused (same self-setBy near-sync state), slowdown restore should apply; rate={unpaused_rate}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_paused_rewind_desync_applies_remote_pause_and_seek_but_skips_self_setby()
+     {
+        async fn run_case(set_by: &str) -> (bool, f64) {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let set_by = set_by.to_owned();
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(0.0)
+                            .with_paused(true)
+                            .with_do_seek(false)
+                            .with_set_by(set_by.as_str()),
+                    ),
+                ))
+                .expect("inbound paused rewind state should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.0;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(true);
+            config.fastforward_on_desync_override = Some(false);
+            config.slow_on_desync_override = Some(false);
+            config.rewind_threshold_seconds_override = Some(1.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(10.0)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(10.0),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            (
+                runtime.player().paused(),
+                runtime.player().position_seconds(),
+            )
+        }
+
+        let (remote_paused, remote_position) = run_case("remote-user").await;
+        let (self_paused, self_position) = run_case("cli-user").await;
+
+        assert!(
+            remote_paused,
+            "remote paused room state should pause local player before/alongside desync correction"
+        );
+        assert!(
+            remote_position < 1.0,
+            "remote paused room state should still apply rewind desync correction seek; position={remote_position}"
+        );
+        assert!(
+            !self_paused,
+            "self-attributed paused room state should not trigger local pause sync"
+        );
+        assert!(
+            self_position > 9.0,
+            "self-attributed paused room state should suppress rewind desync correction; position={self_position}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_paused_fastforward_desync_applies_remote_pause_and_seek_but_skips_self_setby()
+     {
+        async fn run_case(set_by: &str) -> (bool, f64) {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener
+                .local_addr()
+                .expect("listener should have local addr");
+            let set_by = set_by.to_owned();
+
+            let server_task = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.expect("server should accept");
+                let (reader, mut writer) = socket.into_split();
+                let mut lines = BufReader::new(reader).lines();
+
+                let hello_line = lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present");
+                assert!(
+                    hello_line.contains("\"Hello\""),
+                    "first client line should be a Hello message"
+                );
+                writer
+                    .write_all(
+                        b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                    )
+                    .await
+                    .expect("server hello write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server hello flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let inbound_state_line = encode_message_line(&ProtocolMessage::state(
+                    StatePayload::new().with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(true)
+                            .with_do_seek(false)
+                            .with_set_by(set_by.as_str()),
+                    ),
+                ))
+                .expect("inbound paused fastforward state should encode");
+                writer
+                    .write_all(format!("{inbound_state_line}\n").as_bytes())
+                    .await
+                    .expect("inbound state write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("inbound state flush should succeed");
+
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                writer
+                    .shutdown()
+                    .await
+                    .expect("server shutdown should succeed");
+            });
+
+            let mut config = test_client_loop_config_with_addr(addr);
+            config.max_connected_runtime_seconds = 1.6;
+            config.readiness_supported_override = Some(false);
+            config.local_can_control_override = Some(false);
+            config.rewind_on_desync_override = Some(false);
+            config.fastforward_on_desync_override = Some(true);
+            config.slow_on_desync_override = Some(false);
+            config.fastforward_threshold_seconds_override = Some(2.0);
+
+            let mut runtime = create_client_runtime(&config);
+            runtime
+                .player_mut()
+                .set_paused(false)
+                .expect("stub player pause seed should succeed");
+            runtime
+                .player_mut()
+                .set_position(0.2)
+                .expect("stub player position seed should succeed");
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(false)
+                        .with_position_seconds(0.2),
+                );
+
+            let stream = TcpStream::connect(addr)
+                .await
+                .expect("client should connect to test listener");
+            let mut notification_sink = ignore_autoplay_notification;
+            let mut file_difference_sink = ignore_file_difference_notification;
+
+            let exit = run_connected_client_session(
+                stream,
+                &mut runtime,
+                &config,
+                None,
+                None,
+                &mut notification_sink,
+                &mut file_difference_sink,
+            )
+            .await
+            .expect("connected session should run");
+            assert!(
+                matches!(
+                    exit,
+                    ConnectedSessionExit::TransportClosed
+                        | ConnectedSessionExit::RuntimeWindowElapsed
+                ),
+                "connected session should either observe peer close or exit on runtime window"
+            );
+            server_task.await.expect("server task join should succeed");
+            (
+                runtime.player().paused(),
+                runtime.player().position_seconds(),
+            )
+        }
+
+        let (remote_paused, remote_position) = run_case("remote-user").await;
+        let (self_paused, self_position) = run_case("cli-user").await;
+
+        assert!(
+            remote_paused,
+            "remote paused room state should pause local player before/alongside desync correction"
+        );
+        assert!(
+            remote_position > 10.0,
+            "remote paused room state should still apply fastforward desync correction seek; position={remote_position}"
+        );
+        assert!(
+            !self_paused,
+            "self-attributed paused room state should not trigger local pause sync"
+        );
+        assert!(
+            self_position < 1.0,
+            "self-attributed paused room state should suppress fastforward desync correction; position={self_position}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_paused_self_setby_fastforward_candidate_primes_timer_for_next_remote_state()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server hello flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let paused_self_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(10.0)
+                        .with_paused(true)
+                        .with_do_seek(false)
+                        .with_set_by("cli-user"),
+                ),
+            ))
+            .expect("paused self fastforward-candidate state should encode");
+            writer
+                .write_all(format!("{paused_self_line}\n").as_bytes())
+                .await
+                .expect("paused self state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("paused self state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(320)).await;
+            let paused_remote_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(true)
+                            .with_do_seek(false)
+                            .with_set_by("remote-user"),
+                    ),
+            ))
+            .expect("paused remote fastforward-candidate state should encode");
+            writer
+                .write_all(format!("{paused_remote_line}\n").as_bytes())
+                .await
+                .expect("paused remote state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("paused remote state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 2.0;
+        config.readiness_supported_override = Some(false);
+        config.local_can_control_override = Some(false);
+        config.rewind_on_desync_override = Some(false);
+        config.fastforward_on_desync_override = Some(true);
+        config.slow_on_desync_override = Some(false);
+        config.fastforward_threshold_seconds_override = Some(2.0);
+
+        let mut runtime = create_client_runtime(&config);
+        runtime
+            .player_mut()
+            .set_paused(false)
+            .expect("stub player pause seed should succeed");
+        runtime
+            .player_mut()
+            .set_position(0.2)
+            .expect("stub player position seed should succeed");
+        runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(0.2),
+            );
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+        assert!(
+            runtime.player().paused(),
+            "remote paused state should still pause local player"
+        );
+        assert!(
+            runtime.player().position_seconds() > 10.0,
+            "paused self-setBy behind state should prime the fastforward timer so the next remote paused state can fastforward immediately; position={}",
+            runtime.player().position_seconds()
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_client_session_inbound_state_paused_self_setby_near_sync_clears_fastforward_timer_before_next_remote_state()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let hello_line = lines
+                .next_line()
+                .await
+                .expect("hello line read should succeed")
+                .expect("hello line should be present");
+            assert!(
+                hello_line.contains("\"Hello\""),
+                "first client line should be a Hello message"
+            );
+            writer
+                .write_all(
+                    b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.2.255\",\"features\":{\"chat\":true,\"readiness\":false}}}\n",
+                )
+                .await
+                .expect("server hello write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server hello flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let paused_self_behind_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(10.0)
+                        .with_paused(true)
+                        .with_do_seek(false)
+                        .with_set_by("cli-user"),
+                ),
+            ))
+            .expect("paused self behind state should encode");
+            writer
+                .write_all(format!("{paused_self_behind_line}\n").as_bytes())
+                .await
+                .expect("paused self behind state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("paused self behind state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(180)).await;
+            let paused_self_near_sync_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(0.3)
+                            .with_paused(true)
+                            .with_do_seek(false)
+                            .with_set_by("cli-user"),
+                    ),
+            ))
+            .expect("paused self near-sync state should encode");
+            writer
+                .write_all(format!("{paused_self_near_sync_line}\n").as_bytes())
+                .await
+                .expect("paused self near-sync state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("paused self near-sync state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(320)).await;
+            let paused_remote_behind_line = encode_message_line(&ProtocolMessage::state(
+                StatePayload::new()
+                    .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1))
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(10.0)
+                            .with_paused(true)
+                            .with_do_seek(false)
+                            .with_set_by("remote-user"),
+                    ),
+            ))
+            .expect("paused remote behind state should encode");
+            writer
+                .write_all(format!("{paused_remote_behind_line}\n").as_bytes())
+                .await
+                .expect("paused remote behind state write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("paused remote behind state flush should succeed");
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            writer
+                .shutdown()
+                .await
+                .expect("server shutdown should succeed");
+        });
+
+        let mut config = test_client_loop_config_with_addr(addr);
+        config.max_connected_runtime_seconds = 2.2;
+        config.readiness_supported_override = Some(false);
+        config.local_can_control_override = Some(false);
+        config.rewind_on_desync_override = Some(false);
+        config.fastforward_on_desync_override = Some(true);
+        config.slow_on_desync_override = Some(false);
+        config.fastforward_threshold_seconds_override = Some(2.0);
+
+        let mut runtime = create_client_runtime(&config);
+        runtime
+            .player_mut()
+            .set_paused(false)
+            .expect("stub player pause seed should succeed");
+        runtime
+            .player_mut()
+            .set_position(0.2)
+            .expect("stub player position seed should succeed");
+        runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(0.2),
+            );
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test listener");
+        let mut notification_sink = ignore_autoplay_notification;
+        let mut file_difference_sink = ignore_file_difference_notification;
+
+        let exit = run_connected_client_session(
+            stream,
+            &mut runtime,
+            &config,
+            None,
+            None,
+            &mut notification_sink,
+            &mut file_difference_sink,
+        )
+        .await
+        .expect("connected session should run");
+        assert!(
+            matches!(
+                exit,
+                ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+            ),
+            "connected session should either observe peer close or exit on runtime window"
+        );
+        server_task.await.expect("server task join should succeed");
+        assert!(
+            runtime.player().paused(),
+            "remote paused state should still pause local player"
+        );
+        assert!(
+            runtime.player().position_seconds() < 1.0,
+            "paused self-setBy near-sync state should clear the behind timer so the next remote paused state does not fastforward immediately; position={}",
+            runtime.player().position_seconds()
         );
     }
 
