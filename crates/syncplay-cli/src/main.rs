@@ -1233,9 +1233,7 @@ fn parse_serialized_python_string_list_cursor_legacy_compatible(
     let mut values = Vec::new();
     loop {
         skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-        let Some(next) = input.get(*index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let next = input.get(*index..).and_then(|rest| rest.chars().next())?;
         if next == ']' {
             *index += 1;
             return Some(values);
@@ -1243,9 +1241,7 @@ fn parse_serialized_python_string_list_cursor_legacy_compatible(
         let value = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
         values.push(value);
         skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-        let Some(delim) = input.get(*index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let delim = input.get(*index..).and_then(|rest| rest.chars().next())?;
         if delim == ',' {
             *index += 1;
             continue;
@@ -1275,9 +1271,7 @@ fn parse_serialized_per_player_arguments_map_legacy_compatible(
     let mut parsed = BTreeMap::new();
     loop {
         skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let Some(next) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let next = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
         if next == '}' {
             index += 1;
             break;
@@ -1292,9 +1286,7 @@ fn parse_serialized_per_player_arguments_map_legacy_compatible(
             parse_serialized_python_string_list_cursor_legacy_compatible(trimmed, &mut index)?;
         parsed.insert(key, args);
         skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let Some(delim) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let delim = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
         if delim == ',' {
             index += 1;
             continue;
@@ -1362,9 +1354,7 @@ fn parse_serialized_public_servers_list_legacy_compatible(
     let mut parsed = Vec::new();
     loop {
         skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let Some(next) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let next = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
         if next == ']' {
             index += 1;
             break;
@@ -1373,9 +1363,7 @@ fn parse_serialized_public_servers_list_legacy_compatible(
             parse_serialized_python_string_pair_cursor_legacy_compatible(trimmed, &mut index)?,
         );
         skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let Some(delim) = trimmed.get(index..).and_then(|rest| rest.chars().next()) else {
-            return None;
-        };
+        let delim = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
         if delim == ',' {
             index += 1;
             continue;
@@ -1475,8 +1463,8 @@ fn upsert_ini_value_legacy_compatible(
     if let Some(section_start_idx) = section_start {
         let mut insert_at = lines.len();
         let mut key_index = None;
-        for idx in (section_start_idx + 1)..lines.len() {
-            let trimmed = lines[idx].trim();
+        for (idx, line) in lines.iter().enumerate().skip(section_start_idx + 1) {
+            let trimmed = line.trim();
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 insert_at = idx;
                 break;
@@ -4106,6 +4094,7 @@ fn build_client_loop_config_from_env() -> ClientLoopConfig {
     }
 }
 
+#[cfg(test)]
 fn create_client_runtime(
     config: &ClientLoopConfig,
 ) -> ClientRuntime<MpvAdapter, QueuedRuntimeControl> {
@@ -4195,6 +4184,7 @@ fn create_client_session(config: &ClientLoopConfig) -> ClientSession {
     session
 }
 
+#[cfg(test)]
 fn create_mpv_adapter_from_env() -> MpvAdapter {
     let ipc_path = env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH")
         .or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"));
@@ -4507,8 +4497,7 @@ fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
         Ok(adapter) => adapter,
         Err(err) => {
             eprintln!(
-                "warning: failed to connect mpv JSON IPC at '{}': {err}; using stub mpv adapter",
-                ipc_path
+                "warning: failed to connect mpv JSON IPC at '{ipc_path}': {err}; using stub mpv adapter"
             );
             MpvAdapter::default()
         }
@@ -4587,10 +4576,7 @@ fn spawn_managed_mpv_and_attach(
             )
         })?;
 
-    eprintln!(
-        "info: started managed mpv and attached JSON IPC at '{}'",
-        ipc_path
-    );
+    eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
 }
 
@@ -5752,6 +5738,7 @@ fn local_input_command_uses_shared_playlists_legacy_compatible(
     )
 }
 
+#[cfg(test)]
 async fn run_connected_client_session<F, G>(
     stream: TcpStream,
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
@@ -5780,6 +5767,7 @@ where
     Ok(exit)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connected_client_session_with_legacy_startup_overrides<F, G>(
     stream: TcpStream,
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
@@ -5795,7 +5783,6 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     let mut local_input_rx = local_input_rx;
-    let startup_playlist_file_on_connect = startup_playlist_file_on_connect;
     let log_player_telemetry = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY");
     let log_player_drift = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS");
     let reconnect_correction_diagnostics_format =
@@ -6176,6 +6163,7 @@ async fn run_reconnect_backoff(
     Ok(false)
 }
 
+#[cfg(test)]
 async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
     run_client_network_loop_with_legacy_startup_overrides(config, None, None).await
 }
@@ -23278,16 +23266,13 @@ mod tests {
             result.expect("managed mpv CLI smoke should publish local file metadata");
         assert!(
             published_lines.iter().any(|line| line.contains("\"Set\"")),
-            "expected queued Set message from local file publish, got {:?}",
-            published_lines
+            "expected queued Set message from local file publish, got {published_lines:?}"
         );
         assert!(
             published_lines
                 .iter()
                 .any(|line| line.contains(&expected_name)),
-            "expected queued local file publish to include media filename '{}'; lines={:?}",
-            expected_name,
-            published_lines
+            "expected queued local file publish to include media filename '{expected_name}'; lines={published_lines:?}"
         );
     }
 
@@ -23451,6 +23436,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires local standalone mpv binary and media asset"]
+    #[allow(clippy::await_holding_lock)]
     async fn connected_client_session_real_mpv_explicit_ipc_smoke_publishes_local_file_and_applies_local_seek_command()
      {
         use std::process::{Child, Command, Stdio};
@@ -23676,6 +23662,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires local standalone mpv binary and media asset"]
+    #[allow(clippy::await_holding_lock)]
     async fn connected_client_session_real_mpv_explicit_ipc_reconnect_validation_smoke_applies_server_playstate_to_real_player()
      {
         use std::process::{Child, Command, Stdio};
@@ -24002,6 +23989,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires local standalone mpv binary and media asset"]
+    #[allow(clippy::await_holding_lock)]
     async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_desync_rewind_to_real_player()
      {
         use std::process::{Child, Command, Stdio};
@@ -24256,6 +24244,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires local standalone mpv binary and media asset"]
+    #[allow(clippy::await_holding_lock)]
     async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_fastforward_via_ping_forward_delay_to_real_player()
      {
         use std::process::{Child, Command, Stdio};
@@ -24528,6 +24517,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires local standalone mpv binary and media asset"]
+    #[allow(clippy::await_holding_lock)]
     async fn connected_client_session_real_mpv_explicit_ipc_smoke_borderline_fastforward_without_server_rtt_does_not_seek_real_player()
      {
         use std::process::{Child, Command, Stdio};
