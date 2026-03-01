@@ -3006,15 +3006,17 @@ mod tests {
                     .expect("expected output should contain message");
 
                 let actual_output = &actual_event.outbound_lines[index];
-                let actual_message: Value = normalize_cross_impl_message_with_options(
+                let mut actual_message: Value = normalize_cross_impl_message_with_options(
                     serde_json::from_str(&actual_output.line)
                         .expect("actual outbound line should decode to JSON value"),
                     normalization_options,
                 );
-                let expected_message = normalize_cross_impl_message_with_options(
+                let mut expected_message = normalize_cross_impl_message_with_options(
                     expected_message.clone(),
                     normalization_options,
                 );
+                canonicalize_legacy_hello_fields(&mut actual_message);
+                canonicalize_legacy_hello_fields(&mut expected_message);
 
                 assert_eq!(
                     actual_output.client_id, expected_client,
@@ -3122,16 +3124,18 @@ mod tests {
                 .zip(rust_event.outbound_lines.iter())
                 .enumerate()
             {
-                let python_value = normalize_cross_impl_message_with_options(
+                let mut python_value = normalize_cross_impl_message_with_options(
                     serde_json::from_str(&python_output.line)
                         .expect("python outbound line should decode as JSON"),
                     normalization_options,
                 );
-                let rust_value = normalize_cross_impl_message_with_options(
+                let mut rust_value = normalize_cross_impl_message_with_options(
                     serde_json::from_str(&rust_output.line)
                         .expect("rust outbound line should decode as JSON"),
                     normalization_options,
                 );
+                canonicalize_legacy_hello_fields(&mut python_value);
+                canonicalize_legacy_hello_fields(&mut rust_value);
                 assert_eq!(
                     python_output.client_id, rust_output.client_id,
                     "outbound client mismatch at step {index} output {output_index}"

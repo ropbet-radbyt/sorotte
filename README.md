@@ -2,26 +2,44 @@
 
 Rust rewrite workspace for Syncplay.
 
-## Current status
+## Current state (audited 2026-02-24)
 
-- Headless client/server runtime is substantially implemented and passing workspace checks.
-- `syncplay-cli` now supports real `mpv` integration via:
-  - managed `mpv` launch (auto-spawn + JSON IPC attach)
-  - explicit JSON IPC attach to an existing `mpv`
-  - best-effort unmanaged external-player startup compatibility path
-- Launch-hardening gates are currently green in this environment (`clippy`, workspace tests, real-`mpv` smoke matrix, and a release build spot-check).
+- Headless Rust CLI client is implemented and actively test-covered.
+- `syncplay-cli` integrates with `mpv` (managed launch and explicit JSON IPC attach).
+- `crates/syncplay-server` contains a substantial server runtime library (room/state sync, TLS paths, persistent/permanent room behavior) backed by tests.
+- The `syncplay-server` executable now has a real alpha CLI/help surface and listener startup over the Rust server runtime, but Python server CLI parity is still partial.
+- GUI parity is not implemented yet; this is currently a CLI/headless project.
 
-Implemented:
-- workspace crate layout and baseline CI/tooling
-- typed protocol models for all top-level message families
-- protocol fixtures for `Hello`, `Set`, `List`, `State`, `Chat`, `Error`, `TLS`
-- typed decode integration in `syncplay-client-core` and fixture decoding in `syncplay-compat`
+Audit verification run in this session:
 
-CLI alpha packaging / run instructions (Windows / `mpv`):
-- `ALPHA_CLI_PREVIEW.md`
+- `cargo test --workspace` passed
+- `cargo clippy --workspace --all-targets -- -D warnings` passed
 
-Detailed continuity checkpoint:
-- `../NEXT_AGENT_HANDOFF.md`
+Manual/local validations (real `mpv`, release packaging) are tracked separately in `PROJECT_STATUS.md` and `ALPHA_CLI_PREVIEW.md`.
+
+Workspace-level parity and planning docs (one directory up):
+
+- `../PROJECT_STATUS.md`
+- `../PARITY_CHECKLIST.md`
+- `../GUI_CONFIG_PARITY_BACKLOG.md`
+
+## Canonical docs (keep these in this repo)
+
+- `README.md`: repo overview and quick commands
+- `PROJECT_STATUS.md`: repo-local audit summary + completed/pending checklist
+- `ALPHA_CLI_PREVIEW.md`: Windows/`mpv` CLI alpha packaging and run guide
+
+## Workspace layout
+
+- `crates/syncplay-protocol`: typed protocol models + fixture coverage
+- `crates/syncplay-core`: shared core domain types/helpers
+- `crates/syncplay-server`: server runtime library + alpha executable entrypoint (partial Python CLI parity)
+- `crates/syncplay-client-core`: client session/runtime logic
+- `crates/syncplay-player-api`: player abstraction interface
+- `crates/syncplay-player-mpv`: `mpv` JSON IPC adapter
+- `crates/syncplay-cli`: headless CLI client binary
+- `crates/syncplay-sim`: deterministic simulation helpers
+- `crates/syncplay-compat`: compatibility/interop test support
 
 ## Quick commands
 
@@ -32,24 +50,18 @@ Detailed continuity checkpoint:
 
 ## Coverage (cargo-llvm-cov)
 
-`cargo-llvm-cov` is the most practical coverage tool for this Rust workspace (LLVM source-based coverage, workspace-aware, CI-friendly).
-
 Install once:
 
 - `rustup component add llvm-tools-preview`
 - `cargo install cargo-llvm-cov --locked`
 
-Local coverage commands (via cargo aliases in `.cargo/config.toml`):
+Aliases (see `.cargo/config.toml`):
 
-- `cargo cov-clean` (clean prior coverage artifacts)
-- `cargo cov-lcov` (writes `target/lcov.info`; accepts extra filters like `-p syncplay-client-core --lib`)
-- `cargo cov-html` (writes HTML report to `target/llvm-cov/html/`; accepts extra filters)
+- `cargo cov-clean`
+- `cargo cov-lcov`
+- `cargo cov-html`
 
-Examples:
+CI workflows:
 
-- `cargo cov-lcov -p syncplay-client-core --lib`
-- `cargo llvm-cov test -p syncplay-client-core some_test_name -- --nocapture` (test-name filtering requires the `test` subcommand)
-
-CI:
-
-- Manual/scheduled coverage workflow: `.github/workflows/rust-coverage.yml`
+- `.github/workflows/rust-ci.yml`
+- `.github/workflows/rust-coverage.yml`

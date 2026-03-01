@@ -2,14 +2,16 @@
 
 This document captures the current alpha packaging/run flow that was validated locally.
 
+Use `PROJECT_STATUS.md` for the current repo audit/checklist. This file is the packaging/run guide for the Windows/`mpv` CLI alpha path.
+
 ## Scope
 
 - `syncplay-cli.exe` (headless CLI client, `mpv` integration)
-- `syncplay-server.exe` (separate server binary, optional for local testing)
+- `syncplay-server.exe` is now a usable alpha server executable (real `--help` + listener startup), but Python server CLI parity is still partial
 
 This is a developer-preview / CLI-alpha workflow, not a GUI release.
 
-## Validated Gates (2026-02-24)
+## Validated Gates (local validation notes, 2026-02-24)
 
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
@@ -26,6 +28,8 @@ This is a developer-preview / CLI-alpha workflow, not a GUI release.
   - `target/release/syncplay-cli.exe --version`
   - release-profile real-`mpv` smokes (managed + explicit-IPC startup + explicit-IPC reconnect)
 
+Audit note: the latest documentation audit re-ran `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`; real-`mpv` and release-profile checks remain manual/local validations.
+
 ## Release Artifacts (current build)
 
 Built by `cargo build --release`:
@@ -39,18 +43,18 @@ Built by `cargo build --release`:
 Recommended alpha zip contents (Windows):
 
 - `syncplay-cli.exe`
-- `syncplay-server.exe` (optional if shipping client-only)
 - `syncplay_cli.pdb` / `syncplay_server.pdb` (optional, useful for debugging)
 - `README.md`
 - `ALPHA_CLI_PREVIEW.md`
 
 Do not package `target/release/deps/`.
+Present `syncplay-server.exe` as an alpha/developer server binary only (core startup works; several Python server flags are still unimplemented).
 
 ## Prerequisites
 
 - Windows
 - `mpv` with JSON IPC support
-- A Syncplay-compatible server endpoint (existing server, or local `syncplay-server.exe`)
+- A Syncplay-compatible server endpoint (existing server, or the Python `syncplay-server` from the sibling `syncplay/` repo in this workspace)
 
 ## Quick Start (Managed `mpv`)
 
@@ -184,12 +188,23 @@ Supported explicit-IPC `_args` subset:
 
 Unsupported `_args` are ignored in explicit-IPC mode (with startup summary/warning diagnostics).
 
-## Optional: Local Server (alpha/manual testing)
+## Optional: Local Server for Manual Testing (Rust alpha server or Python reference server)
 
 Default local server port is `8999`.
 
+Rust alpha server (core startup path):
+
 ```powershell
-.\target\release\syncplay-server.exe
+.\target\release\syncplay-server.exe --port 8999
+```
+
+Current Rust server CLI parity note: the executable supports core startup/bind/persistence/TLS plus `--disable-chat`, `--disable-ready`, max-length flags, and `--isolate-rooms`, and now accepts Python-style MD5 `Hello.password` tokens for `--password` compatibility; not all Python `syncplay-server` options/behaviors are implemented yet (notably dual-interface binding parity).
+`--isolate-rooms` currently rejects persistent-room options in the Rust alpha (`--rooms-db-file`, `--permanent-rooms-file`, `SYNCPLAY_SERVER_PERSISTENT_ROOMS`), matching the Python docs' incompatibility guidance.
+
+Python reference server fallback:
+
+```powershell
+python ..\syncplay\syncplayServer.py --port 8999
 ```
 
 Then point the client to `127.0.0.1:8999` as shown above.
@@ -201,6 +216,8 @@ Then point the client to `127.0.0.1:8999` as shown above.
 - Full Qt `QSettings` GUI behavior parity is out of scope; `--clear-gui-data` is best-effort for known legacy stores.
 - Explicit-IPC `_args` support is intentionally limited to the subset above.
 - Non-managed external-player startup is best-effort launch compatibility only (no non-`mpv` adapter integration).
+- `syncplay-server.exe` is a usable alpha/local-test server binary for core startup flows, but Python server CLI parity is incomplete (notably dual-interface binding parity and binary-level operational smoke coverage). For `--password`, the Rust server now accepts both raw tokens and Python-style MD5 `Hello.password` tokens as a compatibility superset.
+- `--isolate-rooms` is supported, but currently incompatible with persistent-room options in the Rust alpha (`--rooms-db-file`, `--permanent-rooms-file`, `SYNCPLAY_SERVER_PERSISTENT_ROOMS`).
 - Real-`mpv` smokes are Windows-oriented and rely on local `mpv` + media availability.
 
 ## Diagnostics / Troubleshooting

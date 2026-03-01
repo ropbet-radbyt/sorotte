@@ -6,6 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use md5::Md5;
 use regex::Regex;
 use rusqlite::{Connection, params};
 use rustls::{
@@ -41,9 +42,13 @@ const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
     "You are using Syncplay {client_version} but a newer version is available from {upgrade_url}";
 const LEGACY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
+const LEGACY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
+const LEGACY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
 const LEGACY_UI_MODE_GRAPHICAL: &str = "GUI";
 const LEGACY_UI_MODE_UNKNOWN: &str = "Unknown";
 const DEFAULT_CONTROLLED_ROOM_HASH_SALT: &str = "syncplay-rs-controlled-room-v1";
+const DEFAULT_MAX_CHAT_MESSAGE_LENGTH: usize = 150;
+const DEFAULT_MAX_USERNAME_LENGTH: usize = 16;
 const SERVER_STATE_INTERVAL_SECONDS: f64 = 1.0;
 const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
@@ -174,6 +179,27 @@ fn motd_for_client_version(client_version: &str, motd_template_override: Option<
         return custom_motd;
     }
     default_motd_for_client_version(client_version)
+}
+
+fn truncate_text_to_max_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn hello_server_password_token(hello: &HelloPayload) -> Option<&str> {
+    hello.extra.get("password").and_then(Value::as_str)
+}
+
+fn legacy_server_password_token_md5_hex(token: &str) -> String {
+    format!("{:x}", Md5::digest(token.as_bytes()))
+}
+
+fn server_password_token_matches_legacy_compatible(
+    presented_token: &str,
+    configured_token: &str,
+) -> bool {
+    // Accept raw tokens for Rust-Rust interoperability and legacy-Python MD5 tokens for parity.
+    presented_token == configured_token
+        || presented_token == legacy_server_password_token_md5_hex(configured_token)
 }
 
 fn client_supports_persistent_rooms(advertised_features: Option<&Value>) -> bool {
@@ -619,6 +645,7 @@ pub struct ServerRuntime {
     client_next_periodic_state_at: BTreeMap<String, f64>,
     time_now_override_seconds: Option<f64>,
     room_password_provider: RoomPasswordProvider,
+    server_password_token: Option<String>,
     motd_template: Option<String>,
     stats_persistence: Option<StatsPersistenceStore>,
     stats_snapshot_start_delay_seconds: f64,
@@ -632,6 +659,11 @@ pub struct ServerRuntime {
     tls_rotation_attempts: u32,
     pending_transport_actions: Vec<DirectedTransportAction>,
     persistent_rooms_enabled: bool,
+    isolate_rooms: bool,
+    chat_enabled: bool,
+    readiness_enabled: bool,
+    max_chat_message_length: usize,
+    max_username_length: usize,
     room_persistence: Option<RoomPersistenceStore>,
     permanent_rooms: BTreeSet<String>,
 }
@@ -692,6 +724,7 @@ impl ServerRuntime {
             client_next_periodic_state_at: BTreeMap::new(),
             time_now_override_seconds: None,
             room_password_provider: RoomPasswordProvider::new(salt),
+            server_password_token: None,
             motd_template: None,
             stats_persistence: None,
             stats_snapshot_start_delay_seconds: legacy_stats_snapshot_start_delay_seconds_for_port(
@@ -707,6 +740,11 @@ impl ServerRuntime {
             tls_rotation_attempts: 0,
             pending_transport_actions: Vec::new(),
             persistent_rooms_enabled: false,
+            isolate_rooms: false,
+            chat_enabled: true,
+            readiness_enabled: true,
+            max_chat_message_length: DEFAULT_MAX_CHAT_MESSAGE_LENGTH,
+            max_username_length: DEFAULT_MAX_USERNAME_LENGTH,
             room_persistence: None,
             permanent_rooms: BTreeSet::new(),
         }
@@ -733,6 +771,10 @@ impl ServerRuntime {
                 Some(trimmed.to_owned())
             }
         });
+    }
+
+    pub fn set_server_password_token(&mut self, token: Option<String>) {
+        self.server_password_token = token.filter(|token| !token.is_empty());
     }
 
     pub fn with_stats_db_path(db_path: impl Into<PathBuf>) -> Result<Self, ServerRuntimeError> {
@@ -800,6 +842,26 @@ impl ServerRuntime {
 
     pub fn set_persistent_rooms_enabled(&mut self, enabled: bool) {
         self.persistent_rooms_enabled = enabled;
+    }
+
+    pub fn set_isolate_rooms(&mut self, enabled: bool) {
+        self.isolate_rooms = enabled;
+    }
+
+    pub fn set_chat_enabled(&mut self, enabled: bool) {
+        self.chat_enabled = enabled;
+    }
+
+    pub fn set_readiness_enabled(&mut self, enabled: bool) {
+        self.readiness_enabled = enabled;
+    }
+
+    pub fn set_max_chat_message_length(&mut self, max_chars: usize) {
+        self.max_chat_message_length = max_chars;
+    }
+
+    pub fn set_max_username_length(&mut self, max_chars: usize) {
+        self.max_username_length = max_chars;
     }
 
     pub fn with_persistent_rooms_db_path(
@@ -1012,6 +1074,9 @@ impl ServerRuntime {
         client_id: &str,
         chat: ChatPayload,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if !self.chat_enabled {
+            return Ok(Vec::new());
+        }
         let session = self
             .sessions
             .get(client_id)
@@ -1020,6 +1085,7 @@ impl ServerRuntime {
             ChatPayload::Text(message) => message,
             ChatPayload::Message(message_payload) => message_payload.message,
         };
+        let message = truncate_text_to_max_chars(&message, self.max_chat_message_length);
         let outbound_message = ProtocolMessage::chat_message(session.username.clone(), message);
         Ok(self
             .clients_in_room(&session.room)
@@ -1062,18 +1128,36 @@ impl ServerRuntime {
         client_id: &str,
         hello: HelloPayload,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let requested_username = hello.username.trim();
+        let requested_username =
+            truncate_text_to_max_chars(hello.username.trim(), self.max_username_length);
         let room_name = hello.room.name.trim();
         let version = hello.effective_version().trim();
         if requested_username.is_empty() || room_name.is_empty() || version.is_empty() {
             return Err(ServerRuntimeError::InvalidHello);
+        }
+        if let Some(required_password_token) = self.server_password_token.as_deref() {
+            let Some(server_password_token) = hello_server_password_token(&hello) else {
+                return Ok(vec![DirectedProtocolMessage::new(
+                    client_id,
+                    ProtocolMessage::error_message(LEGACY_SERVER_PASSWORD_REQUIRED_ERROR),
+                )]);
+            };
+            if !server_password_token_matches_legacy_compatible(
+                server_password_token,
+                required_password_token,
+            ) {
+                return Ok(vec![DirectedProtocolMessage::new(
+                    client_id,
+                    ProtocolMessage::error_message(LEGACY_SERVER_WRONG_PASSWORD_ERROR),
+                )]);
+            }
         }
 
         let advertised_features = hello.features.clone();
         if let Some(previous_session) = self.remove_session_tracking(client_id) {
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
-        let username = self.find_free_username(requested_username, Some(client_id));
+        let username = self.find_free_username(&requested_username, Some(client_id));
         self.domain.join_room(&username, room_name);
         self.ensure_room_state(room_name);
         self.sessions.insert(
@@ -1100,7 +1184,7 @@ impl ServerRuntime {
             version,
             advertised_features.clone(),
         );
-        for existing_client in self.clients_all_excluding(client_id) {
+        for existing_client in self.clients_visible_on_join(room_name, client_id) {
             outbound.push(DirectedProtocolMessage::new(
                 existing_client,
                 joined_message.clone(),
@@ -1132,7 +1216,14 @@ impl ServerRuntime {
         );
         let mut response = HelloPayload::new(username.clone(), room_name, version)
             .with_realversion(SERVER_REAL_VERSION)
-            .with_features(server_feature_list(self.persistent_rooms_enabled));
+            .with_features(server_feature_list(
+                self.persistent_rooms_enabled,
+                self.isolate_rooms,
+                self.chat_enabled,
+                self.readiness_enabled,
+                self.max_chat_message_length,
+                self.max_username_length,
+            ));
         response
             .extra
             .insert("motd".to_owned(), Value::String(motd));
@@ -1220,11 +1311,28 @@ impl ServerRuntime {
 
                 let room_update_message =
                     user_room_update_message(&session.username, &session.room);
-                for peer_client in self.clients_all() {
+                for peer_client in
+                    self.room_switch_visibility_recipients(client_id, &previous_room, &session.room)
+                {
                     outbound_messages.push(DirectedProtocolMessage::new(
                         peer_client,
                         room_update_message.clone(),
                     ));
+                }
+                if self.isolate_rooms {
+                    let left_message = user_event_message(
+                        &session.username,
+                        &previous_room,
+                        json!({
+                            "left": true,
+                        }),
+                    );
+                    for peer_client in self.clients_in_room(&previous_room) {
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            peer_client,
+                            left_message.clone(),
+                        ));
+                    }
                 }
 
                 let room_playlist = self.room_playlist_state(&session.room);
@@ -1310,7 +1418,12 @@ impl ServerRuntime {
                     }
                     let auth_message =
                         controller_auth_status_message(&session.username, &session.room, success);
-                    for peer_client in self.clients_all() {
+                    let recipients = if self.isolate_rooms {
+                        self.clients_in_room(&session.room)
+                    } else {
+                        self.clients_all()
+                    };
+                    for peer_client in recipients {
                         outbound_messages.push(DirectedProtocolMessage::new(
                             peer_client,
                             auth_message.clone(),
@@ -1339,7 +1452,9 @@ impl ServerRuntime {
             }
         }
 
-        if let Some(ready) = set.ready {
+        if self.readiness_enabled
+            && let Some(ready) = set.ready
+        {
             self.domain
                 .set_ready(&session.username, &session.room, ready.is_ready)?;
             let ready_message = ready_update_message(
@@ -1703,7 +1818,11 @@ impl ServerRuntime {
                 "left": true,
             }),
         );
-        let mut recipients = self.clients_all();
+        let mut recipients = if self.isolate_rooms {
+            self.clients_in_room(&session.room)
+        } else {
+            self.clients_all()
+        };
         recipients.push(client_id.to_owned());
         let mut outbound_messages: Vec<_> = recipients
             .into_iter()
@@ -2041,7 +2160,38 @@ impl ServerRuntime {
             .collect()
     }
 
+    fn clients_visible_on_join(&self, room_name: &str, joining_client_id: &str) -> Vec<String> {
+        if self.isolate_rooms {
+            self.clients_in_room(room_name)
+                .into_iter()
+                .filter(|client_id| client_id != joining_client_id)
+                .collect()
+        } else {
+            self.clients_all_excluding(joining_client_id)
+        }
+    }
+
+    fn room_switch_visibility_recipients(
+        &self,
+        moving_client_id: &str,
+        _previous_room: &str,
+        current_room: &str,
+    ) -> Vec<String> {
+        if !self.isolate_rooms {
+            return self.clients_all();
+        }
+        let mut recipients = BTreeSet::new();
+        recipients.insert(moving_client_id.to_owned());
+        for client_id in self.clients_in_room(current_room) {
+            recipients.insert(client_id);
+        }
+        recipients.into_iter().collect()
+    }
+
     fn user_ready(&self, username: &str, room_name: &str) -> Option<bool> {
+        if !self.readiness_enabled {
+            return None;
+        }
         self.domain.users_in_room(room_name).and_then(|users| {
             users
                 .into_iter()
@@ -2054,6 +2204,17 @@ impl ServerRuntime {
         &self,
         client_id: &str,
     ) -> BTreeMap<String, BTreeMap<String, ListUserEntry>> {
+        if self.isolate_rooms {
+            let Some(session) = self.sessions.get(client_id) else {
+                return BTreeMap::new();
+            };
+            let mut all_rooms = self.list_rooms_snapshot();
+            let mut rooms = BTreeMap::new();
+            if let Some(room_entries) = all_rooms.remove(&session.room) {
+                rooms.insert(session.room.clone(), room_entries);
+            }
+            return rooms;
+        }
         let mut rooms = self.list_rooms_snapshot();
         if client_is_gui_user(
             self.sessions
@@ -2068,14 +2229,14 @@ impl ServerRuntime {
     fn list_rooms_snapshot(&self) -> BTreeMap<String, BTreeMap<String, ListUserEntry>> {
         let mut rooms = BTreeMap::new();
         for session in self.sessions.values() {
-            let ready = self
-                .user_ready(&session.username, &session.room)
-                .unwrap_or(false);
+            let ready = self.user_ready(&session.username, &session.room);
             let mut entry = ListUserEntry::new()
                 .with_position(0.0)
                 .with_file(json!({}))
-                .with_controller(self.user_is_room_controller(&session.username, &session.room))
-                .with_is_ready(ready);
+                .with_controller(self.user_is_room_controller(&session.username, &session.room));
+            if let Some(ready) = ready {
+                entry = entry.with_is_ready(ready);
+            }
             if let Some(features) = &session.features {
                 entry = entry.with_features(features.clone());
             }
@@ -2306,13 +2467,22 @@ fn controlled_room_name_for(room_name: &str, password: &str) -> String {
     RoomPasswordProvider::default().controlled_room_name_for(room_name, password)
 }
 
-fn server_feature_list(persistent_rooms_enabled: bool) -> Value {
+fn server_feature_list(
+    persistent_rooms_enabled: bool,
+    isolate_rooms: bool,
+    chat_enabled: bool,
+    readiness_enabled: bool,
+    max_chat_message_length: usize,
+    max_username_length: usize,
+) -> Value {
     json!({
-        "isolateRooms": false,
-        "readiness": true,
+        "isolateRooms": isolate_rooms,
+        "readiness": readiness_enabled,
         "managedRooms": true,
         "persistentRooms": persistent_rooms_enabled,
-        "chat": true,
+        "chat": chat_enabled,
+        "maxChatMessageLength": max_chat_message_length,
+        "maxUsernameLength": max_username_length,
         "featureList": true,
         "setOthersReadiness": true,
         "uiMode": "UNKNOWN",
@@ -2753,12 +2923,13 @@ mod tests {
     use tokio_rustls::TlsConnector;
 
     use super::{
-        DirectedOutboundLine, DirectedTransportAction, RoomPasswordCheckError,
-        RoomPasswordProvider, ServerApp, ServerRuntime, ServerRuntimeError, ServerTransportAction,
+        DirectedOutboundLine, DirectedTransportAction, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
+        LEGACY_SERVER_WRONG_PASSWORD_ERROR, RoomPasswordCheckError, RoomPasswordProvider,
+        ServerApp, ServerRuntime, ServerRuntimeError, ServerTransportAction,
         run_server_network_loop_until_shutdown,
     };
     use syncplay_protocol::{
-        ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
+        ChatPayload, ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
     };
 
     const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
@@ -5334,6 +5505,345 @@ mod tests {
                 .username,
             "alice__",
             "after stripping to a conflicting base username, underscores should be appended"
+        );
+    }
+
+    #[test]
+    fn hello_response_features_reflect_chat_readiness_and_length_limits() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_chat_enabled(false);
+        runtime.set_readiness_enabled(false);
+        runtime.set_max_chat_message_length(42);
+        runtime.set_max_username_length(12);
+
+        let directed_lines = runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should succeed");
+        let directed_messages = decode_directed_lines(&directed_lines);
+
+        let hello_message = directed_messages
+            .into_iter()
+            .find(|(recipient, message)| {
+                recipient == "client-1" && matches!(message, ProtocolMessage::Hello(_))
+            })
+            .expect("hello response should be present")
+            .1;
+        let hello = extract_hello_from_message(hello_message).expect("hello payload should decode");
+        let features = hello
+            .features
+            .expect("server hello should include features");
+        assert_eq!(features.get("chat").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            features.get("readiness").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            features.get("maxChatMessageLength").and_then(Value::as_u64),
+            Some(42)
+        );
+        assert_eq!(
+            features.get("maxUsernameLength").and_then(Value::as_u64),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn hello_response_features_reflect_isolate_rooms() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_isolate_rooms(true);
+
+        let directed_lines = runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should succeed");
+        let directed_messages = decode_directed_lines(&directed_lines);
+        let hello_message = directed_messages
+            .into_iter()
+            .find(|(recipient, message)| {
+                recipient == "client-1" && matches!(message, ProtocolMessage::Hello(_))
+            })
+            .expect("hello response should be present")
+            .1;
+        let hello = extract_hello_from_message(hello_message).expect("hello payload should decode");
+        let features = hello
+            .features
+            .expect("server hello should include features");
+        assert_eq!(
+            features.get("isolateRooms").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn hello_requires_server_password_token_when_configured() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_server_password_token(Some("secret".to_owned()));
+
+        let directed_lines = runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should return protocol error response");
+        let directed_messages = decode_directed_lines(&directed_lines);
+
+        assert!(
+            directed_messages.iter().any(|(recipient, message)| {
+                recipient == "client-1"
+                    && matches!(
+                        message,
+                        ProtocolMessage::Error(payload)
+                            if payload.error.message == LEGACY_SERVER_PASSWORD_REQUIRED_ERROR
+                    )
+            }),
+            "hello without password should receive legacy password-required error"
+        );
+        assert!(
+            runtime.session("client-1").is_none(),
+            "session should not be created after password failure"
+        );
+    }
+
+    #[test]
+    fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_server_password_token(Some("secret".to_owned()));
+        runtime.set_max_username_length(4);
+
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice-long","password":"secret","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello with matching password should succeed");
+        assert_eq!(
+            runtime
+                .session("client-1")
+                .expect("session should exist")
+                .username,
+            "alic"
+        );
+    }
+
+    #[test]
+    fn hello_server_password_token_accepts_legacy_python_md5_hash() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_server_password_token(Some("secret".to_owned()));
+
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","password":"5ebe2294ecd0e0f08eab7690d2a6ee69","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello with Python-style MD5 password token should succeed");
+        assert!(
+            runtime.session("client-1").is_some(),
+            "session should be created after MD5-compatible password match"
+        );
+    }
+
+    #[test]
+    fn hello_server_password_token_rejects_non_matching_token() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_server_password_token(Some("secret".to_owned()));
+
+        let directed_lines = runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Hello":{"username":"alice","password":"deadbeef","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should return protocol error response");
+        let directed_messages = decode_directed_lines(&directed_lines);
+
+        assert!(
+            directed_messages.iter().any(|(recipient, message)| {
+                recipient == "client-1"
+                    && matches!(
+                        message,
+                        ProtocolMessage::Error(payload)
+                            if payload.error.message == LEGACY_SERVER_WRONG_PASSWORD_ERROR
+                    )
+            }),
+            "hello with wrong password token should receive legacy wrong-password error"
+        );
+        assert!(
+            runtime.session("client-1").is_none(),
+            "session should not be created after wrong password"
+        );
+    }
+
+    #[test]
+    fn chat_and_ready_updates_obey_runtime_disable_flags_and_chat_limit() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_chat_enabled(false);
+        runtime.set_readiness_enabled(false);
+        runtime.set_max_chat_message_length(4);
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("alice hello should succeed");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("bob hello should succeed");
+
+        let chat_disabled = runtime
+            .handle_line_fanout("client-1", r#"{"Chat":"hello world"}"#)
+            .expect("chat while disabled should be ignored");
+        assert!(
+            chat_disabled.is_empty(),
+            "chat should be ignored when disabled"
+        );
+
+        let ready_disabled = runtime
+            .handle_line_fanout(
+                "client-1",
+                r#"{"Set":{"ready":{"isReady":true,"manuallyInitiated":true}}}"#,
+            )
+            .expect("ready while disabled should be ignored");
+        assert!(
+            ready_disabled.is_empty(),
+            "ready update should be ignored when readiness is disabled"
+        );
+
+        runtime.set_chat_enabled(true);
+        let chat_enabled = runtime
+            .handle_line_fanout("client-1", r#"{"Chat":"hello world"}"#)
+            .expect("chat after enabling should fan out");
+        let directed_messages = decode_directed_lines(&chat_enabled);
+        assert!(
+            directed_messages.iter().any(|(recipient, message)| {
+                recipient == "client-2"
+                    && matches!(
+                        message,
+                        ProtocolMessage::Chat(payload)
+                            if matches!(
+                                &payload.chat,
+                                ChatPayload::Message(chat) if chat.message == "hell"
+                            ) || matches!(&payload.chat, ChatPayload::Text(text) if text == "hell")
+                    )
+            }),
+            "chat message should be truncated to runtime max length"
+        );
+    }
+
+    #[test]
+    fn isolate_rooms_join_events_do_not_leak_to_other_rooms() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_isolate_rooms(true);
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("alice hello should succeed");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"charlie","room":{"name":"room2"},"version":"1.2.255"}}"#,
+            )
+            .expect("charlie hello should succeed");
+
+        let directed_lines = runtime
+            .handle_line_fanout(
+                "client-3",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("bob hello should succeed");
+        let directed_messages = decode_directed_lines(&directed_lines);
+        assert!(
+            has_user_event(&directed_messages, "client-1", "bob", "joined"),
+            "same-room peer should receive join event"
+        );
+        assert!(
+            !has_user_event(&directed_messages, "client-2", "bob", "joined"),
+            "other-room peer should not receive join event when isolateRooms is enabled"
+        );
+    }
+
+    #[test]
+    fn isolate_rooms_list_request_is_scoped_to_requester_room() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_isolate_rooms(true);
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("alice hello should succeed");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"charlie","room":{"name":"room2"},"version":"1.2.255"}}"#,
+            )
+            .expect("charlie hello should succeed");
+
+        let outbound_lines = runtime
+            .handle_line("client-1", r#"{"List":null}"#)
+            .expect("list request should succeed");
+        let response =
+            decode_message_line(&outbound_lines[0]).expect("list response should decode");
+        let ProtocolMessage::List(payload) = response else {
+            panic!("expected list response");
+        };
+        let ListPayload::Rooms(rooms) = payload.list else {
+            panic!("expected room snapshot list");
+        };
+        assert!(rooms.contains_key("room1"));
+        assert!(
+            !rooms.contains_key("room2"),
+            "other rooms should be hidden in isolateRooms mode"
+        );
+    }
+
+    #[test]
+    fn isolate_rooms_room_switch_sends_left_to_old_room_without_destination_leak() {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_isolate_rooms(true);
+        runtime
+            .handle_line(
+                "client-1",
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("alice hello should succeed");
+        runtime
+            .handle_line(
+                "client-2",
+                r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("bob hello should succeed");
+        runtime
+            .handle_line(
+                "client-3",
+                r#"{"Hello":{"username":"charlie","room":{"name":"room2"},"version":"1.2.255"}}"#,
+            )
+            .expect("charlie hello should succeed");
+
+        let directed_lines = runtime
+            .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+            .expect("room switch should succeed");
+        let directed_messages = decode_directed_lines(&directed_lines);
+
+        assert!(
+            has_user_event(&directed_messages, "client-2", "alice", "left"),
+            "old-room peer should receive left event"
+        );
+        assert!(
+            !has_user_room_update(&directed_messages, "client-2", "alice", "room2"),
+            "old-room peer should not receive destination room update in isolateRooms mode"
+        );
+        assert!(
+            has_user_room_update(&directed_messages, "client-3", "alice", "room2"),
+            "new-room peer should receive room update for moved user"
         );
     }
 
