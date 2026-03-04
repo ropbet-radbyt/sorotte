@@ -20,6 +20,7 @@ use syncplay_client_app::app_boundary::{
     },
     persistence::{
         load_syncplay_ini_stored_client_settings_mvp_from_path,
+        parse_serialized_public_servers_list_legacy_compatible,
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
     state::{
@@ -1331,6 +1332,9 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn pick_media_files(state: &SyncplayGuiShellAppState) -> Option<Vec<String>> {
+        if let Some(paths) = Self::media_file_pick_override_paths_from_lookup(&env_trimmed) {
+            return Some(paths);
+        }
         let mut dialog = FileDialog::new().set_title("Select Media File");
         if let Some(directory) = Self::media_search_dialog_start_directory(state) {
             dialog = dialog.set_directory(directory);
@@ -1343,7 +1347,23 @@ impl GuiWidgetEguiRenderer {
         })
     }
 
+    fn media_file_pick_override_paths_from_lookup<F>(lookup: &F) -> Option<Vec<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let paths = lookup("SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS")?
+            .split('|')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if paths.is_empty() { None } else { Some(paths) }
+    }
+
     fn pick_media_search_directory(state: &SyncplayGuiShellAppState) -> Option<String> {
+        if let Some(path) = Self::media_search_browse_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
         let mut dialog = FileDialog::new().set_title("Select Media Search Directory");
         if let Some(directory) = Self::media_search_dialog_start_directory(state) {
             dialog = dialog.set_directory(directory);
@@ -1351,6 +1371,15 @@ impl GuiWidgetEguiRenderer {
         dialog
             .pick_folder()
             .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn media_search_browse_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
     }
 
     fn media_search_dialog_start_directory(state: &SyncplayGuiShellAppState) -> Option<&str> {
@@ -1783,6 +1812,202 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.tracked_remote_usernames.clear();
     }
 
+    fn session_media_search_target(&self) -> Option<String> {
+        if let Some(file_name) =
+            self.runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| {
+                    playlist
+                        .index
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| playlist.files.get(index))
+                })
+        {
+            let trimmed = file_name.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+
+        if let Some(file_name) = self
+            .runtime
+            .session()
+            .username
+            .as_deref()
+            .and_then(|username| self.runtime.session().user_file_name(username))
+        {
+            let trimmed = file_name.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+
+        self.tracked_remote_usernames.iter().find_map(|username| {
+            self.runtime
+                .session()
+                .user_file_name(username)
+                .map(str::trim)
+                .filter(|file_name| !file_name.is_empty())
+                .map(str::to_owned)
+        })
+    }
+
+    fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+        let Some(target) = self.session_media_search_target() else {
+            return Err(
+                "Client-core session runtime cannot search missing media because the current session does not expose a target file."
+                    .to_owned(),
+            );
+        };
+        if target.contains("://") {
+            return Err(
+                "Client-core session runtime cannot search missing media for URL-based media targets."
+                    .to_owned(),
+            );
+        }
+        let Some(file_name) = Path::new(&target)
+            .file_name()
+            .and_then(|name| name.to_str())
+        else {
+            return Err(
+                "Client-core session runtime could not derive a file name for missing-media search."
+                    .to_owned(),
+            );
+        };
+        let file_name = file_name.trim();
+        if file_name.is_empty() {
+            return Err(
+                "Client-core session runtime could not derive a non-empty file name for missing-media search."
+                    .to_owned(),
+            );
+        }
+        Ok(file_name.to_owned())
+    }
+
+    fn missing_media_file_name_matches(target: &str, candidate: &str) -> bool {
+        if cfg!(windows) {
+            candidate.eq_ignore_ascii_case(target)
+        } else {
+            candidate == target
+        }
+    }
+
+    fn search_path_for_missing_media_target(
+        target_file_name: &str,
+        path: &Path,
+    ) -> Result<Option<String>, String> {
+        if path.is_file() {
+            let matches_target =
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|candidate| {
+                        Self::missing_media_file_name_matches(target_file_name, candidate)
+                    });
+            if matches_target {
+                return Ok(Some(path.to_string_lossy().into_owned()));
+            }
+            return Ok(None);
+        }
+
+        if !path.is_dir() {
+            return Ok(None);
+        }
+
+        let mut children = std::fs::read_dir(path)
+            .map_err(|error| {
+                format!(
+                    "Client-core session runtime could not scan '{}' during missing-media search: {error}",
+                    path.display()
+                )
+            })?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect::<Vec<_>>();
+        children.sort();
+
+        for child in children {
+            if let Some(found_path) =
+                Self::search_path_for_missing_media_target(target_file_name, &child)?
+            {
+                return Ok(Some(found_path));
+            }
+        }
+        Ok(None)
+    }
+
+    fn normalize_public_server_rows(
+        current_servers: Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
+        let mut normalized = Vec::new();
+        let mut seen_addresses = BTreeSet::new();
+        for (label, address) in current_servers {
+            let Some(label) = normalized_editable_text(&label) else {
+                continue;
+            };
+            let Some(address) = normalized_editable_text(&address) else {
+                continue;
+            };
+            let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+            if host.trim().is_empty() {
+                continue;
+            }
+            let dedupe_key = address.to_ascii_lowercase();
+            if !seen_addresses.insert(dedupe_key) {
+                continue;
+            }
+            normalized.push((label, address));
+        }
+        normalized
+    }
+
+    fn refreshed_public_server_rows_from_lookup<F>(
+        lookup: &F,
+    ) -> Result<Option<Vec<(String, String)>>, String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let env_name = "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS";
+        let Some(value) = lookup(env_name) else {
+            return Ok(None);
+        };
+        let Some(parsed) = parse_serialized_public_servers_list_legacy_compatible(&value) else {
+            return Err(format!(
+                "{env_name} must be a serialized public-server list like [[\"Primary\", \"syncplay.pl:8999\"]]."
+            ));
+        };
+        Ok(Some(Self::normalize_public_server_rows(parsed)))
+    }
+
+    fn refreshed_public_server_rows_from_sources<F, R>(
+        lookup: &F,
+        read_to_string: &R,
+    ) -> Result<Option<Vec<(String, String)>>, String>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> Result<String, String>,
+    {
+        let path_env_name = "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH";
+        if let Some(path) = lookup(path_env_name) {
+            let value = read_to_string(&path)
+                .map_err(|error| format!("{path_env_name} could not read '{path}': {error}"))?;
+            let Some(parsed) = parse_serialized_public_servers_list_legacy_compatible(&value)
+            else {
+                return Err(format!(
+                    "{path_env_name} file '{path}' must be a serialized public-server list like [[\"Primary\", \"syncplay.pl:8999\"]]."
+                ));
+            };
+            return Ok(Some(Self::normalize_public_server_rows(parsed)));
+        }
+
+        Self::refreshed_public_server_rows_from_lookup(lookup)
+    }
+
+    fn refreshed_public_server_rows_from_env() -> Result<Option<Vec<(String, String)>>, String> {
+        Self::refreshed_public_server_rows_from_sources(&env_trimmed, &|path| {
+            std::fs::read_to_string(path).map_err(|error| error.to_string())
+        })
+    }
+
     fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
         let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
         lines.extend(
@@ -2052,21 +2277,20 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let baseline_main_window =
             MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
         let session = self.runtime.session();
-        let room_name = session
-            .room
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        let local_username = session
-            .username
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let controlled_room_active = room_name.starts_with('+');
-        let local_is_controller =
-            controlled_room_active && session.local_can_control() == Some(true);
         let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        snapshot.room_name = baseline_main_window.room_name.clone();
         snapshot.shared_playlist_enabled = baseline_main_window.shared_playlist_enabled;
+        snapshot.controlled_room_active = baseline_main_window.controlled_room_active;
+        snapshot.users = baseline_main_window
+            .users
+            .iter()
+            .map(|user| MainWindowRuntimeUserSnapshot {
+                username: user.username.clone(),
+                is_self: user.is_self,
+                is_ready: user.is_ready,
+                is_controller: user.is_controller,
+            })
+            .collect();
         snapshot.playlist = baseline_main_window
             .playlist
             .iter()
@@ -2075,9 +2299,25 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
         snapshot.playback_paused = baseline_main_window.playback_paused;
         snapshot.autoplay_active = baseline_main_window.autoplay_active;
-        snapshot.room_name = room_name.to_owned();
-        snapshot.controlled_room_active = controlled_room_active;
-        snapshot.users = self.session_runtime_users(room_name, local_username, local_is_controller);
+        if let Some(room_name) = session
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let local_username = session
+                .username
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let controlled_room_active = room_name.starts_with('+');
+            let local_is_controller =
+                controlled_room_active && session.local_can_control() == Some(true);
+            snapshot.room_name = room_name.to_owned();
+            snapshot.controlled_room_active = controlled_room_active;
+            snapshot.users =
+                self.session_runtime_users(room_name, local_username, local_is_controller);
+        }
         if let Some(playlist) = session.current_room_playlist() {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
@@ -2096,7 +2336,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         } else if let Some(server_readiness_supported) = session.server_readiness_supported() {
             snapshot.can_set_ready = server_readiness_supported;
         }
-        Some(snapshot)
+        (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
+            .then_some(snapshot)
     }
 
     fn session_playlist_selection_index(&self, playlist_len: usize) -> Option<usize> {
@@ -2416,22 +2657,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn refresh_public_servers(
         &mut self,
-        _current_servers: Vec<(String, String)>,
+        current_servers: Vec<(String, String)>,
     ) -> Result<Vec<(String, String)>, String> {
-        Err(
-            "Client-core chat session runtime does not yet implement public-server refresh."
-                .to_owned(),
-        )
+        if let Some(refreshed_servers) = Self::refreshed_public_server_rows_from_env()? {
+            return Ok(refreshed_servers);
+        }
+        Ok(Self::normalize_public_server_rows(current_servers))
     }
 
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Err(
-            "Client-core chat session runtime does not yet implement missing-media search."
-                .to_owned(),
-        )
+    fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String> {
+        let target_file_name = self.missing_media_search_target_file_name()?;
+        for directory in directories {
+            let trimmed = directory.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(found_path) =
+                Self::search_path_for_missing_media_target(&target_file_name, Path::new(trimmed))?
+            {
+                return Ok(Some(found_path));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -10669,6 +10916,21 @@ fn env_trimmed(name: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiClientCoreChatLoopbackBootstrap {
+    username: String,
+    room: String,
+}
+
+impl GuiClientCoreChatLoopbackBootstrap {
+    fn startup_message(&self) -> String {
+        format!(
+            "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as {} in room {}.",
+            self.username, self.room
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiClientCoreChatTcpBootstrap {
     host: String,
     port: u16,
@@ -10685,16 +10947,157 @@ impl GuiClientCoreChatTcpBootstrap {
         }
     }
 
-    fn startup_settings(&self) -> StoredClientSettingsMvp {
-        StoredClientSettingsMvp {
-            host: Some(self.host.clone()),
-            port: Some(self.port),
-            username: Some(self.username.clone()),
-            room: Some(self.room.clone()),
-            chat_input_enabled: Some(true),
-            chat_output_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+    fn startup_message_from_lookup<F>(&self, lookup: &F) -> String
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let mut defaults = Vec::new();
+        if lookup("SYNCPLAY_CLIENT_HOST").is_none() {
+            defaults.push("host=127.0.0.1");
         }
+        if lookup("SYNCPLAY_CLIENT_PORT").is_none() {
+            defaults.push("port=8999");
+        }
+        if lookup("SYNCPLAY_CLIENT_USERNAME").is_none() && lookup("SYNCPLAY_CLIENT_NAME").is_none()
+        {
+            defaults.push("user=gui-user");
+        }
+        if lookup("SYNCPLAY_CLIENT_ROOM").is_none() {
+            defaults.push("room=gui-demo");
+        }
+        let defaults_suffix = if defaults.is_empty() {
+            String::new()
+        } else {
+            format!(" Defaults: {}.", defaults.join(", "))
+        };
+        format!(
+            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for {} as {} in room {}.",
+            self.host_arg(),
+            self.username,
+            self.room,
+        ) + &defaults_suffix
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiStartupPublicServerSource {
+    FilePath(String),
+    InlineEnv,
+}
+
+impl GuiStartupPublicServerSource {
+    fn from_lookup<F>(lookup: &F) -> Option<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        if let Some(path) = lookup("SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(Self::FilePath(path));
+        }
+        lookup("SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .map(|_| Self::InlineEnv)
+    }
+
+    fn startup_message(&self, server_count: usize) -> String {
+        let noun = if server_count == 1 {
+            "public server"
+        } else {
+            "public servers"
+        };
+        match self {
+            Self::FilePath(path) => format!(
+                "Startup loaded {server_count} {noun} from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH ({path})."
+            ),
+            Self::InlineEnv => format!(
+                "Startup loaded {server_count} {noun} from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS."
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiStartupConfigPathSource {
+    Override(PathBuf),
+    WorkingDirectoryExisting(PathBuf),
+    ConfigRootExisting(PathBuf),
+    DefaultConfigTarget(PathBuf),
+}
+
+impl GuiStartupConfigPathSource {
+    fn resolved_path(&self) -> &Path {
+        match self {
+            Self::Override(path)
+            | Self::WorkingDirectoryExisting(path)
+            | Self::ConfigRootExisting(path)
+            | Self::DefaultConfigTarget(path) => path.as_path(),
+        }
+    }
+
+    fn startup_message(&self) -> String {
+        let rendered_path = self.resolved_path().display();
+        match self {
+            Self::Override(_) => format!(
+                "Startup configuration path uses SYNCPLAY_CLIENT_CONFIG_PATH ({rendered_path})."
+            ),
+            Self::WorkingDirectoryExisting(_) => format!(
+                "Startup configuration path uses existing working-directory config ({rendered_path})."
+            ),
+            Self::ConfigRootExisting(_) => format!(
+                "Startup configuration path uses existing config-root file ({rendered_path})."
+            ),
+            Self::DefaultConfigTarget(_) => format!(
+                "Startup configuration path will use default config target ({rendered_path})."
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiStartupPlayerIpcSource {
+    ClientEnv(String),
+    LegacyEnv(String),
+}
+
+impl GuiStartupPlayerIpcSource {
+    fn from_lookup<F>(lookup: &F) -> Option<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        if let Some(path) = lookup("SYNCPLAY_CLIENT_MPV_IPC_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(Self::ClientEnv(path));
+        }
+        lookup("SYNCPLAY_MPV_IPC_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .map(Self::LegacyEnv)
+    }
+
+    fn ipc_path(&self) -> &str {
+        match self {
+            Self::ClientEnv(path) | Self::LegacyEnv(path) => path,
+        }
+    }
+
+    fn startup_message(&self) -> String {
+        match self {
+            Self::ClientEnv(path) => {
+                format!("Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH ({path}).")
+            }
+            Self::LegacyEnv(path) => {
+                format!("Startup will try mpv JSON IPC from SYNCPLAY_MPV_IPC_PATH ({path}).")
+            }
+        }
+    }
+
+    fn missing_startup_message() -> String {
+        "Startup has no explicit mpv JSON IPC path. Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint.".to_owned()
     }
 }
 
@@ -10750,13 +11153,105 @@ where
     }))
 }
 
+fn gui_client_core_chat_loopback_bootstrap_from_lookup<F>(
+    lookup: F,
+) -> Result<Option<GuiClientCoreChatLoopbackBootstrap>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !env_flag_enabled_lookup(&lookup, "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK")? {
+        return Ok(None);
+    }
+
+    Ok(Some(GuiClientCoreChatLoopbackBootstrap {
+        username: lookup("SYNCPLAY_CLIENT_USERNAME")
+            .or_else(|| lookup("SYNCPLAY_CLIENT_NAME"))
+            .unwrap_or_else(|| "gui-user".to_owned()),
+        room: lookup("SYNCPLAY_CLIENT_ROOM").unwrap_or_else(|| "gui-demo".to_owned()),
+    }))
+}
+
+fn gui_startup_settings_from_lookup_with<F, R, C, I, L>(
+    lookup: F,
+    read_to_string: R,
+    current_dir: C,
+    is_file: I,
+    load_settings_at_path: L,
+) -> Result<StoredClientSettingsMvp, String>
+where
+    F: Fn(&str) -> Option<String>,
+    R: Fn(&str) -> Result<String, String>,
+    C: Fn() -> Option<PathBuf>,
+    I: Fn(&Path) -> bool,
+    L: Fn(&Path) -> Result<Option<StoredClientSettingsMvp>, String>,
+{
+    let config_path_source = resolve_syncplay_gui_config_path_source_legacy_compatible_with(
+        &lookup,
+        current_dir,
+        is_file,
+    );
+    let mut settings = match config_path_source.as_ref() {
+        Some(source) => load_settings_at_path(source.resolved_path())?.unwrap_or_default(),
+        None => StoredClientSettingsMvp::default(),
+    };
+    if let Some(bootstrap) = gui_client_core_chat_loopback_bootstrap_from_lookup(&lookup)? {
+        settings.username = Some(bootstrap.username);
+        settings.room = Some(bootstrap.room);
+        settings.chat_input_enabled = Some(true);
+        settings.chat_output_enabled = Some(true);
+    } else if let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(&lookup)? {
+        settings.host = Some(bootstrap.host);
+        settings.port = Some(bootstrap.port);
+        settings.username = Some(bootstrap.username);
+        settings.room = Some(bootstrap.room);
+        settings.chat_input_enabled = Some(true);
+        settings.chat_output_enabled = Some(true);
+    }
+    if let Some(public_servers) =
+        GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_sources(
+            &lookup,
+            &read_to_string,
+        )?
+    {
+        settings.public_servers = Some(public_servers);
+    }
+    Ok(settings)
+}
+
+fn gui_startup_settings_from_lookup<F, R>(
+    lookup: F,
+    read_to_string: R,
+) -> Result<StoredClientSettingsMvp, String>
+where
+    F: Fn(&str) -> Option<String>,
+    R: Fn(&str) -> Result<String, String>,
+{
+    gui_startup_settings_from_lookup_with(
+        lookup,
+        read_to_string,
+        || env::current_dir().ok(),
+        Path::is_file,
+        |path| {
+            load_syncplay_ini_stored_client_settings_mvp_from_path(path)
+                .map_err(|error| error.to_string())
+        },
+    )
+}
+
 fn gui_startup_host_and_settings() -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String>
 {
+    let settings = gui_startup_settings_from_lookup(env_trimmed, |path| {
+        std::fs::read_to_string(path).map_err(|error| error.to_string())
+    })?;
+    if let Some(bootstrap) = gui_client_core_chat_loopback_bootstrap_from_lookup(env_trimmed)? {
+        let host = GuiEframeNativeHost::with_client_core_chat_loopback_session(
+            bootstrap.username,
+            bootstrap.room,
+        )?;
+        return Ok((host, settings));
+    }
     let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(env_trimmed)? else {
-        return Ok((
-            GuiEframeNativeHost::default(),
-            StoredClientSettingsMvp::default(),
-        ));
+        return Ok((GuiEframeNativeHost::default(), settings));
     };
 
     let host = GuiEframeNativeHost::with_client_core_chat_tcp_session(
@@ -10764,51 +11259,192 @@ fn gui_startup_host_and_settings() -> Result<(GuiEframeNativeHost, StoredClientS
         bootstrap.room.clone(),
         bootstrap.host_arg(),
     )?;
-    Ok((host, bootstrap.startup_settings()))
+    Ok((host, settings))
 }
 
 fn syncplay_config_names_legacy_compatible() -> [&'static str; 2] {
     [".syncplay", "syncplay.ini"]
 }
 
-fn syncplay_gui_config_path_override() -> Option<PathBuf> {
-    env_trimmed("SYNCPLAY_CLIENT_CONFIG_PATH").map(PathBuf::from)
+fn syncplay_gui_config_path_override_from_lookup<F>(lookup: &F) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    lookup("SYNCPLAY_CLIENT_CONFIG_PATH")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn explicit_mpv_ipc_path_from_lookup<F>(lookup: &F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    GuiStartupPlayerIpcSource::from_lookup(lookup).map(|source| source.ipc_path().to_owned())
 }
 
 fn explicit_mpv_ipc_path_from_env() -> Option<String> {
-    env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH").or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"))
+    explicit_mpv_ipc_path_from_lookup(&env_trimmed)
 }
 
-fn default_syncplay_gui_config_root_legacy_compatible() -> Option<PathBuf> {
+fn default_syncplay_gui_config_root_legacy_compatible_from_lookup<F>(lookup: &F) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
     if cfg!(windows) {
-        return env_trimmed("APPDATA").map(PathBuf::from);
+        return lookup("APPDATA")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
     }
-    if let Some(xdg_config_home) = env_trimmed("XDG_CONFIG_HOME") {
+    if let Some(xdg_config_home) = lookup("XDG_CONFIG_HOME")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
         return Some(PathBuf::from(xdg_config_home));
     }
-    env_trimmed("HOME").map(|home| PathBuf::from(home).join(".config"))
+    lookup("HOME")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|home| PathBuf::from(home).join(".config"))
 }
 
-fn resolve_syncplay_gui_config_path_legacy_compatible() -> Option<PathBuf> {
-    if let Some(path) = syncplay_gui_config_path_override() {
-        return Some(path);
+fn resolve_syncplay_gui_config_path_source_legacy_compatible_with<F, C, I>(
+    lookup: &F,
+    current_dir: C,
+    is_file: I,
+) -> Option<GuiStartupConfigPathSource>
+where
+    F: Fn(&str) -> Option<String>,
+    C: Fn() -> Option<PathBuf>,
+    I: Fn(&Path) -> bool,
+{
+    if let Some(path) = syncplay_gui_config_path_override_from_lookup(lookup) {
+        return Some(GuiStartupConfigPathSource::Override(path));
     }
-    if let Ok(cwd) = env::current_dir() {
+    if let Some(cwd) = current_dir() {
         for name in syncplay_config_names_legacy_compatible() {
             let candidate = cwd.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
+            if is_file(&candidate) {
+                return Some(GuiStartupConfigPathSource::WorkingDirectoryExisting(
+                    candidate,
+                ));
             }
         }
     }
-    let root = default_syncplay_gui_config_root_legacy_compatible()?;
+    let root = default_syncplay_gui_config_root_legacy_compatible_from_lookup(lookup)?;
     for name in syncplay_config_names_legacy_compatible() {
         let candidate = root.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+        if is_file(&candidate) {
+            return Some(GuiStartupConfigPathSource::ConfigRootExisting(candidate));
         }
     }
-    Some(root.join("syncplay.ini"))
+    Some(GuiStartupConfigPathSource::DefaultConfigTarget(
+        root.join("syncplay.ini"),
+    ))
+}
+
+fn resolve_syncplay_gui_config_path_legacy_compatible() -> Option<PathBuf> {
+    resolve_syncplay_gui_config_path_source_legacy_compatible_with(
+        &env_trimmed,
+        || env::current_dir().ok(),
+        Path::is_file,
+    )
+    .map(|source| source.resolved_path().to_path_buf())
+}
+
+fn gui_startup_actions_from_lookup<F>(
+    lookup: F,
+    settings: &StoredClientSettingsMvp,
+) -> Vec<GuiShellAction>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let config_path_source = resolve_syncplay_gui_config_path_source_legacy_compatible_with(
+        &lookup,
+        || env::current_dir().ok(),
+        Path::is_file,
+    );
+    let mut messages = gui_startup_messages_from_lookup_and_config_path_source(
+        &lookup,
+        settings,
+        config_path_source,
+    );
+    if GuiStartupPlayerIpcSource::from_lookup(&lookup).is_none() {
+        messages.push(GuiStartupPlayerIpcSource::missing_startup_message());
+    }
+    gui_startup_actions_from_messages(messages)
+}
+
+#[cfg(test)]
+fn gui_startup_actions_from_lookup_and_config_path_source<F>(
+    lookup: F,
+    settings: &StoredClientSettingsMvp,
+    config_path_source: Option<GuiStartupConfigPathSource>,
+) -> Vec<GuiShellAction>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    gui_startup_actions_from_messages(gui_startup_messages_from_lookup_and_config_path_source(
+        &lookup,
+        settings,
+        config_path_source,
+    ))
+}
+
+fn gui_startup_messages_from_lookup_and_config_path_source<F>(
+    lookup: &F,
+    settings: &StoredClientSettingsMvp,
+    config_path_source: Option<GuiStartupConfigPathSource>,
+) -> Vec<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut messages = Vec::new();
+    if let Some(bootstrap) = gui_client_core_chat_loopback_bootstrap_from_lookup(lookup)
+        .ok()
+        .flatten()
+    {
+        messages.push(bootstrap.startup_message());
+    } else if let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(lookup)
+        .ok()
+        .flatten()
+    {
+        messages.push(bootstrap.startup_message_from_lookup(lookup));
+    }
+    if let Some(source) = GuiStartupPublicServerSource::from_lookup(lookup) {
+        messages.push(source.startup_message(settings.public_servers.as_ref().map_or(0, Vec::len)));
+    }
+    if let Some(source) = GuiStartupPlayerIpcSource::from_lookup(lookup) {
+        messages.push(source.startup_message());
+    }
+    if let Some(source) = config_path_source {
+        messages.push(source.startup_message());
+    }
+    messages
+}
+
+fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellAction> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    let summary_message = if messages.len() == 1 {
+        messages[0].clone()
+    } else {
+        format!(
+            "Startup summary: {} startup notices active. Check system chat for details.",
+            messages.len()
+        )
+    };
+    let mut actions = messages
+        .into_iter()
+        .map(GuiShellAction::AnnounceSystemChatEvent)
+        .collect::<Vec<_>>();
+    actions.push(GuiShellAction::PushTransientNotification {
+        level: GuiTransientNotificationLevel::Info,
+        message: summary_message,
+    });
+    actions
 }
 
 #[cfg(test)]
@@ -10832,11 +11468,23 @@ fn startup_preview(settings: &StoredClientSettingsMvp) -> String {
     run_gui_host(settings, &mut host)
 }
 
+#[cfg(test)]
 fn run_gui_host<Host: GuiAppHost>(
     settings: &StoredClientSettingsMvp,
     host: &mut Host,
 ) -> Host::Output {
-    let state = SyncplayGuiShellAppState::from_stored_settings(settings);
+    run_gui_host_with_startup_actions(settings, Vec::new(), host)
+}
+
+fn run_gui_host_with_startup_actions<Host: GuiAppHost>(
+    settings: &StoredClientSettingsMvp,
+    startup_actions: Vec<GuiShellAction>,
+    host: &mut Host,
+) -> Host::Output {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(settings);
+    for action in startup_actions {
+        state.apply(action);
+    }
     host.render(state)
 }
 
@@ -10883,7 +11531,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = run_gui_host(&settings, &mut host) {
+    let startup_actions = gui_startup_actions_from_lookup(env_trimmed, &settings);
+    if let Err(error) = run_gui_host_with_startup_actions(&settings, startup_actions, &mut host) {
         eprintln!("syncplay-gui failed to start: {error}");
         std::process::exit(1);
     }
@@ -16315,6 +16964,367 @@ mod tests {
     }
 
     #[test]
+    fn gui_startup_actions_from_lookup_prefers_file_public_server_source() {
+        let settings = StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS" => {
+                    Some(r#"[["Ignored", "inline.example:8999"]]"#.to_owned())
+                }
+                _ => None,
+            },
+            &settings,
+            None,
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_bootstrap() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp::default(),
+            None,
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_client_core_chat_loopback_bootstrap() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp::default(),
+            None,
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as shaun in room room-a."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as shaun in room room-a."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_defaults() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp::default(),
+            None,
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for 127.0.0.1:8999 as gui-user in room gui-demo. Defaults: host=127.0.0.1, port=8999, user=gui-user, room=gui-demo."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for 127.0.0.1:8999 as gui-user in room gui-demo. Defaults: host=127.0.0.1, port=8999, user=gui-user, room=gui-demo."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_surfaces_public_server_refresh_source() {
+        let settings = StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        };
+        let startup_actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                _ => None,
+            },
+            &settings,
+            None,
+        );
+        let mut host = GuiTextPreviewHost;
+
+        let preview =
+            super::run_gui_host_with_startup_actions(&settings, startup_actions, &mut host);
+
+        assert!(preview.contains(
+            "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
+        ));
+        assert!(preview.contains("[Notifications] count=1"));
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_surfaces_tcp_bootstrap_and_public_server_sources() {
+        let settings = StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        };
+        let startup_actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                _ => None,
+            },
+            &settings,
+            None,
+        );
+        let mut host = GuiTextPreviewHost;
+
+        let preview =
+            super::run_gui_host_with_startup_actions(&settings, startup_actions, &mut host);
+
+        assert!(preview.contains(
+            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
+        ));
+        assert!(preview.contains(
+            "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
+        ));
+        assert!(
+            preview.contains(
+                "Startup summary: 2 startup notices active. Check system chat for details."
+            )
+        );
+        assert!(preview.contains("[Notifications] count=1"));
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_config_path_source() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |_name| None,
+            &StoredClientSettingsMvp::default(),
+            Some(super::GuiStartupConfigPathSource::DefaultConfigTarget(
+                std::path::PathBuf::from("C:/Users/shaun/AppData/Roaming/syncplay.ini"),
+            )),
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Startup configuration path will use default config target (C:/Users/shaun/AppData/Roaming/syncplay.ini)."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        "Startup configuration path will use default config target (C:/Users/shaun/AppData/Roaming/syncplay.ini)."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_player_ipc_source_with_client_precedence() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_CLIENT_MPV_IPC_PATH" => Some(r#"\\.\pipe\syncplay-mpv"#.to_owned()),
+                "SYNCPLAY_MPV_IPC_PATH" => Some("/tmp/ignored-mpv.sock".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp::default(),
+            None,
+        );
+
+        assert_eq!(
+            actions,
+            vec![
+                GuiShellAction::AnnounceSystemChatEvent(
+                    r"Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH (\\.\pipe\syncplay-mpv)."
+                        .to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message:
+                        r"Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH (\\.\pipe\syncplay-mpv)."
+                            .to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_and_config_path_source_consolidates_multi_message_toasts() {
+        let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp {
+                public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
+                ..StoredClientSettingsMvp::default()
+            },
+            None,
+        );
+
+        let notification_messages = actions
+            .iter()
+            .filter_map(|action| match action {
+                GuiShellAction::PushTransientNotification { message, .. } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(notification_messages.len(), 1);
+        assert_eq!(
+            notification_messages[0],
+            "Startup summary: 2 startup notices active. Check system chat for details."
+        );
+    }
+
+    #[test]
+    fn gui_startup_actions_from_lookup_reports_missing_player_ipc_source() {
+        let actions = super::gui_startup_actions_from_lookup(
+            |_name| None,
+            &StoredClientSettingsMvp::default(),
+        );
+
+        assert!(actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Startup has no explicit mpv JSON IPC path. Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
+            )
+        }));
+    }
+
+    #[test]
+    fn resolve_syncplay_gui_config_path_source_legacy_compatible_with_reports_default_target() {
+        let source = super::resolve_syncplay_gui_config_path_source_legacy_compatible_with(
+            &|name| match name {
+                "APPDATA" => Some("C:/Users/shaun/AppData/Roaming".to_owned()),
+                _ => None,
+            },
+            || None,
+            |_path| false,
+        );
+
+        assert_eq!(
+            source,
+            Some(super::GuiStartupConfigPathSource::DefaultConfigTarget(
+                std::path::PathBuf::from("C:/Users/shaun/AppData/Roaming/syncplay.ini"),
+            ))
+        );
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
+        let startup_actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |_name| None,
+            &StoredClientSettingsMvp::default(),
+            Some(super::GuiStartupConfigPathSource::Override(
+                std::path::PathBuf::from("C:/custom/syncplay.ini"),
+            )),
+        );
+        let mut host = GuiTextPreviewHost;
+
+        let preview = super::run_gui_host_with_startup_actions(
+            &StoredClientSettingsMvp::default(),
+            startup_actions,
+            &mut host,
+        );
+
+        assert!(preview.contains(
+            "Startup configuration path uses SYNCPLAY_CLIENT_CONFIG_PATH (C:/custom/syncplay.ini)."
+        ));
+        assert!(preview.contains("[Notifications] count=1"));
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_surfaces_player_ipc_source() {
+        let startup_actions = super::gui_startup_actions_from_lookup_and_config_path_source(
+            |name| match name {
+                "SYNCPLAY_MPV_IPC_PATH" => Some("/tmp/syncplay-mpv.sock".to_owned()),
+                _ => None,
+            },
+            &StoredClientSettingsMvp::default(),
+            None,
+        );
+        let mut host = GuiTextPreviewHost;
+
+        let preview = super::run_gui_host_with_startup_actions(
+            &StoredClientSettingsMvp::default(),
+            startup_actions,
+            &mut host,
+        );
+
+        assert!(preview.contains(
+            "Startup will try mpv JSON IPC from SYNCPLAY_MPV_IPC_PATH (/tmp/syncplay-mpv.sock)."
+        ));
+        assert!(preview.contains("[Notifications] count=1"));
+    }
+
+    #[test]
     fn run_gui_host_passes_shell_state_through_host_boundary() {
         #[derive(Default)]
         struct RecordingHost {
@@ -16363,22 +17373,222 @@ mod tests {
     }
 
     #[test]
-    fn gui_client_core_chat_tcp_bootstrap_startup_settings_enable_chat_and_seed_connection() {
-        let bootstrap = super::GuiClientCoreChatTcpBootstrap {
-            host: "2001:db8::1".to_owned(),
-            port: 9000,
-            username: "gui-user".to_owned(),
-            room: "gui-room".to_owned(),
-        };
+    fn gui_client_core_chat_loopback_bootstrap_from_lookup_uses_existing_client_env_keys() {
+        let bootstrap =
+            super::gui_client_core_chat_loopback_bootstrap_from_lookup(|name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                _ => None,
+            })
+            .expect("bootstrap lookup should succeed")
+            .expect("bootstrap should be enabled");
 
-        assert_eq!(bootstrap.host_arg(), "[2001:db8::1]:9000");
-        let settings = bootstrap.startup_settings();
+        assert_eq!(
+            bootstrap,
+            super::GuiClientCoreChatLoopbackBootstrap {
+                username: "shaun".to_owned(),
+                room: "room-a".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_tcp_bootstrap_overrides_settings_enable_chat_and_seed_connection() {
+        let settings = super::gui_startup_settings_from_lookup_with(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("2001:db8::1".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("9000".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("gui-user".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("gui-room".to_owned()),
+                _ => None,
+            },
+            |_path| Err("unexpected file read".to_owned()),
+            || None,
+            |_path| false,
+            |_path| Ok(None),
+        )
+        .expect("startup settings lookup should succeed");
+
         assert_eq!(settings.host.as_deref(), Some("2001:db8::1"));
         assert_eq!(settings.port, Some(9000));
         assert_eq!(settings.username.as_deref(), Some("gui-user"));
         assert_eq!(settings.room.as_deref(), Some("gui-room"));
         assert_eq!(settings.chat_input_enabled, Some(true));
         assert_eq!(settings.chat_output_enabled, Some(true));
+    }
+
+    #[test]
+    fn gui_client_core_chat_loopback_bootstrap_overlays_settings_enable_chat() {
+        let settings = super::gui_startup_settings_from_lookup_with(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("gui-user".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("gui-room".to_owned()),
+                _ => None,
+            },
+            |_path| Err("unexpected file read".to_owned()),
+            || None,
+            |_path| false,
+            |_path| Ok(None),
+        )
+        .expect("startup settings lookup should succeed");
+
+        assert_eq!(settings.host, None);
+        assert_eq!(settings.port, None);
+        assert_eq!(settings.username.as_deref(), Some("gui-user"));
+        assert_eq!(settings.room.as_deref(), Some("gui-room"));
+        assert_eq!(settings.chat_input_enabled, Some(true));
+        assert_eq!(settings.chat_output_enabled, Some(true));
+    }
+
+    #[test]
+    fn gui_startup_settings_from_lookup_seeds_public_servers_without_tcp_bootstrap() {
+        let settings = super::gui_startup_settings_from_lookup(
+            |name| match name {
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS" => Some(
+                    r#"[[" Primary ", " syncplay.pl:8999 "], ["Duplicate", "SYNCPLAY.PL:8999"]]"#
+                        .to_owned(),
+                ),
+                _ => None,
+            },
+            |_path| Err("unexpected file read".to_owned()),
+        )
+        .expect("startup settings lookup should succeed");
+
+        assert_eq!(
+            settings.public_servers,
+            Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
+        );
+        assert_eq!(settings.host, None);
+        assert_eq!(settings.username, None);
+    }
+
+    #[test]
+    fn gui_startup_settings_from_lookup_merges_tcp_bootstrap_and_file_public_servers() {
+        let settings = super::gui_startup_settings_from_lookup(
+            |name| match name {
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                _ => None,
+            },
+            |path| {
+                if path == "public-servers.txt" {
+                    Ok(r#"[[" File Primary ", " file.example:8999 "]]"#.to_owned())
+                } else {
+                    Err("unexpected file read".to_owned())
+                }
+            },
+        )
+        .expect("startup settings lookup should succeed");
+
+        assert_eq!(settings.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(settings.port, Some(8995));
+        assert_eq!(settings.username.as_deref(), Some("shaun"));
+        assert_eq!(settings.room.as_deref(), Some("room-a"));
+        assert_eq!(settings.chat_input_enabled, Some(true));
+        assert_eq!(settings.chat_output_enabled, Some(true));
+        assert_eq!(
+            settings.public_servers,
+            Some(vec![(
+                "File Primary".to_owned(),
+                "file.example:8999".to_owned()
+            )])
+        );
+    }
+
+    #[test]
+    fn gui_startup_settings_from_lookup_loads_stored_config_before_rendering() {
+        let settings = super::gui_startup_settings_from_lookup_with(
+            |name| match name {
+                "SYNCPLAY_CLIENT_CONFIG_PATH" => Some("stored-syncplay.ini".to_owned()),
+                _ => None,
+            },
+            |_path| Err("unexpected file read".to_owned()),
+            || None,
+            |_path| false,
+            |path| {
+                assert_eq!(path, std::path::Path::new("stored-syncplay.ini"));
+                Ok(Some(StoredClientSettingsMvp {
+                    host: Some("persisted.example".to_owned()),
+                    port: Some(8999),
+                    username: Some("persisted-user".to_owned()),
+                    room: Some("persisted-room".to_owned()),
+                    player_path: Some("C:/Players/mpv.exe".to_owned()),
+                    ..StoredClientSettingsMvp::default()
+                }))
+            },
+        )
+        .expect("startup settings lookup should succeed");
+
+        assert_eq!(settings.host.as_deref(), Some("persisted.example"));
+        assert_eq!(settings.port, Some(8999));
+        assert_eq!(settings.username.as_deref(), Some("persisted-user"));
+        assert_eq!(settings.room.as_deref(), Some("persisted-room"));
+        assert_eq!(settings.player_path.as_deref(), Some("C:/Players/mpv.exe"));
+
+        let state = SyncplayGuiShellAppState::from_stored_settings(&settings);
+        assert_eq!(
+            state.configuration.settings.host.as_deref(),
+            Some("persisted.example")
+        );
+        assert_eq!(state.configuration.settings.port, Some(8999));
+        assert_eq!(
+            state.configuration.settings.username.as_deref(),
+            Some("persisted-user")
+        );
+        assert_eq!(
+            state.configuration.settings.room.as_deref(),
+            Some("persisted-room")
+        );
+        assert_eq!(
+            state.configuration.settings.player_path.as_deref(),
+            Some("C:/Players/mpv.exe")
+        );
+    }
+
+    #[test]
+    fn gui_startup_settings_from_lookup_overlays_bootstrap_on_loaded_config() {
+        let settings = super::gui_startup_settings_from_lookup_with(
+            |name| match name {
+                "SYNCPLAY_CLIENT_CONFIG_PATH" => Some("stored-syncplay.ini".to_owned()),
+                "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+                "SYNCPLAY_CLIENT_HOST" => Some("runtime.example".to_owned()),
+                "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some("runtime-user".to_owned()),
+                "SYNCPLAY_CLIENT_ROOM" => Some("runtime-room".to_owned()),
+                _ => None,
+            },
+            |_path| Err("unexpected file read".to_owned()),
+            || None,
+            |_path| false,
+            |_path| {
+                Ok(Some(StoredClientSettingsMvp {
+                    host: Some("persisted.example".to_owned()),
+                    port: Some(7777),
+                    username: Some("persisted-user".to_owned()),
+                    room: Some("persisted-room".to_owned()),
+                    player_path: Some("C:/Players/mpv.exe".to_owned()),
+                    ready_at_start: Some(true),
+                    ..StoredClientSettingsMvp::default()
+                }))
+            },
+        )
+        .expect("startup settings lookup should succeed");
+
+        assert_eq!(settings.host.as_deref(), Some("runtime.example"));
+        assert_eq!(settings.port, Some(8995));
+        assert_eq!(settings.username.as_deref(), Some("runtime-user"));
+        assert_eq!(settings.room.as_deref(), Some("runtime-room"));
+        assert_eq!(settings.chat_input_enabled, Some(true));
+        assert_eq!(settings.chat_output_enabled, Some(true));
+        assert_eq!(settings.player_path.as_deref(), Some("C:/Players/mpv.exe"));
+        assert_eq!(settings.ready_at_start, Some(true));
     }
 
     #[test]
@@ -16466,6 +17676,52 @@ mod tests {
         assert_eq!(
             GuiWidgetEguiRenderer::media_search_dialog_start_directory(&state),
             Some("D:/AltMedia")
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_reads_media_search_browse_override_path_from_lookup() {
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_search_browse_override_path_from_lookup(
+                &|name| match name {
+                    "SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH" => {
+                        Some("  C:/Smoke/Media Search  ".to_owned())
+                    }
+                    _ => None,
+                }
+            ),
+            Some("C:/Smoke/Media Search".to_owned())
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_search_browse_override_path_from_lookup(&|_name| None),
+            None
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_reads_media_file_pick_override_paths_from_lookup() {
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_file_pick_override_paths_from_lookup(&|name| match name {
+                "SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS" => {
+                    Some("  C:/Smoke/episode1.mkv | | D:/Alt/episode2.mp4  ".to_owned())
+                }
+                _ => None,
+            }),
+            Some(vec![
+                "C:/Smoke/episode1.mkv".to_owned(),
+                "D:/Alt/episode2.mp4".to_owned(),
+            ])
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_file_pick_override_paths_from_lookup(&|_name| None),
+            None
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_file_pick_override_paths_from_lookup(&|name| match name {
+                "SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS" => Some("   |  ".to_owned()),
+                _ => None,
+            }),
+            None
         );
     }
 
@@ -17586,6 +18842,258 @@ mod tests {
     }
 
     #[test]
+    fn gui_client_core_chat_session_runtime_adapter_searches_missing_media_from_session_playlist() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "syncplay-gui-missing-media-search-{}-{unique_suffix}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        let found_path = nested.join("episode2.mkv");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&nested)
+            .expect("test missing-media search directory tree should be created");
+        std::fs::write(&found_path, b"test")
+            .expect("test missing-media search file should be written");
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist-change set message should apply");
+        adapter
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist-index set message should apply");
+
+        let search_result = super::GuiSessionRuntimeAdapter::search_missing_media(
+            &mut adapter,
+            vec![root.to_string_lossy().into_owned()],
+        )
+        .expect("missing-media search should succeed");
+        assert_eq!(
+            search_result,
+            Some(found_path.to_string_lossy().into_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_normalizes_public_server_refresh_rows() {
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let refreshed = super::GuiSessionRuntimeAdapter::refresh_public_servers(
+            &mut adapter,
+            vec![
+                (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
+                ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
+                (" ".to_owned(), "backup.example:9000".to_owned()),
+                ("Invalid".to_owned(), " :9000 ".to_owned()),
+                ("IPv6".to_owned(), "[::1]:8999".to_owned()),
+            ],
+        )
+        .expect("public-server refresh should normalize rows");
+
+        assert_eq!(
+            refreshed,
+            vec![
+                ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                ("IPv6".to_owned(), "[::1]:8999".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_uses_lookup_public_server_refresh_source() {
+        let refreshed =
+            super::GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_lookup(
+                &|name| match name {
+                    "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS" => Some(
+                        r#"[[" Gui Primary ", " syncplay.pl:8999 "], ["Duplicate", "SYNCPLAY.PL:8999"]]"#
+                            .to_owned(),
+                    ),
+                    _ => None,
+                },
+            )
+            .expect("lookup-backed public-server refresh should parse")
+            .expect("lookup-backed public-server refresh should produce rows");
+
+        assert_eq!(
+            refreshed,
+            vec![("Gui Primary".to_owned(), "syncplay.pl:8999".to_owned())]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_uses_file_lookup_public_server_refresh_source()
+    {
+        let refreshed = super::GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_sources(
+            &|name| match name {
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
+                "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS" => Some(
+                    r#"[["Inline", "inline.example:9000"]]"#.to_owned(),
+                ),
+                _ => None,
+            },
+            &|path| {
+                if path == "public-servers.txt" {
+                    Ok(
+                        r#"[[" File Primary ", " file.example:8999 "], ["Duplicate", "FILE.EXAMPLE:8999"]]"#
+                            .to_owned(),
+                    )
+                } else {
+                    Err("unexpected path".to_owned())
+                }
+            },
+        )
+        .expect("file-backed public-server refresh should parse")
+        .expect("file-backed public-server refresh should produce rows");
+
+        assert_eq!(
+            refreshed,
+            vec![("File Primary".to_owned(), "file.example:8999".to_owned())]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_rejects_invalid_lookup_public_server_refresh_source()
+     {
+        let error =
+            super::GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_lookup(
+                &|name| {
+                    (name == "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS")
+                        .then_some("not-a-serialized-public-server-list".to_owned())
+                },
+            )
+            .expect_err("invalid lookup-backed public-server refresh should fail");
+
+        assert!(
+            error.contains("SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS"),
+            "error should identify the invalid lookup source"
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_before_server_hello()
+    {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut stale_main_window = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_main_window.room_name = "live-room".to_owned();
+        stale_main_window.shared_playlist_enabled = true;
+        stale_main_window.controlled_room_active = true;
+        stale_main_window.users = vec![
+            MainWindowRuntimeUserSnapshot {
+                username: "alice".to_owned(),
+                is_self: true,
+                is_ready: true,
+                is_controller: true,
+            },
+            MainWindowRuntimeUserSnapshot {
+                username: "bob".to_owned(),
+                is_self: false,
+                is_ready: false,
+                is_controller: false,
+            },
+        ];
+        stale_main_window.playlist = vec!["episode2.mkv".to_owned()];
+        stale_main_window.can_set_ready = false;
+        stale_main_window.can_manage_playlist = true;
+        stale_main_window.playback_paused = true;
+        stale_main_window.autoplay_active = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_main_window
+        )));
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: true,
+                }],
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        let snapshot = actions
+            .iter()
+            .find_map(|action| match action {
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+                _ => None,
+            })
+            .expect("pre-Hello session state should clear stale main-window runtime state");
+        assert_eq!(snapshot.room_name, "room1");
+        assert!(!snapshot.shared_playlist_enabled);
+        assert!(!snapshot.controlled_room_active);
+        assert_eq!(
+            snapshot.users,
+            vec![MainWindowRuntimeUserSnapshot {
+                username: "alice".to_owned(),
+                is_self: true,
+                is_ready: false,
+                is_controller: false,
+            }]
+        );
+        assert!(snapshot.playlist.is_empty());
+        assert!(!snapshot.can_set_ready);
+        assert!(!snapshot.can_manage_playlist);
+        assert!(!snapshot.playback_paused);
+        assert!(!snapshot.autoplay_active);
+
+        let snapshot = actions
+            .iter()
+            .find_map(|action| match action {
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot) => Some(snapshot),
+                _ => None,
+            })
+            .expect("pre-Hello session state should clear stale menu runtime state");
+        assert!(
+            snapshot
+                .action_overrides
+                .contains(&MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Chat",
+                    enabled: false,
+                })
+        );
+        assert!(
+            snapshot
+                .action_overrides
+                .contains(&MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: false,
+                })
+        );
+    }
+
+    #[test]
     fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_to_system_chat()
     {
         let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -17857,6 +19365,25 @@ mod tests {
         assert_eq!(
             startup_actions,
             vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "room1".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: false,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
                         section_title: "Window",
@@ -17912,6 +19439,25 @@ mod tests {
         assert_eq!(
             hello_actions,
             vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "room1".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
                         section_title: "Window",
@@ -17995,6 +19541,146 @@ mod tests {
     }
 
     #[test]
+    fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client_core_session()
+    {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "syncplay-gui-owner-missing-media-search-{}-{unique_suffix}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        let found_path = nested.join("episode2.mkv");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&nested)
+            .expect("test missing-media search directory tree should be created");
+        std::fs::write(&found_path, b"test")
+            .expect("test missing-media search file should be written");
+
+        let (mut owner, session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+        assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+
+        session_transport.push_inbound_protocol_lines([
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+                .to_owned(),
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#
+                .to_owned(),
+            r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#.to_owned(),
+        ]);
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>(),
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
+        );
+
+        assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let actions = handle.drain_actions();
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteMissingMediaSearch(Some(path))
+                    if path == &found_path.to_string_lossy().into_owned()
+            )),
+            "queued owner should route missing-media search through the client-core session runtime"
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_routes_public_server_refresh_through_client_core_session()
+    {
+        let (mut owner, session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
+                ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
+                ("Invalid".to_owned(), " :9000 ".to_owned()),
+                ("Backup".to_owned(), "backup.example:9000".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+        assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+
+        assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::RefreshPublicServers(vec![]),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let actions = handle.drain_actions();
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompletePublicServerRefresh(servers)
+                    if servers
+                        == &vec![
+                            ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                            ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                        ]
+            )),
+            "queued owner should route public-server refresh through the client-core session runtime"
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .iter()
+                .map(|row| (row.label.clone(), row.address.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                ("Backup".to_owned(), "backup.example:9000".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
     fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_reports_support() {
         let (mut owner, session_transport) =
             super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -18013,6 +19699,25 @@ mod tests {
         assert_eq!(
             startup_actions,
             vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "room1".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: false,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
                         section_title: "Window",
@@ -18066,6 +19771,25 @@ mod tests {
         assert_eq!(
             hello_actions,
             vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "room1".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
                         section_title: "Window",
@@ -18586,6 +20310,53 @@ mod tests {
         assert!(first_hello_line.contains("\"Hello\""));
         assert!(first_hello_line.contains("\"alice\""));
 
+        let mut stale_main_window = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_main_window.shared_playlist_enabled = true;
+        stale_main_window.playlist = vec!["episode2.mkv".to_owned()];
+        stale_main_window.can_set_ready = true;
+        stale_main_window.playback_paused = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_main_window
+        )));
+
+        let mut stale_interaction = GuiInteractionRuntimeSnapshot::from_shell_state(&state);
+        stale_interaction.selection.selected_main_window_playlist = Some(0);
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+                stale_interaction
+            ))
+        );
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: true,
+                }],
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+        assert!(state.main_window.shared_playlist_enabled);
+        assert_eq!(state.main_window.playlist.len(), 1);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Playlist")
+                })
+                .is_some_and(|action| action.enabled)
+        );
+
         assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ConnectPublicServer,
@@ -18599,10 +20370,60 @@ mod tests {
             )),
             "public-server connect should complete through the client-core session runtime"
         );
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if !snapshot.shared_playlist_enabled
+                        && snapshot.playlist.is_empty()
+                        && !snapshot.can_set_ready
+                        && !snapshot.playback_paused
+            )),
+            "public-server reconnect should clear stale session-owned main-window state before the new server replies"
+        );
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot)
+                    if snapshot.selection.selected_main_window_playlist.is_none()
+            )),
+            "public-server reconnect should clear stale playlist selection before the new server replies"
+        );
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot)
+                    if snapshot.action_overrides.contains(&MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Playlist",
+                        enabled: false,
+                    })
+            )),
+            "public-server reconnect should clear stale playlist menu state before the new server replies"
+        );
         for action in reconnect_actions {
             assert!(state.apply(action));
         }
         assert!(state.pending_operation.is_none());
+        assert!(!state.main_window.shared_playlist_enabled);
+        assert!(state.main_window.playlist.is_empty());
+        assert!(!state.main_window.playback.can_set_ready);
+        assert!(!state.main_window.playback_paused);
+        assert_eq!(state.selection.selected_main_window_playlist, None);
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Playlist")
+                })
+                .is_some_and(|action| !action.enabled)
+        );
 
         let second_hello_line = second_hello_rx
             .recv_timeout(Duration::from_secs(1))
