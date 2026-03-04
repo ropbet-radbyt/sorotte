@@ -1,0 +1,19372 @@
+use std::{
+    collections::{BTreeSet, VecDeque},
+    env,
+    io::{self, Read, Write},
+    net::TcpStream,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use eframe::egui;
+use rfd::FileDialog;
+use syncplay_client_app::app_boundary::{
+    compatibility::{
+        LegacyConfigurationGetterCompatibilityStatus,
+        legacy_configuration_getter_startup_compat_entries,
+    },
+    language::{
+        SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
+        normalized_legacy_runtime_language_tag_legacy_compatible,
+    },
+    persistence::{
+        load_syncplay_ini_stored_client_settings_mvp_from_path,
+        upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    },
+    state::{
+        StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
+        parse_autoplay_min_users_override_legacy_compatible,
+        parse_host_and_optional_port_from_host_arg_legacy_compatible,
+        parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
+        unpause_action_mode_legacy_name_compatible,
+    },
+};
+use syncplay_client_core::{
+    AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
+    ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
+    ReconnectTransitionNotification, UserChangeNotification,
+};
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
+use syncplay_player_mpv::MpvAdapter;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiLaunchMode {
+    FirstRun,
+    ExistingConfig,
+}
+
+impl GuiLaunchMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FirstRun => "first-run",
+            Self::ExistingConfig => "existing-config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiConnectionSettingsSection {
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    room: Option<String>,
+    server_password_set: bool,
+    player_path: Option<String>,
+    public_server_count: usize,
+    room_history_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiReadinessSection {
+    ready_at_start: bool,
+    autoplay_enabled: bool,
+    autoplay_require_same_filenames: bool,
+    shared_playlist_enabled: bool,
+    pause_on_leave: bool,
+    unpause_action_label: String,
+    autoplay_min_users_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPrivacySection {
+    filename_privacy_mode_label: String,
+    filesize_privacy_mode_label: String,
+    only_switch_to_trusted_domains: bool,
+    trusted_domain_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GuiDesyncSection {
+    rewind_on_desync: bool,
+    fastforward_on_desync: bool,
+    slow_on_desync: bool,
+    dont_slow_down_with_me: bool,
+    rewind_threshold_seconds: Option<f64>,
+    fastforward_threshold_seconds: Option<f64>,
+    slowdown_threshold_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GuiMediaSearchSection {
+    media_directory_count: usize,
+    folder_search_first_file_timeout_seconds: Option<f64>,
+    folder_search_timeout_seconds: Option<f64>,
+    folder_search_double_check_interval_seconds: Option<f64>,
+    folder_search_warning_threshold_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiChatSection {
+    chat_input_enabled: bool,
+    chat_output_enabled: bool,
+    chat_direct_input: bool,
+    chat_move_osd: bool,
+    chat_max_lines: Option<i64>,
+    chat_input_font_family: Option<String>,
+    chat_output_font_family: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiOsdSection {
+    show_osd: bool,
+    show_duration_notification: bool,
+    show_same_room_osd: bool,
+    show_osd_warnings: bool,
+    show_noncontroller_osd: bool,
+    show_different_room_osd: bool,
+    show_contact_info: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiSystemSection {
+    language_tag: String,
+    check_for_updates_automatically: bool,
+    compatibility_startup_entry_count: usize,
+    ignored_startup_exception_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiDialogControlKind {
+    TextInput,
+    PasswordInput,
+    Checkbox,
+    Select,
+    NumericInput,
+    ReadOnly,
+}
+
+impl GuiDialogControlKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TextInput => "text",
+            Self::PasswordInput => "password",
+            Self::Checkbox => "checkbox",
+            Self::Select => "select",
+            Self::NumericInput => "numeric",
+            Self::ReadOnly => "readonly",
+        }
+    }
+
+    fn is_editable(self) -> bool {
+        !matches!(self, Self::ReadOnly)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiDialogControl {
+    label: &'static str,
+    kind: GuiDialogControlKind,
+    value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiDialogSection {
+    title: &'static str,
+    controls: Vec<GuiDialogControl>,
+}
+
+impl GuiDialogSection {
+    fn control_mut(&mut self, label: &str) -> Option<&mut GuiDialogControl> {
+        self.controls
+            .iter_mut()
+            .find(|control| control.label == label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FirstRunConfigurationDialogState {
+    launch_mode: GuiLaunchMode,
+    connection: GuiConnectionSettingsSection,
+    readiness: GuiReadinessSection,
+    privacy: GuiPrivacySection,
+    desync: GuiDesyncSection,
+    media_search: GuiMediaSearchSection,
+    chat: GuiChatSection,
+    osd: GuiOsdSection,
+    system: GuiSystemSection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FirstRunConfigurationDialogDraft {
+    launch_mode: GuiLaunchMode,
+    compatibility_startup_entry_count: usize,
+    ignored_startup_exception_count: usize,
+    sections: Vec<GuiDialogSection>,
+    settings: StoredClientSettingsMvp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowUserRow {
+    username: String,
+    is_self: bool,
+    is_ready: bool,
+    is_controller: bool,
+    is_selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowPlaylistRow {
+    label: String,
+    is_selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowChatRow {
+    sender: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowPlaybackControls {
+    can_toggle_pause: bool,
+    can_seek: bool,
+    can_set_ready: bool,
+    can_manage_playlist: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MainWindowShellState {
+    room_name: String,
+    shared_playlist_enabled: bool,
+    controlled_room_active: bool,
+    users: Vec<MainWindowUserRow>,
+    playlist: Vec<MainWindowPlaylistRow>,
+    chat: Vec<MainWindowChatRow>,
+    playback: MainWindowPlaybackControls,
+    playback_paused: bool,
+    autoplay_active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowRuntimeUserSnapshot {
+    username: String,
+    is_self: bool,
+    is_ready: bool,
+    is_controller: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowRuntimeChatSnapshot {
+    sender: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowRuntimeSnapshot {
+    room_name: String,
+    shared_playlist_enabled: bool,
+    controlled_room_active: bool,
+    users: Vec<MainWindowRuntimeUserSnapshot>,
+    playlist: Vec<String>,
+    chat: Vec<MainWindowRuntimeChatSnapshot>,
+    can_toggle_pause: bool,
+    can_seek: bool,
+    can_set_ready: bool,
+    can_manage_playlist: bool,
+    playback_paused: bool,
+    autoplay_active: bool,
+}
+
+impl MainWindowRuntimeSnapshot {
+    fn from_shell_state(state: &MainWindowShellState) -> Self {
+        Self {
+            room_name: state.room_name.clone(),
+            shared_playlist_enabled: state.shared_playlist_enabled,
+            controlled_room_active: state.controlled_room_active,
+            users: state
+                .users
+                .iter()
+                .map(|user| MainWindowRuntimeUserSnapshot {
+                    username: user.username.clone(),
+                    is_self: user.is_self,
+                    is_ready: user.is_ready,
+                    is_controller: user.is_controller,
+                })
+                .collect(),
+            playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
+            chat: state
+                .chat
+                .iter()
+                .map(|row| MainWindowRuntimeChatSnapshot {
+                    sender: row.sender.clone(),
+                    message: row.message.clone(),
+                })
+                .collect(),
+            can_toggle_pause: state.playback.can_toggle_pause,
+            can_seek: state.playback.can_seek,
+            can_set_ready: state.playback.can_set_ready,
+            can_manage_playlist: state.playback.can_manage_playlist,
+            playback_paused: state.playback_paused,
+            autoplay_active: state.autoplay_active,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuActionShellItem {
+    label: &'static str,
+    enabled: bool,
+    is_selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuSectionShellState {
+    title: &'static str,
+    actions: Vec<MenuActionShellItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuDialogShellState {
+    sections: Vec<MenuSectionShellState>,
+    tls_prompt_expected: bool,
+    update_notice_expected: bool,
+    about_dialog_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuActionRuntimeOverride {
+    section_title: &'static str,
+    action_label: &'static str,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuDialogRuntimeSnapshot {
+    action_overrides: Vec<MenuActionRuntimeOverride>,
+    tls_prompt_expected: bool,
+    update_notice_expected: bool,
+    about_dialog_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicServerBrowserRow {
+    label: String,
+    address: String,
+    is_selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicServerBrowserShellState {
+    servers: Vec<PublicServerBrowserRow>,
+    can_connect: bool,
+    can_refresh: bool,
+    can_add_custom_server: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublicServerBrowserRuntimeFlags {
+    can_connect: bool,
+    can_refresh: bool,
+    can_add_custom_server: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaSearchDirectoryRow {
+    path: String,
+    is_selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MediaSearchWorkflowShellState {
+    directories: Vec<MediaSearchDirectoryRow>,
+    can_browse_directories: bool,
+    can_search_missing_media: bool,
+    first_file_timeout_seconds: Option<f64>,
+    search_timeout_seconds: Option<f64>,
+    double_check_interval_seconds: Option<f64>,
+    warning_threshold_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MediaSearchWorkflowRuntimeFlags {
+    can_browse_directories: bool,
+    can_search_missing_media: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SyncplayGuiRuntimeSnapshot {
+    active_view: GuiShellView,
+    open_modal: Option<GuiShellModal>,
+    main_window: MainWindowRuntimeSnapshot,
+    public_servers: PublicServerBrowserShellState,
+    media_search: MediaSearchWorkflowShellState,
+    tls_prompt_expected: bool,
+    update_notice_expected: bool,
+    about_dialog_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiFeedbackRuntimeSnapshot {
+    validation_issues: Vec<GuiValidationIssue>,
+    notifications: Vec<GuiTransientNotification>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiErrorRuntimeSnapshot {
+    last_action_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SyncplayGuiShellAppState {
+    active_view: GuiShellView,
+    open_modal: Option<GuiShellModal>,
+    selection: GuiSelectionState,
+    runtime_menu_action_overrides: Vec<MenuActionRuntimeOverride>,
+    runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride,
+    commands: GuiCommandAvailabilityState,
+    pending_operation: Option<GuiPendingOperationState>,
+    outgoing_chat_message: Option<String>,
+    new_main_window_user_draft: String,
+    new_playlist_entry_draft: String,
+    focused_configuration_control: Option<GuiFocusedConfigurationControlState>,
+    public_server_edit_session: Option<GuiPublicServerEditSessionState>,
+    main_window_user_edit_session: Option<GuiMainWindowUserEditSessionState>,
+    text_edit_session: Option<GuiTextEditSessionState>,
+    runtime_validation_issues: Vec<GuiValidationIssue>,
+    notifications: Vec<GuiTransientNotification>,
+    validation: GuiValidationState,
+    saved_configuration: StoredClientSettingsMvp,
+    configuration: FirstRunConfigurationDialogDraft,
+    main_window: MainWindowShellState,
+    menus: MenuDialogShellState,
+    public_servers: PublicServerBrowserShellState,
+    media_search: MediaSearchWorkflowShellState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiSelectionState {
+    selected_main_window_user: Option<usize>,
+    selected_main_window_playlist: Option<usize>,
+    selected_menu_action: Option<(usize, usize)>,
+    selected_media_search_directory: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiCommandAvailabilityState {
+    can_save_configuration: bool,
+    can_reset_configuration: bool,
+    can_reload_configuration: bool,
+    can_connect_public_server: bool,
+    can_refresh_public_servers: bool,
+    can_search_missing_media: bool,
+    can_toggle_pause: bool,
+    can_send_chat_message: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiCommandAvailabilityRuntimeOverride {
+    can_save_configuration: Option<bool>,
+    can_reset_configuration: Option<bool>,
+    can_reload_configuration: Option<bool>,
+    can_connect_public_server: Option<bool>,
+    can_refresh_public_servers: Option<bool>,
+    can_search_missing_media: Option<bool>,
+    can_toggle_pause: Option<bool>,
+    can_send_chat_message: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiCommandRuntimeSnapshot {
+    command_availability: GuiCommandAvailabilityState,
+    pending_operation: Option<GuiPendingOperationKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiFocusedConfigurationControlRuntimeSnapshot {
+    section: String,
+    label: String,
+    activation_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPublicServerEditSessionRuntimeSnapshot {
+    editing_index: Option<usize>,
+    label_buffer: String,
+    address_buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiMainWindowUserEditSessionRuntimeSnapshot {
+    editing_index: usize,
+    username_buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiTextEditSessionRuntimeSnapshot {
+    section: String,
+    label: String,
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiInteractionRuntimeSnapshot {
+    selection: GuiSelectionState,
+    selected_public_server_index: Option<usize>,
+    focused_configuration_control: Option<GuiFocusedConfigurationControlRuntimeSnapshot>,
+    public_server_edit_session: Option<GuiPublicServerEditSessionRuntimeSnapshot>,
+    main_window_user_edit_session: Option<GuiMainWindowUserEditSessionRuntimeSnapshot>,
+    text_edit_session: Option<GuiTextEditSessionRuntimeSnapshot>,
+}
+
+impl GuiInteractionRuntimeSnapshot {
+    fn from_shell_state(state: &SyncplayGuiShellAppState) -> Self {
+        Self {
+            selection: state.selection.clone(),
+            selected_public_server_index: state.selected_public_server_index(),
+            focused_configuration_control: state.focused_configuration_control.as_ref().map(
+                |focused| GuiFocusedConfigurationControlRuntimeSnapshot {
+                    section: focused.section.to_owned(),
+                    label: focused.label.to_owned(),
+                    activation_count: focused.activation_count,
+                },
+            ),
+            public_server_edit_session: state.public_server_edit_session.as_ref().map(|session| {
+                GuiPublicServerEditSessionRuntimeSnapshot {
+                    editing_index: session.editing_index,
+                    label_buffer: session.label_buffer.clone(),
+                    address_buffer: session.address_buffer.clone(),
+                    is_dirty: session.is_dirty,
+                }
+            }),
+            main_window_user_edit_session: state.main_window_user_edit_session.as_ref().map(
+                |session| GuiMainWindowUserEditSessionRuntimeSnapshot {
+                    editing_index: session.editing_index,
+                    username_buffer: session.username_buffer.clone(),
+                    is_dirty: session.is_dirty,
+                },
+            ),
+            text_edit_session: state.text_edit_session.as_ref().map(|session| {
+                GuiTextEditSessionRuntimeSnapshot {
+                    section: session.section.to_owned(),
+                    label: session.label.to_owned(),
+                    buffer: session.buffer.clone(),
+                    is_dirty: session.is_dirty,
+                }
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiDraftRuntimeSnapshot {
+    outgoing_chat_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GuiConfigurationDraftRuntimeSnapshot {
+    settings: StoredClientSettingsMvp,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GuiSavedConfigurationRuntimeSnapshot {
+    settings: StoredClientSettingsMvp,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GuiConfigurationRuntimeSnapshot {
+    draft_settings: StoredClientSettingsMvp,
+    saved_settings: StoredClientSettingsMvp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiWidgetKind {
+    Panel,
+    TextInput,
+    PasswordInput,
+    Checkbox,
+    Select,
+    NumericInput,
+    ReadOnly,
+    Button,
+    List,
+    ListItem,
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiWidgetNode {
+    id: String,
+    label: String,
+    kind: GuiWidgetKind,
+    value: Option<String>,
+    enabled: bool,
+    selected: bool,
+    children: Vec<GuiWidgetNode>,
+}
+
+impl GuiWidgetNode {
+    fn leaf(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: GuiWidgetKind,
+        value: Option<String>,
+        enabled: bool,
+        selected: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            value,
+            enabled,
+            selected,
+            children: Vec::new(),
+        }
+    }
+
+    fn branch(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: GuiWidgetKind,
+        children: Vec<GuiWidgetNode>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            value: None,
+            enabled: true,
+            selected: false,
+            children,
+        }
+    }
+
+    fn find(&self, id: &str) -> Option<&Self> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.children.iter().find_map(|child| child.find(id))
+    }
+
+    fn render_with(&self, renderer: &mut impl GuiWidgetRenderer) {
+        self.render_with_depth(renderer, 0);
+    }
+
+    fn render_with_depth(&self, renderer: &mut impl GuiWidgetRenderer, depth: usize) {
+        renderer.begin_node(self, depth);
+        for child in &self.children {
+            child.render_with_depth(renderer, depth + 1);
+        }
+        renderer.end_node(self, depth);
+    }
+}
+
+trait GuiWidgetRenderer {
+    fn begin_node(&mut self, node: &GuiWidgetNode, depth: usize);
+
+    fn end_node(&mut self, node: &GuiWidgetNode, depth: usize);
+}
+
+trait GuiAppHost {
+    type Output;
+
+    fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output;
+}
+
+impl GuiWidgetKind {
+    #[cfg(test)]
+    fn label(self) -> &'static str {
+        match self {
+            Self::Panel => "panel",
+            Self::TextInput => "text-input",
+            Self::PasswordInput => "password-input",
+            Self::Checkbox => "checkbox",
+            Self::Select => "select",
+            Self::NumericInput => "numeric-input",
+            Self::ReadOnly => "read-only",
+            Self::Button => "button",
+            Self::List => "list",
+            Self::ListItem => "list-item",
+            Self::Status => "status",
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct GuiWidgetTextPreviewRenderer {
+    lines: Vec<String>,
+}
+
+#[cfg(test)]
+impl GuiWidgetTextPreviewRenderer {
+    fn finish(self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+#[cfg(test)]
+impl GuiWidgetRenderer for GuiWidgetTextPreviewRenderer {
+    fn begin_node(&mut self, node: &GuiWidgetNode, depth: usize) {
+        let indent = "  ".repeat(depth);
+        let value = node.value.as_deref().unwrap_or("(none)");
+        self.lines.push(format!(
+            "{indent}- {} [{}] id={}, enabled={}, selected={}, value={value}",
+            node.label,
+            node.kind.label(),
+            node.id,
+            bool_label(node.enabled),
+            bool_label(node.selected),
+        ));
+    }
+
+    fn end_node(&mut self, _node: &GuiWidgetNode, _depth: usize) {}
+}
+
+#[derive(Debug, Default)]
+struct GuiWidgetEguiRenderer {
+    stack: Vec<GuiWidgetNode>,
+    root: Option<GuiWidgetNode>,
+    actions: Vec<GuiShellAction>,
+    close_requested: bool,
+    seek_prompt_requested: bool,
+    selected_media_files: Option<Vec<String>>,
+    pending_completion_requested: bool,
+    pending_cancel_requested: bool,
+}
+
+impl GuiWidgetEguiRenderer {
+    fn root(&self) -> Option<&GuiWidgetNode> {
+        self.root.as_ref()
+    }
+
+    fn take_close_requested(&mut self) -> bool {
+        std::mem::take(&mut self.close_requested)
+    }
+
+    fn take_seek_prompt_requested(&mut self) -> bool {
+        std::mem::take(&mut self.seek_prompt_requested)
+    }
+
+    fn take_selected_media_files(&mut self) -> Option<Vec<String>> {
+        self.selected_media_files.take()
+    }
+
+    fn take_pending_completion_requested(&mut self) -> bool {
+        std::mem::take(&mut self.pending_completion_requested)
+    }
+
+    fn take_pending_cancel_requested(&mut self) -> bool {
+        std::mem::take(&mut self.pending_cancel_requested)
+    }
+
+    fn show(
+        &mut self,
+        ctx: &egui::Context,
+        state: &SyncplayGuiShellAppState,
+        show_manual_pending_controls: bool,
+    ) -> Vec<GuiShellAction> {
+        if let Some(root) = self.root().cloned() {
+            self.show_menu_bar(ctx, &root, state);
+            self.show_modal_window(ctx, state);
+            self.show_status_bar(ctx, &root, show_manual_pending_controls);
+            self.show_navigation_panel(ctx, &root);
+            self.show_active_surface(ctx, &root, state);
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("Syncplay GUI");
+                ui.label("No widget tree is currently available.");
+            });
+        }
+        std::mem::take(&mut self.actions)
+    }
+
+    fn show_menu_bar(
+        &mut self,
+        ctx: &egui::Context,
+        root: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let Some(menus) = root.find("menus-root") else {
+            return;
+        };
+        egui::TopBottomPanel::top("syncplay-native-menu-bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                for section in &menus.children {
+                    ui.menu_button(&section.label, |ui| {
+                        self.render_menu_section(ui, section, state);
+                    });
+                }
+            });
+        });
+    }
+
+    fn show_modal_window(&mut self, ctx: &egui::Context, state: &SyncplayGuiShellAppState) {
+        let Some(modal) = state.open_modal else {
+            return;
+        };
+        let mut open = true;
+        let mut close_clicked = false;
+        egui::Window::new(Self::modal_window_title(modal))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                for line in Self::modal_body_lines(modal) {
+                    ui.label(line);
+                }
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    for (label, action) in Self::modal_actions(modal) {
+                        if ui.button(label).clicked() {
+                            self.actions.push(action);
+                        }
+                    }
+                });
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    close_clicked = true;
+                }
+            });
+        if !open || close_clicked {
+            self.actions.push(GuiShellAction::CloseModal);
+        }
+    }
+
+    fn show_status_bar(
+        &mut self,
+        ctx: &egui::Context,
+        root: &GuiWidgetNode,
+        show_manual_pending_controls: bool,
+    ) {
+        let active_view = root
+            .find("shell:active-view")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(none)");
+        let open_modal = root
+            .find("shell:open-modal")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(none)");
+        let pending_operation = root
+            .find("shell:pending-operation")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(none)");
+        egui::TopBottomPanel::bottom("syncplay-native-status-bar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Syncplay GUI");
+                ui.separator();
+                ui.label(format!("view: {active_view}"));
+                ui.separator();
+                ui.label(format!("modal: {open_modal}"));
+                ui.separator();
+                ui.label(format!("pending: {pending_operation}"));
+                if Self::should_show_manual_pending_controls(
+                    pending_operation,
+                    show_manual_pending_controls,
+                ) {
+                    ui.separator();
+                    if ui.button("Complete").clicked() {
+                        self.pending_completion_requested = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_cancel_requested = true;
+                    }
+                }
+            });
+        });
+    }
+
+    fn should_show_manual_pending_controls(
+        pending_operation: &str,
+        show_manual_pending_controls: bool,
+    ) -> bool {
+        show_manual_pending_controls && pending_operation != "(none)"
+    }
+
+    fn show_navigation_panel(&mut self, ctx: &egui::Context, root: &GuiWidgetNode) {
+        egui::SidePanel::left("syncplay-native-navigation")
+            .default_width(240.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Surfaces");
+                ui.separator();
+                for child in &root.children {
+                    if Self::is_surface_node(child) {
+                        let response = ui.selectable_label(child.selected, &child.label);
+                        if response.clicked()
+                            && let Some(action) = Self::action_for_surface_node(child)
+                        {
+                            self.actions.push(action);
+                        }
+                    }
+                }
+                if let Some(notifications) = root.find("shell:notifications") {
+                    ui.separator();
+                    ui.heading("Notifications");
+                    if notifications.children.is_empty() {
+                        ui.label("No transient notifications.");
+                    } else {
+                        for notification in &notifications.children {
+                            if ui
+                                .selectable_label(false, Self::display_text(notification))
+                                .clicked()
+                                && let Some(action) = Self::action_for_list_item_node(notification)
+                            {
+                                self.actions.push(action);
+                            }
+                        }
+                    }
+                }
+            });
+    }
+
+    fn show_active_surface(
+        &mut self,
+        ctx: &egui::Context,
+        root: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let active_surface = root
+            .children
+            .iter()
+            .find(|node| Self::is_surface_node(node) && node.selected)
+            .or_else(|| {
+                root.children
+                    .iter()
+                    .find(|node| Self::is_surface_node(node))
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(active_surface) = active_surface {
+                    ui.heading(&active_surface.label);
+                    ui.separator();
+                    self.render_node(ui, active_surface, state);
+                } else {
+                    ui.heading(&root.label);
+                    ui.label("No active surface is currently selected.");
+                }
+            });
+        });
+    }
+
+    fn render_menu_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        for child in &node.children {
+            if child.children.is_empty() {
+                self.render_leaf(ui, child, state);
+            } else {
+                ui.menu_button(&child.label, |ui| {
+                    self.render_menu_section(ui, child, state);
+                });
+            }
+        }
+    }
+
+    fn render_node(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        match node.kind {
+            GuiWidgetKind::Panel => {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(&node.label);
+                        if node.selected {
+                            ui.label(egui::RichText::new("active").small().strong());
+                        }
+                        if !node.enabled {
+                            ui.label(egui::RichText::new("disabled").small());
+                        }
+                    });
+                    for child in &node.children {
+                        self.render_node(ui, child, state);
+                    }
+                });
+            }
+            GuiWidgetKind::List => {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.strong(&node.label);
+                    if node.children.is_empty() {
+                        ui.label("No items.");
+                    } else {
+                        for child in &node.children {
+                            self.render_node(ui, child, state);
+                        }
+                    }
+                });
+            }
+            _ => self.render_leaf(ui, node, state),
+        }
+    }
+
+    fn render_leaf(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        match node.kind {
+            GuiWidgetKind::TextInput
+            | GuiWidgetKind::PasswordInput
+            | GuiWidgetKind::NumericInput => {
+                self.render_text_input(ui, node, state);
+            }
+            GuiWidgetKind::Select => self.render_select(ui, node, state),
+            GuiWidgetKind::Checkbox => {
+                let mut checked = matches!(node.value.as_deref(), Some("yes" | "true"));
+                let response =
+                    ui.add_enabled(node.enabled, egui::Checkbox::new(&mut checked, &node.label));
+                if response.changed()
+                    && let Some(action) = Self::action_for_checkbox_node(state, node, checked)
+                {
+                    self.actions.push(action);
+                }
+            }
+            GuiWidgetKind::Button => {
+                if ui
+                    .add_enabled(node.enabled, egui::Button::new(Self::display_text(node)))
+                    .clicked()
+                {
+                    if Self::is_open_media_file_menu_action(state, node) {
+                        self.selected_media_files = Self::pick_media_files(state);
+                    } else if Self::is_exit_menu_action(state, node) {
+                        self.close_requested = true;
+                    } else if Self::is_seek_menu_action(state, node) {
+                        self.seek_prompt_requested = true;
+                    } else {
+                        self.actions
+                            .extend(Self::actions_for_clicked_button(state, node));
+                    }
+                }
+            }
+            GuiWidgetKind::ListItem => {
+                ui.add_enabled_ui(node.enabled, |ui| {
+                    if ui
+                        .selectable_label(node.selected, Self::display_text(node))
+                        .clicked()
+                        && let Some(action) = Self::action_for_list_item_node(node)
+                    {
+                        self.actions.push(action);
+                    }
+                });
+            }
+            GuiWidgetKind::ReadOnly | GuiWidgetKind::Status => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(&node.label).strong());
+                    ui.label(node.value.as_deref().unwrap_or("(none)"));
+                });
+            }
+            GuiWidgetKind::Panel | GuiWidgetKind::List => {}
+        }
+    }
+
+    fn render_text_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let mut value = node.value.clone().unwrap_or_else(|| "(none)".to_owned());
+        ui.horizontal(|ui| {
+            ui.label(&node.label);
+            let response = ui.add_enabled(
+                node.enabled,
+                egui::TextEdit::singleline(&mut value)
+                    .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
+                    .desired_width(260.0),
+            );
+            let submitted =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if let Some(actions) = Self::actions_for_text_input_node(
+                state,
+                node,
+                &value,
+                response.changed(),
+                submitted,
+            ) {
+                self.actions.extend(actions);
+            }
+        });
+    }
+
+    fn render_select(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let mut value = node.value.clone().unwrap_or_default();
+        let previous = value.clone();
+        let options = Self::configuration_select_options_for_node(state, node)
+            .unwrap_or_else(|| vec![previous.clone()]);
+        ui.horizontal(|ui| {
+            ui.label(&node.label);
+            ui.add_enabled_ui(node.enabled, |ui| {
+                egui::ComboBox::from_id_salt(&node.id)
+                    .selected_text(if value.is_empty() { "(unset)" } else { &value })
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for option in &options {
+                            ui.selectable_value(&mut value, option.clone(), option);
+                        }
+                    });
+            });
+        });
+        if value != previous
+            && let Some(actions) =
+                Self::actions_for_text_input_node(state, node, &value, true, false)
+        {
+            self.actions.extend(actions);
+        }
+    }
+
+    fn modal_window_title(modal: GuiShellModal) -> &'static str {
+        match modal {
+            GuiShellModal::TlsCertificatePrompt => "TLS Certificate Prompt",
+            GuiShellModal::UpdateNotice => "Update Notice",
+            GuiShellModal::About => "About Syncplay",
+        }
+    }
+
+    fn modal_body_lines(modal: GuiShellModal) -> [&'static str; 2] {
+        match modal {
+            GuiShellModal::TlsCertificatePrompt => [
+                "The reducer reports an active TLS certificate prompt.",
+                "Trust or reject wiring is still pending, but this native modal path is active.",
+            ],
+            GuiShellModal::UpdateNotice => [
+                "The reducer reports that an update notice is available.",
+                "This modal now routes into the existing help and update-notice actions.",
+            ],
+            GuiShellModal::About => [
+                "The reducer reports that the About dialog is open.",
+                "This modal now routes into the existing help and update actions.",
+            ],
+        }
+    }
+
+    fn modal_actions(modal: GuiShellModal) -> Vec<(&'static str, GuiShellAction)> {
+        match modal {
+            GuiShellModal::TlsCertificatePrompt => vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                (
+                    "Show Prompt Again",
+                    GuiShellAction::AnnounceTlsCertificatePromptRequired,
+                ),
+            ],
+            GuiShellModal::UpdateNotice => vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                ("Check Again", GuiShellAction::AnnounceUpdateNoticeAvailable),
+            ],
+            GuiShellModal::About => vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                (
+                    "Check for Updates",
+                    GuiShellAction::AnnounceUpdateNoticeAvailable,
+                ),
+            ],
+        }
+    }
+
+    fn display_text(node: &GuiWidgetNode) -> String {
+        match node.value.as_deref() {
+            Some(value) if !value.is_empty() => format!("{}: {}", node.label, value),
+            _ => node.label.clone(),
+        }
+    }
+
+    fn action_for_surface_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
+        let view = match node.id.as_str() {
+            "configuration-root" => GuiShellView::Configuration,
+            "main-window-root" => GuiShellView::MainWindow,
+            "menus-root" => GuiShellView::MenusAndDialogs,
+            "public-servers-root" => GuiShellView::PublicServers,
+            "media-search-root" => GuiShellView::MediaSearch,
+            _ => return None,
+        };
+        Some(GuiShellAction::SwitchView(view))
+    }
+
+    fn actions_for_button_node(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Vec<GuiShellAction> {
+        match node.id.as_str() {
+            "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
+            "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
+            "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
+            "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
+            "main-window:room:set" => {
+                vec![GuiShellAction::SetMainWindowRoom(
+                    Self::main_window_room_draft(state),
+                )]
+            }
+            "main-window:room:join" => {
+                vec![GuiShellAction::JoinMainWindowRoom(
+                    Self::main_window_room_draft(state),
+                )]
+            }
+            "main-window:room:leave" => vec![GuiShellAction::LeaveMainWindowRoom],
+            "main-window:user:add" => vec![GuiShellAction::CommitNewMainWindowUser],
+            "main-window:user:toggle-ready" => {
+                vec![GuiShellAction::ToggleSelectedMainWindowUserReady]
+            }
+            "main-window:user:toggle-controller" => {
+                vec![GuiShellAction::ToggleSelectedMainWindowUserController]
+            }
+            "main-window:user:edit" => vec![GuiShellAction::BeginEditSelectedMainWindowUser],
+            "main-window:user:remove" => vec![GuiShellAction::RemoveSelectedMainWindowUser],
+            "main-window:user-edit:commit" => vec![GuiShellAction::CommitMainWindowUserEdit],
+            "main-window:user-edit:cancel" => vec![GuiShellAction::CancelMainWindowUserEdit],
+            "main-window:playlist:add" => vec![GuiShellAction::CommitNewPlaylistEntry],
+            "main-window:playlist:up" => vec![GuiShellAction::MoveSelectedMainWindowPlaylistUp],
+            "main-window:playlist:down" => vec![GuiShellAction::MoveSelectedMainWindowPlaylistDown],
+            "main-window:playlist:remove" => vec![GuiShellAction::RemoveSelectedMainWindowPlaylist],
+            "main-window:control:set-ready" => {
+                let local_user_ready = state
+                    .main_window
+                    .users
+                    .iter()
+                    .find(|user| user.is_self)
+                    .map(|user| user.is_ready)
+                    .unwrap_or(false);
+                vec![if local_user_ready {
+                    GuiShellAction::AnnounceLocalUserNotReady
+                } else {
+                    GuiShellAction::AnnounceLocalUserReady
+                }]
+            }
+            "public-servers:command:connect" => {
+                vec![GuiShellAction::BeginSelectedPublicServerConnect]
+            }
+            "public-servers:command:refresh" => vec![GuiShellAction::BeginPublicServerRefresh],
+            "public-servers:command:add-custom" => vec![GuiShellAction::BeginAddPublicServer],
+            "public-servers:command:edit" => vec![GuiShellAction::BeginEditSelectedPublicServer],
+            "public-servers:command:remove" => vec![GuiShellAction::RemoveSelectedPublicServer],
+            "public-servers:edit:commit" => vec![GuiShellAction::CommitPublicServerEdit],
+            "public-servers:edit:cancel" => vec![GuiShellAction::CancelPublicServerEdit],
+            "media-search:directory:up" => vec![GuiShellAction::MoveSelectedMediaSearchDirectoryUp],
+            "media-search:directory:down" => {
+                vec![GuiShellAction::MoveSelectedMediaSearchDirectoryDown]
+            }
+            "media-search:directory:remove" => {
+                vec![GuiShellAction::RemoveSelectedMediaSearchDirectory]
+            }
+            "media-search:command:search" => vec![GuiShellAction::BeginMissingMediaSearch],
+            _ => {
+                if let Some((section_index, action_index)) = Self::menu_action_identity(node) {
+                    vec![
+                        GuiShellAction::SelectMenuAction {
+                            section_index,
+                            action_index,
+                        },
+                        GuiShellAction::TriggerSelectedMenuAction,
+                    ]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    fn actions_for_clicked_button(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Vec<GuiShellAction> {
+        match node.id.as_str() {
+            "media-search:command:browse" => Self::actions_for_media_search_browse_click(state),
+            _ => Self::actions_for_button_node(state, node),
+        }
+    }
+
+    fn actions_for_media_search_browse_click(
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        Self::pick_media_search_directory(state)
+            .map(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed)
+            .into_iter()
+            .collect()
+    }
+
+    fn is_open_media_file_menu_action(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> bool {
+        Self::matches_menu_action(state, node, "File", "Open Media File")
+    }
+
+    fn is_exit_menu_action(state: &SyncplayGuiShellAppState, node: &GuiWidgetNode) -> bool {
+        Self::matches_menu_action(state, node, "File", "Exit")
+    }
+
+    fn is_seek_menu_action(state: &SyncplayGuiShellAppState, node: &GuiWidgetNode) -> bool {
+        Self::matches_menu_action(state, node, "Playback", "Seek")
+    }
+
+    fn matches_menu_action(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+        section_title: &str,
+        action_label: &str,
+    ) -> bool {
+        let Some((section_index, action_index)) = Self::menu_action_identity(node) else {
+            return false;
+        };
+        let Some(section) = state.menus.sections.get(section_index) else {
+            return false;
+        };
+        let Some(action) = section.actions.get(action_index) else {
+            return false;
+        };
+        section.title == section_title && action.label == action_label
+    }
+
+    fn pick_media_files(state: &SyncplayGuiShellAppState) -> Option<Vec<String>> {
+        let mut dialog = FileDialog::new().set_title("Select Media File");
+        if let Some(directory) = Self::media_search_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog.pick_files().map(|paths| {
+            paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    fn pick_media_search_directory(state: &SyncplayGuiShellAppState) -> Option<String> {
+        let mut dialog = FileDialog::new().set_title("Select Media Search Directory");
+        if let Some(directory) = Self::media_search_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn media_search_dialog_start_directory(state: &SyncplayGuiShellAppState) -> Option<&str> {
+        state
+            .selection
+            .selected_media_search_directory
+            .and_then(|index| state.media_search.directories.get(index))
+            .or_else(|| state.media_search.directories.first())
+            .map(|row| row.path.as_str())
+    }
+
+    fn action_for_list_item_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
+        Self::parse_index_suffix(&node.id, "main-window:user:")
+            .map(GuiShellAction::SelectMainWindowUser)
+            .or_else(|| {
+                Self::parse_index_suffix(&node.id, "main-window:playlist:")
+                    .map(GuiShellAction::SelectMainWindowPlaylist)
+            })
+            .or_else(|| {
+                Self::parse_index_suffix(&node.id, "public-servers:row:")
+                    .map(GuiShellAction::SelectPublicServer)
+            })
+            .or_else(|| {
+                Self::parse_index_suffix(&node.id, "media-search:directory:")
+                    .map(GuiShellAction::SelectMediaSearchDirectory)
+            })
+            .or_else(|| {
+                Self::parse_index_suffix(&node.id, "shell:notification:")
+                    .map(GuiShellAction::DismissTransientNotification)
+            })
+    }
+
+    fn action_for_checkbox_node(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+        value: bool,
+    ) -> Option<GuiShellAction> {
+        let (section, label, kind) = Self::configuration_control_identity(state, node)?;
+        if kind != GuiDialogControlKind::Checkbox {
+            return None;
+        }
+        Some(GuiShellAction::EditConfigurationBool {
+            section,
+            label,
+            value,
+        })
+    }
+
+    fn actions_for_text_input_node(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+        value: &str,
+        changed: bool,
+        submitted: bool,
+    ) -> Option<Vec<GuiShellAction>> {
+        if node.id == "main-window:chat-input" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+                    GuiDraftRuntimeSnapshot {
+                        outgoing_chat_message: normalized_editable_text(value),
+                    },
+                ));
+            }
+            if submitted {
+                actions.push(GuiShellAction::BeginLocalChatSend(value.to_owned()));
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
+        if node.id == "main-window:room-input" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::EditConfigurationText {
+                    section: "Connection",
+                    label: "Room",
+                    value: value.to_owned(),
+                });
+            }
+            if submitted && normalized_editable_text(value).is_some() {
+                actions.push(GuiShellAction::JoinMainWindowRoom(value.to_owned()));
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
+        if node.id == "main-window:user:new" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdateNewMainWindowUserDraft(
+                    value.to_owned(),
+                ));
+            }
+            if submitted && normalized_editable_text(value).is_some() {
+                actions.push(GuiShellAction::CommitNewMainWindowUser);
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
+        if node.id == "main-window:playlist:new" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdateNewPlaylistEntryDraft(
+                    value.to_owned(),
+                ));
+            }
+            if submitted && normalized_editable_text(value).is_some() {
+                actions.push(GuiShellAction::CommitNewPlaylistEntry);
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
+        if let Some((section, label, kind)) = Self::configuration_control_identity(state, node) {
+            if matches!(
+                kind,
+                GuiDialogControlKind::TextInput
+                    | GuiDialogControlKind::PasswordInput
+                    | GuiDialogControlKind::NumericInput
+                    | GuiDialogControlKind::Select
+            ) && changed
+            {
+                return Some(vec![GuiShellAction::EditConfigurationText {
+                    section,
+                    label,
+                    value: value.to_owned(),
+                }]);
+            }
+            return None;
+        }
+
+        let mut actions = Vec::new();
+        match node.id.as_str() {
+            "public-servers:edit:label" => {
+                if changed {
+                    actions.push(GuiShellAction::UpdatePublicServerEditLabel(
+                        value.to_owned(),
+                    ));
+                }
+                if submitted {
+                    actions.push(GuiShellAction::CommitPublicServerEdit);
+                }
+            }
+            "public-servers:edit:address" => {
+                if changed {
+                    actions.push(GuiShellAction::UpdatePublicServerEditAddress(
+                        value.to_owned(),
+                    ));
+                }
+                if submitted {
+                    actions.push(GuiShellAction::CommitPublicServerEdit);
+                }
+            }
+            "main-window:user-edit:username" => {
+                if changed {
+                    actions.push(GuiShellAction::UpdateMainWindowUserEdit(value.to_owned()));
+                }
+                if submitted {
+                    actions.push(GuiShellAction::CommitMainWindowUserEdit);
+                }
+            }
+            _ => {}
+        }
+        (!actions.is_empty()).then_some(actions)
+    }
+
+    fn configuration_control_identity(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Option<(&'static str, &'static str, GuiDialogControlKind)> {
+        let identity = node.id.strip_prefix("config:")?;
+        let (section, label) = identity.split_once(':')?;
+        state.configuration.control_identity(section, label)
+    }
+
+    fn menu_action_identity(node: &GuiWidgetNode) -> Option<(usize, usize)> {
+        let identity = node.id.strip_prefix("menus:action:")?;
+        let (section_index, action_index) = identity.split_once(':')?;
+        Some((section_index.parse().ok()?, action_index.parse().ok()?))
+    }
+
+    fn configuration_select_options_for_node(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Option<Vec<String>> {
+        let (section, label, kind) = Self::configuration_control_identity(state, node)?;
+        if kind != GuiDialogControlKind::Select {
+            return None;
+        }
+        Some(match (section, label) {
+            ("Readiness", "Unpause Action") => [
+                "IfAlreadyReady",
+                "IfOthersReady",
+                "IfMinUsersReady",
+                "Always",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ("Readiness", "Autoplay Min Users") => {
+                let mut options = ["app-default", "0", "1", "2", "3", "4", "5"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if let Some(value) = node.value.as_ref()
+                    && !value.is_empty()
+                    && !options.iter().any(|option| option == value)
+                {
+                    options.push(value.clone());
+                }
+                options
+            }
+            ("Privacy", "Filename Privacy") | ("Privacy", "Filesize Privacy") => {
+                ["SendRaw", "SendHashed", "DoNotSend"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
+            ("System", "Language") => SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY
+                .split('/')
+                .map(str::to_owned)
+                .collect(),
+            _ => return None,
+        })
+    }
+
+    fn main_window_room_draft(state: &SyncplayGuiShellAppState) -> String {
+        state
+            .configuration
+            .control_value("Connection", "Room")
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    fn parse_index_suffix(id: &str, prefix: &str) -> Option<usize> {
+        id.strip_prefix(prefix)?.parse().ok()
+    }
+
+    fn is_surface_node(node: &GuiWidgetNode) -> bool {
+        matches!(
+            node.id.as_str(),
+            "configuration-root"
+                | "main-window-root"
+                | "public-servers-root"
+                | "media-search-root"
+                | "menus-root"
+        )
+    }
+}
+
+impl GuiWidgetRenderer for GuiWidgetEguiRenderer {
+    fn begin_node(&mut self, node: &GuiWidgetNode, _depth: usize) {
+        let mut shallow_node = node.clone();
+        shallow_node.children.clear();
+        self.stack.push(shallow_node);
+    }
+
+    fn end_node(&mut self, _node: &GuiWidgetNode, _depth: usize) {
+        let Some(completed_node) = self.stack.pop() else {
+            return;
+        };
+        if let Some(parent) = self.stack.last_mut() {
+            parent.children.push(completed_node);
+        } else {
+            self.root = Some(completed_node);
+        }
+    }
+}
+
+trait GuiNativeRuntimeBridge {
+    fn shows_manual_pending_controls(&self) -> bool;
+
+    fn drain_runtime_actions(&mut self) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_selected_media_files(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        paths: Vec<String>,
+    ) -> Vec<GuiShellAction>;
+
+    fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
+
+    fn actions_for_pending_completion(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction>;
+
+    fn actions_for_pending_cancel(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction>;
+}
+
+trait GuiNativeRuntimePump {
+    fn pump(&mut self, state: &SyncplayGuiShellAppState);
+}
+
+trait GuiQueuedRuntimeOwner {
+    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SyncplayGuiShellAppState);
+}
+
+#[derive(Default)]
+struct GuiNoopRuntimePump;
+
+impl GuiNativeRuntimePump for GuiNoopRuntimePump {
+    fn pump(&mut self, _state: &SyncplayGuiShellAppState) {}
+}
+
+#[allow(dead_code)]
+#[derive(Default)]
+struct GuiPreviewRuntimeOwner;
+
+#[allow(dead_code)]
+impl GuiPreviewRuntimeOwner {
+    fn push_preview_response(handle: &GuiQueuedRuntimeBridgeHandle, request: GuiRuntimeRequest) {
+        let actions = request.preview_actions();
+        if !actions.is_empty() {
+            handle.push_actions(actions);
+        }
+    }
+}
+
+impl GuiQueuedRuntimeOwner for GuiPreviewRuntimeOwner {
+    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, _state: &SyncplayGuiShellAppState) {
+        for request in handle.drain_requests() {
+            Self::push_preview_response(handle, request);
+        }
+    }
+}
+
+struct GuiNoopClientRuntimePlayer;
+
+impl PlayerAdapter for GuiNoopClientRuntimePlayer {
+    fn name(&self) -> &'static str {
+        "gui-client-runtime-noop"
+    }
+}
+
+trait GuiSessionRuntimeAdapter {
+    fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn adjust_command_availability(
+        &self,
+        _state: &SyncplayGuiShellAppState,
+        command_availability: GuiCommandAvailabilityState,
+    ) -> GuiCommandAvailabilityState {
+        command_availability
+    }
+
+    fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    fn apply_message_json(&mut self, _json_line: &str) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not accept inbound protocol transport messages."
+                .to_owned(),
+        )
+    }
+
+    fn send_chat_message(&mut self, message: String) -> Result<(), String>;
+
+    fn connect_public_server(
+        &mut self,
+        selected_server: Option<(String, String)>,
+    ) -> Result<(), String>;
+
+    fn refresh_public_servers(
+        &mut self,
+        current_servers: Vec<(String, String)>,
+    ) -> Result<Vec<(String, String)>, String>;
+
+    fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String>;
+}
+
+#[allow(dead_code)]
+struct GuiClientCoreChatSessionRuntimeAdapter {
+    username: String,
+    baseline_room: String,
+    runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
+    pending_startup_protocol_lines: VecDeque<String>,
+    tracked_remote_usernames: BTreeSet<String>,
+}
+
+#[allow(dead_code)]
+impl GuiClientCoreChatSessionRuntimeAdapter {
+    fn new(username: impl Into<String>, room: impl Into<String>) -> Result<Self, String> {
+        let username = username.into();
+        let room = room.into();
+        let hello_json = Self::hello_json(&username, &room);
+
+        Ok(Self {
+            username,
+            baseline_room: room,
+            runtime: ClientRuntime::new(
+                ClientSession::default(),
+                GuiNoopClientRuntimePlayer,
+                QueuedRuntimeControl::default(),
+            ),
+            pending_startup_protocol_lines: VecDeque::from([hello_json]),
+            tracked_remote_usernames: BTreeSet::new(),
+        })
+    }
+
+    fn hello_json(username: &str, room: &str) -> String {
+        format!(
+            r#"{{"Hello":{{"username":{username:?},"room":{{"name":{room:?}}},"version":"1.7.5","features":{{"chat":true}}}}}}"#
+        )
+    }
+
+    fn current_room_for_next_hello(&self) -> String {
+        self.runtime
+            .session()
+            .local_room_command_target_with_legacy_fallback(&self.baseline_room)
+    }
+
+    fn reset_session_for_reconnect(&mut self) {
+        let room = self.current_room_for_next_hello();
+        self.baseline_room = room.clone();
+        self.runtime = ClientRuntime::new(
+            ClientSession::default(),
+            GuiNoopClientRuntimePlayer,
+            QueuedRuntimeControl::default(),
+        );
+        self.pending_startup_protocol_lines.clear();
+        self.pending_startup_protocol_lines
+            .push_back(Self::hello_json(&self.username, &room));
+        self.tracked_remote_usernames.clear();
+    }
+
+    fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
+        lines.extend(
+            self.runtime
+                .flush_queued_protocol_lines()
+                .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?,
+        );
+        Ok(lines)
+    }
+
+    fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .apply_message_json(json_line)
+            .map_err(|error| format!("Inbound client-session message apply failed: {error}"))
+    }
+
+    fn note_user_change(&mut self, notification: UserChangeNotification) {
+        match notification {
+            UserChangeNotification::Joined { username, .. }
+            | UserChangeNotification::Playing { username, .. } => {
+                self.tracked_remote_usernames.insert(username);
+            }
+            UserChangeNotification::Left { username, .. } => {
+                self.tracked_remote_usernames.remove(&username);
+            }
+        }
+    }
+
+    fn user_change_action(notification: UserChangeNotification) -> Option<GuiShellAction> {
+        let message = match notification {
+            UserChangeNotification::Joined {
+                username,
+                room,
+                hide_from_osd,
+            } => (!hide_from_osd).then(|| format!("{username} joined {room}.")),
+            UserChangeNotification::Playing {
+                username,
+                room,
+                file_name,
+                include_room_addendum,
+                hide_from_osd,
+                ..
+            } => {
+                if hide_from_osd {
+                    None
+                } else {
+                    let media_label = file_name.unwrap_or_else(|| "media".to_owned());
+                    let room_addendum = if include_room_addendum {
+                        format!(" in {room}")
+                    } else {
+                        String::new()
+                    };
+                    Some(format!(
+                        "{username} is playing {media_label}{room_addendum}."
+                    ))
+                }
+            }
+            UserChangeNotification::Left {
+                username,
+                hide_from_osd,
+            } => (!hide_from_osd).then(|| format!("{username} left.")),
+        }?;
+        Some(GuiShellAction::AnnounceSystemChatEvent(message))
+    }
+
+    fn reconnect_transition_actions(
+        notification: ReconnectTransitionNotification,
+    ) -> Vec<GuiShellAction> {
+        let (level, message, persist_to_system_chat) = match notification {
+            ReconnectTransitionNotification::Attempting {
+                retries,
+                delay_seconds,
+            } => (
+                GuiTransientNotificationLevel::Warning,
+                format!(
+                    "Reconnect attempt {} in {:.1} seconds.",
+                    retries.saturating_add(1),
+                    delay_seconds
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::Connected => (
+                GuiTransientNotificationLevel::Success,
+                "Session reconnected.".to_owned(),
+                true,
+            ),
+            ReconnectTransitionNotification::Disconnected => (
+                GuiTransientNotificationLevel::Warning,
+                "Session disconnected.".to_owned(),
+                true,
+            ),
+            ReconnectTransitionNotification::RestoringState => (
+                GuiTransientNotificationLevel::Info,
+                "Restoring session state.".to_owned(),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                position_diff_seconds,
+                ..
+            } => (
+                GuiTransientNotificationLevel::Warning,
+                format!(
+                    "Session state restore mismatch detected ({position_diff_seconds:.3} seconds)."
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
+                attempt,
+                max_attempts,
+                cooldown_ticks,
+            } => (
+                GuiTransientNotificationLevel::Warning,
+                format!(
+                    "Session state correction retry {attempt}/{max_attempts} scheduled after {cooldown_ticks} ticks."
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
+                attempts,
+                max_attempts,
+            } => (
+                GuiTransientNotificationLevel::Error,
+                format!(
+                    "Session state correction exhausted after {attempts}/{max_attempts} attempts."
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
+                consecutive_mismatch_cycles,
+                disable_after_mismatch_cycles,
+            } => (
+                GuiTransientNotificationLevel::Error,
+                format!(
+                    "Session state correction disabled after {consecutive_mismatch_cycles}/{disable_after_mismatch_cycles} mismatch cycles."
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
+                remaining_reconnect_cycles_after_this_cycle,
+            } => (
+                GuiTransientNotificationLevel::Info,
+                format!(
+                    "Session state correction recovery cooldown active for {} more reconnect cycles.",
+                    remaining_reconnect_cycles_after_this_cycle
+                ),
+                true,
+            ),
+            ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled => (
+                GuiTransientNotificationLevel::Info,
+                "Session state correction recovery cooldown ended.".to_owned(),
+                true,
+            ),
+            ReconnectTransitionNotification::RestoringPlaylist => (
+                GuiTransientNotificationLevel::Info,
+                "Restoring shared playlist state.".to_owned(),
+                true,
+            ),
+        };
+        let mut actions = vec![GuiShellAction::PushTransientNotification {
+            level,
+            message: message.clone(),
+        }];
+        if persist_to_system_chat {
+            actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+        }
+        actions
+    }
+
+    fn controller_auth_transition_action(
+        notification: ControllerAuthTransitionNotification,
+    ) -> Vec<GuiShellAction> {
+        let (level, message) = match notification {
+            ControllerAuthTransitionNotification::Attempting { room } => (
+                GuiTransientNotificationLevel::Info,
+                format!("Requesting controller access for {room}."),
+            ),
+            ControllerAuthTransitionNotification::Succeeded {
+                username,
+                room,
+                hide_from_osd,
+            } => {
+                if hide_from_osd {
+                    return Vec::new();
+                }
+                (
+                    GuiTransientNotificationLevel::Success,
+                    format!("{username} received controller access for {room}."),
+                )
+            }
+            ControllerAuthTransitionNotification::Failed {
+                username,
+                room,
+                hide_from_osd,
+            } => {
+                if hide_from_osd {
+                    return Vec::new();
+                }
+                (
+                    GuiTransientNotificationLevel::Error,
+                    format!("Controller access failed for {username} in {room}."),
+                )
+            }
+        };
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
+    fn autoplay_countdown_action(
+        notification: AutoplayCountdownNotification,
+    ) -> Vec<GuiShellAction> {
+        let message = format!(
+            "Autoplay in {} seconds with {} ready users.",
+            notification.seconds_left, notification.ready_user_count
+        );
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
+    fn session_runtime_users(
+        &self,
+        room_name: &str,
+        local_username: Option<&str>,
+        local_is_controller: bool,
+    ) -> Vec<MainWindowRuntimeUserSnapshot> {
+        let session = self.runtime.session();
+        let mut users = Vec::new();
+        if let Some(local_username) = local_username {
+            users.push(MainWindowRuntimeUserSnapshot {
+                username: local_username.to_owned(),
+                is_self: true,
+                is_ready: session.user_ready(local_username).unwrap_or(false),
+                is_controller: local_is_controller,
+            });
+        }
+        for username in &self.tracked_remote_usernames {
+            if Some(username.as_str()) == local_username {
+                continue;
+            }
+            if session.user_room(username) != Some(room_name) {
+                continue;
+            }
+            users.push(MainWindowRuntimeUserSnapshot {
+                username: username.clone(),
+                is_self: false,
+                is_ready: session.user_ready(username).unwrap_or(false),
+                is_controller: session.user_controller(username).unwrap_or(false),
+            });
+        }
+        users
+    }
+
+    fn main_window_runtime_snapshot(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<MainWindowRuntimeSnapshot> {
+        let baseline_main_window =
+            MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
+        let session = self.runtime.session();
+        let room_name = session
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let local_username = session
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let controlled_room_active = room_name.starts_with('+');
+        let local_is_controller =
+            controlled_room_active && session.local_can_control() == Some(true);
+        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        snapshot.shared_playlist_enabled = baseline_main_window.shared_playlist_enabled;
+        snapshot.playlist = baseline_main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.clone())
+            .collect();
+        snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
+        snapshot.playback_paused = baseline_main_window.playback_paused;
+        snapshot.autoplay_active = baseline_main_window.autoplay_active;
+        snapshot.room_name = room_name.to_owned();
+        snapshot.controlled_room_active = controlled_room_active;
+        snapshot.users = self.session_runtime_users(room_name, local_username, local_is_controller);
+        if let Some(playlist) = session.current_room_playlist() {
+            snapshot.shared_playlist_enabled = true;
+            snapshot.playlist = playlist.files.clone();
+        }
+        let playback_runtime_available =
+            state.main_window.playback.can_toggle_pause || state.main_window.playback.can_seek;
+        snapshot.can_manage_playlist =
+            snapshot.shared_playlist_enabled && playback_runtime_available;
+        if let Some(playstate) = session.current_room_playstate() {
+            if let Some(paused) = playstate.paused {
+                snapshot.playback_paused = paused;
+            }
+        }
+        if session.server_chat_supported().is_none() {
+            snapshot.can_set_ready = false;
+        } else if let Some(server_readiness_supported) = session.server_readiness_supported() {
+            snapshot.can_set_ready = server_readiness_supported;
+        }
+        Some(snapshot)
+    }
+
+    fn session_playlist_selection_index(&self, playlist_len: usize) -> Option<usize> {
+        self.runtime
+            .session()
+            .current_room_playlist()
+            .and_then(|playlist| playlist.index)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|&index| index < playlist_len)
+    }
+
+    fn interaction_runtime_snapshot(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        playlist_len: usize,
+    ) -> Option<GuiInteractionRuntimeSnapshot> {
+        let selected_main_window_playlist = self.session_playlist_selection_index(playlist_len);
+        if state.selection.selected_main_window_playlist == selected_main_window_playlist {
+            return None;
+        }
+
+        let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(state);
+        snapshot.selection.selected_main_window_playlist = selected_main_window_playlist;
+        Some(snapshot)
+    }
+
+    fn menu_dialog_runtime_snapshot(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        shared_playlist_enabled: bool,
+    ) -> Option<MenuDialogRuntimeSnapshot> {
+        let mut action_overrides = Vec::new();
+        let settings = state.configuration.to_stored_settings();
+        let config_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
+            || settings.chat_output_enabled.unwrap_or(false);
+        let desired_show_chat_enabled =
+            config_chat_enabled && self.runtime.session().server_chat_supported() == Some(true);
+
+        let current_show_chat_enabled = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Show Chat")
+            })
+            .map(|action| action.enabled);
+        if current_show_chat_enabled
+            .is_some_and(|current_enabled| current_enabled != desired_show_chat_enabled)
+        {
+            action_overrides.push(MenuActionRuntimeOverride {
+                section_title: "Window",
+                action_label: "Show Chat",
+                enabled: desired_show_chat_enabled,
+            });
+        }
+
+        let current_show_playlist_enabled = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Show Playlist")
+            })
+            .map(|action| action.enabled);
+        if current_show_playlist_enabled
+            .is_some_and(|current_enabled| current_enabled != shared_playlist_enabled)
+        {
+            action_overrides.push(MenuActionRuntimeOverride {
+                section_title: "Window",
+                action_label: "Show Playlist",
+                enabled: shared_playlist_enabled,
+            });
+        }
+
+        let current_playlist_actions_enabled = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Playlist Actions")
+            })
+            .map(|action| action.enabled);
+        let playback_runtime_available =
+            state.main_window.playback.can_toggle_pause || state.main_window.playback.can_seek;
+        let desired_playlist_actions_enabled =
+            shared_playlist_enabled && playback_runtime_available;
+        if current_playlist_actions_enabled
+            .is_some_and(|current_enabled| current_enabled != desired_playlist_actions_enabled)
+        {
+            action_overrides.push(MenuActionRuntimeOverride {
+                section_title: "Playback",
+                action_label: "Playlist Actions",
+                enabled: desired_playlist_actions_enabled,
+            });
+        }
+
+        if action_overrides.is_empty() {
+            return None;
+        }
+
+        Some(MenuDialogRuntimeSnapshot {
+            action_overrides,
+            tls_prompt_expected: state.menus.tls_prompt_expected,
+            update_notice_expected: state.menus.update_notice_expected,
+            about_dialog_available: state.menus.about_dialog_available,
+        })
+    }
+}
+
+impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
+    fn drain_gui_actions(&mut self, state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        let mut actions = Vec::new();
+        let mut trailing_actions = Vec::new();
+        if let Err(error) = self.runtime.run_user_change_notifications_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core user-change dispatch failed: {error}"),
+            });
+        } else {
+            for notification in self.runtime.drain_user_change_notifications() {
+                self.note_user_change(notification.clone());
+                if let Some(action) = Self::user_change_action(notification) {
+                    trailing_actions.push(action);
+                }
+            }
+        }
+        if let Err(error) = self.runtime.run_reconnect_transition_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core reconnect transition dispatch failed: {error}"),
+            });
+        } else {
+            trailing_actions.extend(
+                self.runtime
+                    .drain_reconnect_notifications()
+                    .into_iter()
+                    .flat_map(Self::reconnect_transition_actions),
+            );
+        }
+        if let Err(error) = self.runtime.run_reconnect_state_restore_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core reconnect state-restore dispatch failed: {error}"),
+            });
+        }
+        if let Err(error) = self
+            .runtime
+            .run_reconnect_state_restore_validation_if_needed()
+        {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core reconnect validation dispatch failed: {error}"),
+            });
+        }
+        if !actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    ..
+                }
+            )
+        }) {
+            trailing_actions.extend(
+                self.runtime
+                    .drain_reconnect_notifications()
+                    .into_iter()
+                    .flat_map(Self::reconnect_transition_actions),
+            );
+        } else {
+            self.runtime.drain_reconnect_notifications();
+        }
+        if let Err(error) = self.runtime.run_controller_auth_notifications_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core controller-auth dispatch failed: {error}"),
+            });
+        } else {
+            trailing_actions.extend(
+                self.runtime
+                    .drain_controller_auth_notifications()
+                    .into_iter()
+                    .flat_map(Self::controller_auth_transition_action),
+            );
+        }
+        trailing_actions.extend(
+            self.runtime
+                .drain_autoplay_notifications()
+                .into_iter()
+                .flat_map(Self::autoplay_countdown_action),
+        );
+        if let Err(error) = self.runtime.run_chat_notifications_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core chat notification dispatch failed: {error}"),
+            });
+        }
+
+        let main_window_runtime_snapshot = self.main_window_runtime_snapshot(state);
+        let interaction_runtime_snapshot = self.interaction_runtime_snapshot(
+            state,
+            main_window_runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.playlist.len())
+                .unwrap_or_else(|| state.main_window.playlist.len()),
+        );
+        let menu_dialog_runtime_snapshot = self.menu_dialog_runtime_snapshot(
+            state,
+            main_window_runtime_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.shared_playlist_enabled)
+                .unwrap_or(state.main_window.shared_playlist_enabled),
+        );
+        if let Some(snapshot) = main_window_runtime_snapshot {
+            if snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window) {
+                actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
+            }
+        }
+        if let Some(snapshot) = interaction_runtime_snapshot {
+            actions.push(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot));
+        }
+        if let Some(snapshot) = menu_dialog_runtime_snapshot {
+            actions.push(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot));
+        }
+
+        actions.extend(
+            self.runtime
+                .drain_chat_notifications()
+                .into_iter()
+                .map(|notification| match notification {
+                    ChatNotification::Message { username, message } => {
+                        GuiShellAction::PushChatMessage {
+                            sender: username.unwrap_or_else(|| "Server".to_owned()),
+                            message,
+                        }
+                    }
+                }),
+        );
+        actions.extend(trailing_actions);
+        actions
+    }
+
+    fn adjust_command_availability(
+        &self,
+        _state: &SyncplayGuiShellAppState,
+        mut command_availability: GuiCommandAvailabilityState,
+    ) -> GuiCommandAvailabilityState {
+        if self.runtime.session().server_chat_supported() != Some(true) {
+            command_availability.can_send_chat_message = false;
+        }
+        command_availability
+    }
+
+    fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
+        GuiClientCoreChatSessionRuntimeAdapter::flush_outbound_protocol_lines(self)
+    }
+
+    fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
+        GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
+    }
+
+    fn send_chat_message(&mut self, message: String) -> Result<(), String> {
+        match self.runtime.run_send_chat_message(message) {
+            Ok(true) => Ok(()),
+            Ok(false) => match self.runtime.session().server_chat_supported() {
+                None => Err(
+                    "Client-core session runtime cannot send chat until the server Hello enables chat."
+                        .to_owned(),
+                ),
+                Some(false) => Err(
+                    "Client-core session runtime cannot send chat because the server disabled chat."
+                        .to_owned(),
+                ),
+                Some(true) => Err(
+                    "Client-core session runtime did not queue an outbound chat message."
+                        .to_owned(),
+                ),
+            },
+            Err(error) => Err(format!(
+                "Client-core session runtime chat dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn connect_public_server(
+        &mut self,
+        selected_server: Option<(String, String)>,
+    ) -> Result<(), String> {
+        let Some((_label, address)) = selected_server else {
+            return Err(
+                "Client-core session runtime cannot connect because no public server is selected."
+                    .to_owned(),
+            );
+        };
+        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+        if host.trim().is_empty() {
+            return Err(
+                "Client-core session runtime cannot connect because the selected public-server address is invalid."
+                    .to_owned(),
+            );
+        }
+        self.reset_session_for_reconnect();
+        Ok(())
+    }
+
+    fn refresh_public_servers(
+        &mut self,
+        _current_servers: Vec<(String, String)>,
+    ) -> Result<Vec<(String, String)>, String> {
+        Err(
+            "Client-core chat session runtime does not yet implement public-server refresh."
+                .to_owned(),
+        )
+    }
+
+    fn search_missing_media(
+        &mut self,
+        _directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        Err(
+            "Client-core chat session runtime does not yet implement missing-media search."
+                .to_owned(),
+        )
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Default)]
+struct GuiQueuedSessionTransportHandle {
+    queued_inbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+    queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
+}
+
+#[allow(dead_code)]
+impl GuiQueuedSessionTransportHandle {
+    fn push_inbound_protocol_line(&self, line: impl Into<String>) {
+        self.push_inbound_protocol_lines([line.into()]);
+    }
+
+    fn push_inbound_protocol_lines<I>(&self, lines: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut queue = self
+            .queued_inbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.extend(lines);
+    }
+
+    fn drain_inbound_protocol_lines(&self) -> Vec<String> {
+        let mut queue = self
+            .queued_inbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.drain(..).collect()
+    }
+
+    fn push_outbound_protocol_lines<I>(&self, lines: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut queue = self
+            .queued_outbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.extend(lines);
+    }
+
+    fn drain_outbound_protocol_lines(&self) -> Vec<String> {
+        let mut queue = self
+            .queued_outbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.drain(..).collect()
+    }
+
+    fn clear_protocol_lines(&self) {
+        self.queued_inbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.queued_outbound_protocol_lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
+trait GuiSessionTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String>;
+}
+
+#[allow(dead_code)]
+struct GuiLoopbackSessionTransportDriver {
+    echo_username: String,
+}
+
+#[allow(dead_code)]
+impl GuiLoopbackSessionTransportDriver {
+    fn new(echo_username: impl Into<String>) -> Self {
+        Self {
+            echo_username: echo_username.into(),
+        }
+    }
+
+    fn json_string_literal(input: &str) -> Option<&str> {
+        let mut characters = input.char_indices();
+        match characters.next() {
+            Some((_, '"')) => {}
+            _ => return None,
+        }
+
+        let mut escaped = false;
+        for (index, character) in characters {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => return Some(&input[..=index]),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn chat_message_literal(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("{\"Chat\":")?.strip_suffix('}')?;
+        if rest.starts_with('"') {
+            return Self::json_string_literal(rest);
+        }
+
+        let message_key = "\"message\":";
+        let message_index = rest.find(message_key)?;
+        let message_start = message_index + message_key.len();
+        Self::json_string_literal(rest.get(message_start..)?)
+    }
+
+    fn translated_inbound_line(&self, outbound_line: &str) -> String {
+        let Some(message_literal) = Self::chat_message_literal(outbound_line) else {
+            return outbound_line.to_owned();
+        };
+        format!(
+            r#"{{"Chat":{{"username":{:?},"message":{message_literal}}}}}"#,
+            self.echo_username
+        )
+    }
+}
+
+impl GuiSessionTransportDriver for GuiLoopbackSessionTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        let outbound_protocol_lines = transport.drain_outbound_protocol_lines();
+        if outbound_protocol_lines.is_empty() {
+            return Ok(());
+        }
+        transport.push_inbound_protocol_lines(
+            outbound_protocol_lines
+                .into_iter()
+                .map(|line| self.translated_inbound_line(&line)),
+        );
+        Ok(())
+    }
+}
+
+struct GuiTcpSessionTransportDriver {
+    stream: Option<TcpStream>,
+    pending_outbound_lines: VecDeque<Vec<u8>>,
+    pending_outbound_offset: usize,
+    inbound_buffer: Vec<u8>,
+}
+
+impl GuiTcpSessionTransportDriver {
+    fn connect(host: &str, port: u16) -> Result<Self, String> {
+        let stream = TcpStream::connect((host, port)).map_err(|error| {
+            format!("Session transport TCP connect to {host}:{port} failed: {error}")
+        })?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| format!("Session transport TCP nonblocking setup failed: {error}"))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("Session transport TCP nodelay setup failed: {error}"))?;
+        Ok(Self {
+            stream: Some(stream),
+            pending_outbound_lines: VecDeque::new(),
+            pending_outbound_offset: 0,
+            inbound_buffer: Vec::new(),
+        })
+    }
+
+    fn connect_from_host_arg(host_arg: &str) -> Result<Self, String> {
+        let (host, port) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
+        let Some(port) = port.or(Some(8999)) else {
+            return Err("Session transport TCP port resolution failed.".to_owned());
+        };
+        Self::connect(&host, port)
+    }
+
+    fn disconnect_with_error(&mut self, message: String) -> Result<(), String> {
+        self.stream = None;
+        self.pending_outbound_lines.clear();
+        self.pending_outbound_offset = 0;
+        self.inbound_buffer.clear();
+        Err(message)
+    }
+
+    fn queue_outbound_lines(&mut self, transport: &GuiQueuedSessionTransportHandle) {
+        for line in transport.drain_outbound_protocol_lines() {
+            let mut encoded_line = line.into_bytes();
+            encoded_line.push(b'\n');
+            self.pending_outbound_lines.push_back(encoded_line);
+        }
+    }
+
+    fn flush_outbound_lines(&mut self) -> Result<(), String> {
+        while !self.pending_outbound_lines.is_empty() {
+            let Some(stream) = self.stream.as_mut() else {
+                return Ok(());
+            };
+            let Some(front) = self.pending_outbound_lines.front() else {
+                break;
+            };
+            let front_len = front.len();
+            let pending_slice = &front[self.pending_outbound_offset..];
+            match stream.write(pending_slice) {
+                Ok(0) => {
+                    return self.disconnect_with_error(
+                        "Session transport TCP connection closed while writing.".to_owned(),
+                    );
+                }
+                Ok(written) => {
+                    self.pending_outbound_offset += written;
+                    if self.pending_outbound_offset >= front_len {
+                        self.pending_outbound_lines.pop_front();
+                        self.pending_outbound_offset = 0;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    return self.disconnect_with_error(format!(
+                        "Session transport TCP write failed: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_inbound_lines(
+        &mut self,
+        transport: &GuiQueuedSessionTransportHandle,
+    ) -> Result<(), String> {
+        let mut read_buffer = [0_u8; 4096];
+        let mut closed_by_server = false;
+        loop {
+            let Some(stream) = self.stream.as_mut() else {
+                break;
+            };
+            match stream.read(&mut read_buffer) {
+                Ok(0) => {
+                    self.stream = None;
+                    closed_by_server = true;
+                    break;
+                }
+                Ok(read_bytes) => self
+                    .inbound_buffer
+                    .extend_from_slice(&read_buffer[..read_bytes]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    return self.disconnect_with_error(format!(
+                        "Session transport TCP read failed: {error}"
+                    ));
+                }
+            }
+        }
+
+        let mut complete_lines = Vec::new();
+        while let Some(newline_index) = self.inbound_buffer.iter().position(|byte| *byte == b'\n') {
+            let mut raw_line: Vec<u8> = self.inbound_buffer.drain(..=newline_index).collect();
+            if raw_line.last() == Some(&b'\n') {
+                raw_line.pop();
+            }
+            if raw_line.last() == Some(&b'\r') {
+                raw_line.pop();
+            }
+            if raw_line.is_empty() {
+                continue;
+            }
+            let line = String::from_utf8(raw_line).map_err(|error| {
+                format!("Session transport TCP received a non-UTF-8 line: {error}")
+            })?;
+            complete_lines.push(line);
+        }
+        if !complete_lines.is_empty() {
+            transport.push_inbound_protocol_lines(complete_lines);
+        }
+        if closed_by_server && !self.inbound_buffer.is_empty() {
+            self.inbound_buffer.clear();
+            return Err(
+                "Session transport TCP connection closed with an incomplete inbound line."
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
+    fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String> {
+        self.queue_outbound_lines(transport);
+        self.flush_outbound_lines()?;
+        self.drain_inbound_lines(transport)
+    }
+}
+
+struct GuiPersistedConfigRuntimeOwner {
+    config_path: Option<PathBuf>,
+    session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
+    session_transport: Option<GuiQueuedSessionTransportHandle>,
+    session_transport_driver: Option<Box<dyn GuiSessionTransportDriver>>,
+    player: Option<Box<dyn PlayerAdapter>>,
+    player_unavailability_reason: Option<String>,
+    player_local_file: Option<LocalFileUpdate>,
+    player_position_seconds: Option<f64>,
+    player_paused: Option<bool>,
+}
+
+impl GuiPersistedConfigRuntimeOwner {
+    fn with_config_path(config_path: Option<PathBuf>) -> Self {
+        Self {
+            config_path,
+            session: None,
+            session_transport: None,
+            session_transport_driver: None,
+            player: None,
+            player_unavailability_reason: None,
+            player_local_file: None,
+            player_position_seconds: None,
+            player_paused: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn with_session_runtime(mut self, session: Box<dyn GuiSessionRuntimeAdapter>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_session_transport(
+        mut self,
+        session_transport: GuiQueuedSessionTransportHandle,
+    ) -> Self {
+        self.session_transport = Some(session_transport);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_session_transport_driver(
+        mut self,
+        session_transport_driver: Box<dyn GuiSessionTransportDriver>,
+    ) -> Self {
+        self.session_transport_driver = Some(session_transport_driver);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_session_runtime(
+        self,
+        username: impl Into<String>,
+        room: impl Into<String>,
+    ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
+        let session = Box::new(GuiClientCoreChatSessionRuntimeAdapter::new(username, room)?);
+        let session_transport = GuiQueuedSessionTransportHandle::default();
+        Ok((
+            self.with_session_runtime(session)
+                .with_session_transport(session_transport.clone()),
+            session_transport,
+        ))
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_loopback_session_runtime(
+        self,
+        username: impl Into<String>,
+        room: impl Into<String>,
+    ) -> Result<Self, String> {
+        let username = username.into();
+        let room = room.into();
+        let (owner, _session_transport) =
+            self.with_client_core_chat_session_runtime(username.clone(), room)?;
+        Ok(
+            owner.with_session_transport_driver(Box::new(GuiLoopbackSessionTransportDriver::new(
+                username,
+            ))),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_tcp_session_runtime(
+        self,
+        username: impl Into<String>,
+        room: impl Into<String>,
+        host_arg: impl AsRef<str>,
+    ) -> Result<Self, String> {
+        let (owner, _session_transport) =
+            self.with_client_core_chat_session_runtime(username, room)?;
+        Ok(owner.with_session_transport_driver(Box::new(
+            GuiTcpSessionTransportDriver::connect_from_host_arg(host_arg.as_ref())?,
+        )))
+    }
+
+    fn pump_session_transport_driver(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(session_transport) = self.session_transport.as_ref() else {
+            return;
+        };
+        let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
+            return;
+        };
+        if let Err(error) = session_transport_driver.pump(session_transport) {
+            Self::push_actions_and_project(
+                handle,
+                projected_state,
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: format!("Session transport driver pump failed: {error}"),
+                }],
+            );
+        }
+    }
+
+    fn drain_session_transport_inbound(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(session_transport) = self.session_transport.as_ref() else {
+            return;
+        };
+        let inbound_protocol_lines = session_transport.drain_inbound_protocol_lines();
+        if inbound_protocol_lines.is_empty() {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for inbound_protocol_line in inbound_protocol_lines {
+            if let Err(error) = session.apply_message_json(&inbound_protocol_line) {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: format!("Inbound session transport message apply failed: {error}"),
+                    }],
+                );
+            }
+        }
+    }
+
+    fn drain_session_runtime_actions(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            session.drain_gui_actions(projected_state),
+        );
+    }
+
+    fn flush_session_transport_outbound(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(session_transport) = self.session_transport.as_ref() else {
+            return;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.flush_outbound_protocol_lines() {
+            Ok(outbound_protocol_lines) => {
+                if !outbound_protocol_lines.is_empty() {
+                    session_transport.push_outbound_protocol_lines(outbound_protocol_lines);
+                }
+            }
+            Err(error) => {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: format!("Outbound session transport flush failed: {error}"),
+                    }],
+                );
+            }
+        }
+    }
+
+    fn push_runtime_unavailable(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
+        handle.push_actions([
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]);
+    }
+
+    fn open_media_unavailable_message(&self, selected_paths: &[String]) -> String {
+        let base = if selected_paths.len() == 1 {
+            "Opening media requires a playback runtime connection; the selected file was not opened."
+                .to_owned()
+        } else {
+            format!(
+                "Opening media requires a playback runtime connection; {} selected files were not opened.",
+                selected_paths.len()
+            )
+        };
+        if let Some(reason) = self.player_unavailability_reason.as_deref() {
+            format!("{base} {reason}")
+        } else {
+            base
+        }
+    }
+
+    fn seek_unavailable_message(&self, offset_seconds: f64) -> String {
+        let base = format!(
+            "Playback seek requires a playback runtime connection; the {} second request was not applied.",
+            offset_seconds
+        );
+        if let Some(reason) = self.player_unavailability_reason.as_deref() {
+            format!("{base} {reason}")
+        } else {
+            base
+        }
+    }
+
+    fn toggle_pause_unavailable_message(&self) -> String {
+        let base =
+            "Playback toggle requires a playback runtime connection; the pause request was not applied."
+                .to_owned();
+        if let Some(reason) = self.player_unavailability_reason.as_deref() {
+            format!("{base} {reason}")
+        } else {
+            base
+        }
+    }
+
+    fn send_chat_unavailable_message(&self) -> String {
+        "Chat sending requires a session runtime connection; the message was not sent.".to_owned()
+    }
+
+    fn connect_public_server_unavailable_message(&self) -> String {
+        "Public server connect requires a session runtime connection; the selected server was not contacted."
+            .to_owned()
+    }
+
+    fn refresh_public_servers_unavailable_message(&self) -> String {
+        "Public server refresh requires a session runtime connection; the server list was not refreshed."
+            .to_owned()
+    }
+
+    fn search_missing_media_unavailable_message(&self) -> String {
+        "Missing-media search requires a session runtime connection; no search was performed."
+            .to_owned()
+    }
+
+    fn push_actions_and_project(
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        actions: Vec<GuiShellAction>,
+    ) {
+        if actions.is_empty() {
+            return;
+        }
+        handle.push_actions(actions.clone());
+        for action in actions {
+            let _ = projected_state.apply(action);
+        }
+    }
+
+    fn clear_pending_operation_with_runtime_error(
+        &self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        message: String,
+    ) {
+        let mut cleared_state = projected_state.clone();
+        cleared_state.pending_operation = None;
+        let actions = vec![
+            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                command_availability: self
+                    .command_availability_for_runtime_state(&cleared_state, self.player.is_some()),
+                pending_operation: None,
+            }),
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message,
+            },
+        ];
+        Self::push_actions_and_project(handle, projected_state, actions);
+    }
+
+    fn push_player_success(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
+        handle.push_actions([
+            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]);
+    }
+
+    fn push_player_error(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
+        handle.push_actions([
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]);
+    }
+
+    fn refresh_player_state(&mut self) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        while let Some(update) = player.take_playback_telemetry_update() {
+            if let Some(paused) = update.paused {
+                self.player_paused = Some(paused);
+            }
+            if let Some(position_seconds) = update.position_seconds {
+                self.player_position_seconds = Some(position_seconds);
+            }
+        }
+        while let Some(update) = player.take_local_file_update() {
+            self.player_local_file = Some(update);
+            if self.player_position_seconds.is_none() {
+                self.player_position_seconds = Some(0.0);
+            }
+        }
+    }
+
+    fn format_local_file_playlist_entry(local_file: &LocalFileUpdate) -> String {
+        let mut details = Vec::new();
+        if let Some(duration_seconds) = local_file.duration_seconds {
+            details.push(format!("{duration_seconds:.3}s"));
+        }
+        if let Some(size_bytes) = local_file.size_bytes {
+            details.push(format!("{size_bytes} bytes"));
+        }
+        if details.is_empty() {
+            local_file.name.clone()
+        } else {
+            format!("{} [{}]", local_file.name, details.join(", "))
+        }
+    }
+
+    fn player_local_file_playlist_entries(&self) -> Vec<String> {
+        self.player_local_file
+            .as_ref()
+            .map(Self::format_local_file_playlist_entry)
+            .into_iter()
+            .collect()
+    }
+
+    fn command_availability_for_runtime_state(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        player_attached: bool,
+    ) -> GuiCommandAvailabilityState {
+        let settings = state.configuration.to_stored_settings();
+        let busy = state.pending_operation.is_some();
+        let command_availability = GuiCommandAvailabilityState {
+            can_save_configuration: !busy && state.validation.issues.is_empty(),
+            can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
+            can_reload_configuration: !busy,
+            can_connect_public_server: !busy && state.public_servers.can_connect,
+            can_refresh_public_servers: !busy && state.public_servers.can_refresh,
+            can_search_missing_media: !busy && state.media_search.can_search_missing_media,
+            can_toggle_pause: !busy && player_attached,
+            can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
+        };
+        if let Some(session) = self.session.as_ref() {
+            session.adjust_command_availability(state, command_availability)
+        } else {
+            command_availability
+        }
+    }
+
+    fn placeholder_local_file_for_path(path: &str) -> LocalFileUpdate {
+        let name = if path.contains("://") {
+            path.to_owned()
+        } else {
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned()
+        };
+        LocalFileUpdate::new(name).with_path(path.to_owned())
+    }
+
+    fn sync_player_runtime_state(
+        &self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let player_attached = self.player.is_some();
+
+        let mut desired_main_window =
+            MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        let mut main_window_changed = false;
+
+        if desired_main_window.can_toggle_pause != player_attached {
+            desired_main_window.can_toggle_pause = player_attached;
+            main_window_changed = true;
+        }
+        if desired_main_window.can_seek != player_attached {
+            desired_main_window.can_seek = player_attached;
+            main_window_changed = true;
+        }
+        let can_manage_playlist = player_attached && desired_main_window.shared_playlist_enabled;
+        if desired_main_window.can_manage_playlist != can_manage_playlist {
+            desired_main_window.can_manage_playlist = can_manage_playlist;
+            main_window_changed = true;
+        }
+        if !desired_main_window.shared_playlist_enabled {
+            let desired_playlist = self.player_local_file_playlist_entries();
+            if desired_main_window.playlist != desired_playlist {
+                desired_main_window.playlist = desired_playlist;
+                main_window_changed = true;
+            }
+        }
+        if player_attached {
+            if let Some(paused) = self.player_paused {
+                if desired_main_window.playback_paused != paused {
+                    desired_main_window.playback_paused = paused;
+                    main_window_changed = true;
+                }
+            }
+        }
+        if main_window_changed {
+            handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                desired_main_window,
+            ));
+        }
+
+        let mut action_overrides = Vec::new();
+        for (action_label, enabled) in [
+            ("Toggle Pause", player_attached),
+            ("Seek", player_attached),
+            (
+                "Playlist Actions",
+                player_attached && state.main_window.shared_playlist_enabled,
+            ),
+        ] {
+            let current_enabled = state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Playback")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == action_label)
+                })
+                .map(|action| action.enabled);
+            if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
+                action_overrides.push(MenuActionRuntimeOverride {
+                    section_title: "Playback",
+                    action_label,
+                    enabled,
+                });
+            }
+        }
+        if !action_overrides.is_empty() {
+            handle.push_action(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+                MenuDialogRuntimeSnapshot {
+                    action_overrides,
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                },
+            ));
+        }
+
+        let desired_command_availability =
+            self.command_availability_for_runtime_state(state, player_attached);
+        if state.commands != desired_command_availability {
+            handle.push_action(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+                GuiCommandRuntimeSnapshot {
+                    command_availability: desired_command_availability,
+                    pending_operation: state.pending_operation.as_ref().map(|pending| pending.kind),
+                },
+            ));
+        }
+    }
+}
+
+impl Default for GuiPersistedConfigRuntimeOwner {
+    fn default() -> Self {
+        let mut owner =
+            Self::with_config_path(resolve_syncplay_gui_config_path_legacy_compatible());
+        if let Some(ipc_path) = explicit_mpv_ipc_path_from_env() {
+            match MpvAdapter::with_json_ipc(&ipc_path) {
+                Ok(adapter) => {
+                    owner.player = Some(Box::new(adapter));
+                }
+                Err(error) => {
+                    owner.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC attach failed at '{ipc_path}': {error}"
+                    ));
+                }
+            }
+        } else {
+            owner.player_unavailability_reason = Some(
+                "Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
+                    .to_owned(),
+            );
+        }
+        owner
+    }
+}
+
+impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
+    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SyncplayGuiShellAppState) {
+        self.refresh_player_state();
+        let mut projected_state = state.clone();
+        self.pump_session_transport_driver(handle, &mut projected_state);
+        self.drain_session_transport_inbound(handle, &mut projected_state);
+        self.drain_session_runtime_actions(handle, &mut projected_state);
+        self.flush_session_transport_outbound(handle, &mut projected_state);
+        self.pump_session_transport_driver(handle, &mut projected_state);
+        self.drain_session_transport_inbound(handle, &mut projected_state);
+        self.drain_session_runtime_actions(handle, &mut projected_state);
+        for request in handle.drain_requests() {
+            match request {
+                request @ GuiRuntimeRequest::OpenMediaFiles {
+                    load_into_shared_playlist: true,
+                    ..
+                } => {
+                    Self::push_actions_and_project(
+                        handle,
+                        &mut projected_state,
+                        request.preview_actions(),
+                    );
+                }
+                GuiRuntimeRequest::OpenMediaFiles {
+                    paths,
+                    load_into_shared_playlist: false,
+                } => {
+                    if paths.is_empty() {
+                        continue;
+                    }
+                    if self.player.is_some() {
+                        let selected_path = paths[0].clone();
+                        let (player_name, open_result) = {
+                            let player = self.player.as_mut().expect("player should exist");
+                            (player.name(), player.open_file(&selected_path))
+                        };
+                        match open_result {
+                            Ok(()) => {
+                                self.player_local_file =
+                                    Some(Self::placeholder_local_file_for_path(&selected_path));
+                                self.player_position_seconds = Some(0.0);
+                                self.refresh_player_state();
+                                let message = if paths.len() == 1 {
+                                    format!(
+                                        "Opened media file through the attached {} player: {}.",
+                                        player_name, selected_path
+                                    )
+                                } else {
+                                    format!(
+                                        "Opened the first selected media file through the attached {} player: {}. Ignored {} additional selections.",
+                                        player_name,
+                                        selected_path,
+                                        paths.len() - 1
+                                    )
+                                };
+                                handle.push_actions([
+                                    GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                                    GuiShellAction::PushTransientNotification {
+                                        level: GuiTransientNotificationLevel::Success,
+                                        message: message.clone(),
+                                    },
+                                    GuiShellAction::AnnounceSystemChatEvent(message),
+                                ]);
+                            }
+                            Err(error) => {
+                                let message = format!(
+                                    "Opening media through the attached {} player failed: {error}",
+                                    player_name
+                                );
+                                handle.push_actions([
+                                    GuiShellAction::PushTransientNotification {
+                                        level: GuiTransientNotificationLevel::Error,
+                                        message: message.clone(),
+                                    },
+                                    GuiShellAction::AnnounceSystemChatEvent(message),
+                                ]);
+                            }
+                        }
+                    } else {
+                        Self::push_runtime_unavailable(
+                            handle,
+                            self.open_media_unavailable_message(&paths),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::SeekOffset(offset_seconds) => {
+                    self.refresh_player_state();
+                    if self.player.is_some() {
+                        let target_position_seconds =
+                            (self.player_position_seconds.unwrap_or(0.0) + offset_seconds).max(0.0);
+                        let (player_name, seek_result) = {
+                            let player = self.player.as_mut().expect("player should exist");
+                            (player.name(), player.set_position(target_position_seconds))
+                        };
+                        match seek_result {
+                            Ok(()) => {
+                                self.player_position_seconds = Some(target_position_seconds);
+                                self.refresh_player_state();
+                                Self::push_player_success(
+                                    handle,
+                                    format!(
+                                        "Applied a {} second seek via the attached {} player (target {:.3} seconds).",
+                                        offset_seconds, player_name, target_position_seconds
+                                    ),
+                                );
+                            }
+                            Err(error) => {
+                                Self::push_player_error(
+                                    handle,
+                                    format!(
+                                        "Playback seek through the attached {} player failed: {error}",
+                                        player_name
+                                    ),
+                                );
+                            }
+                        }
+                    } else {
+                        Self::push_runtime_unavailable(
+                            handle,
+                            self.seek_unavailable_message(offset_seconds),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::TogglePlaybackPause,
+                ) => {
+                    self.refresh_player_state();
+                    if self.player.is_some() {
+                        let target_paused = !projected_state.main_window.playback_paused;
+                        let (player_name, toggle_result) = {
+                            let player = self.player.as_mut().expect("player should exist");
+                            (player.name(), player.set_paused(target_paused))
+                        };
+                        let actions = match toggle_result {
+                            Ok(()) => {
+                                self.player_paused = Some(target_paused);
+                                self.refresh_player_state();
+                                vec![GuiShellAction::CompletePlaybackPauseToggle]
+                            }
+                            Err(error) => vec![
+                                GuiShellAction::CancelPlaybackPauseToggle,
+                                GuiShellAction::PushTransientNotification {
+                                    level: GuiTransientNotificationLevel::Error,
+                                    message: format!(
+                                        "Playback pause toggle through the attached {} player failed: {error}",
+                                        player_name
+                                    ),
+                                },
+                            ],
+                        };
+                        Self::push_actions_and_project(handle, &mut projected_state, actions);
+                    } else {
+                        let actions = vec![
+                            GuiShellAction::CancelPlaybackPauseToggle,
+                            GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: self.toggle_pause_unavailable_message(),
+                            },
+                        ];
+                        Self::push_actions_and_project(handle, &mut projected_state, actions);
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::ConnectPublicServer,
+                ) => {
+                    if let Some(session) = self.session.as_mut() {
+                        let selected_server = projected_state
+                            .selected_public_server_index()
+                            .and_then(|index| projected_state.public_servers.servers.get(index))
+                            .map(|row| (row.label.clone(), row.address.clone()));
+                        let replacement_transport_driver = if self.session_transport.is_some()
+                            && self.session_transport_driver.is_some()
+                        {
+                            selected_server
+                                .as_ref()
+                                .map(|(_label, address)| {
+                                    GuiTcpSessionTransportDriver::connect_from_host_arg(address)
+                                        .map(|driver| {
+                                            Box::new(driver) as Box<dyn GuiSessionTransportDriver>
+                                        })
+                                })
+                                .transpose()
+                        } else {
+                            Ok(None)
+                        };
+                        let replacement_transport_driver = match replacement_transport_driver {
+                            Ok(driver) => driver,
+                            Err(error) => {
+                                self.clear_pending_operation_with_runtime_error(
+                                    handle,
+                                    &mut projected_state,
+                                    format!(
+                                        "Public server connect through the attached session runtime failed: {error}"
+                                    ),
+                                );
+                                continue;
+                            }
+                        };
+                        match session.connect_public_server(selected_server) {
+                            Ok(()) => {
+                                if let Some(driver) = replacement_transport_driver {
+                                    if let Some(session_transport) = self.session_transport.as_ref() {
+                                        session_transport.clear_protocol_lines();
+                                    }
+                                    self.session_transport_driver = Some(driver);
+                                }
+                                Self::push_actions_and_project(
+                                    handle,
+                                    &mut projected_state,
+                                    vec![GuiShellAction::CompleteSelectedPublicServerConnect],
+                                )
+                            }
+                            Err(error) => self.clear_pending_operation_with_runtime_error(
+                                handle,
+                                &mut projected_state,
+                                format!(
+                                    "Public server connect through the attached session runtime failed: {error}"
+                                ),
+                            ),
+                        }
+                    } else {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            self.connect_public_server_unavailable_message(),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::RefreshPublicServers(_servers),
+                ) => {
+                    if let Some(session) = self.session.as_mut() {
+                        let current_servers = projected_state
+                            .public_servers
+                            .servers
+                            .iter()
+                            .map(|row| (row.label.clone(), row.address.clone()))
+                            .collect();
+                        match session.refresh_public_servers(current_servers) {
+                            Ok(servers) => Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompletePublicServerRefresh(servers)],
+                            ),
+                            Err(error) => self.clear_pending_operation_with_runtime_error(
+                                handle,
+                                &mut projected_state,
+                                format!(
+                                    "Public server refresh through the attached session runtime failed: {error}"
+                                ),
+                            ),
+                        }
+                    } else {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            self.refresh_public_servers_unavailable_message(),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::SearchMissingMedia,
+                ) => {
+                    if let Some(session) = self.session.as_mut() {
+                        let directories = projected_state
+                            .media_search
+                            .directories
+                            .iter()
+                            .map(|row| row.path.clone())
+                            .collect();
+                        match session.search_missing_media(directories) {
+                            Ok(found_path) => Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteMissingMediaSearch(found_path)],
+                            ),
+                            Err(error) => self.clear_pending_operation_with_runtime_error(
+                                handle,
+                                &mut projected_state,
+                                format!(
+                                    "Missing-media search through the attached session runtime failed: {error}"
+                                ),
+                            ),
+                        }
+                    } else {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            self.search_missing_media_unavailable_message(),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::SendChatMessage(message),
+                ) => {
+                    if let Some(session) = self.session.as_mut() {
+                        match session.send_chat_message(message) {
+                            Ok(()) => Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteLocalChatSend],
+                            ),
+                            Err(error) => self.clear_pending_operation_with_runtime_error(
+                                handle,
+                                &mut projected_state,
+                                format!(
+                                    "Chat sending through the attached session runtime failed: {error}"
+                                ),
+                            ),
+                        }
+                    } else {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            self.send_chat_unavailable_message(),
+                        );
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::SaveConfiguration(settings),
+                ) => {
+                    let Some(path) = self.config_path.as_ref() else {
+                        Self::push_actions_and_project(
+                            handle,
+                            &mut projected_state,
+                            vec![GuiShellAction::CompleteConfigurationSave(settings)],
+                        );
+                        continue;
+                    };
+                    match upsert_syncplay_ini_stored_client_settings_mvp_at_path(path, &settings) {
+                        Ok(()) => {
+                            Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteConfigurationSave(settings)],
+                            );
+                        }
+                        Err(error) => Self::push_actions_and_project(
+                            handle,
+                            &mut projected_state,
+                            vec![
+                                GuiShellAction::CancelConfigurationSave,
+                                GuiShellAction::PushTransientNotification {
+                                    level: GuiTransientNotificationLevel::Error,
+                                    message: format!("Configuration save failed: {error}"),
+                                },
+                            ],
+                        ),
+                    }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::ResetConfiguration(settings),
+                ) => {
+                    Self::push_actions_and_project(
+                        handle,
+                        &mut projected_state,
+                        vec![GuiShellAction::CompleteConfigurationReset(settings)],
+                    );
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::ReloadConfiguration(fallback_settings),
+                ) => {
+                    let Some(path) = self.config_path.as_ref() else {
+                        Self::push_actions_and_project(
+                            handle,
+                            &mut projected_state,
+                            vec![GuiShellAction::CompleteConfigurationReload(
+                                fallback_settings,
+                            )],
+                        );
+                        continue;
+                    };
+                    match load_syncplay_ini_stored_client_settings_mvp_from_path(path) {
+                        Ok(Some(settings)) => {
+                            Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteConfigurationReload(settings)],
+                            );
+                        }
+                        Ok(None) => {
+                            Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteConfigurationReload(
+                                    fallback_settings,
+                                )],
+                            );
+                        }
+                        Err(error) => Self::push_actions_and_project(
+                            handle,
+                            &mut projected_state,
+                            vec![
+                                GuiShellAction::CancelConfigurationReload,
+                                GuiShellAction::PushTransientNotification {
+                                    level: GuiTransientNotificationLevel::Error,
+                                    message: format!("Configuration reload failed: {error}"),
+                                },
+                            ],
+                        ),
+                    }
+                }
+                GuiRuntimeRequest::CancelPendingOperation(_kind) => {
+                    Self::push_actions_and_project(
+                        handle,
+                        &mut projected_state,
+                        vec![GuiShellAction::CancelPendingOperation],
+                    );
+                }
+            }
+            self.flush_session_transport_outbound(handle, &mut projected_state);
+            self.pump_session_transport_driver(handle, &mut projected_state);
+            self.drain_session_transport_inbound(handle, &mut projected_state);
+            self.drain_session_runtime_actions(handle, &mut projected_state);
+        }
+        self.sync_player_runtime_state(handle, &projected_state);
+    }
+}
+
+#[derive(Default)]
+struct GuiPreviewRuntimeBridge;
+
+impl GuiPreviewRuntimeBridge {
+    fn preview_media_file_actions(
+        state: &SyncplayGuiShellAppState,
+        paths: Vec<String>,
+    ) -> Vec<GuiShellAction> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+
+        let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::MainWindow)];
+        if state.shared_playlist_events_enabled() {
+            actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(paths));
+            return actions;
+        }
+
+        let message = if paths.len() == 1 {
+            format!("Media file selected: {}.", paths[0])
+        } else {
+            format!("Media files selected: {} entries.", paths.len())
+        };
+        actions.push(GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Info,
+            message: message.clone(),
+        });
+        actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+        actions
+    }
+
+    fn preview_seek_actions(offset_seconds: f64) -> Vec<GuiShellAction> {
+        let message = format!("Seek requested: {} seconds.", offset_seconds);
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
+    fn preview_pending_completion_actions(state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        GuiPendingCompletionRequest::from_state(state)
+            .map(GuiPendingCompletionRequest::into_action)
+            .into_iter()
+            .collect()
+    }
+
+    fn preview_pending_cancel_actions(state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        state
+            .pending_operation
+            .as_ref()
+            .map(|_| GuiShellAction::CancelPendingOperation)
+            .into_iter()
+            .collect()
+    }
+}
+
+impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
+    fn shows_manual_pending_controls(&self) -> bool {
+        true
+    }
+
+    fn actions_for_selected_media_files(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        paths: Vec<String>,
+    ) -> Vec<GuiShellAction> {
+        Self::preview_media_file_actions(state, paths)
+    }
+
+    fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
+        Self::preview_seek_actions(offset_seconds)
+    }
+
+    fn actions_for_pending_completion(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        Self::preview_pending_completion_actions(state)
+    }
+
+    fn actions_for_pending_cancel(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        Self::preview_pending_cancel_actions(state)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+enum GuiPendingCompletionRequest {
+    SaveConfiguration(StoredClientSettingsMvp),
+    ResetConfiguration(StoredClientSettingsMvp),
+    ReloadConfiguration(StoredClientSettingsMvp),
+    ConnectPublicServer,
+    RefreshPublicServers(Vec<(String, String)>),
+    SearchMissingMedia,
+    TogglePlaybackPause,
+    SendChatMessage(String),
+}
+
+impl GuiPendingCompletionRequest {
+    fn from_state(state: &SyncplayGuiShellAppState) -> Option<Self> {
+        let pending = state.pending_operation.as_ref()?;
+        Some(match pending.kind {
+            GuiPendingOperationKind::SaveConfiguration => {
+                Self::SaveConfiguration(state.configuration.to_stored_settings())
+            }
+            GuiPendingOperationKind::ResetConfiguration => {
+                Self::ResetConfiguration(state.saved_configuration.clone())
+            }
+            GuiPendingOperationKind::ReloadConfiguration => {
+                Self::ReloadConfiguration(state.saved_configuration.clone())
+            }
+            GuiPendingOperationKind::ConnectPublicServer => Self::ConnectPublicServer,
+            GuiPendingOperationKind::RefreshPublicServers => Self::RefreshPublicServers(
+                state
+                    .public_servers
+                    .servers
+                    .iter()
+                    .map(|row| (row.label.clone(), row.address.clone()))
+                    .collect(),
+            ),
+            GuiPendingOperationKind::SearchMissingMedia => Self::SearchMissingMedia,
+            GuiPendingOperationKind::TogglePlaybackPause => Self::TogglePlaybackPause,
+            GuiPendingOperationKind::SendChatMessage => {
+                Self::SendChatMessage(state.outgoing_chat_message.clone()?)
+            }
+        })
+    }
+
+    fn into_action(self) -> GuiShellAction {
+        match self {
+            Self::SaveConfiguration(settings) => {
+                GuiShellAction::CompleteConfigurationSave(settings)
+            }
+            Self::ResetConfiguration(settings) => {
+                GuiShellAction::CompleteConfigurationReset(settings)
+            }
+            Self::ReloadConfiguration(settings) => {
+                GuiShellAction::CompleteConfigurationReload(settings)
+            }
+            Self::ConnectPublicServer => GuiShellAction::CompleteSelectedPublicServerConnect,
+            Self::RefreshPublicServers(servers) => {
+                GuiShellAction::CompletePublicServerRefresh(servers)
+            }
+            Self::SearchMissingMedia => GuiShellAction::CompleteMissingMediaSearch(None),
+            Self::TogglePlaybackPause => GuiShellAction::CompletePlaybackPauseToggle,
+            Self::SendChatMessage(_) => GuiShellAction::CompleteLocalChatSend,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+enum GuiRuntimeRequest {
+    OpenMediaFiles {
+        paths: Vec<String>,
+        load_into_shared_playlist: bool,
+    },
+    SeekOffset(f64),
+    CompletePendingOperation(GuiPendingCompletionRequest),
+    CancelPendingOperation(GuiPendingOperationKind),
+}
+
+impl GuiRuntimeRequest {
+    fn preview_actions(&self) -> Vec<GuiShellAction> {
+        match self {
+            Self::OpenMediaFiles {
+                paths,
+                load_into_shared_playlist,
+            } => {
+                if paths.is_empty() {
+                    return Vec::new();
+                }
+
+                let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::MainWindow)];
+                if *load_into_shared_playlist {
+                    actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(paths.clone()));
+                    return actions;
+                }
+
+                let message = if paths.len() == 1 {
+                    format!("Media file selected: {}.", paths[0])
+                } else {
+                    format!("Media files selected: {} entries.", paths.len())
+                };
+                actions.push(GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: message.clone(),
+                });
+                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+                actions
+            }
+            Self::SeekOffset(offset_seconds) => {
+                let message = format!("Seek requested: {} seconds.", offset_seconds);
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            }
+            Self::CompletePendingOperation(request) => vec![request.clone().into_action()],
+            Self::CancelPendingOperation(_) => vec![GuiShellAction::CancelPendingOperation],
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Default)]
+struct GuiQueuedRuntimeBridgeHandle {
+    queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
+    queued_requests: Arc<Mutex<VecDeque<GuiRuntimeRequest>>>,
+}
+
+#[allow(dead_code)]
+impl GuiQueuedRuntimeBridgeHandle {
+    fn push_action(&self, action: GuiShellAction) {
+        self.push_actions([action]);
+    }
+
+    fn push_actions<I>(&self, actions: I)
+    where
+        I: IntoIterator<Item = GuiShellAction>,
+    {
+        let mut queue = self
+            .queued_actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.extend(actions);
+    }
+
+    fn drain_actions(&self) -> Vec<GuiShellAction> {
+        let mut queue = self
+            .queued_actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.drain(..).collect()
+    }
+
+    fn push_request(&self, request: GuiRuntimeRequest) {
+        self.push_requests([request]);
+    }
+
+    fn push_requests<I>(&self, requests: I)
+    where
+        I: IntoIterator<Item = GuiRuntimeRequest>,
+    {
+        let mut queue = self
+            .queued_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.extend(requests);
+    }
+
+    fn drain_requests(&self) -> Vec<GuiRuntimeRequest> {
+        let mut queue = self
+            .queued_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.drain(..).collect()
+    }
+
+    fn drain_preview_response_actions(&self) -> Vec<GuiShellAction> {
+        self.drain_requests()
+            .into_iter()
+            .flat_map(|request| request.preview_actions())
+            .collect()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Default)]
+struct GuiQueuedRuntimeBridge {
+    handle: GuiQueuedRuntimeBridgeHandle,
+    show_manual_pending_controls: bool,
+}
+
+#[allow(dead_code)]
+impl GuiQueuedRuntimeBridge {
+    fn new() -> (Self, GuiQueuedRuntimeBridgeHandle) {
+        Self::new_with_manual_pending_controls(false)
+    }
+
+    fn new_with_manual_pending_controls(
+        show_manual_pending_controls: bool,
+    ) -> (Self, GuiQueuedRuntimeBridgeHandle) {
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        (
+            Self {
+                handle: handle.clone(),
+                show_manual_pending_controls,
+            },
+            handle,
+        )
+    }
+}
+
+impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
+    fn shows_manual_pending_controls(&self) -> bool {
+        self.show_manual_pending_controls
+    }
+
+    fn drain_runtime_actions(&mut self) -> Vec<GuiShellAction> {
+        self.handle.drain_actions()
+    }
+
+    fn actions_for_selected_media_files(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        paths: Vec<String>,
+    ) -> Vec<GuiShellAction> {
+        if !paths.is_empty() {
+            self.handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+                paths,
+                load_into_shared_playlist: state.shared_playlist_events_enabled(),
+            });
+        }
+        Vec::new()
+    }
+
+    fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SeekOffset(offset_seconds));
+        Vec::new()
+    }
+
+    fn actions_for_pending_completion(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        if let Some(request) = GuiPendingCompletionRequest::from_state(state) {
+            self.handle
+                .push_request(GuiRuntimeRequest::CompletePendingOperation(request));
+        }
+        Vec::new()
+    }
+
+    fn actions_for_pending_cancel(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        if let Some(pending) = state.pending_operation.as_ref() {
+            self.handle
+                .push_request(GuiRuntimeRequest::CancelPendingOperation(pending.kind));
+        }
+        Vec::new()
+    }
+}
+
+struct GuiQueuedRuntimeOwnerPump<TOwner> {
+    handle: GuiQueuedRuntimeBridgeHandle,
+    owner: TOwner,
+}
+
+impl<TOwner> GuiQueuedRuntimeOwnerPump<TOwner> {
+    fn new(handle: GuiQueuedRuntimeBridgeHandle, owner: TOwner) -> Self {
+        Self { handle, owner }
+    }
+}
+
+impl<TOwner> GuiNativeRuntimePump for GuiQueuedRuntimeOwnerPump<TOwner>
+where
+    TOwner: GuiQueuedRuntimeOwner,
+{
+    fn pump(&mut self, state: &SyncplayGuiShellAppState) {
+        self.owner.pump(&self.handle, state);
+    }
+}
+
+struct GuiNativeApp {
+    state: SyncplayGuiShellAppState,
+    runtime: Box<dyn GuiNativeRuntimeBridge>,
+    runtime_pump: Box<dyn GuiNativeRuntimePump>,
+    seek_prompt_open: bool,
+    seek_prompt_buffer: String,
+    seek_prompt_error: Option<String>,
+}
+
+impl GuiNativeApp {
+    fn new(
+        _creation_context: &eframe::CreationContext<'_>,
+        state: SyncplayGuiShellAppState,
+        runtime: Box<dyn GuiNativeRuntimeBridge>,
+        runtime_pump: Box<dyn GuiNativeRuntimePump>,
+    ) -> Self {
+        Self {
+            state,
+            runtime,
+            runtime_pump,
+            seek_prompt_open: false,
+            seek_prompt_buffer: String::new(),
+            seek_prompt_error: None,
+        }
+    }
+
+    fn parse_seek_offset_seconds(value: &str) -> Option<f64> {
+        let offset = value.trim().parse::<f64>().ok()?;
+        offset.is_finite().then_some(offset)
+    }
+
+    fn close_seek_prompt(&mut self) {
+        self.seek_prompt_open = false;
+        self.seek_prompt_buffer.clear();
+        self.seek_prompt_error = None;
+    }
+
+    fn show_seek_prompt(&mut self, ctx: &egui::Context) -> (Vec<GuiShellAction>, bool) {
+        if !self.seek_prompt_open {
+            return (Vec::new(), false);
+        }
+
+        let mut open = self.seek_prompt_open;
+        let mut buffer = self.seek_prompt_buffer.clone();
+        let mut submit_requested = false;
+        let mut cancel_requested = false;
+
+        egui::Window::new("Playback Seek")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Enter a seek offset in seconds. Negative values rewind.");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut buffer)
+                        .desired_width(200.0)
+                        .hint_text("e.g. 12.5 or -5"),
+                );
+                let submitted =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if let Some(error) = self.seek_prompt_error.as_deref() {
+                    ui.colored_label(ui.visuals().warn_fg_color, error);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Seek").clicked() {
+                        submit_requested = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_requested = true;
+                    }
+                });
+                if submitted {
+                    submit_requested = true;
+                }
+            });
+
+        let mut local_state_changed = false;
+        if buffer != self.seek_prompt_buffer {
+            self.seek_prompt_buffer = buffer;
+            if self.seek_prompt_error.take().is_some() {
+                local_state_changed = true;
+            }
+        }
+
+        if submit_requested {
+            if let Some(offset_seconds) = Self::parse_seek_offset_seconds(&self.seek_prompt_buffer)
+            {
+                let actions = self.runtime.actions_for_seek_offset(offset_seconds);
+                self.close_seek_prompt();
+                return (actions, true);
+            }
+            self.seek_prompt_error =
+                Some("Seek offset must be a finite number of seconds.".to_owned());
+            return (Vec::new(), true);
+        }
+
+        if !open || cancel_requested {
+            self.close_seek_prompt();
+            return (Vec::new(), true);
+        }
+
+        (Vec::new(), local_state_changed)
+    }
+}
+
+impl eframe::App for GuiNativeApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        self.state.render_shell_widgets(&mut renderer);
+        let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
+        let actions = renderer.show(ctx, &self.state, show_manual_pending_controls);
+        let close_requested = renderer.take_close_requested();
+        let seek_prompt_requested = renderer.take_seek_prompt_requested();
+        let selected_media_files = renderer.take_selected_media_files();
+        let pending_completion_requested = renderer.take_pending_completion_requested();
+        let pending_cancel_requested = renderer.take_pending_cancel_requested();
+        if seek_prompt_requested {
+            self.seek_prompt_open = true;
+            self.seek_prompt_error = None;
+        }
+        let mut state_changed = false;
+        for action in actions {
+            state_changed |= self.state.apply(action);
+        }
+        if let Some(paths) = selected_media_files {
+            for action in self
+                .runtime
+                .actions_for_selected_media_files(&self.state, paths)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if pending_completion_requested {
+            for action in self.runtime.actions_for_pending_completion(&self.state) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if pending_cancel_requested {
+            for action in self.runtime.actions_for_pending_cancel(&self.state) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        let (seek_actions, seek_prompt_state_changed) = self.show_seek_prompt(ctx);
+        for action in seek_actions {
+            state_changed |= self.state.apply(action);
+        }
+        self.runtime_pump.pump(&self.state);
+        for action in self.runtime.drain_runtime_actions() {
+            state_changed |= self.state.apply(action);
+        }
+        if close_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if state_changed
+            || seek_prompt_requested
+            || seek_prompt_state_changed
+            || pending_completion_requested
+            || pending_cancel_requested
+        {
+            ctx.request_repaint();
+        }
+    }
+}
+
+struct GuiEframeNativeHost {
+    runtime: Option<Box<dyn GuiNativeRuntimeBridge>>,
+    runtime_pump: Option<Box<dyn GuiNativeRuntimePump>>,
+}
+
+impl GuiEframeNativeHost {
+    fn native_options() -> eframe::NativeOptions {
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("Syncplay GUI")
+                .with_inner_size([1280.0, 820.0])
+                .with_min_inner_size([960.0, 640.0]),
+            ..Default::default()
+        }
+    }
+
+    fn with_runtime_and_pump(
+        runtime: Box<dyn GuiNativeRuntimeBridge>,
+        runtime_pump: Box<dyn GuiNativeRuntimePump>,
+    ) -> Self {
+        Self {
+            runtime: Some(runtime),
+            runtime_pump: Some(runtime_pump),
+        }
+    }
+
+    fn with_runtime(runtime: Box<dyn GuiNativeRuntimeBridge>) -> Self {
+        Self::with_runtime_and_pump(runtime, Box::<GuiNoopRuntimePump>::default())
+    }
+
+    fn with_queued_runtime_owner<TOwner>(show_manual_pending_controls: bool, owner: TOwner) -> Self
+    where
+        TOwner: GuiQueuedRuntimeOwner + 'static,
+    {
+        let (runtime, handle) =
+            GuiQueuedRuntimeBridge::new_with_manual_pending_controls(show_manual_pending_controls);
+        Self::with_runtime_and_pump(
+            Box::new(runtime),
+            Box::new(GuiQueuedRuntimeOwnerPump::new(handle, owner)),
+        )
+    }
+
+    fn with_queued_preview_runtime() -> Self {
+        Self::with_queued_runtime_owner(true, GuiPersistedConfigRuntimeOwner::default())
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_session(
+        username: impl Into<String>,
+        room: impl Into<String>,
+    ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
+        let (owner, session_transport) = GuiPersistedConfigRuntimeOwner::default()
+            .with_client_core_chat_session_runtime(username, room)?;
+        Ok((
+            Self::with_queued_runtime_owner(true, owner),
+            session_transport,
+        ))
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_loopback_session(
+        username: impl Into<String>,
+        room: impl Into<String>,
+    ) -> Result<Self, String> {
+        let owner = GuiPersistedConfigRuntimeOwner::default()
+            .with_client_core_chat_loopback_session_runtime(username, room)?;
+        Ok(Self::with_queued_runtime_owner(true, owner))
+    }
+
+    #[allow(dead_code)]
+    fn with_client_core_chat_tcp_session(
+        username: impl Into<String>,
+        room: impl Into<String>,
+        host_arg: impl AsRef<str>,
+    ) -> Result<Self, String> {
+        let owner = GuiPersistedConfigRuntimeOwner::default()
+            .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
+        Ok(Self::with_queued_runtime_owner(true, owner))
+    }
+
+    #[allow(dead_code)]
+    fn with_queued_runtime() -> (Self, GuiQueuedRuntimeBridgeHandle) {
+        let (runtime, handle) = GuiQueuedRuntimeBridge::new();
+        (Self::with_runtime(Box::new(runtime)), handle)
+    }
+}
+
+impl Default for GuiEframeNativeHost {
+    fn default() -> Self {
+        Self::with_queued_preview_runtime()
+    }
+}
+
+impl GuiAppHost for GuiEframeNativeHost {
+    type Output = eframe::Result<()>;
+
+    fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
+        let runtime = self
+            .runtime
+            .take()
+            .unwrap_or_else(|| Box::<GuiPreviewRuntimeBridge>::default());
+        let runtime_pump = self
+            .runtime_pump
+            .take()
+            .unwrap_or_else(|| Box::<GuiNoopRuntimePump>::default());
+        eframe::run_native(
+            "Syncplay GUI",
+            Self::native_options(),
+            Box::new(move |creation_context| {
+                Ok(Box::new(GuiNativeApp::new(
+                    creation_context,
+                    state,
+                    runtime,
+                    runtime_pump,
+                )))
+            }),
+        )
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct GuiTextPreviewHost;
+
+#[cfg(test)]
+impl GuiAppHost for GuiTextPreviewHost {
+    type Output = String;
+
+    fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
+        let mut renderer = GuiWidgetTextPreviewRenderer::default();
+        state.render_shell_widgets(&mut renderer);
+        format!(
+            "{}\n\n[Widget Tree]\n{}",
+            state.render_lines().join("\n"),
+            renderer.finish()
+        )
+    }
+}
+
+impl GuiDialogControlKind {
+    fn widget_kind(self) -> GuiWidgetKind {
+        match self {
+            Self::TextInput => GuiWidgetKind::TextInput,
+            Self::PasswordInput => GuiWidgetKind::PasswordInput,
+            Self::Checkbox => GuiWidgetKind::Checkbox,
+            Self::Select => GuiWidgetKind::Select,
+            Self::NumericInput => GuiWidgetKind::NumericInput,
+            Self::ReadOnly => GuiWidgetKind::ReadOnly,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiPendingOperationKind {
+    SaveConfiguration,
+    ResetConfiguration,
+    ReloadConfiguration,
+    ConnectPublicServer,
+    RefreshPublicServers,
+    SearchMissingMedia,
+    TogglePlaybackPause,
+    SendChatMessage,
+}
+
+impl GuiPendingOperationKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SaveConfiguration => "save-configuration",
+            Self::ResetConfiguration => "reset-configuration",
+            Self::ReloadConfiguration => "reload-configuration",
+            Self::ConnectPublicServer => "connect-public-server",
+            Self::RefreshPublicServers => "refresh-public-servers",
+            Self::SearchMissingMedia => "search-missing-media",
+            Self::TogglePlaybackPause => "toggle-playback-pause",
+            Self::SendChatMessage => "send-chat-message",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPendingOperationState {
+    kind: GuiPendingOperationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiFocusedConfigurationControlState {
+    section: &'static str,
+    label: &'static str,
+    kind: GuiDialogControlKind,
+    activation_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPublicServerEditSessionState {
+    editing_index: Option<usize>,
+    label_buffer: String,
+    address_buffer: String,
+    is_dirty: bool,
+    original_label: Option<String>,
+    original_address: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiMainWindowUserEditSessionState {
+    editing_index: usize,
+    username_buffer: String,
+    is_dirty: bool,
+    original_username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiTextEditSessionState {
+    section: &'static str,
+    label: &'static str,
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiTransientNotificationLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+impl GuiTransientNotificationLevel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiTransientNotification {
+    level: GuiTransientNotificationLevel,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiValidationIssue {
+    scope: String,
+    label: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiValidationState {
+    issues: Vec<GuiValidationIssue>,
+    last_action_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiShellView {
+    Configuration,
+    MainWindow,
+    MenusAndDialogs,
+    PublicServers,
+    MediaSearch,
+}
+
+impl GuiShellView {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration",
+            Self::MainWindow => "main-window",
+            Self::MenusAndDialogs => "menus-and-dialogs",
+            Self::PublicServers => "public-servers",
+            Self::MediaSearch => "media-search",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiShellModal {
+    About,
+    UpdateNotice,
+    TlsCertificatePrompt,
+}
+
+impl GuiShellModal {
+    fn label(self) -> &'static str {
+        match self {
+            Self::About => "about",
+            Self::UpdateNotice => "update-notice",
+            Self::TlsCertificatePrompt => "tls-certificate-prompt",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum GuiShellAction {
+    SwitchView(GuiShellView),
+    OpenModal(GuiShellModal),
+    CloseModal,
+    TriggerSelectedMenuAction,
+    AnnounceTlsCertificatePromptRequired,
+    AnnounceUpdateNoticeAvailable,
+    AnnounceAboutDialogRequested,
+    AnnounceHelpRequested,
+    ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot),
+    ApplyGuiFeedbackRuntimeSnapshot(GuiFeedbackRuntimeSnapshot),
+    ApplyGuiErrorRuntimeSnapshot(GuiErrorRuntimeSnapshot),
+    ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot),
+    ApplyGuiInteractionRuntimeSnapshot(GuiInteractionRuntimeSnapshot),
+    ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot),
+    ApplyGuiConfigurationDraftRuntimeSnapshot(GuiConfigurationDraftRuntimeSnapshot),
+    ApplyGuiSavedConfigurationRuntimeSnapshot(GuiSavedConfigurationRuntimeSnapshot),
+    ApplyGuiConfigurationRuntimeSnapshot(GuiConfigurationRuntimeSnapshot),
+    BeginConfigurationSave,
+    CompleteConfigurationSave(StoredClientSettingsMvp),
+    CancelConfigurationSave,
+    BeginConfigurationReset,
+    CompleteConfigurationReset(StoredClientSettingsMvp),
+    CancelConfigurationReset,
+    BeginConfigurationReload,
+    CompleteConfigurationReload(StoredClientSettingsMvp),
+    CancelConfigurationReload,
+    BeginPendingOperation(GuiPendingOperationKind),
+    CompletePendingOperation,
+    CancelPendingOperation,
+    FocusConfigurationControl {
+        section: &'static str,
+        label: &'static str,
+    },
+    ActivateFocusedConfigurationControl,
+    ClearConfigurationControlFocus,
+    BeginAddPublicServer,
+    BeginEditSelectedPublicServer,
+    UpdatePublicServerEditLabel(String),
+    UpdatePublicServerEditAddress(String),
+    CommitPublicServerEdit,
+    CancelPublicServerEdit,
+    RemoveSelectedPublicServer,
+    BeginEditSelectedMainWindowUser,
+    UpdateMainWindowUserEdit(String),
+    CommitMainWindowUserEdit,
+    CancelMainWindowUserEdit,
+    PushTransientNotification {
+        level: GuiTransientNotificationLevel,
+        message: String,
+    },
+    DismissTransientNotification(usize),
+    ClearTransientNotifications,
+    BeginConfigurationTextEdit {
+        section: &'static str,
+        label: &'static str,
+    },
+    UpdateConfigurationTextEdit(String),
+    CommitConfigurationTextEdit,
+    CancelConfigurationTextEdit,
+    UpdateNewMainWindowUserDraft(String),
+    CommitNewMainWindowUser,
+    UpdateNewPlaylistEntryDraft(String),
+    CommitNewPlaylistEntry,
+    SelectMainWindowUser(usize),
+    AddMainWindowUser(String),
+    AnnounceMainWindowUserJoined(String),
+    AnnounceSelectedMainWindowUserRenamed(String),
+    AnnounceSelectedMainWindowUserLeft,
+    BeginPlaybackPauseToggle,
+    CompletePlaybackPauseToggle,
+    CancelPlaybackPauseToggle,
+    AnnouncePlaybackPaused,
+    AnnouncePlaybackResumed,
+    AnnounceLocalUserReady,
+    AnnounceLocalUserNotReady,
+    AnnounceAutoplayState(bool),
+    AnnounceSharedPlaylistLoaded(Vec<String>),
+    AnnounceSharedPlaylistEntryAdded(String),
+    AnnounceSharedPlaylistSelectionChanged(usize),
+    AnnounceSelectedSharedPlaylistEntryRemoved,
+    BeginLocalChatSend(String),
+    CompleteLocalChatSend,
+    CancelLocalChatSend,
+    AnnounceRemoteChatMessage {
+        sender: String,
+        message: String,
+    },
+    AnnounceSystemChatEvent(String),
+    ToggleSelectedMainWindowUserReady,
+    ToggleSelectedMainWindowUserController,
+    RemoveSelectedMainWindowUser,
+    SelectMainWindowPlaylist(usize),
+    MoveSelectedMainWindowPlaylistUp,
+    MoveSelectedMainWindowPlaylistDown,
+    RemoveSelectedMainWindowPlaylist,
+    SelectMenuAction {
+        section_index: usize,
+        action_index: usize,
+    },
+    SelectMediaSearchDirectory(usize),
+    MoveSelectedMediaSearchDirectoryUp,
+    MoveSelectedMediaSearchDirectoryDown,
+    RemoveSelectedMediaSearchDirectory,
+    EditConfigurationText {
+        section: &'static str,
+        label: &'static str,
+        value: String,
+    },
+    EditConfigurationBool {
+        section: &'static str,
+        label: &'static str,
+        value: bool,
+    },
+    AnnouncePublicServerSelectionChanged(usize),
+    BeginSelectedPublicServerConnect,
+    CompleteSelectedPublicServerConnect,
+    BeginPublicServerRefresh,
+    CompletePublicServerRefresh(Vec<(String, String)>),
+    AnnounceCustomPublicServerAdded {
+        label: String,
+        address: String,
+    },
+    SelectPublicServer(usize),
+    AddMediaSearchDirectory(String),
+    AnnounceMediaSearchDirectorySelected(usize),
+    AnnounceMediaSearchDirectoryBrowsed(String),
+    BeginMissingMediaSearch,
+    CompleteMissingMediaSearch(Option<String>),
+    JoinMainWindowRoom(String),
+    LeaveMainWindowRoom,
+    SetMainWindowRoom(String),
+    ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
+    ApplyGuiRuntimeSnapshot(SyncplayGuiRuntimeSnapshot),
+    PushChatMessage {
+        sender: String,
+        message: String,
+    },
+}
+
+impl FirstRunConfigurationDialogState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let startup_entries = legacy_configuration_getter_startup_compat_entries();
+        let ignored_startup_exception_count = startup_entries
+            .iter()
+            .filter(|entry| entry.status == LegacyConfigurationGetterCompatibilityStatus::Ignored)
+            .count();
+
+        Self {
+            launch_mode: if settings == &StoredClientSettingsMvp::default() {
+                GuiLaunchMode::FirstRun
+            } else {
+                GuiLaunchMode::ExistingConfig
+            },
+            connection: GuiConnectionSettingsSection {
+                host: settings.host.clone(),
+                port: settings.port,
+                username: settings.username.clone(),
+                room: settings.room.clone(),
+                server_password_set: settings
+                    .server_password
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty()),
+                player_path: settings.player_path.clone(),
+                public_server_count: settings.public_servers.as_ref().map_or(0, Vec::len),
+                room_history_count: settings.room_list.as_ref().map_or(0, Vec::len),
+            },
+            readiness: GuiReadinessSection {
+                ready_at_start: settings.ready_at_start.unwrap_or(false),
+                autoplay_enabled: settings.autoplay_initial_state.unwrap_or(false),
+                autoplay_require_same_filenames: settings
+                    .autoplay_require_same_filenames
+                    .unwrap_or(false),
+                shared_playlist_enabled: settings.shared_playlist_enabled.unwrap_or(false),
+                pause_on_leave: settings.pause_on_leave.unwrap_or(false),
+                unpause_action_label: settings
+                    .unpause_action
+                    .clone()
+                    .map(unpause_action_mode_legacy_name_compatible)
+                    .unwrap_or("IfAlreadyReady")
+                    .to_owned(),
+                autoplay_min_users_label: settings
+                    .autoplay_min_users
+                    .as_ref()
+                    .map(autoplay_threshold_override_legacy_value_compatible)
+                    .unwrap_or_else(|| "app-default".to_owned()),
+            },
+            privacy: GuiPrivacySection {
+                filename_privacy_mode_label: settings
+                    .filename_privacy_mode
+                    .map(privacy_mode_legacy_name_compatible)
+                    .unwrap_or("SendRaw")
+                    .to_owned(),
+                filesize_privacy_mode_label: settings
+                    .filesize_privacy_mode
+                    .map(privacy_mode_legacy_name_compatible)
+                    .unwrap_or("SendRaw")
+                    .to_owned(),
+                only_switch_to_trusted_domains: settings
+                    .only_switch_to_trusted_domains
+                    .unwrap_or(false),
+                trusted_domain_count: settings.trusted_domains.as_ref().map_or(0, Vec::len),
+            },
+            desync: GuiDesyncSection {
+                rewind_on_desync: settings.rewind_on_desync.unwrap_or(false),
+                fastforward_on_desync: settings.fastforward_on_desync.unwrap_or(false),
+                slow_on_desync: settings.slow_on_desync.unwrap_or(false),
+                dont_slow_down_with_me: settings.dont_slow_down_with_me.unwrap_or(false),
+                rewind_threshold_seconds: settings.rewind_threshold_seconds,
+                fastforward_threshold_seconds: settings.fastforward_threshold_seconds,
+                slowdown_threshold_seconds: settings.slowdown_threshold_seconds,
+            },
+            media_search: GuiMediaSearchSection {
+                media_directory_count: settings
+                    .media_search_directories
+                    .as_ref()
+                    .map_or(0, Vec::len),
+                folder_search_first_file_timeout_seconds: settings
+                    .folder_search_first_file_timeout_seconds,
+                folder_search_timeout_seconds: settings.folder_search_timeout_seconds,
+                folder_search_double_check_interval_seconds: settings
+                    .folder_search_double_check_interval_seconds,
+                folder_search_warning_threshold_seconds: settings
+                    .folder_search_warning_threshold_seconds,
+            },
+            chat: GuiChatSection {
+                chat_input_enabled: settings.chat_input_enabled.unwrap_or(false),
+                chat_output_enabled: settings.chat_output_enabled.unwrap_or(false),
+                chat_direct_input: settings.chat_direct_input.unwrap_or(false),
+                chat_move_osd: settings.chat_move_osd.unwrap_or(false),
+                chat_max_lines: settings.chat_max_lines,
+                chat_input_font_family: settings.chat_input_font_family.clone(),
+                chat_output_font_family: settings.chat_output_font_family.clone(),
+            },
+            osd: GuiOsdSection {
+                show_osd: settings.show_osd.unwrap_or(false),
+                show_duration_notification: settings.show_duration_notification.unwrap_or(false),
+                show_same_room_osd: settings.show_same_room_osd.unwrap_or(false),
+                show_osd_warnings: settings.show_osd_warnings.unwrap_or(false),
+                show_noncontroller_osd: settings.show_noncontroller_osd.unwrap_or(false),
+                show_different_room_osd: settings.show_different_room_osd.unwrap_or(false),
+                show_contact_info: settings.show_contact_info.unwrap_or(false),
+            },
+            system: GuiSystemSection {
+                language_tag: settings
+                    .language
+                    .as_deref()
+                    .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+                    .unwrap_or("en")
+                    .to_owned(),
+                check_for_updates_automatically: settings
+                    .check_for_updates_automatically
+                    .unwrap_or(false),
+                compatibility_startup_entry_count: startup_entries.len(),
+                ignored_startup_exception_count,
+            },
+        }
+    }
+
+    fn dialog_sections(&self) -> Vec<GuiDialogSection> {
+        vec![
+            GuiDialogSection {
+                title: "Connection",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Host",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.connection.host.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Port",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_port_text(self.connection.port),
+                    },
+                    GuiDialogControl {
+                        label: "Username",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.connection.username.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Room",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.connection.room.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Server Password",
+                        kind: GuiDialogControlKind::PasswordInput,
+                        value: if self.connection.server_password_set {
+                            "(configured)".to_owned()
+                        } else {
+                            "(unset)".to_owned()
+                        },
+                    },
+                    GuiDialogControl {
+                        label: "Player Path",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.connection.player_path.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Public Servers",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: self.connection.public_server_count.to_string(),
+                    },
+                    GuiDialogControl {
+                        label: "Room History",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: self.connection.room_history_count.to_string(),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Readiness",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Ready At Start",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.ready_at_start).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Autoplay",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.autoplay_enabled).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Require Same Filenames",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.autoplay_require_same_filenames)
+                            .to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Shared Playlists",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.shared_playlist_enabled).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Pause On Leave",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.pause_on_leave).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Unpause Action",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.readiness.unpause_action_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Autoplay Min Users",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.readiness.autoplay_min_users_label.clone(),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Privacy",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Filename Privacy",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.privacy.filename_privacy_mode_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Filesize Privacy",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.privacy.filesize_privacy_mode_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Trusted Domains Only",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.privacy.only_switch_to_trusted_domains).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Trusted Domain Count",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: self.privacy.trusted_domain_count.to_string(),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Desync",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Rewind On Desync",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.desync.rewind_on_desync).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Fastforward On Desync",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.desync.fastforward_on_desync).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Slow On Desync",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.desync.slow_on_desync).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Dont Slow Down With Me",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.desync.dont_slow_down_with_me).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Rewind Threshold",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(self.desync.rewind_threshold_seconds),
+                    },
+                    GuiDialogControl {
+                        label: "Fastforward Threshold",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(self.desync.fastforward_threshold_seconds),
+                    },
+                    GuiDialogControl {
+                        label: "Slowdown Threshold",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(self.desync.slowdown_threshold_seconds),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Media Search",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Directory Count",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: self.media_search.media_directory_count.to_string(),
+                    },
+                    GuiDialogControl {
+                        label: "First File Timeout",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(
+                            self.media_search.folder_search_first_file_timeout_seconds,
+                        ),
+                    },
+                    GuiDialogControl {
+                        label: "Search Timeout",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(
+                            self.media_search.folder_search_timeout_seconds,
+                        ),
+                    },
+                    GuiDialogControl {
+                        label: "Double Check Interval",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(
+                            self.media_search
+                                .folder_search_double_check_interval_seconds,
+                        ),
+                    },
+                    GuiDialogControl {
+                        label: "Warning Threshold",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_seconds_text(
+                            self.media_search.folder_search_warning_threshold_seconds,
+                        ),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "Chat",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Chat Input",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.chat.chat_input_enabled).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Chat Output",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.chat.chat_output_enabled).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Direct Input",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.chat.chat_direct_input).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Move OSD",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.chat.chat_move_osd).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Max Lines",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_max_lines),
+                    },
+                    GuiDialogControl {
+                        label: "Input Font",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.chat.chat_input_font_family.as_deref())
+                            .to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Output Font",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.chat.chat_output_font_family.as_deref())
+                            .to_owned(),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "OSD",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Show OSD",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_osd).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Duration",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_duration_notification).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Same Room",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_same_room_osd).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Warnings",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_osd_warnings).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Noncontroller",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_noncontroller_osd).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Different Room",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_different_room_osd).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Show Contact Info",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_contact_info).to_owned(),
+                    },
+                ],
+            },
+            GuiDialogSection {
+                title: "System",
+                controls: vec![
+                    GuiDialogControl {
+                        label: "Language",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.system.language_tag.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Auto Update",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.system.check_for_updates_automatically).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Supported Languages",
+                        kind: GuiDialogControlKind::ReadOnly,
+                        value: SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY.to_owned(),
+                    },
+                ],
+            },
+        ]
+    }
+}
+
+impl FirstRunConfigurationDialogDraft {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let state = FirstRunConfigurationDialogState::from_stored_settings(settings);
+        Self {
+            launch_mode: state.launch_mode,
+            compatibility_startup_entry_count: state.system.compatibility_startup_entry_count,
+            ignored_startup_exception_count: state.system.ignored_startup_exception_count,
+            sections: state.dialog_sections(),
+            settings: settings.clone(),
+        }
+    }
+
+    fn apply_text_value(&mut self, section_title: &str, label: &str, value: &str) -> bool {
+        let Some(control) = self
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| section.control_mut(label))
+        else {
+            return false;
+        };
+        if !control.kind.is_editable() {
+            return false;
+        }
+
+        control.value = value.to_owned();
+        let normalized = normalized_editable_text(value);
+
+        match (section_title, label) {
+            ("Connection", "Host") => {
+                self.settings.host = normalized;
+            }
+            ("Connection", "Port") => {
+                self.settings.port = normalized.and_then(|value| value.parse::<u16>().ok());
+            }
+            ("Connection", "Username") => {
+                self.settings.username = normalized;
+            }
+            ("Connection", "Room") => {
+                self.settings.room = normalized;
+            }
+            ("Connection", "Server Password") => {
+                self.settings.server_password = normalized;
+            }
+            ("Connection", "Player Path") => {
+                self.settings.player_path = normalized;
+            }
+            ("Readiness", "Unpause Action") => {
+                self.settings.unpause_action = normalized
+                    .as_deref()
+                    .and_then(parse_unpause_action_mode_legacy_compatible);
+            }
+            ("Readiness", "Autoplay Min Users") => {
+                self.settings.autoplay_min_users = normalized
+                    .as_deref()
+                    .and_then(parse_autoplay_min_users_override_legacy_compatible);
+            }
+            ("Privacy", "Filename Privacy") => {
+                self.settings.filename_privacy_mode = normalized
+                    .as_deref()
+                    .and_then(PrivacyMode::from_legacy_name);
+            }
+            ("Privacy", "Filesize Privacy") => {
+                self.settings.filesize_privacy_mode = normalized
+                    .as_deref()
+                    .and_then(PrivacyMode::from_legacy_name);
+            }
+            ("Desync", "Rewind Threshold") => {
+                self.settings.rewind_threshold_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Desync", "Fastforward Threshold") => {
+                self.settings.fastforward_threshold_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Desync", "Slowdown Threshold") => {
+                self.settings.slowdown_threshold_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Media Search", "First File Timeout") => {
+                self.settings.folder_search_first_file_timeout_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Media Search", "Search Timeout") => {
+                self.settings.folder_search_timeout_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Media Search", "Double Check Interval") => {
+                self.settings.folder_search_double_check_interval_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Media Search", "Warning Threshold") => {
+                self.settings.folder_search_warning_threshold_seconds =
+                    normalized.and_then(|value| value.parse::<f64>().ok());
+            }
+            ("Chat", "Max Lines") => {
+                self.settings.chat_max_lines =
+                    normalized.and_then(|value| value.parse::<i64>().ok());
+            }
+            ("Chat", "Input Font") => {
+                self.settings.chat_input_font_family = normalized;
+            }
+            ("Chat", "Output Font") => {
+                self.settings.chat_output_font_family = normalized;
+            }
+            ("System", "Language") => {
+                self.settings.language = normalized
+                    .as_deref()
+                    .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn apply_bool_value(&mut self, section_title: &str, label: &str, value: bool) -> bool {
+        let Some(control) = self
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| section.control_mut(label))
+        else {
+            return false;
+        };
+        if control.kind != GuiDialogControlKind::Checkbox {
+            return false;
+        }
+
+        control.value = bool_label(value).to_owned();
+
+        match (section_title, label) {
+            ("Readiness", "Ready At Start") => {
+                self.settings.ready_at_start = Some(value);
+            }
+            ("Readiness", "Autoplay") => {
+                self.settings.autoplay_initial_state = Some(value);
+            }
+            ("Readiness", "Require Same Filenames") => {
+                self.settings.autoplay_require_same_filenames = Some(value);
+            }
+            ("Readiness", "Shared Playlists") => {
+                self.settings.shared_playlist_enabled = Some(value);
+            }
+            ("Readiness", "Pause On Leave") => {
+                self.settings.pause_on_leave = Some(value);
+            }
+            ("Privacy", "Trusted Domains Only") => {
+                self.settings.only_switch_to_trusted_domains = Some(value);
+            }
+            ("Desync", "Rewind On Desync") => {
+                self.settings.rewind_on_desync = Some(value);
+            }
+            ("Desync", "Fastforward On Desync") => {
+                self.settings.fastforward_on_desync = Some(value);
+            }
+            ("Desync", "Slow On Desync") => {
+                self.settings.slow_on_desync = Some(value);
+            }
+            ("Desync", "Dont Slow Down With Me") => {
+                self.settings.dont_slow_down_with_me = Some(value);
+            }
+            ("Chat", "Chat Input") => {
+                self.settings.chat_input_enabled = Some(value);
+            }
+            ("Chat", "Chat Output") => {
+                self.settings.chat_output_enabled = Some(value);
+            }
+            ("Chat", "Direct Input") => {
+                self.settings.chat_direct_input = Some(value);
+            }
+            ("Chat", "Move OSD") => {
+                self.settings.chat_move_osd = Some(value);
+            }
+            ("OSD", "Show OSD") => {
+                self.settings.show_osd = Some(value);
+            }
+            ("OSD", "Show Duration") => {
+                self.settings.show_duration_notification = Some(value);
+            }
+            ("OSD", "Show Same Room") => {
+                self.settings.show_same_room_osd = Some(value);
+            }
+            ("OSD", "Show Warnings") => {
+                self.settings.show_osd_warnings = Some(value);
+            }
+            ("OSD", "Show Noncontroller") => {
+                self.settings.show_noncontroller_osd = Some(value);
+            }
+            ("OSD", "Show Different Room") => {
+                self.settings.show_different_room_osd = Some(value);
+            }
+            ("OSD", "Show Contact Info") => {
+                self.settings.show_contact_info = Some(value);
+            }
+            ("System", "Auto Update") => {
+                self.settings.check_for_updates_automatically = Some(value);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn to_stored_settings(&self) -> StoredClientSettingsMvp {
+        self.settings.clone()
+    }
+
+    fn control(&self, section_title: &str, label: &str) -> Option<&GuiDialogControl> {
+        self.sections
+            .iter()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .controls
+                    .iter()
+                    .find(|control| control.label == label)
+            })
+    }
+
+    fn control_identity(
+        &self,
+        section_title: &str,
+        label: &str,
+    ) -> Option<(&'static str, &'static str, GuiDialogControlKind)> {
+        self.sections
+            .iter()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .controls
+                    .iter()
+                    .find(|control| control.label == label)
+                    .map(|control| (section.title, control.label, control.kind))
+            })
+    }
+
+    fn control_value(&self, section_title: &str, label: &str) -> Option<&str> {
+        self.control(section_title, label)
+            .map(|control| control.value.as_str())
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!(
+            "syncplay-gui configuration surface initialized in {} mode ({} startup entries, {} ignored exception).",
+            self.launch_mode.label(),
+            self.compatibility_startup_entry_count,
+            self.ignored_startup_exception_count,
+        )];
+
+        for section in &self.sections {
+            lines.push(format!("[{}]", section.title));
+            for control in &section.controls {
+                lines.push(format!(
+                    "- {} [{}]: {}",
+                    control.label,
+                    control.kind.label(),
+                    control.value
+                ));
+            }
+        }
+
+        lines.push(
+            "Native window widgets are still pending; this shell now owns the first grouped GUI configuration state model, a typed dialog control schema, and an editable draft that round-trips back into shared client settings."
+                .to_owned(),
+        );
+        lines
+    }
+}
+
+impl GuiValidationState {
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!(
+            "[Validation] status={}, last_action_error={}",
+            if self.issues.is_empty() {
+                "clean".to_owned()
+            } else {
+                format!("{} issue(s)", self.issues.len())
+            },
+            self.last_action_error.as_deref().unwrap_or("(none)")
+        )];
+
+        for issue in &self.issues {
+            lines.push(format!(
+                "- {} / {}: {}",
+                issue.scope, issue.label, issue.message
+            ));
+        }
+
+        lines
+    }
+}
+
+impl GuiSelectionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Selection] user={}, playlist={}, menu={}, media_directory={}",
+            optional_index_text(self.selected_main_window_user),
+            optional_index_text(self.selected_main_window_playlist),
+            self.selected_menu_action.map_or_else(
+                || "(none)".to_owned(),
+                |(section, action)| format!("{section}:{action}")
+            ),
+            optional_index_text(self.selected_media_search_directory),
+        )]
+    }
+}
+
+impl GuiCommandAvailabilityState {
+    fn any_enabled(&self) -> bool {
+        self.can_save_configuration
+            || self.can_reset_configuration
+            || self.can_reload_configuration
+            || self.can_connect_public_server
+            || self.can_refresh_public_servers
+            || self.can_search_missing_media
+            || self.can_toggle_pause
+            || self.can_send_chat_message
+    }
+
+    fn render_lines(&self, pending_operation: Option<&GuiPendingOperationState>) -> Vec<String> {
+        vec![
+            format!(
+                "[Commands] busy={}, save_configuration={}, reset_configuration={}, reload_configuration={}, connect_public_server={}, refresh_public_servers={}, search_missing_media={}, toggle_pause={}, send_chat_message={}",
+                bool_label(pending_operation.is_some()),
+                bool_label(self.can_save_configuration),
+                bool_label(self.can_reset_configuration),
+                bool_label(self.can_reload_configuration),
+                bool_label(self.can_connect_public_server),
+                bool_label(self.can_refresh_public_servers),
+                bool_label(self.can_search_missing_media),
+                bool_label(self.can_toggle_pause),
+                bool_label(self.can_send_chat_message),
+            ),
+            format!(
+                "[Pending] operation={}",
+                pending_operation
+                    .map(|pending| pending.kind.label())
+                    .unwrap_or("(none)")
+            ),
+        ]
+    }
+}
+
+impl GuiCommandAvailabilityRuntimeOverride {
+    fn from_baseline_and_snapshot(
+        baseline: &GuiCommandAvailabilityState,
+        snapshot: &GuiCommandAvailabilityState,
+    ) -> Self {
+        Self {
+            can_save_configuration: (baseline.can_save_configuration
+                != snapshot.can_save_configuration)
+                .then_some(snapshot.can_save_configuration),
+            can_reset_configuration: (baseline.can_reset_configuration
+                != snapshot.can_reset_configuration)
+                .then_some(snapshot.can_reset_configuration),
+            can_reload_configuration: (baseline.can_reload_configuration
+                != snapshot.can_reload_configuration)
+                .then_some(snapshot.can_reload_configuration),
+            can_connect_public_server: (baseline.can_connect_public_server
+                != snapshot.can_connect_public_server)
+                .then_some(snapshot.can_connect_public_server),
+            can_refresh_public_servers: (baseline.can_refresh_public_servers
+                != snapshot.can_refresh_public_servers)
+                .then_some(snapshot.can_refresh_public_servers),
+            can_search_missing_media: (baseline.can_search_missing_media
+                != snapshot.can_search_missing_media)
+                .then_some(snapshot.can_search_missing_media),
+            can_toggle_pause: (baseline.can_toggle_pause != snapshot.can_toggle_pause)
+                .then_some(snapshot.can_toggle_pause),
+            can_send_chat_message: (baseline.can_send_chat_message
+                != snapshot.can_send_chat_message)
+                .then_some(snapshot.can_send_chat_message),
+        }
+    }
+
+    fn apply_to(&self, command_availability: &mut GuiCommandAvailabilityState) {
+        if let Some(value) = self.can_save_configuration {
+            command_availability.can_save_configuration = value;
+        }
+        if let Some(value) = self.can_reset_configuration {
+            command_availability.can_reset_configuration = value;
+        }
+        if let Some(value) = self.can_reload_configuration {
+            command_availability.can_reload_configuration = value;
+        }
+        if let Some(value) = self.can_connect_public_server {
+            command_availability.can_connect_public_server = value;
+        }
+        if let Some(value) = self.can_refresh_public_servers {
+            command_availability.can_refresh_public_servers = value;
+        }
+        if let Some(value) = self.can_search_missing_media {
+            command_availability.can_search_missing_media = value;
+        }
+        if let Some(value) = self.can_toggle_pause {
+            command_availability.can_toggle_pause = value;
+        }
+        if let Some(value) = self.can_send_chat_message {
+            command_availability.can_send_chat_message = value;
+        }
+    }
+
+    fn normalize_for_baseline(&mut self, baseline: &GuiCommandAvailabilityState) {
+        if self.can_save_configuration == Some(baseline.can_save_configuration) {
+            self.can_save_configuration = None;
+        }
+        if self.can_reset_configuration == Some(baseline.can_reset_configuration) {
+            self.can_reset_configuration = None;
+        }
+        if self.can_reload_configuration == Some(baseline.can_reload_configuration) {
+            self.can_reload_configuration = None;
+        }
+        if self.can_connect_public_server == Some(baseline.can_connect_public_server) {
+            self.can_connect_public_server = None;
+        }
+        if self.can_refresh_public_servers == Some(baseline.can_refresh_public_servers) {
+            self.can_refresh_public_servers = None;
+        }
+        if self.can_search_missing_media == Some(baseline.can_search_missing_media) {
+            self.can_search_missing_media = None;
+        }
+        if self.can_toggle_pause == Some(baseline.can_toggle_pause) {
+            self.can_toggle_pause = None;
+        }
+        if self.can_send_chat_message == Some(baseline.can_send_chat_message) {
+            self.can_send_chat_message = None;
+        }
+    }
+}
+
+impl GuiFocusedConfigurationControlState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Control Focus] focused={} / {}, kind={}, activations={}",
+            self.section,
+            self.label,
+            self.kind.label(),
+            self.activation_count
+        )]
+    }
+}
+
+impl GuiPublicServerEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Public Server Edit] editing_index={}, dirty={}, label={}, address={}",
+            self.editing_index
+                .map_or_else(|| "(new)".to_owned(), |index| index.to_string()),
+            bool_label(self.is_dirty),
+            self.label_buffer,
+            self.address_buffer,
+        )]
+    }
+}
+
+impl GuiMainWindowUserEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Main Window User Edit] editing_index={}, dirty={}, username={}",
+            self.editing_index,
+            bool_label(self.is_dirty),
+            self.username_buffer,
+        )]
+    }
+}
+
+impl GuiTransientNotification {
+    fn render_line(&self) -> String {
+        format!("- {}: {}", self.level.label(), self.message)
+    }
+}
+
+impl GuiTextEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Text Edit] editing={} / {}, dirty={}, buffer={}",
+            self.section,
+            self.label,
+            bool_label(self.is_dirty),
+            self.buffer
+        )]
+    }
+}
+
+impl MainWindowShellState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let room_name = settings
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("(no room joined)")
+            .to_owned();
+        let username = settings
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("You")
+            .to_owned();
+        let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
+        let player_attached = settings
+            .player_path
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let controlled_room_active = room_name.starts_with('+');
+
+        let mut playlist = Vec::new();
+        if shared_playlist_enabled {
+            playlist.push(MainWindowPlaylistRow {
+                label: "Playlist pane ready for shared entries".to_owned(),
+                is_selected: true,
+            });
+        }
+
+        Self {
+            room_name,
+            shared_playlist_enabled,
+            controlled_room_active,
+            users: vec![MainWindowUserRow {
+                username,
+                is_self: true,
+                is_ready: settings.ready_at_start.unwrap_or(false),
+                is_controller: controlled_room_active,
+                is_selected: true,
+            }],
+            playlist,
+            chat: if settings.chat_output_enabled.unwrap_or(false) {
+                vec![MainWindowChatRow {
+                    sender: "system".to_owned(),
+                    message: "Chat pane ready".to_owned(),
+                }]
+            } else {
+                Vec::new()
+            },
+            playback: MainWindowPlaybackControls {
+                can_toggle_pause: player_attached,
+                can_seek: player_attached,
+                can_set_ready: true,
+                can_manage_playlist: player_attached && shared_playlist_enabled,
+            },
+            playback_paused: false,
+            autoplay_active: settings.autoplay_initial_state.unwrap_or(false),
+        }
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            "[Main Window]".to_owned(),
+            format!(
+                "Room: {} (shared_playlist={}, controlled_room={})",
+                self.room_name,
+                bool_label(self.shared_playlist_enabled),
+                bool_label(self.controlled_room_active),
+            ),
+            format!(
+                "Playback Controls: pause={}, seek={}, ready={}, playlist={}",
+                bool_label(self.playback.can_toggle_pause),
+                bool_label(self.playback.can_seek),
+                bool_label(self.playback.can_set_ready),
+                bool_label(self.playback.can_manage_playlist),
+            ),
+            format!(
+                "Playback State: paused={}, autoplay={}",
+                bool_label(self.playback_paused),
+                bool_label(self.autoplay_active),
+            ),
+            format!("Users ({}):", self.users.len()),
+        ];
+
+        for user in &self.users {
+            lines.push(format!(
+                "- {} [self={}, ready={}, controller={}, selected={}]",
+                user.username,
+                bool_label(user.is_self),
+                bool_label(user.is_ready),
+                bool_label(user.is_controller),
+                bool_label(user.is_selected),
+            ));
+        }
+
+        lines.push(format!("Playlist ({}):", self.playlist.len()));
+        if self.playlist.is_empty() {
+            lines.push("- (empty)".to_owned());
+        } else {
+            for item in &self.playlist {
+                lines.push(format!(
+                    "- {} [selected={}]",
+                    item.label,
+                    bool_label(item.is_selected)
+                ));
+            }
+        }
+
+        lines.push(format!("Chat ({}):", self.chat.len()));
+        if self.chat.is_empty() {
+            lines.push("- (empty)".to_owned());
+        } else {
+            for entry in &self.chat {
+                lines.push(format!("- {}: {}", entry.sender, entry.message));
+            }
+        }
+
+        lines
+    }
+}
+
+impl MenuDialogShellState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let player_attached = settings
+            .player_path
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
+        let can_open_media_file = player_attached || shared_playlist_enabled;
+        let chat_enabled = settings.chat_input_enabled.unwrap_or(false)
+            || settings.chat_output_enabled.unwrap_or(false);
+
+        Self {
+            sections: vec![
+                MenuSectionShellState {
+                    title: "File",
+                    actions: vec![
+                        MenuActionShellItem {
+                            label: "Open Media File",
+                            enabled: can_open_media_file,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Open Media Search",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Open Public Server Browser",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Exit",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                    ],
+                },
+                MenuSectionShellState {
+                    title: "Playback",
+                    actions: vec![
+                        MenuActionShellItem {
+                            label: "Toggle Pause",
+                            enabled: player_attached,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Seek",
+                            enabled: player_attached,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Playlist Actions",
+                            enabled: player_attached && shared_playlist_enabled,
+                            is_selected: false,
+                        },
+                    ],
+                },
+                MenuSectionShellState {
+                    title: "Advanced",
+                    actions: vec![
+                        MenuActionShellItem {
+                            label: "Trusted Domains",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "TLS Certificates",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Update Check",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                    ],
+                },
+                MenuSectionShellState {
+                    title: "Window",
+                    actions: vec![
+                        MenuActionShellItem {
+                            label: "Show Chat",
+                            enabled: chat_enabled,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Show Playlist",
+                            enabled: shared_playlist_enabled,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Show Users",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                    ],
+                },
+                MenuSectionShellState {
+                    title: "Help",
+                    actions: vec![
+                        MenuActionShellItem {
+                            label: "About",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Manual / Command Help",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Check for Updates",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                    ],
+                },
+            ],
+            tls_prompt_expected: settings.only_switch_to_trusted_domains.unwrap_or(false),
+            update_notice_expected: settings.check_for_updates_automatically.unwrap_or(false),
+            about_dialog_available: true,
+        }
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec!["[Menus & Dialogs]".to_owned()];
+
+        for section in &self.sections {
+            lines.push(format!("{}:", section.title));
+            for action in &section.actions {
+                lines.push(format!(
+                    "- {} [enabled={}, selected={}]",
+                    action.label,
+                    bool_label(action.enabled),
+                    bool_label(action.is_selected),
+                ));
+            }
+        }
+
+        lines.push(format!(
+            "Dialog Prompts: tls_certificate={}, update_notice={}, about={}",
+            bool_label(self.tls_prompt_expected),
+            bool_label(self.update_notice_expected),
+            bool_label(self.about_dialog_available),
+        ));
+
+        lines
+    }
+}
+
+impl PublicServerBrowserShellState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let servers = settings
+            .public_servers
+            .as_ref()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (label, address))| PublicServerBrowserRow {
+                        label: label.clone(),
+                        address: address.clone(),
+                        is_selected: index == 0,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Self {
+            can_connect: !servers.is_empty(),
+            can_refresh: true,
+            can_add_custom_server: true,
+            servers,
+        }
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            "[Public Server Browser]".to_owned(),
+            format!(
+                "Actions: connect={}, refresh={}, add_custom={}",
+                bool_label(self.can_connect),
+                bool_label(self.can_refresh),
+                bool_label(self.can_add_custom_server),
+            ),
+            format!("Servers ({}):", self.servers.len()),
+        ];
+
+        if self.servers.is_empty() {
+            lines.push("- (empty)".to_owned());
+        } else {
+            for server in &self.servers {
+                lines.push(format!(
+                    "- {} @ {} [selected={}]",
+                    server.label,
+                    server.address,
+                    bool_label(server.is_selected),
+                ));
+            }
+        }
+
+        lines
+    }
+
+    fn apply_runtime_flags(&mut self, runtime_flags: PublicServerBrowserRuntimeFlags) {
+        self.can_connect = runtime_flags.can_connect && !self.servers.is_empty();
+        self.can_refresh = runtime_flags.can_refresh;
+        self.can_add_custom_server = runtime_flags.can_add_custom_server;
+    }
+}
+
+impl PublicServerBrowserRuntimeFlags {
+    fn from_shell_state(state: &PublicServerBrowserShellState) -> Self {
+        Self {
+            can_connect: state.can_connect,
+            can_refresh: state.can_refresh,
+            can_add_custom_server: state.can_add_custom_server,
+        }
+    }
+}
+
+impl MediaSearchWorkflowShellState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let directories = settings
+            .media_search_directories
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| MediaSearchDirectoryRow {
+                path,
+                is_selected: false,
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            can_browse_directories: true,
+            can_search_missing_media: !directories.is_empty(),
+            first_file_timeout_seconds: settings.folder_search_first_file_timeout_seconds,
+            search_timeout_seconds: settings.folder_search_timeout_seconds,
+            double_check_interval_seconds: settings.folder_search_double_check_interval_seconds,
+            warning_threshold_seconds: settings.folder_search_warning_threshold_seconds,
+            directories,
+        }
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            "[Media Search Workflow]".to_owned(),
+            format!(
+                "Actions: browse_directories={}, search_missing_media={}",
+                bool_label(self.can_browse_directories),
+                bool_label(self.can_search_missing_media),
+            ),
+            format!(
+                "Timing: first_file={}, search={}, double_check={}, warning={}",
+                optional_seconds_text(self.first_file_timeout_seconds),
+                optional_seconds_text(self.search_timeout_seconds),
+                optional_seconds_text(self.double_check_interval_seconds),
+                optional_seconds_text(self.warning_threshold_seconds),
+            ),
+            format!("Directories ({}):", self.directories.len()),
+        ];
+
+        if self.directories.is_empty() {
+            lines.push("- (empty)".to_owned());
+        } else {
+            for directory in &self.directories {
+                lines.push(format!(
+                    "- {} [selected={}]",
+                    directory.path,
+                    bool_label(directory.is_selected),
+                ));
+            }
+        }
+
+        lines
+    }
+
+    fn apply_runtime_flags(&mut self, runtime_flags: MediaSearchWorkflowRuntimeFlags) {
+        self.can_browse_directories = runtime_flags.can_browse_directories;
+        self.can_search_missing_media =
+            runtime_flags.can_search_missing_media && !self.directories.is_empty();
+    }
+}
+
+impl MediaSearchWorkflowRuntimeFlags {
+    fn from_shell_state(state: &MediaSearchWorkflowShellState) -> Self {
+        Self {
+            can_browse_directories: state.can_browse_directories,
+            can_search_missing_media: state.can_search_missing_media,
+        }
+    }
+}
+
+impl SyncplayGuiShellAppState {
+    fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let mut state = Self {
+            active_view: GuiShellView::Configuration,
+            open_modal: None,
+            selection: GuiSelectionState::default(),
+            runtime_menu_action_overrides: Vec::new(),
+            runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
+            commands: GuiCommandAvailabilityState::default(),
+            pending_operation: None,
+            outgoing_chat_message: None,
+            new_main_window_user_draft: String::new(),
+            new_playlist_entry_draft: String::new(),
+            focused_configuration_control: None,
+            public_server_edit_session: None,
+            main_window_user_edit_session: None,
+            text_edit_session: None,
+            runtime_validation_issues: Vec::new(),
+            notifications: Vec::new(),
+            validation: GuiValidationState::default(),
+            saved_configuration: settings.clone(),
+            configuration: FirstRunConfigurationDialogDraft::from_stored_settings(settings),
+            main_window: MainWindowShellState::from_stored_settings(settings),
+            menus: MenuDialogShellState::from_stored_settings(settings),
+            public_servers: PublicServerBrowserShellState::from_stored_settings(settings),
+            media_search: MediaSearchWorkflowShellState::from_stored_settings(settings),
+        };
+        state.default_selection_from_surfaces();
+        state.apply_selection_to_surfaces();
+        state.refresh_validation();
+        state
+    }
+
+    fn apply(&mut self, action: GuiShellAction) -> bool {
+        match action {
+            GuiShellAction::SwitchView(view) => {
+                self.active_view = view;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::OpenModal(modal) => {
+                self.open_modal = Some(modal);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CloseModal => {
+                let had_modal = self.open_modal.is_some();
+                self.open_modal = None;
+                if had_modal {
+                    self.clear_action_error_and_refresh();
+                }
+                had_modal
+            }
+            GuiShellAction::TriggerSelectedMenuAction => self.trigger_selected_menu_action(),
+            GuiShellAction::AnnounceTlsCertificatePromptRequired => {
+                self.announce_tls_certificate_prompt_required()
+            }
+            GuiShellAction::AnnounceUpdateNoticeAvailable => {
+                self.announce_update_notice_available()
+            }
+            GuiShellAction::AnnounceAboutDialogRequested => self.announce_about_dialog_requested(),
+            GuiShellAction::AnnounceHelpRequested => self.announce_help_requested(),
+            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot) => {
+                self.apply_menu_dialog_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(snapshot) => {
+                self.apply_gui_feedback_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiErrorRuntimeSnapshot(snapshot) => {
+                self.apply_gui_error_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(snapshot) => {
+                self.apply_gui_command_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => {
+                self.apply_gui_interaction_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiDraftRuntimeSnapshot(snapshot) => {
+                self.apply_gui_draft_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(snapshot) => {
+                self.apply_gui_configuration_draft_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(snapshot) => {
+                self.apply_gui_saved_configuration_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(snapshot) => {
+                self.apply_gui_configuration_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::BeginConfigurationSave => self.begin_configuration_save(),
+            GuiShellAction::CompleteConfigurationSave(settings) => {
+                self.complete_configuration_save(settings)
+            }
+            GuiShellAction::CancelConfigurationSave => self.cancel_configuration_save(),
+            GuiShellAction::BeginConfigurationReset => self.begin_configuration_reset(),
+            GuiShellAction::CompleteConfigurationReset(settings) => {
+                self.complete_configuration_reset(settings)
+            }
+            GuiShellAction::CancelConfigurationReset => self.cancel_configuration_reset(),
+            GuiShellAction::BeginConfigurationReload => self.begin_configuration_reload(),
+            GuiShellAction::CompleteConfigurationReload(settings) => {
+                self.complete_configuration_reload(settings)
+            }
+            GuiShellAction::CancelConfigurationReload => self.cancel_configuration_reload(),
+            GuiShellAction::BeginPendingOperation(kind) => {
+                if self.pending_operation.is_some() {
+                    return self
+                        .record_action_error("Another GUI operation is already in progress.");
+                }
+                self.pending_operation = Some(GuiPendingOperationState { kind });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CompletePendingOperation => {
+                let Some(pending) = self.pending_operation.as_ref() else {
+                    return self.record_action_error("No GUI operation is currently in progress.");
+                };
+                if pending.kind == GuiPendingOperationKind::SendChatMessage {
+                    self.outgoing_chat_message = None;
+                }
+                self.pending_operation = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CancelPendingOperation => self.cancel_pending_operation(),
+            GuiShellAction::FocusConfigurationControl { section, label } => {
+                let Some(control) = self.configuration.control(section, label) else {
+                    return self.record_action_error(
+                        "No editable configuration control exists at the requested location.",
+                    );
+                };
+                if !control.kind.is_editable() {
+                    return self.record_action_error(
+                        "The requested configuration control is not focusable.",
+                    );
+                }
+                let activation_count = self
+                    .focused_configuration_control
+                    .as_ref()
+                    .filter(|focused| focused.section == section && focused.label == label)
+                    .map_or(0, |focused| focused.activation_count);
+                self.focused_configuration_control = Some(GuiFocusedConfigurationControlState {
+                    section,
+                    label,
+                    kind: control.kind,
+                    activation_count,
+                });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::ActivateFocusedConfigurationControl => {
+                let Some(focused) = self.focused_configuration_control.clone() else {
+                    return self
+                        .record_action_error("No configuration control is currently focused.");
+                };
+
+                if focused.kind == GuiDialogControlKind::Checkbox {
+                    let Some(current_value) = self
+                        .configuration
+                        .control_value(focused.section, focused.label)
+                    else {
+                        return self.record_action_error(
+                            "The focused configuration control no longer exists.",
+                        );
+                    };
+                    let next_value = current_value != "yes";
+                    let previous_settings = self.configuration.to_stored_settings();
+                    let applied = self.configuration.apply_bool_value(
+                        focused.section,
+                        focused.label,
+                        next_value,
+                    );
+                    if !applied {
+                        return self.record_action_error(
+                            "The focused checkbox control could not be toggled.",
+                        );
+                    }
+                    if let Some(focused_state) = self.focused_configuration_control.as_mut() {
+                        focused_state.activation_count += 1;
+                    }
+                    self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                    self.clear_action_error_and_refresh();
+                    return true;
+                }
+
+                let Some(control) = self.configuration.control(focused.section, focused.label)
+                else {
+                    return self.record_action_error(
+                        "The focused configuration control no longer exists.",
+                    );
+                };
+                self.text_edit_session = Some(GuiTextEditSessionState {
+                    section: focused.section,
+                    label: focused.label,
+                    buffer: control.value.clone(),
+                    is_dirty: false,
+                });
+                if let Some(focused_state) = self.focused_configuration_control.as_mut() {
+                    focused_state.activation_count += 1;
+                }
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::ClearConfigurationControlFocus => {
+                let had_focus = self.focused_configuration_control.is_some();
+                self.focused_configuration_control = None;
+                if had_focus {
+                    self.clear_action_error_and_refresh();
+                }
+                had_focus
+            }
+            GuiShellAction::BeginAddPublicServer => {
+                self.public_server_edit_session = Some(GuiPublicServerEditSessionState {
+                    editing_index: None,
+                    label_buffer: String::new(),
+                    address_buffer: String::new(),
+                    is_dirty: false,
+                    original_label: None,
+                    original_address: None,
+                });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::BeginEditSelectedPublicServer => {
+                let Some(index) = self.selected_public_server_index() else {
+                    return self.record_action_error("No public server is currently selected.");
+                };
+                let Some(row) = self.public_servers.servers.get(index) else {
+                    return self
+                        .record_action_error("No public server exists at the requested index.");
+                };
+                self.public_server_edit_session = Some(GuiPublicServerEditSessionState {
+                    editing_index: Some(index),
+                    label_buffer: row.label.clone(),
+                    address_buffer: row.address.clone(),
+                    is_dirty: false,
+                    original_label: Some(row.label.clone()),
+                    original_address: Some(row.address.clone()),
+                });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::UpdatePublicServerEditLabel(buffer) => {
+                let Some(session) = self.public_server_edit_session.as_mut() else {
+                    return self
+                        .record_action_error("No public-server edit session is currently active.");
+                };
+                session.label_buffer = buffer;
+                session.is_dirty = true;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::UpdatePublicServerEditAddress(buffer) => {
+                let Some(session) = self.public_server_edit_session.as_mut() else {
+                    return self
+                        .record_action_error("No public-server edit session is currently active.");
+                };
+                session.address_buffer = buffer;
+                session.is_dirty = true;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CommitPublicServerEdit => {
+                let Some(session) = self.public_server_edit_session.clone() else {
+                    return self
+                        .record_action_error("No public-server edit session is currently active.");
+                };
+                let label = session.label_buffer.trim();
+                let address = session.address_buffer.trim();
+                if label.is_empty() || address.is_empty() {
+                    return self.record_action_error(
+                        "Public-server label and address must both be non-empty.",
+                    );
+                }
+                let (host, _) =
+                    parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
+                if host.trim().is_empty() {
+                    return self.record_action_error("Public-server address is not valid.");
+                }
+
+                let mut settings = self.configuration.to_stored_settings();
+                let mut servers = settings.public_servers.take().unwrap_or_default();
+                if let Some(index) = session.editing_index {
+                    if index >= servers.len() {
+                        return self.record_action_error(
+                            "The public server being edited no longer exists.",
+                        );
+                    }
+                    servers[index] = (label.to_owned(), address.to_owned());
+                } else {
+                    servers.push((label.to_owned(), address.to_owned()));
+                }
+                let selected_index = session.editing_index.unwrap_or(servers.len() - 1);
+                settings.public_servers = Some(servers);
+                self.resync_from_settings(settings);
+                self.public_server_edit_session = None;
+                self.set_selected_public_server_index(Some(selected_index));
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CancelPublicServerEdit => {
+                if self.public_server_edit_session.is_none() {
+                    return self
+                        .record_action_error("No public-server edit session is currently active.");
+                }
+                self.public_server_edit_session = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::RemoveSelectedPublicServer => {
+                let Some(index) = self.selected_public_server_index() else {
+                    return self.record_action_error("No public server is currently selected.");
+                };
+                let mut settings = self.configuration.to_stored_settings();
+                let mut servers = settings.public_servers.take().unwrap_or_default();
+                if index >= servers.len() {
+                    return self
+                        .record_action_error("No public server exists at the requested index.");
+                }
+                servers.remove(index);
+                settings.public_servers = if servers.is_empty() {
+                    None
+                } else {
+                    Some(servers)
+                };
+                self.resync_from_settings(settings);
+                if self.public_servers.servers.is_empty() {
+                    self.set_selected_public_server_index(None);
+                } else if index >= self.public_servers.servers.len() {
+                    self.set_selected_public_server_index(Some(
+                        self.public_servers.servers.len() - 1,
+                    ));
+                } else {
+                    self.set_selected_public_server_index(Some(index));
+                }
+                self.public_server_edit_session = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::BeginEditSelectedMainWindowUser => {
+                let Some(index) = self.selection.selected_main_window_user else {
+                    return self.record_action_error("No main-window user is currently selected.");
+                };
+                let Some(user) = self.main_window.users.get(index) else {
+                    return self
+                        .record_action_error("No main-window user exists at the requested index.");
+                };
+                self.main_window_user_edit_session = Some(GuiMainWindowUserEditSessionState {
+                    editing_index: index,
+                    username_buffer: user.username.clone(),
+                    is_dirty: false,
+                    original_username: user.username.clone(),
+                });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::UpdateMainWindowUserEdit(buffer) => {
+                let Some(session) = self.main_window_user_edit_session.as_mut() else {
+                    return self.record_action_error(
+                        "No main-window user edit session is currently active.",
+                    );
+                };
+                let Some(user) = self.main_window.users.get(session.editing_index) else {
+                    self.main_window_user_edit_session = None;
+                    return self.record_action_error(
+                        "The main-window user being edited no longer exists.",
+                    );
+                };
+                session.is_dirty = buffer != user.username;
+                session.username_buffer = buffer;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CommitMainWindowUserEdit => {
+                let Some(session) = self.main_window_user_edit_session.clone() else {
+                    return self.record_action_error(
+                        "No main-window user edit session is currently active.",
+                    );
+                };
+                let Some((previous_username, username)) = self.rename_main_window_user_at_index(
+                    session.editing_index,
+                    session.username_buffer,
+                    "Renamed main-window user names must be non-empty.",
+                    "The main-window user being edited no longer exists.",
+                ) else {
+                    return false;
+                };
+                self.main_window_user_edit_session = None;
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Success,
+                    format!("User renamed: {} -> {}.", previous_username, username),
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CancelMainWindowUserEdit => {
+                if self.main_window_user_edit_session.is_none() {
+                    return self.record_action_error(
+                        "No main-window user edit session is currently active.",
+                    );
+                }
+                self.main_window_user_edit_session = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::UpdateNewMainWindowUserDraft(buffer) => {
+                self.new_main_window_user_draft = buffer;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CommitNewMainWindowUser => {
+                if !self.announce_main_window_user_joined(self.new_main_window_user_draft.clone()) {
+                    return false;
+                }
+                self.new_main_window_user_draft.clear();
+                true
+            }
+            GuiShellAction::UpdateNewPlaylistEntryDraft(buffer) => {
+                self.new_playlist_entry_draft = buffer;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CommitNewPlaylistEntry => {
+                if !self.announce_shared_playlist_entry_added(self.new_playlist_entry_draft.clone())
+                {
+                    return false;
+                }
+                self.new_playlist_entry_draft.clear();
+                true
+            }
+            GuiShellAction::PushTransientNotification { level, message } => {
+                let trimmed = message.trim();
+                if trimmed.is_empty() {
+                    return self
+                        .record_action_error("Transient notification messages must be non-empty.");
+                }
+                self.push_transient_notification(level, trimmed.to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::DismissTransientNotification(index) => {
+                if index >= self.notifications.len() {
+                    return self.record_action_error(
+                        "No transient notification exists at the requested index.",
+                    );
+                }
+                self.notifications.remove(index);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::ClearTransientNotifications => {
+                let had_notifications = !self.notifications.is_empty();
+                self.notifications.clear();
+                if had_notifications {
+                    self.clear_action_error_and_refresh();
+                }
+                had_notifications
+            }
+            GuiShellAction::BeginConfigurationTextEdit { section, label } => {
+                let Some(control) = self.configuration.control(section, label) else {
+                    return self.record_action_error(
+                        "No editable configuration control exists at the requested location.",
+                    );
+                };
+                if !control.kind.is_editable() || control.kind == GuiDialogControlKind::Checkbox {
+                    return self.record_action_error(
+                        "The requested configuration control does not support text-edit sessions.",
+                    );
+                }
+                self.text_edit_session = Some(GuiTextEditSessionState {
+                    section,
+                    label,
+                    buffer: control.value.clone(),
+                    is_dirty: false,
+                });
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::UpdateConfigurationTextEdit(buffer) => {
+                let Some(session) = self.text_edit_session.as_mut() else {
+                    return self.record_action_error(
+                        "No configuration text-edit session is currently active.",
+                    );
+                };
+                let current_value = self
+                    .configuration
+                    .control_value(session.section, session.label)
+                    .unwrap_or("(missing)")
+                    .to_owned();
+                session.is_dirty = buffer != current_value;
+                session.buffer = buffer;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CommitConfigurationTextEdit => {
+                let Some(session) = self.text_edit_session.clone() else {
+                    return self.record_action_error(
+                        "No configuration text-edit session is currently active.",
+                    );
+                };
+                let previous_settings = self.configuration.to_stored_settings();
+                let applied = self.configuration.apply_text_value(
+                    session.section,
+                    session.label,
+                    &session.buffer,
+                );
+                if !applied {
+                    return self.record_action_error(
+                        "Configuration text-edit session could not be committed.",
+                    );
+                }
+                self.text_edit_session = None;
+                self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::CancelConfigurationTextEdit => {
+                if self.text_edit_session.is_none() {
+                    return self.record_action_error(
+                        "No configuration text-edit session is currently active.",
+                    );
+                }
+                self.text_edit_session = None;
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SelectMainWindowUser(index) => {
+                if index >= self.main_window.users.len() {
+                    return self
+                        .record_action_error("No main-window user exists at the requested index.");
+                }
+                self.selection.selected_main_window_user = Some(index);
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::AddMainWindowUser(username) => self.add_main_window_user(username),
+            GuiShellAction::AnnounceMainWindowUserJoined(username) => {
+                self.announce_main_window_user_joined(username)
+            }
+            GuiShellAction::AnnounceSelectedMainWindowUserRenamed(username) => {
+                self.announce_selected_main_window_user_renamed(username)
+            }
+            GuiShellAction::AnnounceSelectedMainWindowUserLeft => {
+                self.announce_selected_main_window_user_left()
+            }
+            GuiShellAction::BeginPlaybackPauseToggle => self.begin_playback_pause_toggle(),
+            GuiShellAction::CompletePlaybackPauseToggle => self.complete_playback_pause_toggle(),
+            GuiShellAction::CancelPlaybackPauseToggle => self.cancel_playback_pause_toggle(),
+            GuiShellAction::AnnouncePlaybackPaused => self.announce_playback_pause_state(true),
+            GuiShellAction::AnnouncePlaybackResumed => self.announce_playback_pause_state(false),
+            GuiShellAction::AnnounceLocalUserReady => self.announce_local_user_ready_state(true),
+            GuiShellAction::AnnounceLocalUserNotReady => {
+                self.announce_local_user_ready_state(false)
+            }
+            GuiShellAction::AnnounceAutoplayState(active) => self.announce_autoplay_state(active),
+            GuiShellAction::AnnounceSharedPlaylistLoaded(entries) => {
+                self.announce_shared_playlist_loaded(entries)
+            }
+            GuiShellAction::AnnounceSharedPlaylistEntryAdded(entry) => {
+                self.announce_shared_playlist_entry_added(entry)
+            }
+            GuiShellAction::AnnounceSharedPlaylistSelectionChanged(index) => {
+                self.announce_shared_playlist_selection_changed(index)
+            }
+            GuiShellAction::AnnounceSelectedSharedPlaylistEntryRemoved => {
+                self.announce_selected_shared_playlist_entry_removed()
+            }
+            GuiShellAction::BeginLocalChatSend(message) => self.begin_local_chat_send(message),
+            GuiShellAction::CompleteLocalChatSend => self.complete_local_chat_send(),
+            GuiShellAction::CancelLocalChatSend => self.cancel_local_chat_send(),
+            GuiShellAction::AnnounceRemoteChatMessage { sender, message } => {
+                self.announce_remote_chat_message(sender, message)
+            }
+            GuiShellAction::AnnounceSystemChatEvent(message) => {
+                self.announce_system_chat_event(message)
+            }
+            GuiShellAction::ToggleSelectedMainWindowUserReady => {
+                self.toggle_selected_main_window_user_ready()
+            }
+            GuiShellAction::ToggleSelectedMainWindowUserController => {
+                self.toggle_selected_main_window_user_controller()
+            }
+            GuiShellAction::RemoveSelectedMainWindowUser => self.remove_selected_main_window_user(),
+            GuiShellAction::SelectMainWindowPlaylist(index) => {
+                if index >= self.main_window.playlist.len() {
+                    return self
+                        .record_action_error("No playlist row exists at the requested index.");
+                }
+                self.selection.selected_main_window_playlist = Some(index);
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::MoveSelectedMainWindowPlaylistUp => {
+                self.move_selected_main_window_playlist(-1)
+            }
+            GuiShellAction::MoveSelectedMainWindowPlaylistDown => {
+                self.move_selected_main_window_playlist(1)
+            }
+            GuiShellAction::RemoveSelectedMainWindowPlaylist => {
+                self.remove_selected_main_window_playlist()
+            }
+            GuiShellAction::SelectMenuAction {
+                section_index,
+                action_index,
+            } => {
+                let Some(section) = self.menus.sections.get(section_index) else {
+                    return self
+                        .record_action_error("No menu section exists at the requested index.");
+                };
+                if action_index >= section.actions.len() {
+                    return self
+                        .record_action_error("No menu action exists at the requested index.");
+                }
+                self.selection.selected_menu_action = Some((section_index, action_index));
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SelectMediaSearchDirectory(index) => {
+                if index >= self.media_search.directories.len() {
+                    return self.record_action_error(
+                        "No media-search directory exists at the requested index.",
+                    );
+                }
+                self.selection.selected_media_search_directory = Some(index);
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::MoveSelectedMediaSearchDirectoryUp => {
+                self.move_selected_media_search_directory(-1)
+            }
+            GuiShellAction::MoveSelectedMediaSearchDirectoryDown => {
+                self.move_selected_media_search_directory(1)
+            }
+            GuiShellAction::RemoveSelectedMediaSearchDirectory => {
+                self.remove_selected_media_search_directory()
+            }
+            GuiShellAction::EditConfigurationText {
+                section,
+                label,
+                value,
+            } => {
+                let previous_settings = self.configuration.to_stored_settings();
+                let applied = self.configuration.apply_text_value(section, label, &value);
+                if applied {
+                    self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                    self.clear_action_error_and_refresh();
+                } else {
+                    return self
+                        .record_action_error("Configuration text control could not be updated.");
+                }
+                applied
+            }
+            GuiShellAction::EditConfigurationBool {
+                section,
+                label,
+                value,
+            } => {
+                let previous_settings = self.configuration.to_stored_settings();
+                let applied = self.configuration.apply_bool_value(section, label, value);
+                if applied {
+                    self.sync_derived_surfaces_from_configuration_settings(&previous_settings);
+                    self.clear_action_error_and_refresh();
+                } else {
+                    return self.record_action_error(
+                        "Configuration checkbox control could not be updated.",
+                    );
+                }
+                applied
+            }
+            GuiShellAction::AnnouncePublicServerSelectionChanged(index) => {
+                self.announce_public_server_selection_changed(index)
+            }
+            GuiShellAction::BeginSelectedPublicServerConnect => {
+                self.begin_selected_public_server_connect()
+            }
+            GuiShellAction::CompleteSelectedPublicServerConnect => {
+                self.complete_selected_public_server_connect()
+            }
+            GuiShellAction::BeginPublicServerRefresh => self.begin_public_server_refresh(),
+            GuiShellAction::CompletePublicServerRefresh(servers) => {
+                self.complete_public_server_refresh(servers)
+            }
+            GuiShellAction::AnnounceCustomPublicServerAdded { label, address } => {
+                self.announce_custom_public_server_added(label, address)
+            }
+            GuiShellAction::SelectPublicServer(index) => {
+                if !self.apply_public_server_selection(index) {
+                    return false;
+                }
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::AddMediaSearchDirectory(path) => {
+                if !self.add_media_search_directory_path(path) {
+                    return false;
+                }
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::AnnounceMediaSearchDirectorySelected(index) => {
+                self.announce_media_search_directory_selected(index)
+            }
+            GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(path) => {
+                self.announce_media_search_directory_browsed(path)
+            }
+            GuiShellAction::BeginMissingMediaSearch => self.begin_missing_media_search(),
+            GuiShellAction::CompleteMissingMediaSearch(found_path) => {
+                self.complete_missing_media_search(found_path)
+            }
+            GuiShellAction::JoinMainWindowRoom(room) => self.join_main_window_room(room),
+            GuiShellAction::LeaveMainWindowRoom => self.leave_main_window_room(),
+            GuiShellAction::SetMainWindowRoom(room) => {
+                let normalized = normalized_editable_text(&room);
+                let Some(room) = normalized else {
+                    return self.record_action_error("Room name cannot be empty.");
+                };
+                self.set_main_window_room_state(Some(room));
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => {
+                self.apply_main_window_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot) => {
+                self.apply_gui_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::PushChatMessage { sender, message } => {
+                if sender.trim().is_empty() || message.trim().is_empty() {
+                    return self
+                        .record_action_error("Chat sender and message must both be non-empty.");
+                }
+                self.append_chat_row(sender, message);
+                self.clear_action_error_and_refresh();
+                true
+            }
+        }
+    }
+
+    fn render_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!(
+            "[Shell App State] active_view={}, open_modal={}",
+            self.active_view.label(),
+            self.open_modal
+                .map(GuiShellModal::label)
+                .unwrap_or("(none)")
+        )];
+        lines.extend(self.selection.render_lines());
+        lines.extend(self.commands.render_lines(self.pending_operation.as_ref()));
+        lines.push(format!(
+            "[Chat Send] pending_message={}",
+            self.outgoing_chat_message.as_deref().unwrap_or("(none)")
+        ));
+        lines.extend(
+            self.focused_configuration_control
+                .as_ref()
+                .map(GuiFocusedConfigurationControlState::render_lines)
+                .unwrap_or_else(|| vec!["[Control Focus] focused=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.public_server_edit_session
+                .as_ref()
+                .map(GuiPublicServerEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Public Server Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.main_window_user_edit_session
+                .as_ref()
+                .map(GuiMainWindowUserEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Main Window User Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.text_edit_session
+                .as_ref()
+                .map(GuiTextEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Text Edit] editing=(none)".to_owned()]),
+        );
+        lines.push(format!(
+            "[Notifications] count={}",
+            self.notifications.len()
+        ));
+        if self.notifications.is_empty() {
+            lines.push("- (empty)".to_owned());
+        } else {
+            for notification in &self.notifications {
+                lines.push(notification.render_line());
+            }
+        }
+        lines.extend(self.validation.render_lines());
+        lines.extend(self.configuration.render_lines());
+        lines.extend(self.main_window.render_lines());
+        lines.extend(self.menus.render_lines());
+        lines.extend(self.public_servers.render_lines());
+        lines.extend(self.media_search.render_lines());
+        lines.push(
+            "syncplay-gui now has a unified shell app state and action reducer for future native widget binding."
+                .to_owned(),
+        );
+        lines
+    }
+
+    fn configuration_widget_tree(&self) -> GuiWidgetNode {
+        let busy = self.pending_operation.is_some();
+        let mut children =
+            self.configuration
+                .sections
+                .iter()
+                .map(|section| {
+                    let controls = section
+                        .controls
+                        .iter()
+                        .map(|control| {
+                            let active_edit_session =
+                                self.text_edit_session.as_ref().and_then(|session| {
+                                    ((session.section == section.title)
+                                        && (session.label == control.label))
+                                        .then_some(session)
+                                });
+                            let focused = self.focused_configuration_control.as_ref().is_some_and(
+                                |focused| {
+                                    focused.section == section.title
+                                        && focused.label == control.label
+                                },
+                            );
+                            let value = active_edit_session
+                                .map(|session| session.buffer.clone())
+                                .unwrap_or_else(|| control.value.clone());
+                            GuiWidgetNode::leaf(
+                                format!("config:{}:{}", section.title, control.label),
+                                control.label,
+                                control.kind.widget_kind(),
+                                Some(value),
+                                control.kind.is_editable() && !busy,
+                                focused,
+                            )
+                        })
+                        .collect();
+
+                    GuiWidgetNode::branch(
+                        format!("config-section:{}", section.title),
+                        section.title,
+                        GuiWidgetKind::Panel,
+                        controls,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+        children.push(GuiWidgetNode::branch(
+            "config-commands",
+            "Commands",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "config-command:save",
+                    "Save",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_save_configuration,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-command:reset",
+                    "Reset",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_reset_configuration,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-command:reload",
+                    "Reload",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_reload_configuration,
+                    false,
+                ),
+            ],
+        ));
+
+        GuiWidgetNode::branch(
+            "configuration-root",
+            "Configuration",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn main_window_widget_tree(&self) -> GuiWidgetNode {
+        let can_edit_room = self.pending_operation.is_none();
+        let room_draft = self
+            .configuration
+            .control_value("Connection", "Room")
+            .unwrap_or_default()
+            .to_owned();
+        let has_room_draft = !room_draft.trim().is_empty();
+        let has_joined_room = {
+            let joined_room = self.main_window.room_name.trim();
+            !joined_room.is_empty() && joined_room != "(no room joined)"
+        };
+        let can_manage_playlist =
+            self.main_window.playback.can_manage_playlist && self.pending_operation.is_none();
+        let selected_playlist_index = self.selection.selected_main_window_playlist;
+        let can_move_playlist_up =
+            can_manage_playlist && selected_playlist_index.is_some_and(|index| index > 0);
+        let can_move_playlist_down = can_manage_playlist
+            && selected_playlist_index
+                .is_some_and(|index| index + 1 < self.main_window.playlist.len());
+        let can_remove_playlist = can_manage_playlist && selected_playlist_index.is_some();
+        let can_add_playlist_entry =
+            can_manage_playlist && !self.new_playlist_entry_draft.trim().is_empty();
+        let can_manage_users =
+            self.pending_operation.is_none() && self.main_window_user_edit_session.is_none();
+        let selected_user_index = self.selection.selected_main_window_user;
+        let selected_user = selected_user_index.and_then(|index| self.main_window.users.get(index));
+        let can_toggle_user_ready = can_manage_users && selected_user.is_some();
+        let can_toggle_user_controller =
+            can_manage_users && self.main_window.controlled_room_active && selected_user.is_some();
+        let can_edit_user = can_manage_users && selected_user.is_some();
+        let can_remove_user = can_manage_users && selected_user.is_some_and(|user| !user.is_self);
+        let can_add_user = can_manage_users && !self.new_main_window_user_draft.trim().is_empty();
+        let mut children = vec![
+            GuiWidgetNode::leaf(
+                "main-window:room",
+                "Room",
+                GuiWidgetKind::Status,
+                Some(self.main_window.room_name.clone()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::branch(
+                "main-window:room-actions",
+                "Room Actions",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:room-input",
+                        "Room Draft",
+                        GuiWidgetKind::TextInput,
+                        Some(room_draft),
+                        can_edit_room,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:room:set",
+                        "Set Current Room",
+                        GuiWidgetKind::Button,
+                        None,
+                        can_edit_room && has_room_draft,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:room:join",
+                        "Join Draft Room",
+                        GuiWidgetKind::Button,
+                        None,
+                        can_edit_room && has_room_draft,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:room:leave",
+                        "Leave Room",
+                        GuiWidgetKind::Button,
+                        None,
+                        can_edit_room && has_joined_room,
+                        false,
+                    ),
+                ],
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:playback-paused",
+                "Playback Paused",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.main_window.playback_paused).to_owned()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:autoplay",
+                "Autoplay",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.main_window.autoplay_active).to_owned()),
+                true,
+                false,
+            ),
+        ];
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:users",
+            "Users",
+            GuiWidgetKind::List,
+            self.main_window
+                .users
+                .iter()
+                .enumerate()
+                .map(|(index, user)| {
+                    GuiWidgetNode::leaf(
+                        format!("main-window:user:{index}"),
+                        &user.username,
+                        GuiWidgetKind::ListItem,
+                        Some(format!(
+                            "self={}, ready={}, controller={}",
+                            bool_label(user.is_self),
+                            bool_label(user.is_ready),
+                            bool_label(user.is_controller),
+                        )),
+                        true,
+                        user.is_selected,
+                    )
+                })
+                .collect(),
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:user-actions",
+            "User Actions",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "main-window:user:new",
+                    "New User",
+                    GuiWidgetKind::TextInput,
+                    Some(self.new_main_window_user_draft.clone()),
+                    can_manage_users,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:user:add",
+                    "Add User",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_add_user,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:user:toggle-ready",
+                    "Toggle Selected Ready",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_toggle_user_ready,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:user:toggle-controller",
+                    "Toggle Selected Controller",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_toggle_user_controller,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:user:edit",
+                    "Edit Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_edit_user,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:user:remove",
+                    "Remove Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_remove_user,
+                    false,
+                ),
+            ],
+        ));
+
+        if let Some(session) = &self.main_window_user_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "main-window:user-edit-session",
+                "User Edit",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:user-edit:username",
+                        "Username",
+                        GuiWidgetKind::TextInput,
+                        Some(session.username_buffer.clone()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:user-edit:commit",
+                        "Save Changes",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:user-edit:cancel",
+                        "Cancel Edit",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:playlist",
+            "Playlist",
+            GuiWidgetKind::List,
+            self.main_window
+                .playlist
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    GuiWidgetNode::leaf(
+                        format!("main-window:playlist:{index}"),
+                        &row.label,
+                        GuiWidgetKind::ListItem,
+                        None,
+                        true,
+                        row.is_selected,
+                    )
+                })
+                .collect(),
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:playlist-actions",
+            "Playlist Actions",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:new",
+                    "New Entry",
+                    GuiWidgetKind::TextInput,
+                    Some(self.new_playlist_entry_draft.clone()),
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:add",
+                    "Add Entry",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_add_playlist_entry,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:up",
+                    "Move Selected Up",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_move_playlist_up,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:down",
+                    "Move Selected Down",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_move_playlist_down,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:remove",
+                    "Remove Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_remove_playlist,
+                    false,
+                ),
+            ],
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:chat",
+            "Chat",
+            GuiWidgetKind::List,
+            self.main_window
+                .chat
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    GuiWidgetNode::leaf(
+                        format!("main-window:chat:{index}"),
+                        &row.sender,
+                        GuiWidgetKind::ListItem,
+                        Some(row.message.clone()),
+                        true,
+                        false,
+                    )
+                })
+                .collect(),
+        ));
+
+        children.push(GuiWidgetNode::leaf(
+            "main-window:chat-input",
+            "Chat Input",
+            GuiWidgetKind::TextInput,
+            Some(self.outgoing_chat_message.clone().unwrap_or_default()),
+            self.commands.can_send_chat_message,
+            false,
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "main-window:controls",
+            "Controls",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "main-window:control:toggle-pause",
+                    "Toggle Pause",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_toggle_pause,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:control:set-ready",
+                    "Set Ready",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.main_window.playback.can_set_ready && self.pending_operation.is_none(),
+                    false,
+                ),
+            ],
+        ));
+
+        GuiWidgetNode::branch(
+            "main-window-root",
+            "Main Window",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn menu_dialog_widget_tree(&self) -> GuiWidgetNode {
+        let mut children = self
+            .menus
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(section_index, section)| {
+                GuiWidgetNode::branch(
+                    format!("menus:section:{section_index}"),
+                    section.title,
+                    GuiWidgetKind::Panel,
+                    section
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .map(|(action_index, action)| {
+                            GuiWidgetNode::leaf(
+                                format!("menus:action:{section_index}:{action_index}"),
+                                action.label,
+                                GuiWidgetKind::Button,
+                                None,
+                                action.enabled,
+                                action.is_selected,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        children.push(GuiWidgetNode::branch(
+            "menus:dialogs",
+            "Dialogs",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "menus:dialog:tls",
+                    "TLS Certificate Prompt",
+                    GuiWidgetKind::Status,
+                    Some(bool_label(self.menus.tls_prompt_expected).to_owned()),
+                    true,
+                    self.open_modal == Some(GuiShellModal::TlsCertificatePrompt),
+                ),
+                GuiWidgetNode::leaf(
+                    "menus:dialog:update",
+                    "Update Notice",
+                    GuiWidgetKind::Status,
+                    Some(bool_label(self.menus.update_notice_expected).to_owned()),
+                    true,
+                    self.open_modal == Some(GuiShellModal::UpdateNotice),
+                ),
+                GuiWidgetNode::leaf(
+                    "menus:dialog:about",
+                    "About Dialog",
+                    GuiWidgetKind::Status,
+                    Some(bool_label(self.menus.about_dialog_available).to_owned()),
+                    self.menus.about_dialog_available,
+                    self.open_modal == Some(GuiShellModal::About),
+                ),
+            ],
+        ));
+
+        GuiWidgetNode::branch(
+            "menus-root",
+            "Menus & Dialogs",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn public_server_widget_tree(&self) -> GuiWidgetNode {
+        let has_selected_server = self.selected_public_server_index().is_some();
+        let can_run_server_commands =
+            self.pending_operation.is_none() && self.public_server_edit_session.is_none();
+        let mut children = vec![GuiWidgetNode::branch(
+            "public-servers:list",
+            "Servers",
+            GuiWidgetKind::List,
+            self.public_servers
+                .servers
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    GuiWidgetNode::leaf(
+                        format!("public-servers:row:{index}"),
+                        &row.label,
+                        GuiWidgetKind::ListItem,
+                        Some(row.address.clone()),
+                        true,
+                        row.is_selected,
+                    )
+                })
+                .collect(),
+        )];
+
+        children.push(GuiWidgetNode::branch(
+            "public-servers:commands",
+            "Commands",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "public-servers:command:connect",
+                    "Connect",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_connect_public_server && can_run_server_commands,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "public-servers:command:refresh",
+                    "Refresh",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_refresh_public_servers && can_run_server_commands,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "public-servers:command:add-custom",
+                    "Add Custom Server",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.public_servers.can_add_custom_server && can_run_server_commands,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "public-servers:command:edit",
+                    "Edit Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    has_selected_server && can_run_server_commands,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "public-servers:command:remove",
+                    "Remove Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    has_selected_server && can_run_server_commands,
+                    false,
+                ),
+            ],
+        ));
+
+        if let Some(session) = &self.public_server_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "public-servers:edit-session",
+                "Edit Session",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "public-servers:edit:label",
+                        "Label",
+                        GuiWidgetKind::TextInput,
+                        Some(session.label_buffer.clone()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "public-servers:edit:address",
+                        "Address",
+                        GuiWidgetKind::TextInput,
+                        Some(session.address_buffer.clone()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "public-servers:edit:commit",
+                        "Save Changes",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "public-servers:edit:cancel",
+                        "Cancel Edit",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
+        GuiWidgetNode::branch(
+            "public-servers-root",
+            "Public Servers",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn media_search_widget_tree(&self) -> GuiWidgetNode {
+        let selected_directory_index = self.selection.selected_media_search_directory;
+        let can_manage_directories = self.pending_operation.is_none();
+        let can_move_directory_up =
+            can_manage_directories && selected_directory_index.is_some_and(|index| index > 0);
+        let can_move_directory_down = can_manage_directories
+            && selected_directory_index
+                .is_some_and(|index| index + 1 < self.media_search.directories.len());
+        let can_remove_directory = can_manage_directories && selected_directory_index.is_some();
+        let mut children = vec![GuiWidgetNode::branch(
+            "media-search:directories",
+            "Directories",
+            GuiWidgetKind::List,
+            self.media_search
+                .directories
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    GuiWidgetNode::leaf(
+                        format!("media-search:directory:{index}"),
+                        &row.path,
+                        GuiWidgetKind::ListItem,
+                        None,
+                        true,
+                        row.is_selected,
+                    )
+                })
+                .collect(),
+        )];
+
+        children.push(GuiWidgetNode::branch(
+            "media-search:commands",
+            "Commands",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "media-search:command:browse",
+                    "Browse Directories",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.media_search.can_browse_directories && self.pending_operation.is_none(),
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:command:search",
+                    "Search Missing Media",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_search_missing_media,
+                    false,
+                ),
+            ],
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "media-search:directory-actions",
+            "Directory Actions",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "media-search:directory:up",
+                    "Move Selected Up",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_move_directory_up,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:directory:down",
+                    "Move Selected Down",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_move_directory_down,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:directory:remove",
+                    "Remove Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_remove_directory,
+                    false,
+                ),
+            ],
+        ));
+
+        children.push(GuiWidgetNode::branch(
+            "media-search:timing",
+            "Timing",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "media-search:timing:first-file",
+                    "First File Timeout",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.first_file_timeout_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:timing:search",
+                    "Search Timeout",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.search_timeout_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+            ],
+        ));
+
+        GuiWidgetNode::branch(
+            "media-search-root",
+            "Media Search",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn shell_widget_tree(&self) -> GuiWidgetNode {
+        let mut configuration = self.configuration_widget_tree();
+        configuration.selected = self.active_view == GuiShellView::Configuration;
+
+        let mut main_window = self.main_window_widget_tree();
+        main_window.selected = self.active_view == GuiShellView::MainWindow;
+
+        let mut menus = self.menu_dialog_widget_tree();
+        menus.selected = self.active_view == GuiShellView::MenusAndDialogs;
+
+        let mut public_servers = self.public_server_widget_tree();
+        public_servers.selected = self.active_view == GuiShellView::PublicServers;
+
+        let mut media_search = self.media_search_widget_tree();
+        media_search.selected = self.active_view == GuiShellView::MediaSearch;
+
+        let notifications = GuiWidgetNode::branch(
+            "shell:notifications",
+            "Notifications",
+            GuiWidgetKind::List,
+            self.notifications
+                .iter()
+                .enumerate()
+                .map(|(index, notification)| {
+                    GuiWidgetNode::leaf(
+                        format!("shell:notification:{index}"),
+                        notification.level.label(),
+                        GuiWidgetKind::ListItem,
+                        Some(notification.message.clone()),
+                        true,
+                        false,
+                    )
+                })
+                .collect(),
+        );
+
+        GuiWidgetNode::branch(
+            "shell-root",
+            "Syncplay GUI",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "shell:active-view",
+                    "Active View",
+                    GuiWidgetKind::Status,
+                    Some(self.active_view.label().to_owned()),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:open-modal",
+                    "Open Modal",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.open_modal
+                            .map(GuiShellModal::label)
+                            .unwrap_or("(none)")
+                            .to_owned(),
+                    ),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:pending-operation",
+                    "Pending Operation",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.pending_operation
+                            .as_ref()
+                            .map(|pending| pending.kind.label())
+                            .unwrap_or("(none)")
+                            .to_owned(),
+                    ),
+                    true,
+                    false,
+                ),
+                notifications,
+                configuration,
+                main_window,
+                menus,
+                public_servers,
+                media_search,
+            ],
+        )
+    }
+
+    fn render_shell_widgets(&self, renderer: &mut impl GuiWidgetRenderer) {
+        self.shell_widget_tree().render_with(renderer);
+    }
+
+    fn reapply_runtime_main_window_surface_from_snapshot(
+        &mut self,
+        previous_settings: &StoredClientSettingsMvp,
+        current_snapshot: &MainWindowRuntimeSnapshot,
+    ) {
+        let previous_baseline = MainWindowRuntimeSnapshot::from_shell_state(
+            &MainWindowShellState::from_stored_settings(previous_settings),
+        );
+
+        if current_snapshot.room_name != previous_baseline.room_name {
+            self.main_window.room_name = current_snapshot.room_name.clone();
+        }
+        if current_snapshot.shared_playlist_enabled != previous_baseline.shared_playlist_enabled {
+            self.main_window.shared_playlist_enabled = current_snapshot.shared_playlist_enabled;
+        }
+        if current_snapshot.controlled_room_active != previous_baseline.controlled_room_active {
+            self.main_window.controlled_room_active = current_snapshot.controlled_room_active;
+        }
+        if current_snapshot.users != previous_baseline.users {
+            self.main_window.users = current_snapshot
+                .users
+                .iter()
+                .map(|user| MainWindowUserRow {
+                    username: user.username.clone(),
+                    is_self: user.is_self,
+                    is_ready: user.is_ready,
+                    is_controller: user.is_controller,
+                    is_selected: false,
+                })
+                .collect();
+        }
+        if current_snapshot.playlist != previous_baseline.playlist {
+            self.main_window.playlist = current_snapshot
+                .playlist
+                .iter()
+                .map(|label| MainWindowPlaylistRow {
+                    label: label.clone(),
+                    is_selected: false,
+                })
+                .collect();
+        }
+        if current_snapshot.chat != previous_baseline.chat {
+            self.main_window.chat = current_snapshot
+                .chat
+                .iter()
+                .map(|row| MainWindowChatRow {
+                    sender: row.sender.clone(),
+                    message: row.message.clone(),
+                })
+                .collect();
+        }
+        if current_snapshot.can_toggle_pause != previous_baseline.can_toggle_pause {
+            self.main_window.playback.can_toggle_pause = current_snapshot.can_toggle_pause;
+        }
+        if current_snapshot.can_seek != previous_baseline.can_seek {
+            self.main_window.playback.can_seek = current_snapshot.can_seek;
+        }
+        if current_snapshot.can_set_ready != previous_baseline.can_set_ready {
+            self.main_window.playback.can_set_ready = current_snapshot.can_set_ready;
+        }
+        if current_snapshot.can_manage_playlist != previous_baseline.can_manage_playlist {
+            self.main_window.playback.can_manage_playlist = current_snapshot.can_manage_playlist;
+        }
+        if current_snapshot.playback_paused != previous_baseline.playback_paused {
+            self.main_window.playback_paused = current_snapshot.playback_paused;
+        }
+        if current_snapshot.autoplay_active != previous_baseline.autoplay_active {
+            self.main_window.autoplay_active = current_snapshot.autoplay_active;
+        }
+    }
+
+    fn preserves_runtime_dialog_expectations(
+        &self,
+        previous_settings: &StoredClientSettingsMvp,
+    ) -> (bool, bool) {
+        let previous_baseline = MenuDialogShellState::from_stored_settings(previous_settings);
+        (
+            self.menus.tls_prompt_expected != previous_baseline.tls_prompt_expected,
+            self.menus.update_notice_expected != previous_baseline.update_notice_expected,
+        )
+    }
+
+    fn preserves_runtime_public_server_surface(
+        &self,
+        previous_settings: &StoredClientSettingsMvp,
+    ) -> bool {
+        let previous_baseline =
+            PublicServerBrowserShellState::from_stored_settings(previous_settings);
+        PublicServerBrowserRuntimeFlags::from_shell_state(&self.public_servers)
+            != PublicServerBrowserRuntimeFlags::from_shell_state(&previous_baseline)
+    }
+
+    fn preserves_runtime_media_search_surface(
+        &self,
+        previous_settings: &StoredClientSettingsMvp,
+    ) -> bool {
+        let previous_baseline =
+            MediaSearchWorkflowShellState::from_stored_settings(previous_settings);
+        MediaSearchWorkflowRuntimeFlags::from_shell_state(&self.media_search)
+            != MediaSearchWorkflowRuntimeFlags::from_shell_state(&previous_baseline)
+    }
+
+    fn sync_derived_surfaces_from_configuration_settings(
+        &mut self,
+        previous_settings: &StoredClientSettingsMvp,
+    ) {
+        let preserved_main_window_runtime_snapshot =
+            MainWindowRuntimeSnapshot::from_shell_state(&self.main_window);
+        let settings = self.configuration.to_stored_settings();
+        let preserved_public_server_rows = (previous_settings.public_servers
+            == settings.public_servers)
+            .then(|| self.public_servers.servers.clone());
+        let preserved_media_search_directories = (previous_settings.media_search_directories
+            == settings.media_search_directories)
+            .then(|| self.media_search.directories.clone());
+        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
+            self.preserves_runtime_dialog_expectations(previous_settings);
+        let preserve_public_servers =
+            self.preserves_runtime_public_server_surface(previous_settings);
+        let preserved_public_server_flags = preserve_public_servers
+            .then(|| PublicServerBrowserRuntimeFlags::from_shell_state(&self.public_servers));
+        let preserve_media_search = self.preserves_runtime_media_search_surface(previous_settings);
+        let preserved_media_search_flags = preserve_media_search
+            .then(|| MediaSearchWorkflowRuntimeFlags::from_shell_state(&self.media_search));
+        let selected_public_server_address =
+            self.selected_public_server_address().map(str::to_owned);
+        let tls_prompt_expected = self.menus.tls_prompt_expected;
+        let update_notice_expected = self.menus.update_notice_expected;
+        let about_dialog_available = self.menus.about_dialog_available;
+        self.main_window = MainWindowShellState::from_stored_settings(&settings);
+        self.reapply_runtime_main_window_surface_from_snapshot(
+            previous_settings,
+            &preserved_main_window_runtime_snapshot,
+        );
+        self.menus = MenuDialogShellState::from_stored_settings(&settings);
+        if preserve_tls_prompt_expected {
+            self.menus.tls_prompt_expected = tls_prompt_expected;
+        }
+        if preserve_update_notice_expected {
+            self.menus.update_notice_expected = update_notice_expected;
+        }
+        self.menus.about_dialog_available = about_dialog_available;
+        self.public_servers = PublicServerBrowserShellState::from_stored_settings(&settings);
+        if let Some(servers) = preserved_public_server_rows {
+            self.public_servers.servers = servers;
+        }
+        if let Some(runtime_flags) = preserved_public_server_flags {
+            self.public_servers.apply_runtime_flags(runtime_flags);
+        }
+        self.restore_selected_public_server_address(selected_public_server_address.as_deref());
+        self.media_search = MediaSearchWorkflowShellState::from_stored_settings(&settings);
+        if let Some(directories) = preserved_media_search_directories {
+            self.media_search.directories = directories;
+        }
+        if let Some(runtime_flags) = preserved_media_search_flags {
+            self.media_search.apply_runtime_flags(runtime_flags);
+        }
+        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.sync_dialog_menu_actions_from_runtime_state();
+        self.normalize_selection();
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+        self.normalize_focused_configuration_control();
+        self.normalize_public_server_edit_session();
+        self.normalize_main_window_user_edit_session();
+        self.normalize_text_edit_session();
+        self.refresh_validation();
+        self.normalize_runtime_command_availability_override_for_current_state();
+        self.refresh_command_availability();
+        self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
+    }
+
+    fn resync_from_settings(&mut self, settings: StoredClientSettingsMvp) {
+        let previous_settings = self.configuration.to_stored_settings();
+        let active_view = self.active_view;
+        let open_modal = self.open_modal;
+        let selection = self.selection.clone();
+        let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
+        let runtime_command_availability_override =
+            self.runtime_command_availability_override.clone();
+        let pending_operation = self.pending_operation.clone();
+        let outgoing_chat_message = self.outgoing_chat_message.clone();
+        let new_main_window_user_draft = self.new_main_window_user_draft.clone();
+        let new_playlist_entry_draft = self.new_playlist_entry_draft.clone();
+        let focused_configuration_control = self.focused_configuration_control.clone();
+        let public_server_edit_session = self.public_server_edit_session.clone();
+        let main_window_user_edit_session = self.main_window_user_edit_session.clone();
+        let text_edit_session = self.text_edit_session.clone();
+        let runtime_validation_issues = self.runtime_validation_issues.clone();
+        let notifications = self.notifications.clone();
+        let last_action_error = self.validation.last_action_error.clone();
+        let saved_configuration = self.saved_configuration.clone();
+        let tls_prompt_expected = self.menus.tls_prompt_expected;
+        let update_notice_expected = self.menus.update_notice_expected;
+        let about_dialog_available = self.menus.about_dialog_available;
+        let selected_public_server_address =
+            self.selected_public_server_address().map(str::to_owned);
+        let preserved_main_window_runtime_snapshot =
+            MainWindowRuntimeSnapshot::from_shell_state(&self.main_window);
+        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
+            self.preserves_runtime_dialog_expectations(&previous_settings);
+        let preserved_public_server_rows = (previous_settings.public_servers
+            == settings.public_servers)
+            .then(|| self.public_servers.servers.clone());
+        let preserve_public_servers =
+            self.preserves_runtime_public_server_surface(&previous_settings);
+        let preserved_public_server_flags = preserve_public_servers
+            .then(|| PublicServerBrowserRuntimeFlags::from_shell_state(&self.public_servers));
+        let preserved_media_search_directories = (previous_settings.media_search_directories
+            == settings.media_search_directories)
+            .then(|| self.media_search.directories.clone());
+        let preserve_media_search = self.preserves_runtime_media_search_surface(&previous_settings);
+        let preserved_media_search_flags = preserve_media_search
+            .then(|| MediaSearchWorkflowRuntimeFlags::from_shell_state(&self.media_search));
+
+        *self = Self::from_stored_settings(&settings);
+        self.active_view = active_view;
+        self.open_modal = open_modal;
+        self.selection = selection;
+        self.runtime_menu_action_overrides = runtime_menu_action_overrides;
+        self.runtime_command_availability_override = runtime_command_availability_override;
+        self.pending_operation = pending_operation;
+        self.outgoing_chat_message = outgoing_chat_message;
+        self.new_main_window_user_draft = new_main_window_user_draft;
+        self.new_playlist_entry_draft = new_playlist_entry_draft;
+        self.focused_configuration_control = focused_configuration_control;
+        self.public_server_edit_session = public_server_edit_session;
+        self.main_window_user_edit_session = main_window_user_edit_session;
+        self.text_edit_session = text_edit_session;
+        self.runtime_validation_issues = runtime_validation_issues;
+        self.notifications = notifications;
+        self.saved_configuration = saved_configuration;
+        if preserve_tls_prompt_expected {
+            self.menus.tls_prompt_expected = tls_prompt_expected;
+        }
+        if preserve_update_notice_expected {
+            self.menus.update_notice_expected = update_notice_expected;
+        }
+        self.menus.about_dialog_available = about_dialog_available;
+        if let Some(servers) = preserved_public_server_rows {
+            self.public_servers.servers = servers;
+        }
+        if let Some(runtime_flags) = preserved_public_server_flags {
+            self.public_servers.apply_runtime_flags(runtime_flags);
+        }
+        self.restore_selected_public_server_address(selected_public_server_address.as_deref());
+        if let Some(directories) = preserved_media_search_directories {
+            self.media_search.directories = directories;
+        }
+        if let Some(runtime_flags) = preserved_media_search_flags {
+            self.media_search.apply_runtime_flags(runtime_flags);
+        }
+        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.reapply_runtime_main_window_surface_from_snapshot(
+            &previous_settings,
+            &preserved_main_window_runtime_snapshot,
+        );
+        self.sync_dialog_menu_actions_from_runtime_state();
+        self.normalize_selection();
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+        self.normalize_focused_configuration_control();
+        self.normalize_public_server_edit_session();
+        self.normalize_main_window_user_edit_session();
+        self.normalize_text_edit_session();
+        self.validation.last_action_error = last_action_error;
+        self.refresh_validation();
+        self.normalize_runtime_command_availability_override_for_current_state();
+        self.refresh_command_availability();
+        self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
+    }
+
+    fn has_unsaved_configuration_changes(&self) -> bool {
+        self.configuration.to_stored_settings() != self.saved_configuration
+    }
+
+    fn default_selection_from_surfaces(&mut self) {
+        self.selection.selected_main_window_user =
+            (!self.main_window.users.is_empty()).then_some(0);
+        self.selection.selected_main_window_playlist = self
+            .main_window
+            .playlist
+            .iter()
+            .position(|row| row.is_selected)
+            .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0));
+        self.selection.selected_menu_action =
+            self.menus
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(section_index, section)| {
+                    (!section.actions.is_empty()).then_some((section_index, 0))
+                });
+        self.selection.selected_media_search_directory =
+            (!self.media_search.directories.is_empty()).then_some(0);
+    }
+
+    fn normalize_selection(&mut self) {
+        if self
+            .selection
+            .selected_main_window_user
+            .is_some_and(|index| index >= self.main_window.users.len())
+        {
+            self.selection.selected_main_window_user =
+                (!self.main_window.users.is_empty()).then_some(0);
+        }
+        if self
+            .selection
+            .selected_main_window_playlist
+            .is_some_and(|index| index >= self.main_window.playlist.len())
+        {
+            self.selection.selected_main_window_playlist =
+                (!self.main_window.playlist.is_empty()).then_some(0);
+        }
+        if self
+            .selection
+            .selected_menu_action
+            .is_some_and(|(section_index, action_index)| {
+                self.menus
+                    .sections
+                    .get(section_index)
+                    .is_none_or(|section| action_index >= section.actions.len())
+            })
+        {
+            self.selection.selected_menu_action =
+                self.menus
+                    .sections
+                    .iter()
+                    .enumerate()
+                    .find_map(|(section_index, section)| {
+                        (!section.actions.is_empty()).then_some((section_index, 0))
+                    });
+        }
+        if self
+            .selection
+            .selected_media_search_directory
+            .is_some_and(|index| index >= self.media_search.directories.len())
+        {
+            self.selection.selected_media_search_directory =
+                (!self.media_search.directories.is_empty()).then_some(0);
+        }
+    }
+
+    fn normalize_selected_menu_action_after_runtime_update(&mut self) {
+        let Some((selected_section_index, selected_action_index)) =
+            self.selection.selected_menu_action
+        else {
+            return;
+        };
+        if self
+            .menus
+            .sections
+            .get(selected_section_index)
+            .and_then(|section| section.actions.get(selected_action_index))
+            .is_some_and(|action| action.enabled)
+        {
+            return;
+        }
+
+        let replacement_in_section =
+            self.menus
+                .sections
+                .get(selected_section_index)
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .position(|action| action.enabled)
+                        .map(|action_index| (selected_section_index, action_index))
+                });
+        self.selection.selected_menu_action = replacement_in_section.or_else(|| {
+            self.menus
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(section_index, section)| {
+                    section
+                        .actions
+                        .iter()
+                        .position(|action| action.enabled)
+                        .map(|action_index| (section_index, action_index))
+                })
+        });
+    }
+
+    fn set_menu_action_enabled(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+        enabled: bool,
+    ) {
+        let Some(action) = self
+            .menus
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.label == action_label)
+            })
+        else {
+            return;
+        };
+        action.enabled = enabled;
+    }
+
+    fn set_runtime_menu_action_override(&mut self, action_override: MenuActionRuntimeOverride) {
+        if let Some(existing) = self
+            .runtime_menu_action_overrides
+            .iter_mut()
+            .find(|existing| {
+                existing.section_title == action_override.section_title
+                    && existing.action_label == action_override.action_label
+            })
+        {
+            existing.enabled = action_override.enabled;
+            return;
+        }
+        self.runtime_menu_action_overrides.push(action_override);
+    }
+
+    fn clear_runtime_menu_action_override(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+    ) {
+        self.runtime_menu_action_overrides
+            .retain(|action_override| {
+                action_override.section_title != section_title
+                    || action_override.action_label != action_label
+            });
+    }
+
+    fn remember_runtime_menu_action_override(
+        &mut self,
+        baseline_menus: &MenuDialogShellState,
+        action_override: &MenuActionRuntimeOverride,
+    ) {
+        let baseline_enabled = baseline_menus
+            .sections
+            .iter()
+            .find(|section| section.title == action_override.section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == action_override.action_label)
+            })
+            .map(|action| action.enabled);
+        let Some(baseline_enabled) = baseline_enabled else {
+            return;
+        };
+        if action_override.enabled == baseline_enabled {
+            self.clear_runtime_menu_action_override(
+                action_override.section_title,
+                action_override.action_label,
+            );
+            return;
+        }
+        self.set_runtime_menu_action_override(action_override.clone());
+    }
+
+    fn normalize_runtime_menu_action_overrides_for_settings(
+        &mut self,
+        settings: &StoredClientSettingsMvp,
+    ) {
+        let baseline_menus = MenuDialogShellState::from_stored_settings(settings);
+        self.runtime_menu_action_overrides
+            .retain(|action_override| {
+                baseline_menus
+                    .sections
+                    .iter()
+                    .find(|section| section.title == action_override.section_title)
+                    .and_then(|section| {
+                        section
+                            .actions
+                            .iter()
+                            .find(|action| action.label == action_override.action_label)
+                    })
+                    .is_some_and(|action| action.enabled != action_override.enabled)
+            });
+    }
+
+    fn command_availability_without_runtime_override(&self) -> GuiCommandAvailabilityState {
+        let settings = self.configuration.to_stored_settings();
+        let busy = self.pending_operation.is_some();
+        GuiCommandAvailabilityState {
+            can_save_configuration: !busy && self.validation.issues.is_empty(),
+            can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
+            can_reload_configuration: !busy,
+            can_connect_public_server: !busy && self.public_servers.can_connect,
+            can_refresh_public_servers: !busy && self.public_servers.can_refresh,
+            can_search_missing_media: !busy && self.media_search.can_search_missing_media,
+            can_toggle_pause: !busy && self.main_window.playback.can_toggle_pause,
+            can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
+        }
+    }
+
+    fn normalize_runtime_command_availability_override_for_current_state(&mut self) {
+        let baseline = self.command_availability_without_runtime_override();
+        self.runtime_command_availability_override
+            .normalize_for_baseline(&baseline);
+    }
+
+    fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
+        let busy = self.pending_operation.is_some();
+        let can_open_media_file = !busy
+            && (self.main_window.shared_playlist_enabled
+                || self.main_window.playback.can_toggle_pause
+                || self.main_window.playback.can_seek);
+        self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
+        self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
+        self.set_menu_action_enabled(
+            "Playback",
+            "Seek",
+            !busy && self.main_window.playback.can_seek,
+        );
+        self.set_menu_action_enabled(
+            "Playback",
+            "Playlist Actions",
+            !busy && self.main_window.playback.can_manage_playlist,
+        );
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+    }
+
+    fn sync_dialog_menu_actions_from_runtime_state(&mut self) {
+        let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
+        for action_override in runtime_menu_action_overrides {
+            self.set_menu_action_enabled(
+                action_override.section_title,
+                action_override.action_label,
+                action_override.enabled,
+            );
+        }
+        self.set_menu_action_enabled("Help", "About", self.menus.about_dialog_available);
+    }
+
+    fn apply_selection_to_surfaces(&mut self) {
+        for (index, user) in self.main_window.users.iter_mut().enumerate() {
+            user.is_selected = self.selection.selected_main_window_user == Some(index);
+        }
+        for (index, item) in self.main_window.playlist.iter_mut().enumerate() {
+            item.is_selected = self.selection.selected_main_window_playlist == Some(index);
+        }
+        for (section_index, section) in self.menus.sections.iter_mut().enumerate() {
+            for (action_index, action) in section.actions.iter_mut().enumerate() {
+                action.is_selected =
+                    self.selection.selected_menu_action == Some((section_index, action_index));
+            }
+        }
+        for (index, directory) in self.media_search.directories.iter_mut().enumerate() {
+            directory.is_selected = self.selection.selected_media_search_directory == Some(index);
+        }
+    }
+
+    fn move_selected_main_window_playlist(&mut self, delta: isize) -> bool {
+        if !self.main_window.playback.can_manage_playlist {
+            return self.record_action_error(
+                "Playlist row movement is unavailable when shared playlist controls are disabled.",
+            );
+        }
+        let Some(index) = self.selection.selected_main_window_playlist else {
+            return self.record_action_error("No playlist row is currently selected.");
+        };
+        let Some(target_index) = index.checked_add_signed(delta) else {
+            return self.record_action_error("The selected playlist row cannot move further.");
+        };
+        if target_index >= self.main_window.playlist.len() {
+            return self.record_action_error("The selected playlist row cannot move further.");
+        }
+
+        self.main_window.playlist.swap(index, target_index);
+        self.selection.selected_main_window_playlist = Some(target_index);
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn remove_selected_main_window_playlist(&mut self) -> bool {
+        if !self.main_window.playback.can_manage_playlist {
+            return self.record_action_error(
+                "Playlist row removal is unavailable when shared playlist controls are disabled.",
+            );
+        }
+        let Some(index) = self.selection.selected_main_window_playlist else {
+            return self.record_action_error("No playlist row is currently selected.");
+        };
+        if index >= self.main_window.playlist.len() {
+            return self.record_action_error("No playlist row exists at the requested index.");
+        }
+
+        self.main_window.playlist.remove(index);
+        self.selection.selected_main_window_playlist = if self.main_window.playlist.is_empty() {
+            None
+        } else if index >= self.main_window.playlist.len() {
+            Some(self.main_window.playlist.len() - 1)
+        } else {
+            Some(index)
+        };
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn add_main_window_user(&mut self, username: String) -> bool {
+        let Some(username) = normalized_editable_text(&username) else {
+            return self.record_action_error("Main-window user names must be non-empty.");
+        };
+        if self
+            .main_window
+            .users
+            .iter()
+            .any(|user| user.username.eq_ignore_ascii_case(&username))
+        {
+            return self.record_action_error("A main-window user with that name already exists.");
+        }
+
+        self.main_window.users.push(MainWindowUserRow {
+            username: username.clone(),
+            is_self: false,
+            is_ready: false,
+            is_controller: false,
+            is_selected: false,
+        });
+        self.selection.selected_main_window_user = Some(self.main_window.users.len() - 1);
+        self.apply_selection_to_surfaces();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("User joined: {}.", username),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn rename_main_window_user_at_index(
+        &mut self,
+        index: usize,
+        requested_username: String,
+        empty_error_message: &'static str,
+        missing_error_message: &'static str,
+    ) -> Option<(String, String)> {
+        let Some(username) = normalized_editable_text(&requested_username) else {
+            self.record_action_error(empty_error_message);
+            return None;
+        };
+        if self
+            .main_window
+            .users
+            .iter()
+            .enumerate()
+            .any(|(other_index, user)| {
+                other_index != index && user.username.eq_ignore_ascii_case(&username)
+            })
+        {
+            self.record_action_error("A main-window user with that name already exists.");
+            return None;
+        }
+        let Some(user) = self.main_window.users.get_mut(index) else {
+            if self
+                .main_window_user_edit_session
+                .as_ref()
+                .is_some_and(|session| session.editing_index == index)
+            {
+                self.main_window_user_edit_session = None;
+            }
+            self.record_action_error(missing_error_message);
+            return None;
+        };
+
+        let previous_username = user.username.clone();
+        user.username = username.clone();
+        if user.is_self
+            && !self
+                .configuration
+                .apply_text_value("Connection", "Username", &username)
+        {
+            user.username = previous_username;
+            self.record_action_error(
+                "The local user name could not be synchronized back into configuration state.",
+            );
+            return None;
+        }
+
+        Some((previous_username, username))
+    }
+
+    fn announce_main_window_user_joined(&mut self, username: String) -> bool {
+        if !self.add_main_window_user(username) {
+            return false;
+        }
+        let Some(user) = self.main_window.users.get(self.main_window.users.len() - 1) else {
+            return self.record_action_error(
+                "The announced main-window user could not be resolved after joining.",
+            );
+        };
+        self.push_system_chat_message(format!("{} joined the room.", user.username));
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_selected_main_window_user_renamed(&mut self, username: String) -> bool {
+        let Some(index) = self.selection.selected_main_window_user else {
+            return self.record_action_error("No main-window user is currently selected.");
+        };
+        let Some((previous_username, renamed_username)) = self.rename_main_window_user_at_index(
+            index,
+            username,
+            "Renamed main-window user names must be non-empty.",
+            "The main-window user being renamed no longer exists.",
+        ) else {
+            return false;
+        };
+
+        self.main_window_user_edit_session = None;
+        self.push_system_chat_message(format!(
+            "{} is now known as {}.",
+            previous_username, renamed_username
+        ));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!(
+                "User renamed: {} -> {}.",
+                previous_username, renamed_username
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_selected_main_window_user_left(&mut self) -> bool {
+        let Some(index) = self.selection.selected_main_window_user else {
+            return self.record_action_error("No main-window user is currently selected.");
+        };
+        let Some(user) = self.main_window.users.get(index) else {
+            return self.record_action_error("No main-window user exists at the requested index.");
+        };
+        let username = user.username.clone();
+        if !self.remove_selected_main_window_user() {
+            return false;
+        }
+        self.push_system_chat_message(format!("{} left the room.", username));
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn local_main_window_user_index(&self) -> Option<usize> {
+        self.main_window.users.iter().position(|user| user.is_self)
+    }
+
+    fn begin_playback_pause_toggle(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.main_window.playback.can_toggle_pause {
+            return self.record_action_error(
+                "Playback pause toggling is unavailable when pause controls are disabled.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::TogglePlaybackPause,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            if self.main_window.playback_paused {
+                "Playback resume requested.".to_owned()
+            } else {
+                "Playback pause requested.".to_owned()
+            },
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_playback_pause_toggle(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No playback toggle is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::TogglePlaybackPause {
+            return self.record_action_error("The active GUI operation is not a playback toggle.");
+        }
+
+        self.pending_operation = None;
+        self.announce_playback_pause_state(!self.main_window.playback_paused)
+    }
+
+    fn cancel_playback_pause_toggle(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No playback toggle is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::TogglePlaybackPause {
+            return self.record_action_error("The active GUI operation is not a playback toggle.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Playback toggle canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_playback_pause_state(&mut self, paused: bool) -> bool {
+        if !self.main_window.playback.can_toggle_pause {
+            return self.record_action_error(
+                "Playback pause state cannot change when pause controls are unavailable.",
+            );
+        }
+        if self.main_window.playback_paused == paused {
+            return self.record_action_error(if paused {
+                "Playback is already paused."
+            } else {
+                "Playback is already running."
+            });
+        }
+
+        self.main_window.playback_paused = paused;
+        self.push_system_chat_message(if paused {
+            "Playback paused.".to_owned()
+        } else {
+            "Playback resumed.".to_owned()
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            if paused {
+                "Playback paused.".to_owned()
+            } else {
+                "Playback resumed.".to_owned()
+            },
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_local_user_ready_state(&mut self, ready: bool) -> bool {
+        if !self.main_window.playback.can_set_ready {
+            return self.record_action_error(
+                "Local readiness cannot change when ready controls are unavailable.",
+            );
+        }
+        let Some(index) = self.local_main_window_user_index() else {
+            return self
+                .record_action_error("The local user row is missing from the main-window shell.");
+        };
+        let Some(user) = self.main_window.users.get_mut(index) else {
+            return self
+                .record_action_error("The local user row is missing from the main-window shell.");
+        };
+        if user.is_ready == ready {
+            return self.record_action_error(if ready {
+                "The local user is already marked ready."
+            } else {
+                "The local user is already marked not ready."
+            });
+        }
+
+        user.is_ready = ready;
+        self.push_system_chat_message(if ready {
+            "You are now marked ready.".to_owned()
+        } else {
+            "You are now marked not ready.".to_owned()
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            if ready {
+                "Local readiness updated: ready.".to_owned()
+            } else {
+                "Local readiness updated: not ready.".to_owned()
+            },
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_autoplay_state(&mut self, active: bool) -> bool {
+        if self.main_window.autoplay_active == active {
+            return self.record_action_error(if active {
+                "Autoplay is already active."
+            } else {
+                "Autoplay is already inactive."
+            });
+        }
+
+        self.main_window.autoplay_active = active;
+        self.push_system_chat_message(if active {
+            "Autoplay enabled.".to_owned()
+        } else {
+            "Autoplay disabled.".to_owned()
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            if active {
+                "Autoplay enabled.".to_owned()
+            } else {
+                "Autoplay disabled.".to_owned()
+            },
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn shared_playlist_events_enabled(&self) -> bool {
+        self.main_window.shared_playlist_enabled
+    }
+
+    fn ensure_shared_playlist_event_allowed(&mut self) -> bool {
+        if self.shared_playlist_events_enabled() {
+            true
+        } else {
+            self.record_action_error(
+                "Shared playlist events are unavailable when shared playlists are disabled.",
+            )
+        }
+    }
+
+    fn normalize_shared_playlist_entries(entries: Vec<String>) -> Vec<String> {
+        entries
+            .into_iter()
+            .filter_map(|entry| normalized_editable_text(&entry))
+            .collect()
+    }
+
+    fn announce_shared_playlist_loaded(&mut self, entries: Vec<String>) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let entries = Self::normalize_shared_playlist_entries(entries);
+        if entries.is_empty() {
+            self.main_window.playlist.clear();
+            self.selection.selected_main_window_playlist = None;
+            self.apply_selection_to_surfaces();
+            self.push_system_chat_message("Shared playlist cleared.".to_owned());
+            self.push_transient_notification(
+                GuiTransientNotificationLevel::Info,
+                "Shared playlist cleared.".to_owned(),
+            );
+            self.clear_action_error_and_refresh();
+            return true;
+        }
+
+        self.main_window.playlist = entries
+            .iter()
+            .enumerate()
+            .map(|(index, label)| MainWindowPlaylistRow {
+                label: label.clone(),
+                is_selected: index == 0,
+            })
+            .collect();
+        self.selection.selected_main_window_playlist = Some(0);
+        self.apply_selection_to_surfaces();
+        self.push_system_chat_message(format!(
+            "Shared playlist loaded ({} entries).",
+            self.main_window.playlist.len()
+        ));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!(
+                "Shared playlist loaded: {} entries.",
+                self.main_window.playlist.len()
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_shared_playlist_entry_added(&mut self, entry: String) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let Some(entry) = normalized_editable_text(&entry) else {
+            return self.record_action_error("Shared playlist entries must be non-empty.");
+        };
+        if self.main_window.playlist.len() == 1
+            && self.main_window.playlist[0].label == "Playlist pane ready for shared entries"
+        {
+            self.main_window.playlist.clear();
+        }
+        self.main_window.playlist.push(MainWindowPlaylistRow {
+            label: entry.clone(),
+            is_selected: false,
+        });
+        self.selection.selected_main_window_playlist = Some(self.main_window.playlist.len() - 1);
+        self.apply_selection_to_surfaces();
+        self.push_system_chat_message(format!("Shared playlist entry added: {}.", entry));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Shared playlist entry added: {}.", entry),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_shared_playlist_selection_changed(&mut self, index: usize) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        if index >= self.main_window.playlist.len() {
+            return self
+                .record_action_error("No shared playlist entry exists at the requested index.");
+        }
+        self.selection.selected_main_window_playlist = Some(index);
+        self.apply_selection_to_surfaces();
+        let label = self.main_window.playlist[index].label.clone();
+        self.push_system_chat_message(format!("Shared playlist selection changed: {}.", label));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Shared playlist selected: {}.", label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_selected_shared_playlist_entry_removed(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let Some(index) = self.selection.selected_main_window_playlist else {
+            return self.record_action_error("No shared playlist entry is currently selected.");
+        };
+        let Some(entry) = self.main_window.playlist.get(index) else {
+            return self
+                .record_action_error("No shared playlist entry exists at the requested index.");
+        };
+        let label = entry.label.clone();
+        self.main_window.playlist.remove(index);
+        self.selection.selected_main_window_playlist = if self.main_window.playlist.is_empty() {
+            None
+        } else if index >= self.main_window.playlist.len() {
+            Some(self.main_window.playlist.len() - 1)
+        } else {
+            Some(index)
+        };
+        self.apply_selection_to_surfaces();
+        self.push_system_chat_message(format!("Shared playlist entry removed: {}.", label));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            format!("Shared playlist entry removed: {}.", label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn append_chat_row(&mut self, sender: String, message: String) {
+        self.main_window
+            .chat
+            .push(MainWindowChatRow { sender, message });
+    }
+
+    fn begin_local_chat_send(&mut self, message: String) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_send_chat_message {
+            return self.record_action_error(
+                "Local chat sending is unavailable when chat input is disabled.",
+            );
+        }
+        let Some(message) = normalized_editable_text(&message) else {
+            return self.record_action_error("Local chat messages must be non-empty.");
+        };
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::SendChatMessage,
+        });
+        self.outgoing_chat_message = Some(message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_local_chat_send(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No local chat send is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SendChatMessage {
+            return self.record_action_error("No local chat send is currently in progress.");
+        }
+        let Some(message) = self.outgoing_chat_message.take() else {
+            self.pending_operation = None;
+            return self.record_action_error("No local chat send is currently in progress.");
+        };
+        let sender = self
+            .main_window
+            .users
+            .iter()
+            .find(|user| user.is_self)
+            .map(|user| user.username.clone())
+            .unwrap_or_else(|| "You".to_owned());
+
+        self.append_chat_row(sender, message);
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Chat sent.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_local_chat_send(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No local chat send is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SendChatMessage {
+            return self.record_action_error("No local chat send is currently in progress.");
+        }
+        if self.outgoing_chat_message.is_none() {
+            self.pending_operation = None;
+            return self.record_action_error("No local chat send is currently in progress.");
+        }
+
+        self.outgoing_chat_message = None;
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Chat send canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_remote_chat_message(&mut self, sender: String, message: String) -> bool {
+        let Some(sender) = normalized_editable_text(&sender) else {
+            return self
+                .record_action_error("Remote chat sender and message must both be non-empty.");
+        };
+        let Some(message) = normalized_editable_text(&message) else {
+            return self
+                .record_action_error("Remote chat sender and message must both be non-empty.");
+        };
+
+        self.append_chat_row(sender, message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_system_chat_event(&mut self, message: String) -> bool {
+        let Some(message) = normalized_editable_text(&message) else {
+            return self.record_action_error("System chat messages must be non-empty.");
+        };
+        self.push_system_chat_message(message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_tls_certificate_prompt_required(&mut self) -> bool {
+        self.menus.tls_prompt_expected = true;
+        self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
+        self.push_system_chat_message("TLS certificate prompt opened.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "TLS certificate prompt opened.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_update_notice_available(&mut self) -> bool {
+        self.menus.update_notice_expected = true;
+        self.open_modal = Some(GuiShellModal::UpdateNotice);
+        self.push_system_chat_message("Update notice opened.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Update notice opened.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_about_dialog_requested(&mut self) -> bool {
+        if !self.menus.about_dialog_available {
+            return self.record_action_error("The About dialog is unavailable.");
+        }
+        self.open_modal = Some(GuiShellModal::About);
+        self.push_system_chat_message("About dialog opened.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "About dialog opened.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_help_requested(&mut self) -> bool {
+        self.active_view = GuiShellView::MenusAndDialogs;
+        self.push_system_chat_message("Help requested.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Help opened.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_menu_dialog_runtime_snapshot(&mut self, snapshot: MenuDialogRuntimeSnapshot) -> bool {
+        let settings = self.configuration.to_stored_settings();
+        let baseline_menus = MenuDialogShellState::from_stored_settings(&settings);
+        for action_override in snapshot.action_overrides {
+            self.remember_runtime_menu_action_override(&baseline_menus, &action_override);
+            let mut applied = false;
+            for section in &mut self.menus.sections {
+                if section.title != action_override.section_title {
+                    continue;
+                }
+                if let Some(action) = section
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.label == action_override.action_label)
+                {
+                    action.enabled = action_override.enabled;
+                    applied = true;
+                    break;
+                }
+            }
+            if !applied {
+                return self.record_action_error(format!(
+                    "No menu action exists for '{} / {}' in the runtime snapshot.",
+                    action_override.section_title, action_override.action_label
+                ));
+            }
+        }
+
+        self.menus.tls_prompt_expected = snapshot.tls_prompt_expected;
+        self.menus.update_notice_expected = snapshot.update_notice_expected;
+        self.menus.about_dialog_available = snapshot.about_dialog_available;
+        self.sync_dialog_menu_actions_from_runtime_state();
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Menu/dialog runtime snapshot applied.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_feedback_runtime_snapshot(
+        &mut self,
+        snapshot: GuiFeedbackRuntimeSnapshot,
+    ) -> bool {
+        let mut normalized_validation_issues = Vec::with_capacity(snapshot.validation_issues.len());
+        for issue in snapshot.validation_issues {
+            let Some(scope) = normalized_editable_text(&issue.scope) else {
+                return self.record_action_error(
+                    "GUI feedback runtime snapshots cannot contain empty validation scopes.",
+                );
+            };
+            let Some(label) = normalized_editable_text(&issue.label) else {
+                return self.record_action_error(
+                    "GUI feedback runtime snapshots cannot contain empty validation labels.",
+                );
+            };
+            let Some(message) = normalized_editable_text(&issue.message) else {
+                return self.record_action_error(
+                    "GUI feedback runtime snapshots cannot contain empty validation messages.",
+                );
+            };
+            normalized_validation_issues.push(GuiValidationIssue {
+                scope,
+                label,
+                message,
+            });
+        }
+
+        let mut normalized_notifications = Vec::with_capacity(snapshot.notifications.len());
+        for notification in snapshot.notifications {
+            let Some(message) = normalized_editable_text(&notification.message) else {
+                return self.record_action_error(
+                    "GUI feedback runtime snapshots cannot contain empty notification messages.",
+                );
+            };
+            normalized_notifications.push(GuiTransientNotification {
+                level: notification.level,
+                message,
+            });
+        }
+
+        self.runtime_validation_issues = normalized_validation_issues;
+        self.notifications = normalized_notifications;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_error_runtime_snapshot(&mut self, snapshot: GuiErrorRuntimeSnapshot) -> bool {
+        let last_action_error = match snapshot.last_action_error {
+            Some(message) => {
+                let Some(message) = normalized_editable_text(&message) else {
+                    return self.record_action_error(
+                        "GUI error runtime snapshots cannot contain an empty action error message.",
+                    );
+                };
+                Some(message)
+            }
+            None => None,
+        };
+
+        self.validation.last_action_error = last_action_error;
+        self.refresh_validation();
+        true
+    }
+
+    fn apply_gui_command_runtime_snapshot(&mut self, snapshot: GuiCommandRuntimeSnapshot) -> bool {
+        if snapshot.pending_operation.is_some() && snapshot.command_availability.any_enabled() {
+            return self.record_action_error(
+                "GUI command runtime snapshots cannot leave command actions enabled while a pending operation is active.",
+            );
+        }
+
+        let can_toggle_pause = snapshot.command_availability.can_toggle_pause;
+        let command_availability = snapshot.command_availability;
+        self.pending_operation = snapshot
+            .pending_operation
+            .map(|kind| GuiPendingOperationState { kind });
+        let baseline_command_availability = self.command_availability_without_runtime_override();
+        self.runtime_command_availability_override =
+            GuiCommandAvailabilityRuntimeOverride::from_baseline_and_snapshot(
+                &baseline_command_availability,
+                &command_availability,
+            );
+        self.sync_playback_menu_actions_from_runtime_state(can_toggle_pause);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_interaction_runtime_snapshot(
+        &mut self,
+        snapshot: GuiInteractionRuntimeSnapshot,
+    ) -> bool {
+        if snapshot
+            .selection
+            .selected_main_window_user
+            .is_some_and(|index| index >= self.main_window.users.len())
+        {
+            return self.record_action_error(
+                "GUI interaction runtime snapshots cannot select a missing main-window user.",
+            );
+        }
+        if snapshot
+            .selection
+            .selected_main_window_playlist
+            .is_some_and(|index| index >= self.main_window.playlist.len())
+        {
+            return self.record_action_error(
+                "GUI interaction runtime snapshots cannot select a missing playlist row.",
+            );
+        }
+        if snapshot
+            .selection
+            .selected_menu_action
+            .is_some_and(|(section_index, action_index)| {
+                self.menus
+                    .sections
+                    .get(section_index)
+                    .is_none_or(|section| action_index >= section.actions.len())
+            })
+        {
+            return self.record_action_error(
+                "GUI interaction runtime snapshots cannot select a missing menu action.",
+            );
+        }
+        if snapshot
+            .selection
+            .selected_media_search_directory
+            .is_some_and(|index| index >= self.media_search.directories.len())
+        {
+            return self.record_action_error(
+                "GUI interaction runtime snapshots cannot select a missing media-search directory.",
+            );
+        }
+        if snapshot
+            .selected_public_server_index
+            .is_some_and(|index| index >= self.public_servers.servers.len())
+        {
+            return self.record_action_error(
+                "GUI interaction runtime snapshots cannot select a missing public server row.",
+            );
+        }
+
+        let focused_configuration_control = match snapshot.focused_configuration_control {
+            Some(focused) => {
+                let Some(section) = normalized_editable_text(&focused.section) else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot contain an empty focused control section.",
+                    );
+                };
+                let Some(label) = normalized_editable_text(&focused.label) else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot contain an empty focused control label.",
+                    );
+                };
+                let Some((section_title, control_label, kind)) =
+                    self.configuration.control_identity(&section, &label)
+                else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot focus an unknown configuration control.",
+                    );
+                };
+                if !kind.is_editable() {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot focus a non-editable configuration control.",
+                    );
+                }
+                Some(GuiFocusedConfigurationControlState {
+                    section: section_title,
+                    label: control_label,
+                    kind,
+                    activation_count: focused.activation_count,
+                })
+            }
+            None => None,
+        };
+
+        let text_edit_session = match snapshot.text_edit_session {
+            Some(session) => {
+                let Some(section) = normalized_editable_text(&session.section) else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot contain an empty text-edit section.",
+                    );
+                };
+                let Some(label) = normalized_editable_text(&session.label) else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot contain an empty text-edit label.",
+                    );
+                };
+                let Some((section_title, control_label, kind)) =
+                    self.configuration.control_identity(&section, &label)
+                else {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot target an unknown text-edit control.",
+                    );
+                };
+                if !kind.is_editable() || kind == GuiDialogControlKind::Checkbox {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot target a non-text-editable configuration control.",
+                    );
+                }
+                Some(GuiTextEditSessionState {
+                    section: section_title,
+                    label: control_label,
+                    buffer: session.buffer,
+                    is_dirty: session.is_dirty,
+                })
+            }
+            None => None,
+        };
+
+        let public_server_edit_session = match snapshot.public_server_edit_session {
+            Some(session) => {
+                if session
+                    .editing_index
+                    .is_some_and(|index| index >= self.public_servers.servers.len())
+                {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot edit a missing public server row.",
+                    );
+                }
+                let (original_label, original_address) = session
+                    .editing_index
+                    .and_then(|index| self.public_servers.servers.get(index))
+                    .map(|row| (Some(row.label.clone()), Some(row.address.clone())))
+                    .unwrap_or((None, None));
+                Some(GuiPublicServerEditSessionState {
+                    editing_index: session.editing_index,
+                    label_buffer: session.label_buffer,
+                    address_buffer: session.address_buffer,
+                    is_dirty: session.is_dirty,
+                    original_label,
+                    original_address,
+                })
+            }
+            None => None,
+        };
+
+        let main_window_user_edit_session = match snapshot.main_window_user_edit_session {
+            Some(session) => {
+                if session.editing_index >= self.main_window.users.len() {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot edit a missing main-window user.",
+                    );
+                }
+                Some(GuiMainWindowUserEditSessionState {
+                    editing_index: session.editing_index,
+                    username_buffer: session.username_buffer,
+                    is_dirty: session.is_dirty,
+                    original_username: self.main_window.users[session.editing_index]
+                        .username
+                        .clone(),
+                })
+            }
+            None => None,
+        };
+
+        self.selection = snapshot.selection;
+        self.set_selected_public_server_index(snapshot.selected_public_server_index);
+        self.focused_configuration_control = focused_configuration_control;
+        self.public_server_edit_session = public_server_edit_session;
+        self.main_window_user_edit_session = main_window_user_edit_session;
+        self.text_edit_session = text_edit_session;
+        self.normalize_selection();
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+        self.normalize_focused_configuration_control();
+        self.normalize_public_server_edit_session();
+        self.normalize_main_window_user_edit_session();
+        self.normalize_text_edit_session();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_draft_runtime_snapshot(&mut self, snapshot: GuiDraftRuntimeSnapshot) -> bool {
+        let outgoing_chat_message = match snapshot.outgoing_chat_message {
+            Some(message) => {
+                let Some(message) = normalized_editable_text(&message) else {
+                    return self.record_action_error(
+                        "GUI draft runtime snapshots cannot contain an empty outgoing chat message.",
+                    );
+                };
+                if self
+                    .pending_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind != GuiPendingOperationKind::SendChatMessage)
+                {
+                    return self.record_action_error(
+                        "GUI draft runtime snapshots cannot stage an outgoing chat message while a different pending operation is active.",
+                    );
+                }
+                Some(message)
+            }
+            None => {
+                if self
+                    .pending_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind == GuiPendingOperationKind::SendChatMessage)
+                {
+                    return self.record_action_error(
+                        "GUI draft runtime snapshots cannot clear the outgoing chat message while chat send is still pending.",
+                    );
+                }
+                None
+            }
+        };
+
+        self.outgoing_chat_message = outgoing_chat_message;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_configuration_draft_runtime_snapshot(
+        &mut self,
+        snapshot: GuiConfigurationDraftRuntimeSnapshot,
+    ) -> bool {
+        if self.pending_operation.as_ref().is_some_and(|pending| {
+            matches!(
+                pending.kind,
+                GuiPendingOperationKind::SaveConfiguration
+                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::ReloadConfiguration
+            )
+        }) {
+            return self.record_action_error(
+                "GUI configuration draft runtime snapshots cannot apply while a configuration command is already in progress.",
+            );
+        }
+
+        self.resync_from_settings(snapshot.settings);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_saved_configuration_runtime_snapshot(
+        &mut self,
+        snapshot: GuiSavedConfigurationRuntimeSnapshot,
+    ) -> bool {
+        if self.pending_operation.as_ref().is_some_and(|pending| {
+            matches!(
+                pending.kind,
+                GuiPendingOperationKind::SaveConfiguration
+                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::ReloadConfiguration
+            )
+        }) {
+            return self.record_action_error(
+                "GUI saved-configuration runtime snapshots cannot apply while a configuration command is already in progress.",
+            );
+        }
+
+        self.saved_configuration = snapshot.settings;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_gui_configuration_runtime_snapshot(
+        &mut self,
+        snapshot: GuiConfigurationRuntimeSnapshot,
+    ) -> bool {
+        if self.pending_operation.as_ref().is_some_and(|pending| {
+            matches!(
+                pending.kind,
+                GuiPendingOperationKind::SaveConfiguration
+                    | GuiPendingOperationKind::ResetConfiguration
+                    | GuiPendingOperationKind::ReloadConfiguration
+            )
+        }) {
+            return self.record_action_error(
+                "GUI configuration runtime snapshots cannot apply while a configuration command is already in progress.",
+            );
+        }
+
+        self.resync_from_settings(snapshot.draft_settings);
+        self.saved_configuration = snapshot.saved_settings;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_configuration_save(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.validation.issues.is_empty() {
+            return self.record_action_error(
+                "Configuration cannot be saved while validation issues remain.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::SaveConfiguration,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Configuration save started.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_configuration_save(&mut self, settings: StoredClientSettingsMvp) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration save is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SaveConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration save.");
+        }
+
+        self.saved_configuration = settings;
+        self.pending_operation = None;
+        self.push_system_chat_message("Configuration saved.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Configuration saved.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_configuration_reset(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.has_unsaved_configuration_changes() {
+            return self.record_action_error(
+                "Configuration reset is unavailable with no unsaved changes.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ResetConfiguration,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Configuration reset started.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_configuration_reset(&mut self, settings: StoredClientSettingsMvp) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration reset is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ResetConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration reset.");
+        }
+
+        self.pending_operation = None;
+        self.resync_from_settings(settings.clone());
+        self.saved_configuration = settings;
+        self.push_system_chat_message("Configuration reset to the last saved state.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Configuration reset completed.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_configuration_reset(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration reset is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ResetConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration reset.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Configuration reset canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_configuration_reload(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ReloadConfiguration,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Configuration reload started.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_configuration_reload(&mut self, settings: StoredClientSettingsMvp) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration reload is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ReloadConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration reload.");
+        }
+
+        self.pending_operation = None;
+        self.resync_from_settings(settings.clone());
+        self.saved_configuration = settings;
+        self.push_system_chat_message("Configuration snapshot loaded.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Configuration reload completed.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_configuration_reload(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration reload is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ReloadConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration reload.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Configuration reload canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_configuration_save(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No configuration save is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SaveConfiguration {
+            return self
+                .record_action_error("The active GUI operation is not a configuration save.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Configuration save canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn trigger_selected_menu_action(&mut self) -> bool {
+        let Some((section_index, action_index)) = self.selection.selected_menu_action else {
+            return self.record_action_error("No menu action is currently selected.");
+        };
+        let Some(section) = self.menus.sections.get(section_index) else {
+            return self.record_action_error("No menu section exists at the requested index.");
+        };
+        let Some(action) = section.actions.get(action_index) else {
+            return self.record_action_error("No menu action exists at the requested index.");
+        };
+        if !action.enabled {
+            return self.record_action_error("The selected menu action is currently disabled.");
+        }
+
+        match (section.title, action.label) {
+            ("File", "Open Media File") => {
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Info,
+                    "Open media file requested.".to_owned(),
+                );
+                self.push_system_chat_message("Open media file requested.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("File", "Open Media Search") => {
+                self.active_view = GuiShellView::MediaSearch;
+                self.push_system_chat_message("Media search opened.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("File", "Open Public Server Browser") => {
+                self.active_view = GuiShellView::PublicServers;
+                self.push_system_chat_message("Public server browser opened.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("File", "Exit") => {
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Warning,
+                    "Exit requested.".to_owned(),
+                );
+                self.push_system_chat_message("Exit requested.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Playback", "Toggle Pause") => self.begin_playback_pause_toggle(),
+            ("Playback", "Seek") => {
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Info,
+                    "Seek requested.".to_owned(),
+                );
+                self.push_system_chat_message("Seek requested.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Playback", "Playlist Actions") => {
+                self.active_view = GuiShellView::MainWindow;
+                self.push_system_chat_message("Playlist actions opened.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Advanced", "Trusted Domains") => {
+                self.active_view = GuiShellView::Configuration;
+                self.push_system_chat_message("Trusted domains opened.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
+            ("Advanced", "Update Check") => self.announce_update_notice_available(),
+            ("Window", "Show Chat") | ("Window", "Show Playlist") | ("Window", "Show Users") => {
+                self.active_view = GuiShellView::MainWindow;
+                self.push_system_chat_message(format!(
+                    "Main window section opened: {}.",
+                    action.label
+                ));
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Help", "About") => self.announce_about_dialog_requested(),
+            ("Help", "Manual / Command Help") => self.announce_help_requested(),
+            ("Help", "Check for Updates") => self.announce_update_notice_available(),
+            _ => self.record_action_error("The selected menu action is not mapped yet."),
+        }
+    }
+
+    fn toggle_selected_main_window_user_ready(&mut self) -> bool {
+        let Some(index) = self.selection.selected_main_window_user else {
+            return self.record_action_error("No main-window user is currently selected.");
+        };
+        let Some(user) = self.main_window.users.get_mut(index) else {
+            return self.record_action_error("No main-window user exists at the requested index.");
+        };
+
+        user.is_ready = !user.is_ready;
+        let username = user.username.clone();
+        let readiness = user.is_ready;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!(
+                "User readiness updated: {} -> {}.",
+                username,
+                if readiness { "ready" } else { "not ready" }
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn toggle_selected_main_window_user_controller(&mut self) -> bool {
+        if !self.main_window.controlled_room_active {
+            return self.record_action_error(
+                "Controller state can only be changed while a controlled room is active.",
+            );
+        }
+        let Some(index) = self.selection.selected_main_window_user else {
+            return self.record_action_error("No main-window user is currently selected.");
+        };
+        let Some(user) = self.main_window.users.get_mut(index) else {
+            return self.record_action_error("No main-window user exists at the requested index.");
+        };
+
+        user.is_controller = !user.is_controller;
+        let username = user.username.clone();
+        let is_controller = user.is_controller;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!(
+                "Controller status updated: {} -> {}.",
+                username,
+                if is_controller {
+                    "controller"
+                } else {
+                    "participant"
+                }
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn remove_selected_main_window_user(&mut self) -> bool {
+        let Some(index) = self.selection.selected_main_window_user else {
+            return self.record_action_error("No main-window user is currently selected.");
+        };
+        let Some(user) = self.main_window.users.get(index) else {
+            return self.record_action_error("No main-window user exists at the requested index.");
+        };
+        if user.is_self {
+            return self.record_action_error(
+                "The local user row cannot be removed from the main-window shell.",
+            );
+        }
+
+        let username = user.username.clone();
+        self.main_window.users.remove(index);
+        if let Some(session) = self.main_window_user_edit_session.as_mut() {
+            if session.editing_index == index {
+                self.main_window_user_edit_session = None;
+            } else if session.editing_index > index {
+                session.editing_index -= 1;
+            }
+        }
+        self.selection.selected_main_window_user = if self.main_window.users.is_empty() {
+            None
+        } else if index >= self.main_window.users.len() {
+            Some(self.main_window.users.len() - 1)
+        } else {
+            Some(index)
+        };
+        self.apply_selection_to_surfaces();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            format!("User removed: {}.", username),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn set_main_window_room_state(&mut self, room: Option<String>) {
+        let room_value = room.unwrap_or_default();
+        let _ = self
+            .configuration
+            .apply_text_value("Connection", "Room", &room_value);
+        let controlled_room_active = room_value.starts_with('+');
+        self.main_window.room_name = if room_value.is_empty() {
+            "(no room joined)".to_owned()
+        } else {
+            room_value
+        };
+        self.main_window.controlled_room_active = controlled_room_active;
+        for user in &mut self.main_window.users {
+            user.is_controller = false;
+        }
+        if let Some(user) = self.main_window.users.first_mut() {
+            user.is_controller = controlled_room_active;
+        }
+    }
+
+    fn replace_main_window_runtime_snapshot(
+        &mut self,
+        snapshot: MainWindowRuntimeSnapshot,
+    ) -> bool {
+        let Some(room_name) = normalized_editable_text(&snapshot.room_name) else {
+            return self.record_action_error(
+                "Main-window runtime snapshots must include a non-empty room name.",
+            );
+        };
+
+        let mut normalized_users = Vec::with_capacity(snapshot.users.len());
+        for user in snapshot.users {
+            let Some(username) = normalized_editable_text(&user.username) else {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain empty user names.",
+                );
+            };
+            if normalized_users.iter().any(|existing: &MainWindowUserRow| {
+                existing.username.eq_ignore_ascii_case(&username)
+            }) {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain duplicate user names.",
+                );
+            }
+            normalized_users.push(MainWindowUserRow {
+                username,
+                is_self: user.is_self,
+                is_ready: user.is_ready,
+                is_controller: user.is_controller,
+                is_selected: false,
+            });
+        }
+
+        let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
+        for entry in snapshot.playlist {
+            let Some(label) = normalized_editable_text(&entry) else {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain empty playlist entries.",
+                );
+            };
+            normalized_playlist.push(MainWindowPlaylistRow {
+                label,
+                is_selected: false,
+            });
+        }
+
+        let mut normalized_chat = Vec::with_capacity(snapshot.chat.len());
+        for row in snapshot.chat {
+            let Some(sender) = normalized_editable_text(&row.sender) else {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain empty chat senders.",
+                );
+            };
+            let Some(message) = normalized_editable_text(&row.message) else {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain empty chat messages.",
+                );
+            };
+            normalized_chat.push(MainWindowChatRow { sender, message });
+        }
+
+        let previously_selected_username = self
+            .selection
+            .selected_main_window_user
+            .and_then(|index| self.main_window.users.get(index))
+            .map(|user| user.username.clone());
+        let previous_main_window_user_edit_session = self.main_window_user_edit_session.clone();
+        let previously_selected_playlist = self
+            .selection
+            .selected_main_window_playlist
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.label.clone());
+
+        self.main_window = MainWindowShellState {
+            room_name,
+            shared_playlist_enabled: snapshot.shared_playlist_enabled,
+            controlled_room_active: snapshot.controlled_room_active,
+            users: normalized_users,
+            playlist: normalized_playlist,
+            chat: normalized_chat,
+            playback: MainWindowPlaybackControls {
+                can_toggle_pause: snapshot.can_toggle_pause,
+                can_seek: snapshot.can_seek,
+                can_set_ready: snapshot.can_set_ready,
+                can_manage_playlist: snapshot.can_manage_playlist,
+            },
+            playback_paused: snapshot.playback_paused,
+            autoplay_active: snapshot.autoplay_active,
+        };
+
+        self.selection.selected_main_window_user = previously_selected_username
+            .as_deref()
+            .and_then(|username| {
+                self.main_window
+                    .users
+                    .iter()
+                    .position(|user| user.username == username)
+            })
+            .or_else(|| (!self.main_window.users.is_empty()).then_some(0));
+        self.selection.selected_main_window_playlist = previously_selected_playlist
+            .as_deref()
+            .and_then(|label| {
+                self.main_window
+                    .playlist
+                    .iter()
+                    .position(|row| row.label == label)
+            })
+            .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0));
+        self.main_window_user_edit_session = previous_main_window_user_edit_session;
+        self.normalize_main_window_user_edit_session();
+        self.normalize_selection();
+        self.apply_selection_to_surfaces();
+        true
+    }
+
+    fn apply_main_window_runtime_snapshot(&mut self, snapshot: MainWindowRuntimeSnapshot) -> bool {
+        if !self.replace_main_window_runtime_snapshot(snapshot) {
+            return false;
+        }
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Main window runtime snapshot applied.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
+        true
+    }
+
+    fn apply_gui_runtime_snapshot(&mut self, snapshot: SyncplayGuiRuntimeSnapshot) -> bool {
+        let previously_selected_public_server_address = self
+            .selected_public_server_index()
+            .and_then(|index| self.public_servers.servers.get(index))
+            .map(|row| row.address.clone());
+        let previously_selected_media_search_path = self
+            .selection
+            .selected_media_search_directory
+            .and_then(|index| self.media_search.directories.get(index))
+            .map(|row| row.path.clone());
+
+        if !self.replace_main_window_runtime_snapshot(snapshot.main_window) {
+            return false;
+        }
+
+        self.active_view = snapshot.active_view;
+        self.open_modal = snapshot.open_modal;
+        self.menus.tls_prompt_expected = snapshot.tls_prompt_expected;
+        self.menus.update_notice_expected = snapshot.update_notice_expected;
+        self.menus.about_dialog_available = snapshot.about_dialog_available;
+        self.sync_dialog_menu_actions_from_runtime_state();
+
+        self.public_servers = snapshot.public_servers;
+        self.public_servers.can_connect =
+            self.public_servers.can_connect && !self.public_servers.servers.is_empty();
+        let selected_public_server = self
+            .public_servers
+            .servers
+            .iter()
+            .position(|row| row.is_selected)
+            .or_else(|| {
+                previously_selected_public_server_address
+                    .as_deref()
+                    .and_then(|address| {
+                        self.public_servers
+                            .servers
+                            .iter()
+                            .position(|row| row.address == address)
+                    })
+            })
+            .or_else(|| (!self.public_servers.servers.is_empty()).then_some(0));
+        self.set_selected_public_server_index(selected_public_server);
+
+        self.media_search = snapshot.media_search;
+        self.media_search.can_search_missing_media =
+            self.media_search.can_search_missing_media && !self.media_search.directories.is_empty();
+        self.selection.selected_media_search_directory = self
+            .media_search
+            .directories
+            .iter()
+            .position(|row| row.is_selected)
+            .or_else(|| {
+                previously_selected_media_search_path
+                    .as_deref()
+                    .and_then(|path| {
+                        self.media_search
+                            .directories
+                            .iter()
+                            .position(|row| row.path == path)
+                    })
+            })
+            .or_else(|| (!self.media_search.directories.is_empty()).then_some(0));
+
+        self.normalize_selection();
+        self.apply_selection_to_surfaces();
+        self.normalize_public_server_edit_session();
+        self.normalize_main_window_user_edit_session();
+        self.normalize_text_edit_session();
+        self.normalize_focused_configuration_control();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "GUI runtime snapshot applied.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
+        true
+    }
+
+    fn push_system_chat_message(&mut self, message: String) {
+        self.main_window.chat.push(MainWindowChatRow {
+            sender: "system".to_owned(),
+            message,
+        });
+    }
+
+    fn join_main_window_room(&mut self, room: String) -> bool {
+        let Some(room) = normalized_editable_text(&room) else {
+            return self.record_action_error("Room name cannot be empty.");
+        };
+        self.set_main_window_room_state(Some(room.clone()));
+        self.push_system_chat_message(format!("Joined room: {}.", room));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Room joined: {}.", room),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn leave_main_window_room(&mut self) -> bool {
+        let current_room = self.main_window.room_name.trim();
+        if current_room.is_empty() || current_room == "(no room joined)" {
+            return self.record_action_error("No joined room is currently active.");
+        }
+        let previous_room = current_room.to_owned();
+        self.set_main_window_room_state(None);
+        self.push_system_chat_message(format!("Left room: {}.", previous_room));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            format!("Room left: {}.", previous_room),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn move_selected_media_search_directory(&mut self, delta: isize) -> bool {
+        let Some(index) = self.selection.selected_media_search_directory else {
+            return self.record_action_error("No media-search directory is currently selected.");
+        };
+
+        let mut settings = self.configuration.to_stored_settings();
+        let mut directories = settings.media_search_directories.take().unwrap_or_default();
+        let Some(target_index) = index.checked_add_signed(delta) else {
+            return self
+                .record_action_error("The selected media-search directory cannot move further.");
+        };
+        if index >= directories.len() || target_index >= directories.len() {
+            return self
+                .record_action_error("The selected media-search directory cannot move further.");
+        }
+
+        directories.swap(index, target_index);
+        settings.media_search_directories = Some(directories);
+        self.resync_from_settings(settings);
+        self.selection.selected_media_search_directory = Some(target_index);
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn remove_selected_media_search_directory(&mut self) -> bool {
+        let Some(index) = self.selection.selected_media_search_directory else {
+            return self.record_action_error("No media-search directory is currently selected.");
+        };
+
+        let mut settings = self.configuration.to_stored_settings();
+        let mut directories = settings.media_search_directories.take().unwrap_or_default();
+        if index >= directories.len() {
+            return self
+                .record_action_error("No media-search directory exists at the requested index.");
+        }
+
+        directories.remove(index);
+        settings.media_search_directories = if directories.is_empty() {
+            None
+        } else {
+            Some(directories)
+        };
+        self.resync_from_settings(settings);
+        self.selection.selected_media_search_directory = if self.media_search.directories.is_empty()
+        {
+            None
+        } else if index >= self.media_search.directories.len() {
+            Some(self.media_search.directories.len() - 1)
+        } else {
+            Some(index)
+        };
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn push_transient_notification(
+        &mut self,
+        level: GuiTransientNotificationLevel,
+        message: String,
+    ) {
+        self.notifications
+            .push(GuiTransientNotification { level, message });
+        const MAX_TRANSIENT_NOTIFICATIONS: usize = 5;
+        if self.notifications.len() > MAX_TRANSIENT_NOTIFICATIONS {
+            let overflow = self.notifications.len() - MAX_TRANSIENT_NOTIFICATIONS;
+            self.notifications.drain(0..overflow);
+        }
+    }
+
+    fn selected_public_server_index(&self) -> Option<usize> {
+        self.public_servers
+            .servers
+            .iter()
+            .position(|row| row.is_selected)
+    }
+
+    fn selected_public_server_address(&self) -> Option<&str> {
+        self.public_servers
+            .servers
+            .iter()
+            .find(|row| row.is_selected)
+            .map(|row| row.address.as_str())
+    }
+
+    fn set_selected_public_server_index(&mut self, selected_index: Option<usize>) {
+        for (index, row) in self.public_servers.servers.iter_mut().enumerate() {
+            row.is_selected = selected_index == Some(index);
+        }
+    }
+
+    fn restore_selected_public_server_address(&mut self, selected_address: Option<&str>) {
+        let Some(selected_address) = selected_address else {
+            return;
+        };
+        let Some(selected_index) = self
+            .public_servers
+            .servers
+            .iter()
+            .position(|row| row.address == selected_address)
+        else {
+            return;
+        };
+        self.set_selected_public_server_index(Some(selected_index));
+    }
+
+    fn apply_public_server_selection(&mut self, index: usize) -> bool {
+        let Some(row) = self.public_servers.servers.get(index).cloned() else {
+            return self.record_action_error("No public server exists at the requested index.");
+        };
+        self.set_selected_public_server_index(Some(index));
+
+        let (host, port) =
+            parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
+        let _ = self
+            .configuration
+            .apply_text_value("Connection", "Host", &host);
+        let _ = self.configuration.apply_text_value(
+            "Connection",
+            "Port",
+            &port.map_or_else(String::new, |value| value.to_string()),
+        );
+        true
+    }
+
+    fn announce_public_server_selection_changed(&mut self, index: usize) -> bool {
+        if !self.apply_public_server_selection(index) {
+            return false;
+        }
+        let row = self.public_servers.servers[index].clone();
+        self.push_system_chat_message(format!("Public server selected: {}.", row.label));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Public server selected: {}.", row.label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_selected_public_server_connect(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_connect_public_server {
+            return self.record_action_error(
+                "Public server connect is unavailable when browser connect actions are disabled.",
+            );
+        }
+        let Some(index) = self.selected_public_server_index() else {
+            return self.record_action_error("No public server is currently selected.");
+        };
+        if !self.apply_public_server_selection(index) {
+            return false;
+        }
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ConnectPublicServer,
+        });
+        let row = self.public_servers.servers[index].clone();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Connecting to public server: {}.", row.label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_selected_public_server_connect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No public server connect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ConnectPublicServer {
+            return self.record_action_error("No public server connect is currently in progress.");
+        }
+        let Some(index) = self.selected_public_server_index() else {
+            self.pending_operation = None;
+            return self.record_action_error("No public server is currently selected.");
+        };
+        let Some(row) = self.public_servers.servers.get(index).cloned() else {
+            self.pending_operation = None;
+            return self.record_action_error("No public server exists at the requested index.");
+        };
+        self.pending_operation = None;
+        self.push_system_chat_message(format!("Connected to public server: {}.", row.label));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Connected to public server: {}.", row.label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_selected_public_server_connect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No public server connect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ConnectPublicServer {
+            return self.record_action_error("No public server connect is currently in progress.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Public server connect canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_public_server_refresh(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_refresh_public_servers {
+            return self.record_action_error(
+                "Public server refresh is unavailable when browser refresh actions are disabled.",
+            );
+        }
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::RefreshPublicServers,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Refreshing public servers.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_public_server_refresh(&mut self, servers: Vec<(String, String)>) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No public server refresh is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::RefreshPublicServers {
+            return self.record_action_error("No public server refresh is currently in progress.");
+        }
+
+        let mut normalized = Vec::new();
+        for (label, address) in servers {
+            let Some(label) = normalized_editable_text(&label) else {
+                continue;
+            };
+            let Some(address) = normalized_editable_text(&address) else {
+                continue;
+            };
+            let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+            if host.trim().is_empty() {
+                continue;
+            }
+            normalized.push((label, address));
+        }
+
+        let mut settings = self.configuration.to_stored_settings();
+        settings.public_servers = if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized)
+        };
+        self.resync_from_settings(settings);
+        self.pending_operation = None;
+        if self.public_servers.servers.is_empty() {
+            self.set_selected_public_server_index(None);
+            self.push_system_chat_message("Public servers refreshed: none available.".to_owned());
+            self.push_transient_notification(
+                GuiTransientNotificationLevel::Warning,
+                "Public servers refreshed: none available.".to_owned(),
+            );
+        } else {
+            self.set_selected_public_server_index(Some(0));
+            let _ = self.apply_public_server_selection(0);
+            self.push_system_chat_message(format!(
+                "Public servers refreshed: {} entries.",
+                self.public_servers.servers.len()
+            ));
+            self.push_transient_notification(
+                GuiTransientNotificationLevel::Success,
+                format!(
+                    "Public servers refreshed: {} entries.",
+                    self.public_servers.servers.len()
+                ),
+            );
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_public_server_refresh(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No public server refresh is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::RefreshPublicServers {
+            return self.record_action_error("No public server refresh is currently in progress.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Public server refresh canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_custom_public_server_added(&mut self, label: String, address: String) -> bool {
+        let Some(label) = normalized_editable_text(&label) else {
+            return self.record_action_error(
+                "Custom public-server label and address must both be non-empty.",
+            );
+        };
+        let Some(address) = normalized_editable_text(&address) else {
+            return self.record_action_error(
+                "Custom public-server label and address must both be non-empty.",
+            );
+        };
+        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+        if host.trim().is_empty() {
+            return self.record_action_error("Custom public-server address is not valid.");
+        }
+
+        let mut settings = self.configuration.to_stored_settings();
+        let mut servers = settings.public_servers.take().unwrap_or_default();
+        servers.push((label.clone(), address));
+        let selected_index = servers.len() - 1;
+        settings.public_servers = Some(servers);
+        self.resync_from_settings(settings);
+        self.set_selected_public_server_index(Some(selected_index));
+        let _ = self.apply_public_server_selection(selected_index);
+        self.push_system_chat_message(format!("Custom public server added: {}.", label));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Custom public server added: {}.", label),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn add_media_search_directory_path(&mut self, path: String) -> bool {
+        let Some(path) = normalized_editable_text(&path) else {
+            return self.record_action_error("Media search directory cannot be empty.");
+        };
+        let mut settings = self.configuration.to_stored_settings();
+        let mut directories = settings.media_search_directories.take().unwrap_or_default();
+        if directories.iter().any(|existing| existing == &path) {
+            return self.record_action_error("Media search directory is already present.");
+        }
+        directories.push(path);
+        settings.media_search_directories = Some(directories);
+        self.resync_from_settings(settings);
+        self.selection.selected_media_search_directory =
+            self.media_search.directories.len().checked_sub(1);
+        self.apply_selection_to_surfaces();
+        true
+    }
+
+    fn announce_media_search_directory_selected(&mut self, index: usize) -> bool {
+        if index >= self.media_search.directories.len() {
+            return self
+                .record_action_error("No media-search directory exists at the requested index.");
+        }
+        self.selection.selected_media_search_directory = Some(index);
+        self.apply_selection_to_surfaces();
+        let path = self.media_search.directories[index].path.clone();
+        self.push_system_chat_message(format!("Media search directory selected: {}.", path));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Media search directory selected: {}.", path),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_media_search_directory_browsed(&mut self, path: String) -> bool {
+        if !self.add_media_search_directory_path(path) {
+            return false;
+        }
+        let Some(index) = self.selection.selected_media_search_directory else {
+            return self
+                .record_action_error("The browsed media-search directory could not be selected.");
+        };
+        let path = self.media_search.directories[index].path.clone();
+        self.push_system_chat_message(format!("Media search directory added: {}.", path));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Media search directory added: {}.", path),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_missing_media_search(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_search_missing_media {
+            return self.record_action_error(
+                "Missing-media search is unavailable when search actions are disabled.",
+            );
+        }
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::SearchMissingMedia,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Missing-media search started.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_missing_media_search(&mut self, found_path: Option<String>) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No missing-media search is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SearchMissingMedia {
+            return self.record_action_error("No missing-media search is currently in progress.");
+        }
+        self.pending_operation = None;
+
+        let found_path = found_path.and_then(|path| normalized_editable_text(&path));
+        match found_path {
+            Some(path) => {
+                self.push_system_chat_message(format!("Missing media found: {}.", path));
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Success,
+                    format!("Missing media found: {}.", path),
+                );
+            }
+            None => {
+                self.push_system_chat_message(
+                    "Missing media search completed: no match found.".to_owned(),
+                );
+                self.push_transient_notification(
+                    GuiTransientNotificationLevel::Warning,
+                    "Missing media search completed: no match found.".to_owned(),
+                );
+            }
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_missing_media_search(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No missing-media search is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::SearchMissingMedia {
+            return self.record_action_error("No missing-media search is currently in progress.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Missing-media search canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn normalize_public_server_edit_session(&mut self) {
+        let mut selected_index_to_apply = None;
+        let Some(session) = self.public_server_edit_session.as_mut() else {
+            return;
+        };
+        if let Some(index) = session.editing_index {
+            let matching_index = self
+                .public_servers
+                .servers
+                .get(index)
+                .filter(|row| {
+                    session.original_label.as_deref() == Some(row.label.as_str())
+                        && session.original_address.as_deref() == Some(row.address.as_str())
+                })
+                .map(|_| index)
+                .or_else(|| {
+                    self.public_servers.servers.iter().position(|row| {
+                        session.original_label.as_deref() == Some(row.label.as_str())
+                            && session.original_address.as_deref() == Some(row.address.as_str())
+                    })
+                });
+            let Some(index) = matching_index else {
+                self.public_server_edit_session = None;
+                return;
+            };
+            session.editing_index = Some(index);
+            selected_index_to_apply = Some(index);
+            let Some(row) = self.public_servers.servers.get(index) else {
+                self.public_server_edit_session = None;
+                return;
+            };
+            session.is_dirty =
+                session.label_buffer != row.label || session.address_buffer != row.address;
+            if !session.is_dirty {
+                session.label_buffer = row.label.clone();
+                session.address_buffer = row.address.clone();
+                session.original_label = Some(row.label.clone());
+                session.original_address = Some(row.address.clone());
+            }
+        } else {
+            session.is_dirty = !session.label_buffer.trim().is_empty()
+                || !session.address_buffer.trim().is_empty();
+        }
+        if let Some(index) = selected_index_to_apply {
+            self.set_selected_public_server_index(Some(index));
+        }
+    }
+
+    fn normalize_main_window_user_edit_session(&mut self) {
+        let Some(session) = self.main_window_user_edit_session.as_mut() else {
+            return;
+        };
+        let matching_index = self
+            .main_window
+            .users
+            .get(session.editing_index)
+            .filter(|user| {
+                user.username
+                    .eq_ignore_ascii_case(&session.original_username)
+            })
+            .map(|_| session.editing_index)
+            .or_else(|| {
+                self.main_window.users.iter().position(|user| {
+                    user.username
+                        .eq_ignore_ascii_case(&session.original_username)
+                })
+            });
+        let Some(index) = matching_index else {
+            self.main_window_user_edit_session = None;
+            return;
+        };
+        session.editing_index = index;
+        let Some(user) = self.main_window.users.get(index) else {
+            self.main_window_user_edit_session = None;
+            return;
+        };
+        session.is_dirty = session.username_buffer != user.username;
+        if !session.is_dirty {
+            session.username_buffer = user.username.clone();
+            session.original_username = user.username.clone();
+        }
+        self.selection.selected_main_window_user = Some(index);
+        for (user_index, user) in self.main_window.users.iter_mut().enumerate() {
+            user.is_selected = user_index == index;
+        }
+    }
+
+    fn normalize_text_edit_session(&mut self) {
+        let Some(session) = self.text_edit_session.as_mut() else {
+            return;
+        };
+        let Some(control) = self.configuration.control(session.section, session.label) else {
+            self.text_edit_session = None;
+            return;
+        };
+        if !control.kind.is_editable() || control.kind == GuiDialogControlKind::Checkbox {
+            self.text_edit_session = None;
+            return;
+        }
+        session.is_dirty = session.buffer != control.value;
+    }
+
+    fn sync_focused_configuration_control_to_text_edit_session(&mut self) {
+        let Some(session) = self.text_edit_session.as_ref() else {
+            return;
+        };
+        let Some(control) = self.configuration.control(session.section, session.label) else {
+            return;
+        };
+        let activation_count = self
+            .focused_configuration_control
+            .as_ref()
+            .filter(|focused| focused.section == session.section && focused.label == session.label)
+            .map_or(0, |focused| focused.activation_count);
+        self.focused_configuration_control = Some(GuiFocusedConfigurationControlState {
+            section: session.section,
+            label: session.label,
+            kind: control.kind,
+            activation_count,
+        });
+    }
+
+    fn normalize_focused_configuration_control(&mut self) {
+        let Some(focused) = self.focused_configuration_control.as_mut() else {
+            return;
+        };
+        let Some(control) = self.configuration.control(focused.section, focused.label) else {
+            self.focused_configuration_control = None;
+            return;
+        };
+        if !control.kind.is_editable() {
+            self.focused_configuration_control = None;
+            return;
+        }
+        focused.kind = control.kind;
+    }
+
+    fn refresh_validation(&mut self) {
+        let last_action_error = self.validation.last_action_error.clone();
+        self.normalize_public_server_edit_session();
+        self.normalize_main_window_user_edit_session();
+        let mut issues = self.validation_issues();
+        issues.extend(self.runtime_validation_issues.iter().cloned());
+        self.sync_focused_configuration_control_to_text_edit_session();
+        self.validation = GuiValidationState {
+            issues,
+            last_action_error,
+        };
+        self.refresh_command_availability();
+    }
+
+    fn clear_action_error_and_refresh(&mut self) {
+        self.validation.last_action_error = None;
+        self.refresh_validation();
+    }
+
+    fn record_action_error(&mut self, message: impl Into<String>) -> bool {
+        self.validation.last_action_error = Some(message.into());
+        self.refresh_validation();
+        false
+    }
+
+    fn cancel_pending_operation(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No GUI operation is currently in progress.");
+        };
+        match pending.kind {
+            GuiPendingOperationKind::SaveConfiguration => self.cancel_configuration_save(),
+            GuiPendingOperationKind::ResetConfiguration => self.cancel_configuration_reset(),
+            GuiPendingOperationKind::ReloadConfiguration => self.cancel_configuration_reload(),
+            GuiPendingOperationKind::ConnectPublicServer => {
+                self.cancel_selected_public_server_connect()
+            }
+            GuiPendingOperationKind::RefreshPublicServers => self.cancel_public_server_refresh(),
+            GuiPendingOperationKind::SearchMissingMedia => self.cancel_missing_media_search(),
+            GuiPendingOperationKind::TogglePlaybackPause => self.cancel_playback_pause_toggle(),
+            GuiPendingOperationKind::SendChatMessage => self.cancel_local_chat_send(),
+        }
+    }
+
+    fn refresh_command_availability(&mut self) {
+        self.commands = self.command_availability_without_runtime_override();
+        self.runtime_command_availability_override
+            .apply_to(&mut self.commands);
+    }
+
+    fn validation_issues(&self) -> Vec<GuiValidationIssue> {
+        let mut issues = Vec::new();
+
+        self.push_u16_validation_issue(
+            &mut issues,
+            "Connection",
+            "Port",
+            "must be a valid TCP port from 1 to 65535.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Readiness",
+            "Unpause Action",
+            |value| parse_unpause_action_mode_legacy_compatible(value).is_some(),
+            "must be a supported unpause action mode.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Readiness",
+            "Autoplay Min Users",
+            |value| {
+                value == "app-default"
+                    || parse_autoplay_min_users_override_legacy_compatible(value).is_some()
+            },
+            "must be a supported autoplay threshold or 'app-default'.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Privacy",
+            "Filename Privacy",
+            |value| PrivacyMode::from_legacy_name(value).is_some(),
+            "must be a supported privacy mode.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Privacy",
+            "Filesize Privacy",
+            |value| PrivacyMode::from_legacy_name(value).is_some(),
+            "must be a supported privacy mode.",
+        );
+        for (section, label) in [
+            ("Desync", "Rewind Threshold"),
+            ("Desync", "Fastforward Threshold"),
+            ("Desync", "Slowdown Threshold"),
+            ("Media Search", "First File Timeout"),
+            ("Media Search", "Search Timeout"),
+            ("Media Search", "Double Check Interval"),
+            ("Media Search", "Warning Threshold"),
+        ] {
+            self.push_nonnegative_f64_validation_issue(
+                &mut issues,
+                section,
+                label,
+                "must be a finite non-negative number.",
+            );
+        }
+        self.push_positive_i64_validation_issue(
+            &mut issues,
+            "Chat",
+            "Max Lines",
+            "must be a positive integer.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "System",
+            "Language",
+            |value| normalized_legacy_runtime_language_tag_legacy_compatible(value).is_some(),
+            "must be one of the supported legacy language tags.",
+        );
+
+        let mut seen_directories = std::collections::BTreeSet::new();
+        for directory in &self.media_search.directories {
+            if !seen_directories.insert(directory.path.clone()) {
+                issues.push(GuiValidationIssue {
+                    scope: "Media Search".to_owned(),
+                    label: "Directories".to_owned(),
+                    message: "contains duplicate search directories.".to_owned(),
+                });
+                break;
+            }
+        }
+
+        for row in &self.public_servers.servers {
+            let (host, _) =
+                parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
+            if host.trim().is_empty() {
+                issues.push(GuiValidationIssue {
+                    scope: "Public Servers".to_owned(),
+                    label: "Address".to_owned(),
+                    message: format!("'{}' is not a valid server address.", row.address),
+                });
+            }
+        }
+
+        issues
+    }
+
+    fn push_parse_validation_issue(
+        &self,
+        issues: &mut Vec<GuiValidationIssue>,
+        section: &'static str,
+        label: &'static str,
+        is_valid: impl FnOnce(&str) -> bool,
+        message: &'static str,
+    ) {
+        let Some(value) = self.configuration.control_value(section, label) else {
+            return;
+        };
+        let Some(normalized) = normalized_editable_text(value) else {
+            return;
+        };
+        if !is_valid(&normalized) {
+            issues.push(GuiValidationIssue {
+                scope: section.to_owned(),
+                label: label.to_owned(),
+                message: message.to_owned(),
+            });
+        }
+    }
+
+    fn push_u16_validation_issue(
+        &self,
+        issues: &mut Vec<GuiValidationIssue>,
+        section: &'static str,
+        label: &'static str,
+        message: &'static str,
+    ) {
+        self.push_parse_validation_issue(
+            issues,
+            section,
+            label,
+            |value| value.parse::<u16>().is_ok_and(|parsed| parsed > 0),
+            message,
+        );
+    }
+
+    fn push_nonnegative_f64_validation_issue(
+        &self,
+        issues: &mut Vec<GuiValidationIssue>,
+        section: &'static str,
+        label: &'static str,
+        message: &'static str,
+    ) {
+        self.push_parse_validation_issue(
+            issues,
+            section,
+            label,
+            |value| {
+                value
+                    .parse::<f64>()
+                    .is_ok_and(|parsed| parsed.is_finite() && parsed >= 0.0)
+            },
+            message,
+        );
+    }
+
+    fn push_positive_i64_validation_issue(
+        &self,
+        issues: &mut Vec<GuiValidationIssue>,
+        section: &'static str,
+        label: &'static str,
+        message: &'static str,
+    ) {
+        self.push_parse_validation_issue(
+            issues,
+            section,
+            label,
+            |value| value.parse::<i64>().is_ok_and(|parsed| parsed > 0),
+            message,
+        );
+    }
+}
+
+fn env_trimmed(name: &str) -> Option<String> {
+    env::var(name).ok().and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiClientCoreChatTcpBootstrap {
+    host: String,
+    port: u16,
+    username: String,
+    room: String,
+}
+
+impl GuiClientCoreChatTcpBootstrap {
+    fn host_arg(&self) -> String {
+        if self.host.contains(':') && !(self.host.starts_with('[') && self.host.ends_with(']')) {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    fn startup_settings(&self) -> StoredClientSettingsMvp {
+        StoredClientSettingsMvp {
+            host: Some(self.host.clone()),
+            port: Some(self.port),
+            username: Some(self.username.clone()),
+            room: Some(self.room.clone()),
+            chat_input_enabled: Some(true),
+            chat_output_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        }
+    }
+}
+
+fn env_flag_enabled_lookup<F>(lookup: &F, name: &str) -> Result<bool, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(value) = lookup(name) else {
+        return Ok(false);
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!(
+            "{name} must be one of: 1, true, yes, on, 0, false, no, off."
+        )),
+    }
+}
+
+fn env_port_lookup<F>(lookup: &F, name: &str) -> Result<Option<u16>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(value) = lookup(name) else {
+        return Ok(None);
+    };
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .map(Some)
+        .ok_or_else(|| format!("{name} must be a valid TCP port from 1 to 65535."))
+}
+
+fn gui_client_core_chat_tcp_bootstrap_from_lookup<F>(
+    lookup: F,
+) -> Result<Option<GuiClientCoreChatTcpBootstrap>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !env_flag_enabled_lookup(&lookup, "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP")? {
+        return Ok(None);
+    }
+
+    Ok(Some(GuiClientCoreChatTcpBootstrap {
+        host: lookup("SYNCPLAY_CLIENT_HOST").unwrap_or_else(|| "127.0.0.1".to_owned()),
+        port: env_port_lookup(&lookup, "SYNCPLAY_CLIENT_PORT")?.unwrap_or(8999),
+        username: lookup("SYNCPLAY_CLIENT_USERNAME")
+            .or_else(|| lookup("SYNCPLAY_CLIENT_NAME"))
+            .unwrap_or_else(|| "gui-user".to_owned()),
+        room: lookup("SYNCPLAY_CLIENT_ROOM").unwrap_or_else(|| "gui-demo".to_owned()),
+    }))
+}
+
+fn gui_startup_host_and_settings() -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String>
+{
+    let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(env_trimmed)? else {
+        return Ok((
+            GuiEframeNativeHost::default(),
+            StoredClientSettingsMvp::default(),
+        ));
+    };
+
+    let host = GuiEframeNativeHost::with_client_core_chat_tcp_session(
+        bootstrap.username.clone(),
+        bootstrap.room.clone(),
+        bootstrap.host_arg(),
+    )?;
+    Ok((host, bootstrap.startup_settings()))
+}
+
+fn syncplay_config_names_legacy_compatible() -> [&'static str; 2] {
+    [".syncplay", "syncplay.ini"]
+}
+
+fn syncplay_gui_config_path_override() -> Option<PathBuf> {
+    env_trimmed("SYNCPLAY_CLIENT_CONFIG_PATH").map(PathBuf::from)
+}
+
+fn explicit_mpv_ipc_path_from_env() -> Option<String> {
+    env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH").or_else(|| env_trimmed("SYNCPLAY_MPV_IPC_PATH"))
+}
+
+fn default_syncplay_gui_config_root_legacy_compatible() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return env_trimmed("APPDATA").map(PathBuf::from);
+    }
+    if let Some(xdg_config_home) = env_trimmed("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg_config_home));
+    }
+    env_trimmed("HOME").map(|home| PathBuf::from(home).join(".config"))
+}
+
+fn resolve_syncplay_gui_config_path_legacy_compatible() -> Option<PathBuf> {
+    if let Some(path) = syncplay_gui_config_path_override() {
+        return Some(path);
+    }
+    if let Ok(cwd) = env::current_dir() {
+        for name in syncplay_config_names_legacy_compatible() {
+            let candidate = cwd.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let root = default_syncplay_gui_config_root_legacy_compatible()?;
+    for name in syncplay_config_names_legacy_compatible() {
+        let candidate = root.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    Some(root.join("syncplay.ini"))
+}
+
+#[cfg(test)]
+fn startup_notice(settings: &StoredClientSettingsMvp) -> String {
+    SyncplayGuiShellAppState::from_stored_settings(settings)
+        .render_lines()
+        .join("\n")
+}
+
+#[cfg(test)]
+fn shell_widget_preview(settings: &StoredClientSettingsMvp) -> String {
+    let state = SyncplayGuiShellAppState::from_stored_settings(settings);
+    let mut renderer = GuiWidgetTextPreviewRenderer::default();
+    state.render_shell_widgets(&mut renderer);
+    renderer.finish()
+}
+
+#[cfg(test)]
+fn startup_preview(settings: &StoredClientSettingsMvp) -> String {
+    let mut host = GuiTextPreviewHost;
+    run_gui_host(settings, &mut host)
+}
+
+fn run_gui_host<Host: GuiAppHost>(
+    settings: &StoredClientSettingsMvp,
+    host: &mut Host,
+) -> Host::Output {
+    let state = SyncplayGuiShellAppState::from_stored_settings(settings);
+    host.render(state)
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or("(unset)")
+}
+
+fn optional_port_text(value: Option<u16>) -> String {
+    value.map_or_else(|| "(unset)".to_owned(), |value| value.to_string())
+}
+
+fn optional_seconds_text(value: Option<f64>) -> String {
+    value.map_or_else(|| "(unset)".to_owned(), |value| format!("{value:.2}s"))
+}
+
+fn optional_i64_text(value: Option<i64>) -> String {
+    value.map_or_else(|| "(unset)".to_owned(), |value| value.to_string())
+}
+
+fn optional_index_text(value: Option<usize>) -> String {
+    value.map_or_else(|| "(none)".to_owned(), |value| value.to_string())
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn normalized_editable_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "(unset)" {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn main() {
+    let (mut host, settings) = match gui_startup_host_and_settings() {
+        Ok(startup) => startup,
+        Err(error) => {
+            eprintln!("syncplay-gui failed to configure startup runtime: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = run_gui_host(&settings, &mut host) {
+        eprintln!("syncplay-gui failed to start: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syncplay_client_app::app_boundary::state::AutoplayThresholdOverride;
+    use syncplay_client_core::{PrivacyMode, UnpauseActionMode};
+
+    use super::{
+        FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiAppHost,
+        GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
+        GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot,
+        GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiEframeNativeHost,
+        GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
+        GuiFocusedConfigurationControlRuntimeSnapshot, GuiInteractionRuntimeSnapshot,
+        GuiLaunchMode, GuiMainWindowUserEditSessionRuntimeSnapshot, GuiNativeApp,
+        GuiNativeRuntimeBridge, GuiPendingCompletionRequest, GuiPendingOperationKind,
+        GuiPreviewRuntimeBridge, GuiPublicServerEditSessionRuntimeSnapshot, GuiQueuedRuntimeBridge,
+        GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction,
+        GuiShellModal, GuiShellView, GuiTextEditSessionRuntimeSnapshot, GuiTextPreviewHost,
+        GuiTransientNotification, GuiTransientNotificationLevel, GuiValidationIssue,
+        GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer,
+        GuiWidgetTextPreviewRenderer, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
+        MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
+        MediaSearchDirectoryRow, MediaSearchWorkflowShellState, MenuActionRuntimeOverride,
+        MenuDialogRuntimeSnapshot, MenuDialogShellState, PublicServerBrowserRow,
+        PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
+        run_gui_host, shell_widget_preview, startup_notice, startup_preview,
+    };
+    use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+    #[test]
+    fn configuration_surface_defaults_to_first_run_mode() {
+        let state = FirstRunConfigurationDialogState::from_stored_settings(
+            &StoredClientSettingsMvp::default(),
+        );
+
+        assert_eq!(state.launch_mode, GuiLaunchMode::FirstRun);
+        assert_eq!(state.system.language_tag, "en");
+        assert_eq!(state.readiness.unpause_action_label, "IfAlreadyReady");
+        assert_eq!(state.readiness.autoplay_min_users_label, "app-default");
+        assert_eq!(state.connection.public_server_count, 0);
+    }
+
+    #[test]
+    fn configuration_surface_maps_existing_stored_settings_into_sections() {
+        let state =
+            FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
+                language: Some("pt-br".to_owned()),
+                check_for_updates_automatically: Some(true),
+                host: Some("syncplay.example".to_owned()),
+                port: Some(8995),
+                server_password: Some("secret".to_owned()),
+                username: Some("shaun".to_owned()),
+                room: Some("room-a".to_owned()),
+                room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),
+                player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+                public_servers: Some(vec![("Public".to_owned(), "example.org:8999".to_owned())]),
+                media_search_directories: Some(vec![
+                    "C:/Media".to_owned(),
+                    "D:/Archive".to_owned(),
+                ]),
+                folder_search_first_file_timeout_seconds: Some(2.0),
+                folder_search_timeout_seconds: Some(5.5),
+                folder_search_double_check_interval_seconds: Some(0.5),
+                folder_search_warning_threshold_seconds: Some(3.0),
+                autoplay_initial_state: Some(true),
+                autoplay_require_same_filenames: Some(true),
+                ready_at_start: Some(true),
+                shared_playlist_enabled: Some(true),
+                pause_on_leave: Some(true),
+                only_switch_to_trusted_domains: Some(true),
+                trusted_domains: Some(vec!["example.org".to_owned(), "syncplay.pl".to_owned()]),
+                rewind_on_desync: Some(true),
+                fastforward_on_desync: Some(true),
+                slow_on_desync: Some(true),
+                dont_slow_down_with_me: Some(true),
+                rewind_threshold_seconds: Some(1.5),
+                fastforward_threshold_seconds: Some(4.0),
+                slowdown_threshold_seconds: Some(0.75),
+                unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+                autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+                filename_privacy_mode: Some(PrivacyMode::SendHashed),
+                filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+                show_duration_notification: Some(true),
+                show_osd: Some(true),
+                chat_input_enabled: Some(true),
+                chat_input_font_family: Some("Consolas".to_owned()),
+                chat_direct_input: Some(true),
+                chat_output_enabled: Some(true),
+                chat_output_font_family: Some("Segoe UI".to_owned()),
+                chat_move_osd: Some(true),
+                chat_max_lines: Some(7),
+                show_same_room_osd: Some(true),
+                show_osd_warnings: Some(true),
+                show_noncontroller_osd: Some(true),
+                show_different_room_osd: Some(true),
+                show_contact_info: Some(true),
+                ..StoredClientSettingsMvp::default()
+            });
+
+        assert_eq!(state.launch_mode, GuiLaunchMode::ExistingConfig);
+        assert_eq!(state.system.language_tag, "pt_BR");
+        assert_eq!(state.connection.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(state.connection.port, Some(8995));
+        assert!(state.connection.server_password_set);
+        assert_eq!(state.connection.public_server_count, 1);
+        assert_eq!(state.connection.room_history_count, 2);
+        assert_eq!(state.readiness.unpause_action_label, "IfMinUsersReady");
+        assert_eq!(state.readiness.autoplay_min_users_label, "3");
+        assert_eq!(state.privacy.filename_privacy_mode_label, "SendHashed");
+        assert_eq!(state.privacy.filesize_privacy_mode_label, "DoNotSend");
+        assert_eq!(state.privacy.trusted_domain_count, 2);
+        assert_eq!(state.media_search.media_directory_count, 2);
+        assert_eq!(
+            state.chat.chat_input_font_family.as_deref(),
+            Some("Consolas")
+        );
+        assert_eq!(
+            state.chat.chat_output_font_family.as_deref(),
+            Some("Segoe UI")
+        );
+        assert!(state.osd.show_contact_info);
+        assert!(state.system.check_for_updates_automatically);
+    }
+
+    #[test]
+    fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
+        let state = FirstRunConfigurationDialogState::from_stored_settings(
+            &StoredClientSettingsMvp::default(),
+        );
+        let sections = state.dialog_sections();
+
+        let connection = sections
+            .iter()
+            .find(|section| section.title == "Connection")
+            .expect("connection section should exist");
+        assert!(connection.controls.iter().any(|control| {
+            control.label == "Host" && control.kind == GuiDialogControlKind::TextInput
+        }));
+        assert!(connection.controls.iter().any(|control| {
+            control.label == "Server Password"
+                && control.kind == GuiDialogControlKind::PasswordInput
+        }));
+
+        let readiness = sections
+            .iter()
+            .find(|section| section.title == "Readiness")
+            .expect("readiness section should exist");
+        assert!(readiness.controls.iter().any(|control| {
+            control.label == "Autoplay" && control.kind == GuiDialogControlKind::Checkbox
+        }));
+        assert!(readiness.controls.iter().any(|control| {
+            control.label == "Unpause Action" && control.kind == GuiDialogControlKind::Select
+        }));
+    }
+
+    #[test]
+    fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
+        let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(
+            &StoredClientSettingsMvp::default(),
+        );
+
+        assert!(draft.apply_text_value("Connection", "Host", "syncplay.example"));
+        assert!(draft.apply_text_value("Connection", "Port", "8995"));
+        assert!(draft.apply_text_value("Connection", "Server Password", "secret"));
+        assert!(draft.apply_bool_value("Readiness", "Autoplay", true));
+        assert!(draft.apply_text_value("Readiness", "Unpause Action", "Always"));
+        assert!(draft.apply_text_value("Readiness", "Autoplay Min Users", "3"));
+        assert!(draft.apply_text_value("System", "Language", "pt-br"));
+
+        let saved = draft.to_stored_settings();
+        assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(saved.port, Some(8995));
+        assert_eq!(saved.server_password.as_deref(), Some("secret"));
+        assert_eq!(saved.autoplay_initial_state, Some(true));
+        assert_eq!(saved.unpause_action, Some(UnpauseActionMode::Always));
+        assert_eq!(
+            saved.autoplay_min_users,
+            Some(AutoplayThresholdOverride::Set(3))
+        );
+        assert_eq!(saved.language.as_deref(), Some("pt_BR"));
+    }
+
+    #[test]
+    fn configuration_draft_rejects_readonly_control_edits() {
+        let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(
+            &StoredClientSettingsMvp::default(),
+        );
+
+        assert!(!draft.apply_text_value("Connection", "Public Servers", "5"));
+        assert_eq!(draft.to_stored_settings().public_servers, None);
+    }
+
+    #[test]
+    fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
+        let state = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp {
+            room: Some("+room:ABCDEF123456".to_owned()),
+            username: Some("shaun".to_owned()),
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ready_at_start: Some(true),
+            chat_output_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert_eq!(state.room_name, "+room:ABCDEF123456");
+        assert!(state.shared_playlist_enabled);
+        assert!(state.controlled_room_active);
+        assert_eq!(state.users.len(), 1);
+        assert_eq!(state.users[0].username, "shaun");
+        assert!(state.users[0].is_ready);
+        assert!(state.users[0].is_controller);
+        assert!(state.playback.can_toggle_pause);
+        assert!(state.playback.can_manage_playlist);
+        assert_eq!(state.playlist.len(), 1);
+        assert_eq!(state.chat.len(), 1);
+    }
+
+    #[test]
+    fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
+        let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            chat_output_enabled: Some(true),
+            only_switch_to_trusted_domains: Some(true),
+            check_for_updates_automatically: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        let file = state
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .expect("file section should exist");
+        assert!(
+            file.actions
+                .iter()
+                .find(|item| item.label == "Open Media File")
+                .is_some_and(|item| item.enabled)
+        );
+
+        let playback = state
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(playback.actions.iter().all(|item| item.enabled));
+
+        let window = state
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|item| item.label == "Show Chat")
+                .is_some_and(|item| item.enabled)
+        );
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|item| item.label == "Show Playlist")
+                .is_some_and(|item| item.enabled)
+        );
+
+        assert!(state.tls_prompt_expected);
+        assert!(state.update_notice_expected);
+        assert!(state.about_dialog_available);
+    }
+
+    #[test]
+    fn public_server_browser_shell_state_uses_stored_server_entries() {
+        let state = PublicServerBrowserShellState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                ("Backup".to_owned(), "syncplay.example:8995".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert_eq!(state.servers.len(), 2);
+        assert!(state.can_connect);
+        assert!(state.can_refresh);
+        assert!(state.can_add_custom_server);
+        assert_eq!(state.servers[0].label, "Primary");
+        assert!(state.servers[0].is_selected);
+        assert!(!state.servers[1].is_selected);
+    }
+
+    #[test]
+    fn media_search_workflow_shell_state_uses_stored_directories_and_timing() {
+        let state = MediaSearchWorkflowShellState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
+            folder_search_first_file_timeout_seconds: Some(1.5),
+            folder_search_timeout_seconds: Some(5.0),
+            folder_search_double_check_interval_seconds: Some(0.25),
+            folder_search_warning_threshold_seconds: Some(2.0),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert_eq!(state.directories.len(), 2);
+        assert!(state.can_browse_directories);
+        assert!(state.can_search_missing_media);
+        assert_eq!(state.first_file_timeout_seconds, Some(1.5));
+        assert_eq!(state.search_timeout_seconds, Some(5.0));
+        assert_eq!(state.double_check_interval_seconds, Some(0.25));
+        assert_eq!(state.warning_threshold_seconds, Some(2.0));
+    }
+
+    #[test]
+    fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: Vec::new(),
+                tls_prompt_expected: true,
+                update_notice_expected: true,
+                about_dialog_available: false,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 0,
+            action_index: 0,
+        }));
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: false,
+                    can_reset_configuration: false,
+                    can_reload_configuration: false,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: false,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
+            },
+        )));
+
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Readiness",
+            label: "Shared Playlists",
+            value: true,
+        }));
+
+        assert!(state.main_window.shared_playlist_enabled);
+        assert!(state.main_window.playback.can_manage_playlist);
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|item| item.label == "Show Playlist")
+                .is_some_and(|item| item.enabled)
+        );
+        assert!(state.menus.tls_prompt_expected);
+        assert!(state.menus.update_notice_expected);
+        assert!(!state.menus.about_dialog_available);
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
+        let file = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .expect("file section should exist");
+        assert!(
+            file.actions
+                .iter()
+                .find(|item| item.label == "Open Media File")
+                .is_some_and(|item| !item.enabled && !item.is_selected)
+        );
+        assert!(
+            file.actions
+                .iter()
+                .find(|item| item.label == "Open Media Search")
+                .is_some_and(|item| item.enabled && item.is_selected)
+        );
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(playback.actions.iter().all(|item| !item.enabled));
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|item| item.label == "About")
+                .is_some_and(|item| !item.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuration_edits() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "RuntimeRoom".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: true,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: vec!["Episode 1".to_owned()],
+                chat: vec![MainWindowRuntimeChatSnapshot {
+                    sender: "bob".to_owned(),
+                    message: "synced".to_owned(),
+                }],
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: false,
+                can_manage_playlist: true,
+                playback_paused: true,
+                autoplay_active: true,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: true,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: true,
+                    can_search_missing_media: false,
+                    can_toggle_pause: true,
+                    can_send_chat_message: false,
+                },
+                pending_operation: None,
+            },
+        )));
+
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Chat",
+            label: "Chat Input",
+            value: true,
+        }));
+
+        assert_eq!(state.main_window.room_name, "RuntimeRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.users[1].username, "bob");
+        assert_eq!(state.main_window.playlist[0].label, "Episode 1");
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("synced")
+        );
+        assert!(state.main_window.playback.can_toggle_pause);
+        assert!(state.main_window.playback.can_seek);
+        assert!(state.main_window.playback_paused);
+        assert!(state.main_window.autoplay_active);
+        assert!(state.commands.can_send_chat_message);
+    }
+
+    #[test]
+    fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_edits() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "(no room joined)".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: true,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Room",
+            value: "MergedRoom".to_owned(),
+        }));
+
+        assert_eq!(state.main_window.room_name, "MergedRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.users[1].username, "bob");
+    }
+
+    #[test]
+    fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_runtime_room_updates()
+     {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "(no room joined)".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: true,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.room = Some("RuntimeMergedRoom".to_owned());
+        let saved = state.saved_configuration.clone();
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft,
+                    saved_settings: saved,
+                }
+            ))
+        );
+
+        assert_eq!(state.main_window.room_name, "RuntimeMergedRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.users[1].username, "bob");
+    }
+
+    #[test]
+    fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MenusAndDialogs)));
+        assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MediaSearch)));
+        assert_eq!(state.active_view, GuiShellView::MediaSearch);
+
+        assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
+        assert_eq!(state.open_modal, Some(GuiShellModal::About));
+        assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::UpdateNotice)));
+        assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+        assert!(state.apply(GuiShellAction::OpenModal(
+            GuiShellModal::TlsCertificatePrompt
+        )));
+        assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+
+        assert!(state.apply(GuiShellAction::CloseModal));
+        assert_eq!(state.open_modal, None);
+        assert!(!state.apply(GuiShellAction::CloseModal));
+    }
+
+    #[test]
+    fn gui_shell_app_state_announces_menu_and_dialog_events() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
+        assert!(state.menus.tls_prompt_expected);
+        assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("TLS certificate prompt opened.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
+        assert!(state.menus.update_notice_expected);
+        assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+
+        assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
+        assert_eq!(state.open_modal, Some(GuiShellModal::About));
+
+        assert!(state.apply(GuiShellAction::AnnounceHelpRequested));
+        assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Help opened.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![
+                    MenuActionRuntimeOverride {
+                        section_title: "Playback",
+                        action_label: "Toggle Pause",
+                        enabled: false,
+                    },
+                    MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Chat",
+                        enabled: true,
+                    },
+                    MenuActionRuntimeOverride {
+                        section_title: "Help",
+                        action_label: "Check for Updates",
+                        enabled: false,
+                    },
+                ],
+                tls_prompt_expected: true,
+                update_notice_expected: false,
+                about_dialog_available: false,
+            },
+        )));
+
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert_eq!(state.selection.selected_menu_action, Some((1, 1)));
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Seek")
+                .is_some_and(|action| action.enabled && action.is_selected)
+        );
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(state.menus.tls_prompt_expected);
+        assert!(!state.menus.update_notice_expected);
+        assert!(!state.menus.about_dialog_available);
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|action| action.label == "About")
+                .is_some_and(|action| !action.enabled)
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Menu/dialog runtime snapshot applied.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_menu_dialog_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Invalid",
+                    action_label: "Missing",
+                    enabled: true,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No menu action exists for 'Invalid / Missing' in the runtime snapshot.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Port",
+            value: "70000".to_owned(),
+        }));
+        assert!(state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
+            GuiFeedbackRuntimeSnapshot {
+                validation_issues: vec![GuiValidationIssue {
+                    scope: "Runtime".to_owned(),
+                    label: "Sync".to_owned(),
+                    message: "Server health degraded.".to_owned(),
+                }],
+                notifications: vec![
+                    GuiTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message: "Server warning broadcast.".to_owned(),
+                    },
+                    GuiTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: "Server status feed refreshed.".to_owned(),
+                    },
+                ],
+            },
+        )));
+
+        assert_eq!(state.validation.last_action_error, None);
+        assert_eq!(state.validation.issues.len(), 2);
+        assert!(
+            state
+                .validation
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "Connection" && issue.label == "Port")
+        );
+        assert!(state.validation.issues.iter().any(|issue| {
+            issue.scope == "Runtime"
+                && issue.label == "Sync"
+                && issue.message == "Server health degraded."
+        }));
+        assert_eq!(state.notifications.len(), 2);
+        assert_eq!(
+            state.notifications[0].message.as_str(),
+            "Server warning broadcast."
+        );
+        assert_eq!(
+            state.notifications[1].message.as_str(),
+            "Server status feed refreshed."
+        );
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+        assert!(
+            state
+                .validation
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "Runtime" && issue.label == "Sync")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_feedback_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
+                GuiFeedbackRuntimeSnapshot {
+                    validation_issues: vec![GuiValidationIssue {
+                        scope: "   ".to_owned(),
+                        label: "Sync".to_owned(),
+                        message: "Degraded.".to_owned(),
+                    }],
+                    notifications: Vec::new(),
+                },
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("GUI feedback runtime snapshots cannot contain empty validation scopes.")
+        );
+
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
+                GuiFeedbackRuntimeSnapshot {
+                    validation_issues: Vec::new(),
+                    notifications: vec![GuiTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message: "   ".to_owned(),
+                    }],
+                },
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("GUI feedback runtime snapshots cannot contain empty notification messages.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_error_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
+            GuiErrorRuntimeSnapshot {
+                last_action_error: Some("  runtime error  ".to_owned()),
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("runtime error")
+        );
+
+        assert!(state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
+            GuiErrorRuntimeSnapshot {
+                last_action_error: None,
+            },
+        )));
+        assert_eq!(state.validation.last_action_error, None);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_error_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
+            GuiErrorRuntimeSnapshot {
+                last_action_error: Some("   ".to_owned()),
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("GUI error runtime snapshots cannot contain an empty action error message.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: false,
+                    can_reset_configuration: false,
+                    can_reload_configuration: false,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: false,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
+            },
+        )));
+
+        assert_eq!(
+            state.pending_operation.as_ref().map(|item| item.kind),
+            Some(GuiPendingOperationKind::RefreshPublicServers)
+        );
+        assert_eq!(
+            state.commands,
+            GuiCommandAvailabilityState {
+                can_save_configuration: false,
+                can_reset_configuration: false,
+                can_reload_configuration: false,
+                can_connect_public_server: false,
+                can_refresh_public_servers: false,
+                can_search_missing_media: false,
+                can_toggle_pause: false,
+                can_send_chat_message: false,
+            }
+        );
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|item| item.kind),
+            Some(GuiPendingOperationKind::RefreshPublicServers)
+        );
+        assert!(!state.commands.can_refresh_public_servers);
+        assert!(!state.commands.can_send_chat_message);
+    }
+
+    #[test]
+    fn gui_shell_app_state_keeps_unrelated_command_flags_live_when_runtime_overrides_chat_send() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut command_availability = state.commands.clone();
+        command_availability.can_send_chat_message = false;
+
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability,
+                pending_operation: None,
+            },
+        )));
+        assert!(!state.commands.can_send_chat_message);
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Port",
+            value: "0".to_owned(),
+        }));
+
+        assert!(!state.commands.can_send_chat_message);
+        assert!(!state.commands.can_save_configuration);
+        assert!(state.commands.can_reset_configuration);
+        assert!(state.commands.can_reload_configuration);
+    }
+
+    #[test]
+    fn gui_shell_app_state_clears_stale_runtime_chat_command_override_when_configuration_runtime_snapshot_catches_up()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut command_availability = state.commands.clone();
+        command_availability.can_send_chat_message = false;
+
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability,
+                pending_operation: None,
+            },
+        )));
+        assert_eq!(
+            state
+                .runtime_command_availability_override
+                .can_send_chat_message,
+            Some(false)
+        );
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.chat_input_enabled = Some(false);
+        let saved = state.saved_configuration.clone();
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+        assert_eq!(
+            state
+                .runtime_command_availability_override
+                .can_send_chat_message,
+            None
+        );
+
+        draft.chat_input_enabled = Some(true);
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft,
+                    saved_settings: saved,
+                }
+            ))
+        );
+        assert!(state.commands.can_send_chat_message);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_command_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: false,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: false,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: Some(GuiPendingOperationKind::SaveConfiguration),
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI command runtime snapshots cannot leave command actions enabled while a pending operation is active."
+            )
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_syncs_playback_menu_actions_from_gui_command_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "Room".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![MainWindowRuntimeUserSnapshot {
+                    username: "alice".to_owned(),
+                    is_self: true,
+                    is_ready: false,
+                    is_controller: false,
+                }],
+                playlist: vec!["One".to_owned()],
+                chat: Vec::new(),
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: false,
+                can_manage_playlist: true,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: false,
+                    can_reset_configuration: false,
+                    can_reload_configuration: false,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: false,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
+            },
+        )));
+
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
+        let file = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .expect("file section should exist");
+        assert!(
+            file.actions
+                .iter()
+                .find(|action| action.label == "Open Media File")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert!(
+            file.actions
+                .iter()
+                .find(|action| action.label == "Open Media Search")
+                .is_some_and(|action| action.enabled && action.is_selected)
+        );
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Seek")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Playlist Actions")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            shared_playlist_enabled: Some(true),
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "One".to_owned(),
+                "Two".to_owned(),
+            ]))
+        );
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+                GuiInteractionRuntimeSnapshot {
+                    selection: GuiSelectionState {
+                        selected_main_window_user: Some(1),
+                        selected_main_window_playlist: Some(1),
+                        selected_menu_action: Some((1, 1)),
+                        selected_media_search_directory: Some(0),
+                    },
+                    selected_public_server_index: Some(0),
+                    focused_configuration_control: Some(
+                        GuiFocusedConfigurationControlRuntimeSnapshot {
+                            section: "Connection".to_owned(),
+                            label: "Host".to_owned(),
+                            activation_count: 3,
+                        }
+                    ),
+                    public_server_edit_session: Some(GuiPublicServerEditSessionRuntimeSnapshot {
+                        editing_index: Some(0),
+                        label_buffer: "Alpha Edited".to_owned(),
+                        address_buffer: "alpha.example:9999".to_owned(),
+                        is_dirty: true,
+                    }),
+                    main_window_user_edit_session: Some(
+                        GuiMainWindowUserEditSessionRuntimeSnapshot {
+                            editing_index: 1,
+                            username_buffer: "Bob Runtime".to_owned(),
+                            is_dirty: true,
+                        }
+                    ),
+                    text_edit_session: Some(GuiTextEditSessionRuntimeSnapshot {
+                        section: "Connection".to_owned(),
+                        label: "Host".to_owned(),
+                        buffer: "runtime.example".to_owned(),
+                        is_dirty: true,
+                    }),
+                }
+            ))
+        );
+
+        assert_eq!(state.selection.selected_main_window_user, Some(1));
+        assert!(state.main_window.users[1].is_selected);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+        assert!(state.main_window.playlist[1].is_selected);
+        assert_eq!(state.selection.selected_menu_action, Some((1, 1)));
+        assert!(state.menus.sections[1].actions[1].is_selected);
+        assert_eq!(state.selection.selected_media_search_directory, Some(0));
+        assert!(state.media_search.directories[0].is_selected);
+        assert!(state.public_servers.servers[0].is_selected);
+        assert_eq!(
+            state.focused_configuration_control.as_ref().map(|focused| (
+                focused.section,
+                focused.label,
+                focused.activation_count
+            )),
+            Some(("Connection", "Host", 3))
+        );
+        assert_eq!(
+            state
+                .public_server_edit_session
+                .as_ref()
+                .map(|session| session.editing_index),
+            Some(Some(0))
+        );
+        assert_eq!(
+            state
+                .main_window_user_edit_session
+                .as_ref()
+                .map(|session| session.editing_index),
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .text_edit_session
+                .as_ref()
+                .map(|session| session.buffer.as_str()),
+            Some("runtime.example")
+        );
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+        assert_eq!(state.selection.selected_main_window_user, Some(1));
+        assert!(state.main_window.users[1].is_selected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_runtime_snapshots()
+    {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Playback",
+                    action_label: "Seek",
+                    enabled: false,
+                }],
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            },
+        )));
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+                GuiInteractionRuntimeSnapshot {
+                    selection: GuiSelectionState {
+                        selected_main_window_user: state.selection.selected_main_window_user,
+                        selected_main_window_playlist: state
+                            .selection
+                            .selected_main_window_playlist,
+                        selected_menu_action: Some((1, 1)),
+                        selected_media_search_directory: state
+                            .selection
+                            .selected_media_search_directory,
+                    },
+                    selected_public_server_index: state.selected_public_server_index(),
+                    focused_configuration_control: None,
+                    public_server_edit_session: None,
+                    main_window_user_edit_session: None,
+                    text_edit_session: None,
+                }
+            ))
+        );
+
+        assert_eq!(state.selection.selected_menu_action, Some((1, 0)));
+        assert!(
+            state.menus.sections[1]
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| action.enabled && action.is_selected)
+        );
+        assert!(
+            state.menus.sections[1]
+                .actions
+                .iter()
+                .find(|action| action.label == "Seek")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_interaction_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+                GuiInteractionRuntimeSnapshot {
+                    selection: GuiSelectionState {
+                        selected_main_window_user: Some(0),
+                        selected_main_window_playlist: None,
+                        selected_menu_action: None,
+                        selected_media_search_directory: None,
+                    },
+                    selected_public_server_index: None,
+                    focused_configuration_control: Some(
+                        GuiFocusedConfigurationControlRuntimeSnapshot {
+                            section: "Connection".to_owned(),
+                            label: "Missing".to_owned(),
+                            activation_count: 0,
+                        }
+                    ),
+                    public_server_edit_session: None,
+                    main_window_user_edit_session: None,
+                    text_edit_session: None,
+                }
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI interaction runtime snapshots cannot focus an unknown configuration control."
+            )
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_draft_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+            GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: Some("  runtime draft  ".to_owned()),
+            }
+        )));
+        assert_eq!(
+            state.outgoing_chat_message.as_deref(),
+            Some("runtime draft")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPendingOperation(
+            GuiPendingOperationKind::SendChatMessage,
+        )));
+        assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+            GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: Some("updated runtime draft".to_owned()),
+            }
+        )));
+        assert_eq!(
+            state.outgoing_chat_message.as_deref(),
+            Some("updated runtime draft")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_draft_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginPendingOperation(
+            GuiPendingOperationKind::SaveConfiguration,
+        )));
+        assert!(!state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+            GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: Some("runtime draft".to_owned()),
+            }
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI draft runtime snapshots cannot stage an outgoing chat message while a different pending operation is active."
+            )
+        );
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::SaveConfiguration)
+        );
+        assert_eq!(state.outgoing_chat_message, None);
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
+        let saved = StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            room: Some("SavedRoom".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&saved);
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+
+        let replacement = StoredClientSettingsMvp {
+            host: Some("draft.example".to_owned()),
+            room: Some("DraftRoom".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            public_servers: Some(vec![(
+                "Primary".to_owned(),
+                "syncplay.example:8999".to_owned(),
+            )]),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(
+                GuiConfigurationDraftRuntimeSnapshot {
+                    settings: replacement.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), replacement);
+        assert_eq!(state.saved_configuration, saved);
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(state.main_window.room_name, "DraftRoom");
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .first()
+                .map(|row| row.address.as_str()),
+            Some("syncplay.example:8999")
+        );
+        assert!(state.commands.can_reset_configuration);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_configuration_draft_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationReload));
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(
+                GuiConfigurationDraftRuntimeSnapshot {
+                    settings: StoredClientSettingsMvp {
+                        host: Some("draft.example".to_owned()),
+                        ..StoredClientSettingsMvp::default()
+                    },
+                }
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI configuration draft runtime snapshots cannot apply while a configuration command is already in progress."
+            )
+        );
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ReloadConfiguration)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "dirty.example".to_owned(),
+        }));
+        assert!(state.commands.can_reset_configuration);
+
+        let replacement = StoredClientSettingsMvp {
+            host: Some("dirty.example".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                GuiSavedConfigurationRuntimeSnapshot {
+                    settings: replacement.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.saved_configuration, replacement);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("dirty.example")
+        );
+        assert!(!state.commands.can_reset_configuration);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_saved_configuration_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                GuiSavedConfigurationRuntimeSnapshot {
+                    settings: StoredClientSettingsMvp {
+                        host: Some("saved.example".to_owned()),
+                        ..StoredClientSettingsMvp::default()
+                    },
+                }
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI saved-configuration runtime snapshots cannot apply while a configuration command is already in progress."
+            )
+        );
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::SaveConfiguration)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: true,
+                    can_reload_configuration: true,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: true,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: None,
+            },
+        )));
+
+        let draft = StoredClientSettingsMvp {
+            host: Some("draft.example".to_owned()),
+            room: Some("DraftRoom".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let saved = StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            room: Some("SavedRoom".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(state.main_window.room_name, "DraftRoom");
+        assert!(state.commands.can_reset_configuration);
+        assert!(state.commands.can_toggle_pause);
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuration_runtime_snapshots()
+     {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "RuntimeRoom".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: true,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: vec!["Episode 1".to_owned()],
+                chat: vec![MainWindowRuntimeChatSnapshot {
+                    sender: "bob".to_owned(),
+                    message: "synced".to_owned(),
+                }],
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: false,
+                can_manage_playlist: true,
+                playback_paused: true,
+                autoplay_active: true,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: true,
+                    can_connect_public_server: false,
+                    can_refresh_public_servers: true,
+                    can_search_missing_media: false,
+                    can_toggle_pause: true,
+                    can_send_chat_message: false,
+                },
+                pending_operation: None,
+            },
+        )));
+
+        let draft = StoredClientSettingsMvp {
+            host: Some("draft.example".to_owned()),
+            room: Some("DraftRoom".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        let saved = StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            room: Some("SavedRoom".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert_eq!(state.main_window.room_name, "RuntimeRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.users[1].username, "bob");
+        assert_eq!(state.main_window.playlist[0].label, "Episode 1");
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("synced")
+        );
+        assert!(state.main_window.playback.can_toggle_pause);
+        assert!(state.main_window.playback.can_seek);
+        assert!(state.main_window.playback_paused);
+        assert!(state.main_window.autoplay_active);
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_public_server_selection_across_configuration_edits() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:8999".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Chat",
+            label: "Chat Input",
+            value: true,
+        }));
+
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert!(!state.public_servers.servers[0].is_selected);
+        assert!(state.public_servers.servers[1].is_selected);
+        assert_eq!(state.public_servers.servers[1].address, "beta.example:8999");
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_public_server_selection_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:8999".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.chat_input_enabled = Some(true);
+        let mut saved = state.saved_configuration.clone();
+        saved.chat_input_enabled = Some(false);
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert!(!state.public_servers.servers[0].is_selected);
+        assert!(state.public_servers.servers[1].is_selected);
+        assert_eq!(state.public_servers.servers[1].address, "beta.example:8999");
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration_edits() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Chat",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "syncplay.example".to_owned(),
+        }));
+
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Chat",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuration_catches_up() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Chat",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Chat",
+            label: "Chat Input",
+            value: false,
+        }));
+        assert!(state.runtime_menu_action_overrides.is_empty());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Chat",
+            label: "Chat Input",
+            value: true,
+        }));
+
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuration_runtime_snapshot_catches_up()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Chat",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.chat_input_enabled = Some(false);
+        let saved = state.saved_configuration.clone();
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+        assert!(state.runtime_menu_action_overrides.is_empty());
+
+        draft.chat_input_enabled = Some(true);
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved,
+                }
+            ))
+        );
+
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_show_playlist_override_across_configuration_edits() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "syncplay.example".to_owned(),
+        }));
+
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Playlist")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_show_playlist_override_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        let window = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window section should exist");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Playlist")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_generic_runtime_menu_overrides_across_configuration_edits() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Help",
+                    action_label: "Check for Updates",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "syncplay.example".to_owned(),
+        }));
+
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|action| action.label == "Check for Updates")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_generic_runtime_menu_overrides_across_configuration_runtime_snapshots()
+     {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![MenuActionRuntimeOverride {
+                    section_title: "Help",
+                    action_label: "Check for Updates",
+                    enabled: false,
+                }],
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|action| action.label == "Check for Updates")
+                .is_some_and(|action| !action.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_across_configuration_edits()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut runtime_public_servers = state.public_servers.clone();
+        runtime_public_servers.can_connect = false;
+        runtime_public_servers.can_refresh = false;
+        runtime_public_servers.can_add_custom_server = false;
+        let mut runtime_media_search = state.media_search.clone();
+        runtime_media_search.can_browse_directories = false;
+        runtime_media_search.can_search_missing_media = false;
+
+        assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: state.active_view,
+                open_modal: state.open_modal,
+                main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
+                public_servers: runtime_public_servers,
+                media_search: runtime_media_search,
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "syncplay.example".to_owned(),
+        }));
+
+        assert!(!state.public_servers.can_connect);
+        assert!(!state.public_servers.can_refresh);
+        assert!(!state.public_servers.can_add_custom_server);
+        assert!(!state.media_search.can_browse_directories);
+        assert!(!state.media_search.can_search_missing_media);
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut runtime_public_servers = state.public_servers.clone();
+        runtime_public_servers.can_connect = false;
+        runtime_public_servers.can_refresh = false;
+        runtime_public_servers.can_add_custom_server = false;
+        let mut runtime_media_search = state.media_search.clone();
+        runtime_media_search.can_browse_directories = false;
+        runtime_media_search.can_search_missing_media = false;
+
+        assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: state.active_view,
+                open_modal: state.open_modal,
+                main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
+                public_servers: runtime_public_servers,
+                media_search: runtime_media_search,
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert!(!state.public_servers.can_connect);
+        assert!(!state.public_servers.can_refresh);
+        assert!(!state.public_servers.can_add_custom_server);
+        assert!(!state.media_search.can_browse_directories);
+        assert!(!state.media_search.can_search_missing_media);
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_across_configuration_edits()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        let runtime_public_servers = PublicServerBrowserShellState {
+            servers: vec![
+                PublicServerBrowserRow {
+                    label: "Runtime Primary".to_owned(),
+                    address: "runtime.example:9000".to_owned(),
+                    is_selected: false,
+                },
+                PublicServerBrowserRow {
+                    label: "Runtime Backup".to_owned(),
+                    address: "backup.example:9001".to_owned(),
+                    is_selected: true,
+                },
+            ],
+            can_connect: true,
+            can_refresh: true,
+            can_add_custom_server: true,
+        };
+        let runtime_media_search = MediaSearchWorkflowShellState {
+            directories: vec![
+                MediaSearchDirectoryRow {
+                    path: "D:/Runtime".to_owned(),
+                    is_selected: false,
+                },
+                MediaSearchDirectoryRow {
+                    path: "E:/Runtime".to_owned(),
+                    is_selected: true,
+                },
+            ],
+            can_browse_directories: true,
+            can_search_missing_media: true,
+            first_file_timeout_seconds: state.media_search.first_file_timeout_seconds,
+            search_timeout_seconds: state.media_search.search_timeout_seconds,
+            double_check_interval_seconds: state.media_search.double_check_interval_seconds,
+            warning_threshold_seconds: state.media_search.warning_threshold_seconds,
+        };
+
+        assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: state.active_view,
+                open_modal: state.open_modal,
+                main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
+                public_servers: runtime_public_servers,
+                media_search: runtime_media_search,
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "syncplay.example".to_owned(),
+        }));
+
+        assert_eq!(state.public_servers.servers[0].label, "Runtime Primary");
+        assert_eq!(state.public_servers.servers[1].label, "Runtime Backup");
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert_eq!(state.media_search.directories[0].path, "D:/Runtime");
+        assert_eq!(state.media_search.directories[1].path, "E:/Runtime");
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        let runtime_public_servers = PublicServerBrowserShellState {
+            servers: vec![
+                PublicServerBrowserRow {
+                    label: "Runtime Primary".to_owned(),
+                    address: "runtime.example:9000".to_owned(),
+                    is_selected: false,
+                },
+                PublicServerBrowserRow {
+                    label: "Runtime Backup".to_owned(),
+                    address: "backup.example:9001".to_owned(),
+                    is_selected: true,
+                },
+            ],
+            can_connect: true,
+            can_refresh: true,
+            can_add_custom_server: true,
+        };
+        let runtime_media_search = MediaSearchWorkflowShellState {
+            directories: vec![
+                MediaSearchDirectoryRow {
+                    path: "D:/Runtime".to_owned(),
+                    is_selected: false,
+                },
+                MediaSearchDirectoryRow {
+                    path: "E:/Runtime".to_owned(),
+                    is_selected: true,
+                },
+            ],
+            can_browse_directories: true,
+            can_search_missing_media: true,
+            first_file_timeout_seconds: state.media_search.first_file_timeout_seconds,
+            search_timeout_seconds: state.media_search.search_timeout_seconds,
+            double_check_interval_seconds: state.media_search.double_check_interval_seconds,
+            warning_threshold_seconds: state.media_search.warning_threshold_seconds,
+        };
+
+        assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: state.active_view,
+                open_modal: state.open_modal,
+                main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
+                public_servers: runtime_public_servers,
+                media_search: runtime_media_search,
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }
+        )));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert_eq!(state.public_servers.servers[0].label, "Runtime Primary");
+        assert_eq!(state.public_servers.servers[1].label, "Runtime Backup");
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert_eq!(state.media_search.directories[0].path, "D:/Runtime");
+        assert_eq!(state.media_search.directories[1].path, "E:/Runtime");
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+    }
+
+    #[test]
+    fn gui_shell_app_state_updates_dialog_expectations_from_configuration_edits_without_runtime_overrides()
+     {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Privacy",
+            label: "Trusted Domains Only",
+            value: true,
+        }));
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "System",
+            label: "Auto Update",
+            value: true,
+        }));
+
+        assert!(state.menus.tls_prompt_expected);
+        assert!(state.menus.update_notice_expected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuration_runtime_snapshots()
+     {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
+        assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.host = Some("draft.example".to_owned());
+        let mut saved = state.saved_configuration.clone();
+        saved.host = Some("saved.example".to_owned());
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft.clone(),
+                    saved_settings: saved.clone(),
+                }
+            ))
+        );
+
+        assert_eq!(state.configuration.to_stored_settings(), draft);
+        assert_eq!(state.saved_configuration, saved);
+        assert!(state.menus.tls_prompt_expected);
+        assert!(state.menus.update_notice_expected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_gui_configuration_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationReload));
+        assert!(
+            !state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: StoredClientSettingsMvp {
+                        host: Some("draft.example".to_owned()),
+                        ..StoredClientSettingsMvp::default()
+                    },
+                    saved_settings: StoredClientSettingsMvp {
+                        host: Some("saved.example".to_owned()),
+                        ..StoredClientSettingsMvp::default()
+                    },
+                }
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some(
+                "GUI configuration runtime snapshots cannot apply while a configuration command is already in progress."
+            )
+        );
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ReloadConfiguration)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_configuration_widget_trees() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            host: Some("syncplay.example".to_owned()),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::FocusConfigurationControl {
+            section: "Connection",
+            label: "Host",
+        }));
+        assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
+            section: "Connection",
+            label: "Host",
+        }));
+        assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+            "widget.example".to_owned(),
+        )));
+
+        let tree = state.configuration_widget_tree();
+        let host = tree
+            .find("config:Connection:Host")
+            .expect("host control should exist in widget tree");
+        assert_eq!(host.kind, GuiWidgetKind::TextInput);
+        assert_eq!(host.value.as_deref(), Some("widget.example"));
+        assert!(host.enabled);
+        assert!(host.selected);
+
+        let save = tree
+            .find("config-command:save")
+            .expect("save command should exist in widget tree");
+        assert_eq!(save.kind, GuiWidgetKind::Button);
+        assert!(save.enabled);
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_main_window_widget_trees() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            shared_playlist_enabled: Some(true),
+            player_path: Some("mpv".to_owned()),
+            room: Some("Lounge".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "One".to_owned(),
+                "Two".to_owned(),
+            ]))
+        );
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend(
+            "hello widget".to_owned(),
+        )));
+
+        let tree = state.main_window_widget_tree();
+        let user = tree
+            .find("main-window:user:1")
+            .expect("selected user should exist in widget tree");
+        assert_eq!(user.kind, GuiWidgetKind::ListItem);
+        assert!(user.selected);
+        let new_user = tree
+            .find("main-window:user:new")
+            .expect("new user input should exist in widget tree");
+        assert_eq!(new_user.kind, GuiWidgetKind::TextInput);
+        assert_eq!(new_user.value.as_deref(), Some(""));
+        let room_input = tree
+            .find("main-window:room-input")
+            .expect("room input should exist in widget tree");
+        assert_eq!(room_input.kind, GuiWidgetKind::TextInput);
+        assert_eq!(room_input.value.as_deref(), Some("Lounge"));
+        assert!(!room_input.enabled);
+
+        let playlist = tree
+            .find("main-window:playlist:1")
+            .expect("selected playlist row should exist in widget tree");
+        assert_eq!(playlist.kind, GuiWidgetKind::ListItem);
+        assert!(playlist.selected);
+        let new_playlist = tree
+            .find("main-window:playlist:new")
+            .expect("new playlist input should exist in widget tree");
+        assert_eq!(new_playlist.kind, GuiWidgetKind::TextInput);
+        assert_eq!(new_playlist.value.as_deref(), Some(""));
+        let playlist_add = tree
+            .find("main-window:playlist:add")
+            .expect("playlist add button should exist in widget tree");
+        assert_eq!(playlist_add.kind, GuiWidgetKind::Button);
+        assert!(!playlist_add.enabled);
+        let user_add = tree
+            .find("main-window:user:add")
+            .expect("user add button should exist in widget tree");
+        assert_eq!(user_add.kind, GuiWidgetKind::Button);
+        assert!(!user_add.enabled);
+
+        let chat_input = tree
+            .find("main-window:chat-input")
+            .expect("chat input should exist in widget tree");
+        assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
+        assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
+        assert!(!chat_input.enabled);
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+        assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
+
+        let tree = state.menu_dialog_widget_tree();
+        let pause = tree
+            .find("menus:action:1:0")
+            .expect("playback toggle action should exist");
+        assert_eq!(pause.kind, GuiWidgetKind::Button);
+        assert!(pause.enabled);
+        assert!(pause.selected);
+
+        let about = tree
+            .find("menus:dialog:about")
+            .expect("about dialog status should exist");
+        assert_eq!(about.kind, GuiWidgetKind::Status);
+        assert!(about.enabled);
+        assert!(about.selected);
+        assert_eq!(about.value.as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_public_server_and_media_search_widget_trees() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginAddPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Beta".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditAddress(
+            "beta.example:9000".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(0)));
+
+        let server_tree = state.public_server_widget_tree();
+        let row = server_tree
+            .find("public-servers:row:0")
+            .expect("public server row should exist");
+        assert_eq!(row.kind, GuiWidgetKind::ListItem);
+        assert!(row.selected);
+        assert_eq!(row.value.as_deref(), Some("alpha.example:8999"));
+
+        let edit_label = server_tree
+            .find("public-servers:edit:label")
+            .expect("public server edit label should exist");
+        assert_eq!(edit_label.kind, GuiWidgetKind::TextInput);
+        assert_eq!(edit_label.value.as_deref(), Some("Beta"));
+        let edit_button = server_tree
+            .find("public-servers:command:edit")
+            .expect("public server edit command should exist");
+        assert_eq!(edit_button.kind, GuiWidgetKind::Button);
+        assert!(!edit_button.enabled);
+        let commit_button = server_tree
+            .find("public-servers:edit:commit")
+            .expect("public server edit commit should exist");
+        assert_eq!(commit_button.kind, GuiWidgetKind::Button);
+        assert!(commit_button.enabled);
+        let cancel_button = server_tree
+            .find("public-servers:edit:cancel")
+            .expect("public server edit cancel should exist");
+        assert_eq!(cancel_button.kind, GuiWidgetKind::Button);
+        assert!(cancel_button.enabled);
+
+        let media_tree = state.media_search_widget_tree();
+        let directory = media_tree
+            .find("media-search:directory:0")
+            .expect("media search directory should exist");
+        assert_eq!(directory.kind, GuiWidgetKind::ListItem);
+        assert!(directory.selected);
+
+        let search = media_tree
+            .find("media-search:command:search")
+            .expect("media search command should exist");
+        assert_eq!(search.kind, GuiWidgetKind::Button);
+        assert!(search.enabled);
+        let remove = media_tree
+            .find("media-search:directory:remove")
+            .expect("media-search remove command should exist");
+        assert_eq!(remove.kind, GuiWidgetKind::Button);
+        assert!(remove.enabled);
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_shell_widget_trees() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+        assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::UpdateNotice)));
+        assert!(state.apply(GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Info,
+            message: "Widget tree ready".to_owned(),
+        }));
+
+        let tree = state.shell_widget_tree();
+        assert_eq!(tree.kind, GuiWidgetKind::Panel);
+
+        let active_view = tree
+            .find("shell:active-view")
+            .expect("active view status should exist");
+        assert_eq!(active_view.value.as_deref(), Some("public-servers"));
+
+        let open_modal = tree
+            .find("shell:open-modal")
+            .expect("open modal status should exist");
+        assert_eq!(open_modal.value.as_deref(), Some("update-notice"));
+
+        let notification = tree
+            .find("shell:notification:0")
+            .expect("notification row should exist");
+        assert_eq!(notification.kind, GuiWidgetKind::ListItem);
+        assert_eq!(notification.value.as_deref(), Some("Widget tree ready"));
+
+        let public_servers = tree
+            .find("public-servers-root")
+            .expect("public server subtree should exist");
+        assert!(public_servers.selected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_renders_shell_widget_trees_through_renderer() {
+        #[derive(Default)]
+        struct RecordingRenderer {
+            events: Vec<String>,
+        }
+
+        impl GuiWidgetRenderer for RecordingRenderer {
+            fn begin_node(&mut self, node: &GuiWidgetNode, depth: usize) {
+                self.events.push(format!("begin:{depth}:{}", node.id));
+            }
+
+            fn end_node(&mut self, node: &GuiWidgetNode, depth: usize) {
+                self.events.push(format!("end:{depth}:{}", node.id));
+            }
+        }
+
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+        assert!(state.apply(GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Info,
+            message: "Renderer adapter ready".to_owned(),
+        }));
+
+        let mut renderer = RecordingRenderer::default();
+        state.render_shell_widgets(&mut renderer);
+
+        assert_eq!(
+            renderer.events.first().map(String::as_str),
+            Some("begin:0:shell-root")
+        );
+        assert_eq!(
+            renderer.events.last().map(String::as_str),
+            Some("end:0:shell-root")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:1:shell:notifications")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:2:shell:notification:0")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:1:public-servers-root")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "end:1:public-servers-root")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_triggers_selected_menu_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 0,
+            action_index: 2,
+        }));
+        assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 2,
+            action_index: 1,
+        }));
+        assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
+        assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+        assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::TogglePlaybackPause)
+        );
+        assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));
+        assert!(state.main_window.playback_paused);
+
+        let mut disabled_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        assert!(disabled_state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+        assert!(!disabled_state.apply(GuiShellAction::TriggerSelectedMenuAction));
+        assert_eq!(
+            disabled_state.validation.last_action_error.as_deref(),
+            Some("The selected menu action is currently disabled.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_selects_public_server_and_updates_config_host_port() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                ("Backup".to_owned(), "syncplay.example:8995".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+        assert!(!state.public_servers.servers[0].is_selected);
+        assert!(state.public_servers.servers[1].is_selected);
+
+        let saved = state.configuration.to_stored_settings();
+        assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(saved.port, Some(8995));
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_public_server_browser_event_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::AnnouncePublicServerSelectionChanged(0)));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Public server selected: Primary.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ConnectPublicServer)
+        );
+        assert!(state.apply(GuiShellAction::CompleteSelectedPublicServerConnect));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Connected to public server: Primary.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::RefreshPublicServers)
+        );
+        assert!(
+            state.apply(GuiShellAction::CompletePublicServerRefresh(vec![
+                ("Refreshed".to_owned(), "syncplay.example:8995".to_owned()),
+                ("Backup".to_owned(), "backup.example:8998".to_owned()),
+            ]))
+        );
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.public_servers.servers.len(), 2);
+        assert!(state.public_servers.servers[0].is_selected);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("syncplay.example")
+        );
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceCustomPublicServerAdded {
+                label: "Custom".to_owned(),
+                address: "custom.example:9000".to_owned(),
+            })
+        );
+        assert_eq!(state.public_servers.servers.len(), 3);
+        assert!(state.public_servers.servers[2].is_selected);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("custom.example")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_public_server_browser_event_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Public server connect is unavailable when browser connect actions are disabled.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CompletePublicServerRefresh(vec![])));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No public server refresh is currently in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+        assert!(!state.apply(GuiShellAction::BeginPublicServerRefresh));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+
+        assert!(
+            !state.apply(GuiShellAction::AnnounceCustomPublicServerAdded {
+                label: "Broken".to_owned(),
+                address: ":8999".to_owned(),
+            })
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Custom public-server address is not valid.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_adds_edits_and_removes_public_server_rows() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginAddPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Primary".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditAddress(
+            "syncplay.pl:8999".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::CommitPublicServerEdit));
+        assert_eq!(state.public_servers.servers.len(), 1);
+        assert_eq!(state.public_servers.servers[0].label, "Primary");
+        assert!(state.public_servers.servers[0].is_selected);
+        assert_eq!(
+            state.configuration.to_stored_settings().public_servers,
+            Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
+        );
+
+        assert!(state.apply(GuiShellAction::BeginEditSelectedPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Primary EU".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditAddress(
+            "syncplay.example:8995".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::CommitPublicServerEdit));
+        assert_eq!(state.public_servers.servers[0].label, "Primary EU");
+        assert_eq!(
+            state.public_servers.servers[0].address,
+            "syncplay.example:8995"
+        );
+
+        assert!(state.apply(GuiShellAction::BeginAddPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Secondary".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditAddress(
+            "backup.example:8998".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::CancelPublicServerEdit));
+        assert!(state.public_server_edit_session.is_none());
+        assert_eq!(state.public_servers.servers.len(), 1);
+
+        assert!(state.apply(GuiShellAction::RemoveSelectedPublicServer));
+        assert!(state.public_servers.servers.is_empty());
+        assert_eq!(
+            state.configuration.to_stored_settings().public_servers,
+            None
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_remaps_public_server_edit_sessions_by_row_identity_across_configuration_runtime_snapshots()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:8999".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Beta Edited".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::SelectPublicServer(0)));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.public_servers = Some(vec![
+            ("Inserted".to_owned(), "inserted.example:8999".to_owned()),
+            ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+            ("Beta".to_owned(), "beta.example:8999".to_owned()),
+        ]);
+        let saved = state.saved_configuration.clone();
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft,
+                    saved_settings: saved,
+                }
+            ))
+        );
+
+        assert_eq!(
+            state
+                .public_server_edit_session
+                .as_ref()
+                .map(|session| session.editing_index),
+            Some(Some(2))
+        );
+        assert_eq!(
+            state
+                .public_server_edit_session
+                .as_ref()
+                .map(|session| session.label_buffer.as_str()),
+            Some("Beta Edited")
+        );
+        assert_eq!(state.selected_public_server_index(), Some(2));
+        assert!(state.public_servers.servers[2].is_selected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_clears_public_server_edit_sessions_when_the_edited_row_disappears() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:8999".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedPublicServer));
+
+        let mut draft = state.configuration.to_stored_settings();
+        draft.public_servers = Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]);
+        let saved = state.saved_configuration.clone();
+
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
+                GuiConfigurationRuntimeSnapshot {
+                    draft_settings: draft,
+                    saved_settings: saved,
+                }
+            ))
+        );
+
+        assert!(state.public_server_edit_session.is_none());
+    }
+
+    #[test]
+    fn gui_shell_app_state_keeps_public_server_selection_on_the_active_edit_row() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:8999".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedPublicServer));
+        assert!(state.apply(GuiShellAction::SelectPublicServer(0)));
+
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert!(state.public_servers.servers[1].is_selected);
+        assert!(
+            state
+                .public_server_edit_session
+                .as_ref()
+                .is_some_and(|session| session.editing_index == Some(1))
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_public_server_edit_sessions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::BeginEditSelectedPublicServer));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No public server is currently selected.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CommitPublicServerEdit));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No public-server edit session is currently active.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginAddPublicServer));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
+            "Broken".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::UpdatePublicServerEditAddress(
+            ":8999".to_owned(),
+        )));
+        assert!(!state.apply(GuiShellAction::CommitPublicServerEdit));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Public-server address is not valid.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_transient_notification_queue() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        for (level, message) in [
+            (GuiTransientNotificationLevel::Info, "one"),
+            (GuiTransientNotificationLevel::Success, "two"),
+            (GuiTransientNotificationLevel::Warning, "three"),
+            (GuiTransientNotificationLevel::Error, "four"),
+            (GuiTransientNotificationLevel::Info, "five"),
+            (GuiTransientNotificationLevel::Success, "six"),
+        ] {
+            assert!(state.apply(GuiShellAction::PushTransientNotification {
+                level,
+                message: message.to_owned(),
+            }));
+        }
+
+        assert_eq!(state.notifications.len(), 5);
+        assert_eq!(state.notifications[0].message, "two");
+        assert_eq!(state.notifications[4].message, "six");
+
+        let rendered = state.render_lines().join("\n");
+        assert!(rendered.contains("[Notifications] count=5"));
+        assert!(rendered.contains("- success: two"));
+        assert!(rendered.contains("- success: six"));
+
+        assert!(state.apply(GuiShellAction::DismissTransientNotification(1)));
+        assert_eq!(state.notifications.len(), 4);
+        assert!(state.apply(GuiShellAction::ClearTransientNotifications));
+        assert!(state.notifications.is_empty());
+        assert!(!state.apply(GuiShellAction::ClearTransientNotifications));
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_transient_notification_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Info,
+            message: "   ".to_owned(),
+        }));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Transient notification messages must be non-empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::DismissTransientNotification(0)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No transient notification exists at the requested index.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_adds_media_directory_and_pushes_chat_messages() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AddMediaSearchDirectory(
+            "C:/Media".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::PushChatMessage {
+            sender: "system".to_owned(),
+            message: "Connected".to_owned(),
+        }));
+
+        assert_eq!(state.media_search.directories.len(), 1);
+        assert_eq!(state.media_search.directories[0].path, "C:/Media");
+        assert!(state.media_search.directories[0].is_selected);
+        assert!(state.media_search.can_search_missing_media);
+        assert_eq!(state.main_window.chat.len(), 1);
+        assert_eq!(state.main_window.chat[0].message, "Connected");
+
+        let saved = state.configuration.to_stored_settings();
+        assert_eq!(
+            saved.media_search_directories,
+            Some(vec!["C:/Media".to_owned()])
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello world".to_owned(),)));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::SendChatMessage)
+        );
+        assert_eq!(state.outgoing_chat_message.as_deref(), Some("hello world"));
+        assert!(
+            state
+                .render_lines()
+                .join("\n")
+                .contains("[Chat Send] pending_message=hello world")
+        );
+
+        assert!(state.apply(GuiShellAction::CompleteLocalChatSend));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.outgoing_chat_message, None);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("hello world")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Chat sent.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceRemoteChatMessage {
+            sender: "alice".to_owned(),
+            message: "hi there".to_owned(),
+        }));
+        assert_eq!(
+            state.main_window.chat.last().map(|row| row.sender.as_str()),
+            Some("alice")
+        );
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("hi there")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceSystemChatEvent(
+            "Connection stabilized.".to_owned(),
+        )));
+        assert_eq!(
+            state.main_window.chat.last().map(|row| row.sender.as_str()),
+            Some("system")
+        );
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Connection stabilized.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Local chat sending is unavailable when chat input is disabled.")
+        );
+
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(!state.apply(GuiShellAction::BeginLocalChatSend("   ".to_owned())));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Local chat messages must be non-empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CompleteLocalChatSend));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No local chat send is currently in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        assert!(!state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned())));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+        assert!(state.apply(GuiShellAction::CancelLocalChatSend));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.outgoing_chat_message, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Chat send canceled.")
+        );
+
+        assert!(!state.apply(GuiShellAction::AnnounceRemoteChatMessage {
+            sender: " ".to_owned(),
+            message: "hi".to_owned(),
+        }));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Remote chat sender and message must both be non-empty.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_text_edits_and_room_switches() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Username",
+            value: "shaun".to_owned(),
+        }));
+        assert!(state.apply(GuiShellAction::SetMainWindowRoom(
+            "+room:ABCDEF123456".to_owned(),
+        )));
+
+        let saved = state.configuration.to_stored_settings();
+        assert_eq!(saved.username.as_deref(), Some("shaun"));
+        assert_eq!(saved.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+        assert!(state.main_window.controlled_room_active);
+        assert!(state.main_window.users[0].is_controller);
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_room_join_and_leave_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::JoinMainWindowRoom(
+            "+room:ABCDEF123456".to_owned(),
+        )));
+        assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+        assert!(state.main_window.controlled_room_active);
+        assert!(state.main_window.users[0].is_controller);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Joined room: +room:ABCDEF123456.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Room joined: +room:ABCDEF123456.")
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().room.as_deref(),
+            Some("+room:ABCDEF123456")
+        );
+
+        assert!(state.apply(GuiShellAction::LeaveMainWindowRoom));
+        assert_eq!(state.main_window.room_name, "(no room joined)");
+        assert!(!state.main_window.controlled_room_active);
+        assert!(!state.main_window.users[0].is_controller);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Left room: +room:ABCDEF123456.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Room left: +room:ABCDEF123456.")
+        );
+        assert_eq!(state.configuration.to_stored_settings().room, None);
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_room_status_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::JoinMainWindowRoom("   ".to_owned(),)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Room name cannot be empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::LeaveMainWindowRoom));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No joined room is currently active.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_main_window_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room: Some("InitialRoom".to_owned()),
+            shared_playlist_enabled: Some(true),
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "RuntimeRoom".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: true,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: vec!["One".to_owned(), "Two".to_owned()],
+                chat: vec![MainWindowRuntimeChatSnapshot {
+                    sender: "alice".to_owned(),
+                    message: "hello".to_owned(),
+                }],
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: true,
+                can_manage_playlist: true,
+                playback_paused: false,
+                autoplay_active: true,
+            },
+        )));
+        assert_eq!(state.main_window.room_name, "RuntimeRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.playlist.len(), 2);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Main window runtime snapshot applied.")
+        );
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "+RuntimeRoom".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: true,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: true,
+                        is_controller: true,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "carol".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: true,
+                        is_controller: false,
+                    },
+                ],
+                playlist: vec!["Two".to_owned(), "Three".to_owned()],
+                chat: vec![
+                    MainWindowRuntimeChatSnapshot {
+                        sender: "system".to_owned(),
+                        message: "room sync".to_owned(),
+                    },
+                    MainWindowRuntimeChatSnapshot {
+                        sender: "bob".to_owned(),
+                        message: "ready".to_owned(),
+                    },
+                ],
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: true,
+                can_manage_playlist: true,
+                playback_paused: true,
+                autoplay_active: false,
+            },
+        )));
+        assert_eq!(state.main_window.room_name, "+RuntimeRoom");
+        assert!(state.main_window.controlled_room_active);
+        assert!(state.main_window.playback_paused);
+        assert!(!state.main_window.autoplay_active);
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert_eq!(state.main_window.users[0].username.as_str(), "bob");
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert_eq!(state.main_window.playlist[0].label.as_str(), "Two");
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_syncs_playback_menu_actions_from_main_window_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 1,
+            action_index: 0,
+        }));
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "RuntimeRoom".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![MainWindowRuntimeUserSnapshot {
+                    username: "alice".to_owned(),
+                    is_self: true,
+                    is_ready: false,
+                    is_controller: false,
+                }],
+                playlist: vec!["One".to_owned()],
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: false,
+                can_manage_playlist: false,
+                playback_paused: true,
+                autoplay_active: false,
+            },
+        )));
+
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
+        let file = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .expect("file section should exist");
+        assert!(
+            file.actions
+                .iter()
+                .find(|action| action.label == "Open Media File")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Seek")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Playlist Actions")
+                .is_some_and(|action| !action.enabled && !action.is_selected)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "   ".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: Vec::new(),
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: false,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Main-window runtime snapshots must include a non-empty room name.")
+        );
+
+        assert!(!state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "Room".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "Alice".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: false,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Main-window runtime snapshots cannot contain duplicate user names.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Keep".to_owned(), "keep.example:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Existing".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "SeedRoom".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "alice".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: vec!["A".to_owned(), "B".to_owned()],
+                chat: vec![MainWindowRuntimeChatSnapshot {
+                    sender: "system".to_owned(),
+                    message: "seed".to_owned(),
+                }],
+                can_toggle_pause: true,
+                can_seek: true,
+                can_set_ready: true,
+                can_manage_playlist: true,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(0)));
+
+        assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: GuiShellView::PublicServers,
+                open_modal: Some(GuiShellModal::UpdateNotice),
+                main_window: MainWindowRuntimeSnapshot {
+                    room_name: "+LiveRoom".to_owned(),
+                    shared_playlist_enabled: true,
+                    controlled_room_active: true,
+                    users: vec![
+                        MainWindowRuntimeUserSnapshot {
+                            username: "bob".to_owned(),
+                            is_self: false,
+                            is_ready: true,
+                            is_controller: true,
+                        },
+                        MainWindowRuntimeUserSnapshot {
+                            username: "carol".to_owned(),
+                            is_self: false,
+                            is_ready: false,
+                            is_controller: false,
+                        },
+                    ],
+                    playlist: vec!["B".to_owned(), "C".to_owned()],
+                    chat: vec![MainWindowRuntimeChatSnapshot {
+                        sender: "bob".to_owned(),
+                        message: "synced".to_owned(),
+                    }],
+                    can_toggle_pause: true,
+                    can_seek: false,
+                    can_set_ready: true,
+                    can_manage_playlist: true,
+                    playback_paused: true,
+                    autoplay_active: true,
+                },
+                public_servers: PublicServerBrowserShellState {
+                    servers: vec![
+                        PublicServerBrowserRow {
+                            label: "Alpha".to_owned(),
+                            address: "alpha.example:8999".to_owned(),
+                            is_selected: false,
+                        },
+                        PublicServerBrowserRow {
+                            label: "Beta".to_owned(),
+                            address: "beta.example:8999".to_owned(),
+                            is_selected: true,
+                        },
+                    ],
+                    can_connect: true,
+                    can_refresh: true,
+                    can_add_custom_server: true,
+                },
+                media_search: MediaSearchWorkflowShellState {
+                    directories: vec![
+                        MediaSearchDirectoryRow {
+                            path: "D:/Media".to_owned(),
+                            is_selected: false,
+                        },
+                        MediaSearchDirectoryRow {
+                            path: "E:/Library".to_owned(),
+                            is_selected: true,
+                        },
+                    ],
+                    can_browse_directories: true,
+                    can_search_missing_media: true,
+                    first_file_timeout_seconds: Some(1.0),
+                    search_timeout_seconds: Some(15.0),
+                    double_check_interval_seconds: Some(2.0),
+                    warning_threshold_seconds: Some(5.0),
+                },
+                tls_prompt_expected: true,
+                update_notice_expected: true,
+                about_dialog_available: false,
+            },
+        )));
+
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+        assert_eq!(state.main_window.room_name, "+LiveRoom");
+        assert!(state.main_window.playback_paused);
+        assert!(state.main_window.autoplay_active);
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert_eq!(state.main_window.users[0].username.as_str(), "bob");
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert_eq!(state.main_window.playlist[0].label.as_str(), "B");
+        assert_eq!(state.selected_public_server_index(), Some(1));
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+        let playback = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback")
+            .expect("playback section should exist");
+        let file = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .expect("file section should exist");
+        assert!(
+            file.actions
+                .iter()
+                .find(|action| action.label == "Open Media File")
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Toggle Pause")
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Seek")
+                .is_some_and(|action| !action.enabled)
+        );
+        assert!(
+            playback
+                .actions
+                .iter()
+                .find(|action| action.label == "Playlist Actions")
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(state.menus.tls_prompt_expected);
+        assert!(state.menus.update_notice_expected);
+        assert!(!state.menus.about_dialog_available);
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|action| action.label == "About")
+                .is_some_and(|action| !action.enabled)
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("GUI runtime snapshot applied.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_full_gui_runtime_snapshots() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
+            SyncplayGuiRuntimeSnapshot {
+                active_view: GuiShellView::MainWindow,
+                open_modal: None,
+                main_window: MainWindowRuntimeSnapshot {
+                    room_name: "   ".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: Vec::new(),
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: false,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                },
+                public_servers: PublicServerBrowserShellState {
+                    servers: Vec::new(),
+                    can_connect: false,
+                    can_refresh: true,
+                    can_add_custom_server: true,
+                },
+                media_search: MediaSearchWorkflowShellState {
+                    directories: Vec::new(),
+                    can_browse_directories: true,
+                    can_search_missing_media: false,
+                    first_file_timeout_seconds: None,
+                    search_timeout_seconds: None,
+                    double_check_interval_seconds: None,
+                    warning_threshold_seconds: None,
+                },
+                tls_prompt_expected: false,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            },
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Main-window runtime snapshots must include a non-empty room name.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_announces_main_window_user_membership_events() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AnnounceMainWindowUserJoined(
+            "alice".to_owned(),
+        )));
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("alice joined the room.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User joined: alice.")
+        );
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSelectedMainWindowUserRenamed(
+                "alice-prime".to_owned(),
+            ))
+        );
+        assert_eq!(state.main_window.users[1].username, "alice-prime");
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("alice is now known as alice-prime.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User renamed: alice -> alice-prime.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceSelectedMainWindowUserLeft));
+        assert_eq!(state.main_window.users.len(), 1);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("alice-prime left the room.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User removed: alice-prime.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_commits_native_add_drafts_and_clears_them_after_success() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::UpdateNewMainWindowUserDraft(
+            "alice".to_owned(),
+        )));
+        assert_eq!(state.new_main_window_user_draft, "alice");
+        assert!(state.apply(GuiShellAction::CommitNewMainWindowUser));
+        assert_eq!(state.new_main_window_user_draft, "");
+        assert_eq!(
+            state
+                .main_window
+                .users
+                .last()
+                .map(|user| user.username.as_str()),
+            Some("alice")
+        );
+
+        assert!(state.apply(GuiShellAction::UpdateNewPlaylistEntryDraft(
+            "Episode 1.mkv".to_owned(),
+        )));
+        assert_eq!(state.new_playlist_entry_draft, "Episode 1.mkv");
+        assert!(state.apply(GuiShellAction::CommitNewPlaylistEntry));
+        assert_eq!(state.new_playlist_entry_draft, "");
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .last()
+                .map(|row| row.label.as_str()),
+            Some("Episode 1.mkv")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_main_window_user_announcement_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(
+            !state.apply(GuiShellAction::AnnounceSelectedMainWindowUserRenamed(
+                "   ".to_owned(),
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Renamed main-window user names must be non-empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::AnnounceSelectedMainWindowUserLeft));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The local user row cannot be removed from the main-window shell.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_announces_playback_readiness_and_autoplay_events() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::AnnouncePlaybackPaused));
+        assert!(state.main_window.playback_paused);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Playback paused.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Playback paused.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnouncePlaybackResumed));
+        assert!(!state.main_window.playback_paused);
+        assert!(state.apply(GuiShellAction::AnnounceLocalUserReady));
+        assert!(state.main_window.users[0].is_ready);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("You are now marked ready.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceLocalUserNotReady));
+        assert!(!state.main_window.users[0].is_ready);
+        assert!(state.apply(GuiShellAction::AnnounceAutoplayState(true)));
+        assert!(state.main_window.autoplay_active);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Autoplay enabled.")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Autoplay enabled.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::AnnouncePlaybackPaused));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Playback pause state cannot change when pause controls are unavailable.")
+        );
+
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ready_at_start: Some(true),
+            autoplay_initial_state: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(!state.apply(GuiShellAction::AnnouncePlaybackResumed));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Playback is already running.")
+        );
+        assert!(!state.apply(GuiShellAction::AnnounceLocalUserReady));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The local user is already marked ready.")
+        );
+        assert!(!state.apply(GuiShellAction::AnnounceAutoplayState(true)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Autoplay is already active.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_adds_toggles_and_removes_main_window_users() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("alice".to_owned(),)));
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.selection.selected_main_window_user, Some(1));
+        assert_eq!(state.main_window.users[1].username, "alice");
+        assert!(!state.main_window.users[1].is_self);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User joined: alice.")
+        );
+
+        assert!(state.apply(GuiShellAction::ToggleSelectedMainWindowUserReady));
+        assert!(state.main_window.users[1].is_ready);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User readiness updated: alice -> ready.")
+        );
+
+        assert!(state.apply(GuiShellAction::SetMainWindowRoom(
+            "+room:ABCDEF123456".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::ToggleSelectedMainWindowUserController));
+        assert!(state.main_window.users[1].is_controller);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Controller status updated: alice -> controller.")
+        );
+
+        assert!(state.apply(GuiShellAction::RemoveSelectedMainWindowUser));
+        assert_eq!(state.main_window.users.len(), 1);
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert!(state.main_window.users[0].is_self);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User removed: alice.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_main_window_user_mutations() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::AddMainWindowUser("   ".to_owned(),)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Main-window user names must be non-empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::AddMainWindowUser(
+            state.main_window.users[0].username.clone(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("A main-window user with that name already exists.")
+        );
+
+        assert!(!state.apply(GuiShellAction::ToggleSelectedMainWindowUserController));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Controller state can only be changed while a controlled room is active.")
+        );
+
+        assert!(!state.apply(GuiShellAction::RemoveSelectedMainWindowUser));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The local user row cannot be removed from the main-window shell.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_renames_main_window_users_through_edit_sessions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("alice".to_owned(),)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit(
+            "alice-prime".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::CommitMainWindowUserEdit));
+        assert_eq!(state.main_window.users[1].username, "alice-prime");
+        assert!(state.main_window_user_edit_session.is_none());
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("User renamed: alice -> alice-prime.")
+        );
+
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit("shaun".to_owned(),)));
+        assert!(state.apply(GuiShellAction::CommitMainWindowUserEdit));
+        assert_eq!(state.main_window.users[0].username, "shaun");
+        assert_eq!(
+            state.configuration.to_stored_settings().username.as_deref(),
+            Some("shaun")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_remaps_main_window_user_edit_sessions_across_runtime_row_reorders() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("bob".to_owned(),)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit(
+            "bob-local".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "(no room joined)".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                ],
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: true,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+
+        assert_eq!(
+            state
+                .main_window_user_edit_session
+                .as_ref()
+                .map(|session| session.editing_index),
+            Some(0)
+        );
+        assert_eq!(
+            state
+                .main_window_user_edit_session
+                .as_ref()
+                .map(|session| session.username_buffer.as_str()),
+            Some("bob-local")
+        );
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert!(state.main_window.users[0].is_selected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_keeps_main_window_selection_on_the_active_user_edit_row() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("bob".to_owned(),)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
+
+        assert_eq!(state.selection.selected_main_window_user, Some(1));
+        assert!(state.main_window.users[1].is_selected);
+        assert!(
+            state
+                .main_window_user_edit_session
+                .as_ref()
+                .is_some_and(|session| session.editing_index == 1)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_main_window_user_edit_sessions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::UpdateMainWindowUserEdit(
+            "nobody".to_owned(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No main-window user edit session is currently active.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit("   ".to_owned(),)));
+        assert!(!state.apply(GuiShellAction::CommitMainWindowUserEdit));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Renamed main-window user names must be non-empty.")
+        );
+
+        assert!(state.apply(GuiShellAction::CancelMainWindowUserEdit));
+        assert!(state.apply(GuiShellAction::AddMainWindowUser("alice".to_owned(),)));
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
+        assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit("You".to_owned(),)));
+        assert!(!state.apply(GuiShellAction::CommitMainWindowUserEdit));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("A main-window user with that name already exists.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_cross_surface_selection_and_preserves_it_across_resync() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(0)));
+        assert!(state.apply(GuiShellAction::SelectMenuAction {
+            section_index: 3,
+            action_index: 1,
+        }));
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Username",
+            value: "shaun".to_owned(),
+        }));
+
+        assert_eq!(state.selection.selected_main_window_user, Some(0));
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert_eq!(state.selection.selected_menu_action, Some((3, 1)));
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+        assert!(state.main_window.users[0].is_selected);
+        assert!(state.main_window.playlist[0].is_selected);
+        assert!(state.menus.sections[3].actions[1].is_selected);
+        assert!(!state.menus.sections[3].actions[0].is_selected);
+        assert!(!state.media_search.directories[0].is_selected);
+        assert!(state.media_search.directories[1].is_selected);
+
+        let rendered = state.render_lines().join("\n");
+        assert!(rendered.contains("[Selection] user=0, playlist=0, menu=3:1, media_directory=1"));
+    }
+
+    #[test]
+    fn gui_shell_app_state_moves_and_removes_playlist_rows() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.main_window.playlist.push(MainWindowPlaylistRow {
+            label: "Second".to_owned(),
+            is_selected: false,
+        });
+        state.main_window.playlist.push(MainWindowPlaylistRow {
+            label: "Third".to_owned(),
+            is_selected: false,
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
+        assert!(state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistUp));
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Playlist pane ready for shared entries", "Third", "Second"]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+        assert!(state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistDown));
+        assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+        assert!(state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistUp));
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+
+        assert!(state.apply(GuiShellAction::RemoveSelectedMainWindowPlaylist));
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Playlist pane ready for shared entries", "Second"]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+
+        assert!(state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistUp));
+        assert!(!state.apply(GuiShellAction::MoveSelectedMainWindowPlaylistUp));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The selected playlist row cannot move further.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_announces_shared_playlist_events() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "One".to_owned(),
+                "Two".to_owned(),
+            ]))
+        );
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["One", "Two"]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Shared playlist loaded (2 entries).")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistSelectionChanged(1)));
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+        assert!(state.main_window.playlist[1].is_selected);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Shared playlist selected: Two.")
+        );
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistEntryAdded(
+                "Three".to_owned(),
+            ))
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+        assert_eq!(state.main_window.playlist[2].label, "Three");
+
+        assert!(state.apply(GuiShellAction::AnnounceSelectedSharedPlaylistEntryRemoved));
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["One", "Two"]
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Shared playlist entry removed: Three.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(Vec::new())));
+        assert!(state.main_window.playlist.is_empty());
+        assert_eq!(state.selection.selected_main_window_playlist, None);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Shared playlist cleared.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_shared_playlist_events() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(
+            !state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "One".to_owned(),
+            ]))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Shared playlist events are unavailable when shared playlists are disabled.")
+        );
+
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(
+            !state.apply(GuiShellAction::AnnounceSharedPlaylistEntryAdded(
+                "   ".to_owned(),
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Shared playlist entries must be non-empty.")
+        );
+        assert!(!state.apply(GuiShellAction::AnnounceSharedPlaylistSelectionChanged(1)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No shared playlist entry exists at the requested index.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_moves_and_removes_media_search_rows() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec![
+                "C:/Media".to_owned(),
+                "D:/Archive".to_owned(),
+                "E:/Incoming".to_owned(),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(2)));
+        assert!(state.apply(GuiShellAction::MoveSelectedMediaSearchDirectoryUp));
+        assert_eq!(
+            state
+                .media_search
+                .directories
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C:/Media", "E:/Incoming", "D:/Archive"]
+        );
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+        assert!(state.apply(GuiShellAction::MoveSelectedMediaSearchDirectoryDown));
+        assert_eq!(state.selection.selected_media_search_directory, Some(2));
+        assert!(state.apply(GuiShellAction::MoveSelectedMediaSearchDirectoryUp));
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+
+        assert!(state.apply(GuiShellAction::RemoveSelectedMediaSearchDirectory));
+        assert_eq!(
+            state
+                .media_search
+                .directories
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C:/Media", "D:/Archive"]
+        );
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+        assert_eq!(
+            state
+                .configuration
+                .to_stored_settings()
+                .media_search_directories,
+            Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()])
+        );
+
+        assert!(state.apply(GuiShellAction::RemoveSelectedMediaSearchDirectory));
+        assert!(state.apply(GuiShellAction::RemoveSelectedMediaSearchDirectory));
+        assert!(!state.apply(GuiShellAction::RemoveSelectedMediaSearchDirectory));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No media-search directory is currently selected.")
+        );
+        assert!(!state.commands.can_search_missing_media);
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_media_search_event_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::AnnounceMediaSearchDirectorySelected(0)));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Media search directory selected: C:/Media.")
+        );
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(
+                "D:/Archive".to_owned(),
+            ))
+        );
+        assert_eq!(state.media_search.directories.len(), 2);
+        assert_eq!(state.selection.selected_media_search_directory, Some(1));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Media search directory added: D:/Archive.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::SearchMissingMedia)
+        );
+        assert!(state.apply(GuiShellAction::CompleteMissingMediaSearch(Some(
+            "movie.mkv".to_owned(),
+        ))));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Missing media found: movie.mkv.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+        assert!(state.apply(GuiShellAction::CompleteMissingMediaSearch(None)));
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Missing media search completed: no match found.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_media_search_event_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::AnnounceMediaSearchDirectorySelected(0)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No media-search directory exists at the requested index.")
+        );
+
+        assert!(
+            !state.apply(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(
+                "   ".to_owned(),
+            ))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Media search directory cannot be empty.")
+        );
+
+        assert!(!state.apply(GuiShellAction::BeginMissingMediaSearch));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Missing-media search is unavailable when search actions are disabled.")
+        );
+
+        assert!(
+            !state.apply(GuiShellAction::CompleteMissingMediaSearch(Some(
+                "movie.mkv".to_owned(),
+            )))
+        );
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No missing-media search is currently in progress.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::SaveConfiguration)
+        );
+        assert!(!state.commands.can_save_configuration);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Configuration save started.")
+        );
+
+        assert!(state.apply(GuiShellAction::CancelConfigurationSave));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Configuration save canceled.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert!(state.apply(GuiShellAction::CompleteConfigurationSave(
+            state.configuration.to_stored_settings(),
+        )));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Configuration saved.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::TogglePlaybackPause)
+        );
+        assert!(!state.commands.can_toggle_pause);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Playback pause requested.")
+        );
+
+        assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));
+        assert_eq!(state.pending_operation, None);
+        assert!(state.main_window.playback_paused);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Playback paused.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        assert!(state.apply(GuiShellAction::CancelPlaybackPauseToggle));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Playback toggle canceled.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions() {
+        let mut invalid_configuration_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        assert!(
+            invalid_configuration_state.apply(GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Port",
+                value: "70000".to_owned(),
+            })
+        );
+        assert!(!invalid_configuration_state.commands.can_save_configuration);
+        assert!(!invalid_configuration_state.apply(GuiShellAction::BeginConfigurationSave));
+        assert_eq!(
+            invalid_configuration_state
+                .validation
+                .last_action_error
+                .as_deref(),
+            Some("Configuration cannot be saved while validation issues remain.")
+        );
+
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::CompleteConfigurationSave(
+            StoredClientSettingsMvp::default(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration save is currently in progress.")
+        );
+
+        assert!(!state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Playback pause toggling is unavailable when pause controls are disabled.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CompletePlaybackPauseToggle));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No playback toggle is currently in progress.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_configuration_reset_command_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            room: Some("SavedRoom".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(!state.commands.can_reset_configuration);
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "draft.example".to_owned(),
+        }));
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("draft.example")
+        );
+        assert!(state.commands.can_reset_configuration);
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationReset));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ResetConfiguration)
+        );
+        assert!(!state.commands.can_reset_configuration);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Configuration reset started.")
+        );
+
+        assert!(state.apply(GuiShellAction::CancelConfigurationReset));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("draft.example")
+        );
+        assert!(state.commands.can_reset_configuration);
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationReset));
+        assert!(state.apply(GuiShellAction::CompleteConfigurationReset(
+            state.saved_configuration.clone(),
+        )));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("saved.example")
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().room.as_deref(),
+            Some("SavedRoom")
+        );
+        assert!(!state.commands.can_reset_configuration);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Configuration reset to the last saved state.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_configuration_reset_command_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::BeginConfigurationReset));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Configuration reset is unavailable with no unsaved changes.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CompleteConfigurationReset(
+            StoredClientSettingsMvp::default(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration reset is currently in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "dirty.example".to_owned(),
+        }));
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert!(!state.apply(GuiShellAction::BeginConfigurationReset));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+        assert!(!state.apply(GuiShellAction::CancelConfigurationReset));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The active GUI operation is not a configuration reset.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_handles_configuration_reload_command_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            host: Some("before.example".to_owned()),
+            room: Some("BeforeRoom".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.commands.can_reload_configuration);
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Host",
+            value: "dirty.example".to_owned(),
+        }));
+        assert!(state.commands.can_reset_configuration);
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationReload));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ReloadConfiguration)
+        );
+        assert!(!state.commands.can_reload_configuration);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Configuration reload started.")
+        );
+
+        assert!(state.apply(GuiShellAction::CancelConfigurationReload));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("dirty.example")
+        );
+        assert!(state.commands.can_reload_configuration);
+
+        let replacement = StoredClientSettingsMvp {
+            host: Some("after.example".to_owned()),
+            room: Some("AfterRoom".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            public_servers: Some(vec![(
+                "Primary".to_owned(),
+                "syncplay.example:8999".to_owned(),
+            )]),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: Vec::new(),
+                tls_prompt_expected: true,
+                update_notice_expected: true,
+                about_dialog_available: false,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::BeginConfigurationReload));
+        assert!(state.apply(GuiShellAction::CompleteConfigurationReload(
+            replacement.clone(),
+        )));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.configuration.to_stored_settings(), replacement);
+        assert_eq!(state.saved_configuration, replacement);
+        assert!(!state.commands.can_reset_configuration);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Configuration snapshot loaded.")
+        );
+        assert_eq!(state.active_view, GuiShellView::Configuration);
+        assert!(state.menus.tls_prompt_expected);
+        assert!(state.menus.update_notice_expected);
+        assert!(!state.menus.about_dialog_available);
+        let help = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Help")
+            .expect("help section should exist");
+        assert!(
+            help.actions
+                .iter()
+                .find(|item| item.label == "About")
+                .is_some_and(|item| !item.enabled)
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_configuration_reload_command_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::CompleteConfigurationReload(
+            StoredClientSettingsMvp::default(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration reload is currently in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert!(!state.apply(GuiShellAction::BeginConfigurationReload));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+        assert!(!state.apply(GuiShellAction::CancelConfigurationReload));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The active GUI operation is not a configuration reload.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
+            section: "Connection",
+            label: "Host",
+        }));
+        assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+            "syncplay.example".to_owned(),
+        )));
+        let rendered = state.render_lines().join("\n");
+        assert!(
+            rendered.contains(
+                "[Text Edit] editing=Connection / Host, dirty=yes, buffer=syncplay.example"
+            )
+        );
+
+        assert!(state.apply(GuiShellAction::CommitConfigurationTextEdit));
+        assert!(state.text_edit_session.is_none());
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("syncplay.example")
+        );
+        assert!(
+            state
+                .render_lines()
+                .join("\n")
+                .contains("[Text Edit] editing=(none)")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit {
+            section: "Connection",
+            label: "Host",
+        }));
+        assert!(state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+            "syncplay.cancelled".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::CancelConfigurationTextEdit));
+        assert!(state.text_edit_session.is_none());
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("syncplay.example")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::FocusConfigurationControl {
+            section: "Readiness",
+            label: "Autoplay",
+        }));
+        assert!(state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
+        assert_eq!(
+            state
+                .configuration
+                .to_stored_settings()
+                .autoplay_initial_state,
+            Some(true)
+        );
+        assert_eq!(
+            state
+                .focused_configuration_control
+                .as_ref()
+                .map(|focused| focused.activation_count),
+            Some(1)
+        );
+
+        assert!(state.apply(GuiShellAction::FocusConfigurationControl {
+            section: "Connection",
+            label: "Host",
+        }));
+        assert!(state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
+        assert_eq!(
+            state
+                .text_edit_session
+                .as_ref()
+                .map(|session| session.label),
+            Some("Host")
+        );
+        assert_eq!(
+            state
+                .focused_configuration_control
+                .as_ref()
+                .map(|focused| focused.activation_count),
+            Some(1)
+        );
+
+        let rendered = state.render_lines().join("\n");
+        assert!(
+            rendered
+                .contains("[Control Focus] focused=Connection / Host, kind=text, activations=1")
+        );
+        assert!(rendered.contains("[Text Edit] editing=Connection / Host"));
+
+        assert!(state.apply(GuiShellAction::FocusConfigurationControl {
+            section: "Readiness",
+            label: "Autoplay",
+        }));
+        assert_eq!(
+            state
+                .focused_configuration_control
+                .as_ref()
+                .map(|focused| (focused.section, focused.label)),
+            Some(("Connection", "Host"))
+        );
+
+        assert!(state.apply(GuiShellAction::ClearConfigurationControlFocus));
+        assert_eq!(
+            state
+                .focused_configuration_control
+                .as_ref()
+                .map(|focused| (focused.section, focused.label)),
+            Some(("Connection", "Host"))
+        );
+        assert!(state.apply(GuiShellAction::CancelConfigurationTextEdit));
+        assert!(state.apply(GuiShellAction::ClearConfigurationControlFocus));
+        assert!(state.focused_configuration_control.is_none());
+        assert!(!state.apply(GuiShellAction::ClearConfigurationControlFocus));
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_configuration_focus_and_activation() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration control is currently focused.")
+        );
+
+        assert!(!state.apply(GuiShellAction::FocusConfigurationControl {
+            section: "Privacy",
+            label: "Trusted Domain Count",
+        }));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The requested configuration control is not focusable.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_configuration_text_edit_sessions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::BeginConfigurationTextEdit {
+            section: "OSD",
+            label: "Show OSD",
+        }));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The requested configuration control does not support text-edit sessions.")
+        );
+
+        assert!(!state.apply(GuiShellAction::UpdateConfigurationTextEdit(
+            "orphan".to_owned(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration text-edit session is currently active.")
+        );
+
+        assert!(!state.apply(GuiShellAction::CommitConfigurationTextEdit));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No configuration text-edit session is currently active.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_pending_operations_and_busy_command_availability() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.commands.can_save_configuration);
+        assert!(!state.commands.can_reset_configuration);
+        assert!(state.commands.can_reload_configuration);
+        assert!(state.commands.can_connect_public_server);
+        assert!(state.commands.can_refresh_public_servers);
+        assert!(state.commands.can_search_missing_media);
+        assert!(state.commands.can_toggle_pause);
+        assert!(state.commands.can_send_chat_message);
+
+        assert!(state.apply(GuiShellAction::BeginPendingOperation(
+            GuiPendingOperationKind::RefreshPublicServers,
+        )));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::RefreshPublicServers)
+        );
+        assert!(!state.commands.can_save_configuration);
+        assert!(!state.commands.can_reset_configuration);
+        assert!(!state.commands.can_reload_configuration);
+        assert!(!state.commands.can_connect_public_server);
+        assert!(!state.commands.can_refresh_public_servers);
+        assert!(!state.commands.can_search_missing_media);
+        assert!(!state.commands.can_toggle_pause);
+        assert!(!state.commands.can_send_chat_message);
+
+        let busy_render = state.render_lines().join("\n");
+        assert!(busy_render.contains("[Commands] busy=yes"));
+        assert!(busy_render.contains("[Pending] operation=refresh-public-servers"));
+
+        assert!(!state.apply(GuiShellAction::BeginPendingOperation(
+            GuiPendingOperationKind::SendChatMessage,
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::CompletePendingOperation));
+        assert_eq!(state.pending_operation, None);
+        assert!(state.commands.can_save_configuration);
+        assert!(!state.commands.can_reset_configuration);
+        assert!(state.commands.can_reload_configuration);
+        assert!(state.commands.can_connect_public_server);
+        assert!(state.commands.can_refresh_public_servers);
+        assert!(state.commands.can_search_missing_media);
+        assert!(state.commands.can_toggle_pause);
+        assert!(state.commands.can_send_chat_message);
+
+        assert!(!state.apply(GuiShellAction::CompletePendingOperation));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No GUI operation is currently in progress.")
+        );
+    }
+
+    #[test]
+    fn gui_pending_operation_kind_labels_are_stable() {
+        let labels = [
+            GuiPendingOperationKind::SaveConfiguration.label(),
+            GuiPendingOperationKind::ResetConfiguration.label(),
+            GuiPendingOperationKind::ReloadConfiguration.label(),
+            GuiPendingOperationKind::ConnectPublicServer.label(),
+            GuiPendingOperationKind::RefreshPublicServers.label(),
+            GuiPendingOperationKind::SearchMissingMedia.label(),
+            GuiPendingOperationKind::TogglePlaybackPause.label(),
+            GuiPendingOperationKind::SendChatMessage.label(),
+        ];
+
+        assert_eq!(
+            labels,
+            [
+                "save-configuration",
+                "reset-configuration",
+                "reload-configuration",
+                "connect-public-server",
+                "refresh-public-servers",
+                "search-missing-media",
+                "toggle-playback-pause",
+                "send-chat-message",
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_resync() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+        assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Port",
+            value: "70000".to_owned(),
+        }));
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "System",
+            label: "Language",
+            value: "zz".to_owned(),
+        }));
+
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(state.open_modal, Some(GuiShellModal::About));
+        assert_eq!(state.validation.issues.len(), 2);
+        assert!(
+            state
+                .validation
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "Connection" && issue.label == "Port")
+        );
+        assert!(
+            state
+                .validation
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "System" && issue.label == "Language")
+        );
+
+        let rendered = state.render_lines().join("\n");
+        assert!(rendered.contains("[Validation] status=2 issue(s), last_action_error=(none)"));
+        assert!(rendered.contains("Connection / Port: must be a valid TCP port from 1 to 65535."));
+        assert!(
+            rendered
+                .contains("System / Language: must be one of the supported legacy language tags.")
+        );
+        assert!(rendered.contains("active_view=public-servers"));
+        assert!(rendered.contains("open_modal=about"));
+    }
+
+    #[test]
+    fn gui_shell_app_state_tracks_action_errors_for_rejected_inputs() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::AddMediaSearchDirectory("   ".to_owned(),)));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Media search directory cannot be empty.")
+        );
+
+        assert!(state.apply(GuiShellAction::AddMediaSearchDirectory(
+            "C:/Media".to_owned(),
+        )));
+        assert_eq!(state.validation.last_action_error, None);
+
+        assert!(!state.apply(GuiShellAction::AddMediaSearchDirectory(
+            "C:/Media".to_owned(),
+        )));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Media search directory is already present.")
+        );
+    }
+
+    #[test]
+    fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
+        let notice = startup_notice(&StoredClientSettingsMvp::default());
+
+        assert!(notice.contains("[Shell App State]"));
+        assert!(notice.contains("active_view=configuration"));
+        assert!(notice.contains("open_modal=(none)"));
+        assert!(
+            notice
+                .contains("[Selection] user=0, playlist=(none), menu=0:0, media_directory=(none)")
+        );
+        assert!(notice.contains(
+            "[Commands] busy=no, save_configuration=yes, reset_configuration=no, reload_configuration=yes, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=no"
+        ));
+        assert!(notice.contains("[Pending] operation=(none)"));
+        assert!(notice.contains("[Control Focus] focused=(none)"));
+        assert!(notice.contains("[Public Server Edit] editing=(none)"));
+        assert!(notice.contains("[Text Edit] editing=(none)"));
+        assert!(notice.contains("[Notifications] count=0"));
+        assert!(notice.contains("[Validation] status=clean, last_action_error=(none)"));
+        assert!(notice.contains("configuration surface initialized"));
+        assert!(notice.contains("[Connection]"));
+        assert!(notice.contains("[Readiness]"));
+        assert!(notice.contains("[Privacy]"));
+        assert!(notice.contains("[Media Search]"));
+        assert!(notice.contains("[System]"));
+        assert!(notice.contains("[Main Window]"));
+        assert!(notice.contains("[Menus & Dialogs]"));
+        assert!(notice.contains("[Public Server Browser]"));
+        assert!(notice.contains("[Media Search Workflow]"));
+        assert!(notice.contains("Playback Controls:"));
+        assert!(notice.contains("Dialog Prompts:"));
+        assert!(notice.contains("Servers (0):"));
+        assert!(notice.contains("Directories (0):"));
+        assert!(notice.contains("unified shell app state and action reducer"));
+        assert!(notice.contains("Users (1):"));
+        assert!(notice.contains("- Host [text]:"));
+        assert!(notice.contains("- Server Password [password]:"));
+        assert!(notice.contains("Native window widgets are still pending"));
+        assert!(!notice.contains("bootstrap placeholder"));
+        assert!(notice.contains("de/en/es"));
+    }
+
+    #[test]
+    fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
+        let preview = shell_widget_preview(&StoredClientSettingsMvp::default());
+
+        assert!(!preview.contains("[Widget Tree]"));
+        assert!(preview.contains("- Syncplay GUI [panel] id=shell-root"));
+        assert!(preview.contains(
+            "  - Configuration [panel] id=configuration-root, enabled=yes, selected=yes, value=(none)"
+        ));
+        assert!(preview.contains(
+            "    - Host [text-input] id=config:Connection:Host, enabled=yes, selected=no, value=(unset)"
+        ));
+        assert!(preview.contains(
+            "  - Main Window [panel] id=main-window-root, enabled=yes, selected=no, value=(none)"
+        ));
+    }
+
+    #[test]
+    fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
+        let preview = startup_preview(&StoredClientSettingsMvp::default());
+
+        assert!(preview.contains("[Shell App State]"));
+        assert!(preview.contains("[Widget Tree]"));
+        assert!(preview.contains("- Syncplay GUI [panel] id=shell-root"));
+    }
+
+    #[test]
+    fn run_gui_host_passes_shell_state_through_host_boundary() {
+        #[derive(Default)]
+        struct RecordingHost {
+            saw_configuration_view: bool,
+        }
+
+        impl GuiAppHost for RecordingHost {
+            type Output = String;
+
+            fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
+                self.saw_configuration_view = state.active_view == GuiShellView::Configuration;
+                format!("host:{}", state.active_view.label())
+            }
+        }
+
+        let mut host = RecordingHost::default();
+        let rendered = run_gui_host(&StoredClientSettingsMvp::default(), &mut host);
+
+        assert_eq!(rendered, "host:configuration");
+        assert!(host.saw_configuration_view);
+    }
+
+    #[test]
+    fn gui_client_core_chat_tcp_bootstrap_from_lookup_uses_existing_client_env_keys() {
+        let bootstrap = super::gui_client_core_chat_tcp_bootstrap_from_lookup(|name| match name {
+            "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
+            "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
+            "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
+            "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+            "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
+            _ => None,
+        })
+        .expect("bootstrap lookup should succeed")
+        .expect("bootstrap should be enabled");
+
+        assert_eq!(
+            bootstrap,
+            super::GuiClientCoreChatTcpBootstrap {
+                host: "syncplay.example".to_owned(),
+                port: 8995,
+                username: "shaun".to_owned(),
+                room: "room-a".to_owned(),
+            }
+        );
+        assert_eq!(bootstrap.host_arg(), "syncplay.example:8995");
+    }
+
+    #[test]
+    fn gui_client_core_chat_tcp_bootstrap_startup_settings_enable_chat_and_seed_connection() {
+        let bootstrap = super::GuiClientCoreChatTcpBootstrap {
+            host: "2001:db8::1".to_owned(),
+            port: 9000,
+            username: "gui-user".to_owned(),
+            room: "gui-room".to_owned(),
+        };
+
+        assert_eq!(bootstrap.host_arg(), "[2001:db8::1]:9000");
+        let settings = bootstrap.startup_settings();
+        assert_eq!(settings.host.as_deref(), Some("2001:db8::1"));
+        assert_eq!(settings.port, Some(9000));
+        assert_eq!(settings.username.as_deref(), Some("gui-user"));
+        assert_eq!(settings.room.as_deref(), Some("gui-room"));
+        assert_eq!(settings.chat_input_enabled, Some(true));
+        assert_eq!(settings.chat_output_enabled, Some(true));
+    }
+
+    #[test]
+    fn gui_client_core_chat_tcp_bootstrap_from_lookup_rejects_invalid_port() {
+        let error = super::gui_client_core_chat_tcp_bootstrap_from_lookup(|name| match name {
+            "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("on".to_owned()),
+            "SYNCPLAY_CLIENT_PORT" => Some("70000".to_owned()),
+            _ => None,
+        })
+        .expect_err("invalid port should be rejected");
+
+        assert_eq!(
+            error,
+            "SYNCPLAY_CLIENT_PORT must be a valid TCP port from 1 to 65535.".to_owned()
+        );
+    }
+
+    #[test]
+    fn gui_text_preview_host_uses_summary_and_widget_tree_output() {
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let mut host = GuiTextPreviewHost;
+        let rendered = host.render(state);
+
+        assert!(rendered.contains("[Shell App State]"));
+        assert!(rendered.contains("[Widget Tree]"));
+        assert!(rendered.contains("- Syncplay GUI [panel] id=shell-root"));
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_rebuilds_widget_tree_from_renderer_contract() {
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let expected_tree = state.shell_widget_tree();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+
+        state.render_shell_widgets(&mut renderer);
+
+        assert_eq!(renderer.root(), Some(&expected_tree));
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
+        assert_eq!(
+            GuiWidgetEguiRenderer::modal_window_title(GuiShellModal::TlsCertificatePrompt),
+            "TLS Certificate Prompt"
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::modal_actions(GuiShellModal::TlsCertificatePrompt),
+            vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                (
+                    "Show Prompt Again",
+                    GuiShellAction::AnnounceTlsCertificatePromptRequired,
+                ),
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::modal_actions(GuiShellModal::UpdateNotice),
+            vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                ("Check Again", GuiShellAction::AnnounceUpdateNoticeAvailable),
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::modal_actions(GuiShellModal::About),
+            vec![
+                ("Open Help", GuiShellAction::AnnounceHelpRequested),
+                (
+                    "Check for Updates",
+                    GuiShellAction::AnnounceUpdateNoticeAvailable
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_prefers_selected_media_search_directory_for_native_browse_dialog() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/AltMedia".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_search_dialog_start_directory(&state),
+            Some("D:/AltMedia")
+        );
+    }
+
+    #[test]
+    fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
+        let shared_playlist_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                shared_playlist_enabled: Some(true),
+                ..StoredClientSettingsMvp::default()
+            });
+        let fallback_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let mut runtime = GuiPreviewRuntimeBridge;
+
+        assert_eq!(
+            runtime.actions_for_selected_media_files(
+                &shared_playlist_state,
+                vec![
+                    "C:/Media/Episode 1.mkv".to_owned(),
+                    "C:/Media/Episode 2.mkv".to_owned()
+                ],
+            ),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                    "C:/Media/Episode 1.mkv".to_owned(),
+                    "C:/Media/Episode 2.mkv".to_owned(),
+                ]),
+            ]
+        );
+        assert_eq!(
+            runtime.actions_for_selected_media_files(
+                &fallback_state,
+                vec!["C:/Media/movie.mkv".to_owned()],
+            ),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Media file selected: C:/Media/movie.mkv.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Media file selected: C:/Media/movie.mkv.".to_owned(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            shared_playlist_enabled: Some(true),
+            player_path: Some("mpv".to_owned()),
+            room: Some("Lounge".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let shell_tree = state.shell_widget_tree();
+        let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
+        let menu_action = shell_tree.find("menus:action:0:0").unwrap();
+        let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
+        let seek_menu_action = shell_tree.find("menus:action:1:1").unwrap();
+        let user_row = shell_tree.find("main-window:user:0").unwrap();
+        let room_set_button = shell_tree.find("main-window:room:set").unwrap();
+        let room_join_button = shell_tree.find("main-window:room:join").unwrap();
+        let room_leave_button = shell_tree.find("main-window:room:leave").unwrap();
+        let user_add_input = shell_tree.find("main-window:user:new").unwrap();
+        let user_add_button = shell_tree.find("main-window:user:add").unwrap();
+        let user_edit_button = shell_tree.find("main-window:user:edit").unwrap();
+        let pause_button = shell_tree.find("main-window:control:toggle-pause").unwrap();
+        let playlist_add_input = shell_tree.find("main-window:playlist:new").unwrap();
+        let playlist_add_button = shell_tree.find("main-window:playlist:add").unwrap();
+        let playlist_remove_button = shell_tree.find("main-window:playlist:remove").unwrap();
+        let edit_button = shell_tree.find("public-servers:command:edit").unwrap();
+        let directory_remove_button = shell_tree.find("media-search:directory:remove").unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::action_for_surface_node(public_servers_surface),
+            Some(GuiShellAction::SwitchView(GuiShellView::PublicServers))
+        );
+        assert!(GuiWidgetEguiRenderer::is_open_media_file_menu_action(
+            &state,
+            menu_action
+        ));
+        assert!(!GuiWidgetEguiRenderer::is_exit_menu_action(
+            &state,
+            menu_action
+        ));
+        assert!(!GuiWidgetEguiRenderer::is_open_media_file_menu_action(
+            &state,
+            exit_menu_action
+        ));
+        assert!(GuiWidgetEguiRenderer::is_exit_menu_action(
+            &state,
+            exit_menu_action
+        ));
+        assert!(!GuiWidgetEguiRenderer::is_seek_menu_action(
+            &state,
+            menu_action
+        ));
+        assert!(GuiWidgetEguiRenderer::is_seek_menu_action(
+            &state,
+            seek_menu_action
+        ));
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, menu_action),
+            vec![
+                GuiShellAction::SelectMenuAction {
+                    section_index: 0,
+                    action_index: 0,
+                },
+                GuiShellAction::TriggerSelectedMenuAction,
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::action_for_list_item_node(user_row),
+            Some(GuiShellAction::SelectMainWindowUser(0))
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, room_set_button),
+            vec![GuiShellAction::SetMainWindowRoom("Lounge".to_owned())]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, room_join_button),
+            vec![GuiShellAction::JoinMainWindowRoom("Lounge".to_owned())]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, room_leave_button),
+            vec![GuiShellAction::LeaveMainWindowRoom]
+        );
+        assert_eq!(user_add_input.kind, GuiWidgetKind::TextInput);
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_add_button),
+            vec![GuiShellAction::CommitNewMainWindowUser]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_edit_button),
+            vec![GuiShellAction::BeginEditSelectedMainWindowUser]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, pause_button),
+            vec![GuiShellAction::BeginPlaybackPauseToggle]
+        );
+        assert_eq!(playlist_add_input.kind, GuiWidgetKind::TextInput);
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_add_button),
+            vec![GuiShellAction::CommitNewPlaylistEntry]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_remove_button),
+            vec![GuiShellAction::RemoveSelectedMainWindowPlaylist]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, edit_button),
+            vec![GuiShellAction::BeginEditSelectedPublicServer]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_search_dialog_start_directory(&state),
+            Some("C:/Media")
+        );
+        assert!(GuiWidgetEguiRenderer::should_show_manual_pending_controls(
+            "save-configuration",
+            true
+        ));
+        assert!(!GuiWidgetEguiRenderer::should_show_manual_pending_controls(
+            "save-configuration",
+            false
+        ));
+        assert!(!GuiWidgetEguiRenderer::should_show_manual_pending_controls(
+            "(none)", true
+        ));
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, directory_remove_button),
+            vec![GuiShellAction::RemoveSelectedMediaSearchDirectory]
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let configuration_tree = state.configuration_widget_tree();
+        let host = configuration_tree.find("config:Connection:Host").unwrap();
+        let autoplay = configuration_tree
+            .find("config:Readiness:Autoplay")
+            .unwrap();
+        let unpause_action = configuration_tree
+            .find("config:Readiness:Unpause Action")
+            .unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &state,
+                host,
+                "syncplay.example",
+                true,
+                false,
+            ),
+            Some(vec![GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Host",
+                value: "syncplay.example".to_owned(),
+            }])
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::action_for_checkbox_node(&state, autoplay, true),
+            Some(GuiShellAction::EditConfigurationBool {
+                section: "Readiness",
+                label: "Autoplay",
+                value: true,
+            })
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::configuration_select_options_for_node(&state, unpause_action),
+            Some(vec![
+                "IfAlreadyReady".to_owned(),
+                "IfOthersReady".to_owned(),
+                "IfMinUsersReady".to_owned(),
+                "Always".to_owned(),
+            ])
+        );
+
+        let chat_state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let chat_tree = chat_state.main_window_widget_tree();
+        let chat_input = chat_tree.find("main-window:chat-input").unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &chat_state,
+                chat_input,
+                "Hello world",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
+                    outgoing_chat_message: Some("Hello world".to_owned()),
+                }),
+                GuiShellAction::BeginLocalChatSend("Hello world".to_owned()),
+            ])
+        );
+
+        let room_state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room: Some("Lounge".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let room_tree = room_state.main_window_widget_tree();
+        let room_input = room_tree.find("main-window:room-input").unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &room_state,
+                room_input,
+                "TeamRoom",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::EditConfigurationText {
+                    section: "Connection",
+                    label: "Room",
+                    value: "TeamRoom".to_owned(),
+                },
+                GuiShellAction::JoinMainWindowRoom("TeamRoom".to_owned()),
+            ])
+        );
+
+        let add_user_input = room_tree.find("main-window:user:new").unwrap();
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &room_state,
+                add_user_input,
+                "Alice",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::UpdateNewMainWindowUserDraft("Alice".to_owned()),
+                GuiShellAction::CommitNewMainWindowUser,
+            ])
+        );
+
+        let add_playlist_input = room_tree.find("main-window:playlist:new").unwrap();
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &room_state,
+                add_playlist_input,
+                "Episode 1.mkv",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::UpdateNewPlaylistEntryDraft("Episode 1.mkv".to_owned()),
+                GuiShellAction::CommitNewPlaylistEntry,
+            ])
+        );
+
+        let mut user_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        assert!(user_state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
+        assert!(user_state.apply(GuiShellAction::SelectMainWindowUser(1)));
+        assert!(user_state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
+        let user_tree = user_state.main_window_widget_tree();
+        let user_input = user_tree.find("main-window:user-edit:username").unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &user_state,
+                user_input,
+                "Robert",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::UpdateMainWindowUserEdit("Robert".to_owned()),
+                GuiShellAction::CommitMainWindowUserEdit,
+            ])
+        );
+    }
+
+    #[test]
+    fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut runtime = GuiPreviewRuntimeBridge;
+
+        assert!(runtime.shows_manual_pending_controls());
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert_eq!(
+            runtime.actions_for_pending_completion(&state),
+            vec![GuiShellAction::CompleteConfigurationSave(
+                state.configuration.to_stored_settings(),
+            )]
+        );
+        assert_eq!(
+            runtime.actions_for_pending_cancel(&state),
+            vec![GuiShellAction::CancelPendingOperation]
+        );
+        for action in runtime.actions_for_pending_cancel(&state) {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        assert_eq!(
+            runtime.actions_for_pending_completion(&state),
+            vec![GuiShellAction::CompletePlaybackPauseToggle]
+        );
+        for action in runtime.actions_for_pending_cancel(&state) {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        assert_eq!(
+            runtime.actions_for_pending_completion(&state),
+            vec![GuiShellAction::CompleteSelectedPublicServerConnect]
+        );
+        for action in runtime.actions_for_pending_cancel(&state) {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        assert_eq!(
+            runtime.actions_for_pending_completion(&state),
+            vec![GuiShellAction::CompleteLocalChatSend]
+        );
+        for action in runtime.actions_for_pending_completion(&state) {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("hello")
+        );
+        assert!(runtime.actions_for_pending_completion(&state).is_empty());
+        assert!(runtime.actions_for_pending_cancel(&state).is_empty());
+    }
+
+    #[test]
+    fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
+        let (_host, host_handle) = GuiEframeNativeHost::with_queued_runtime();
+        assert!(host_handle.drain_requests().is_empty());
+
+        let (mut runtime, handle) = GuiQueuedRuntimeBridge::new();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(!runtime.shows_manual_pending_controls());
+        assert!(runtime.drain_runtime_actions().is_empty());
+        assert!(handle.drain_requests().is_empty());
+
+        let (preview_runtime, preview_handle) =
+            GuiQueuedRuntimeBridge::new_with_manual_pending_controls(true);
+        assert!(preview_runtime.shows_manual_pending_controls());
+        let mut preview_pump = super::GuiQueuedRuntimeOwnerPump::new(
+            preview_handle.clone(),
+            super::GuiPreviewRuntimeOwner,
+        );
+        preview_handle.push_request(GuiRuntimeRequest::SeekOffset(3.5));
+        super::GuiNativeRuntimePump::pump(&mut preview_pump, &state);
+        assert_eq!(
+            preview_handle.drain_actions(),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Seek requested: 3.5 seconds.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent("Seek requested: 3.5 seconds.".to_owned(),),
+            ]
+        );
+
+        handle.push_action(GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Info,
+            message: "Runtime callback queued.".to_owned(),
+        });
+        handle.push_action(GuiShellAction::AnnounceSystemChatEvent(
+            "Runtime callback applied.".to_owned(),
+        ));
+
+        assert_eq!(
+            runtime.drain_runtime_actions(),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Runtime callback queued.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent("Runtime callback applied.".to_owned(),),
+            ]
+        );
+        assert!(runtime.drain_runtime_actions().is_empty());
+
+        assert!(
+            runtime
+                .actions_for_selected_media_files(&state, Vec::new())
+                .is_empty()
+        );
+        assert!(handle.drain_requests().is_empty());
+
+        assert!(
+            runtime
+                .actions_for_selected_media_files(&state, vec!["C:/Media/movie.mkv".to_owned()])
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::OpenMediaFiles {
+                paths: vec!["C:/Media/movie.mkv".to_owned()],
+                load_into_shared_playlist: false,
+            }]
+        );
+
+        assert!(runtime.actions_for_seek_offset(12.5).is_empty());
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::SeekOffset(12.5)]
+        );
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec![
+                "C:/Media/episode1.mkv".to_owned(),
+                "C:/Media/episode2.mkv".to_owned(),
+            ],
+            load_into_shared_playlist: true,
+        });
+        assert_eq!(
+            handle.drain_preview_response_actions(),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                    "C:/Media/episode1.mkv".to_owned(),
+                    "C:/Media/episode2.mkv".to_owned(),
+                ]),
+            ]
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        assert!(runtime.actions_for_pending_completion(&state).is_empty());
+        assert!(runtime.actions_for_pending_cancel(&state).is_empty());
+        assert_eq!(
+            handle.drain_requests(),
+            vec![
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::SendChatMessage("hello".to_owned())
+                ),
+                GuiRuntimeRequest::CancelPendingOperation(GuiPendingOperationKind::SendChatMessage),
+            ]
+        );
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello".to_owned()),
+        ));
+        handle.push_request(GuiRuntimeRequest::CancelPendingOperation(
+            GuiPendingOperationKind::SendChatMessage,
+        ));
+        assert_eq!(
+            handle.drain_preview_response_actions(),
+            vec![
+                GuiShellAction::CompleteLocalChatSend,
+                GuiShellAction::CancelPendingOperation,
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "syncplay-gui-persisted-config-owner-{}-{unique_suffix}.ini",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        let saved_settings = StoredClientSettingsMvp {
+            host: Some("persisted.example".to_owned()),
+            room: Some("Cinema".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![GuiShellAction::CompleteConfigurationSave(
+                saved_settings.clone()
+            )]
+        );
+        assert_eq!(
+            super::load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
+                .expect("save should leave a readable config file"),
+            Some(saved_settings.clone())
+        );
+
+        let reloaded_settings = StoredClientSettingsMvp {
+            host: Some("reloaded.example".to_owned()),
+            room: Some("Rewatch".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+            .expect("updating the config file should succeed");
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![GuiShellAction::CompleteConfigurationReload(
+                reloaded_settings.clone()
+            )]
+        );
+
+        std::fs::remove_file(&path).expect("temporary config file should be removable");
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_reports_player_runtime_gaps_explicitly() {
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec!["C:/Media/episode1.mkv".to_owned()],
+            load_into_shared_playlist: true,
+        });
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                    "C:/Media/episode1.mkv".to_owned()
+                ]),
+            ]
+        );
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec!["C:/Media/movie.mkv".to_owned()],
+            load_into_shared_playlist: false,
+        });
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Opening media requires a playback runtime connection; the selected file was not opened."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Opening media requires a playback runtime connection; the selected file was not opened."
+                        .to_owned(),
+                ),
+            ]
+        );
+
+        handle.push_request(GuiRuntimeRequest::SeekOffset(12.5));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
+                        .to_owned(),
+                ),
+            ]
+        );
+
+        let mut connect_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(connect_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &connect_state);
+        let connect_actions = handle.drain_actions();
+        assert_eq!(
+            connect_actions,
+            vec![
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: true,
+                        can_reload_configuration: true,
+                        can_connect_public_server: true,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Public server connect requires a session runtime connection; the selected server was not contacted."
+                        .to_owned(),
+                },
+            ]
+        );
+        for action in connect_actions {
+            assert!(connect_state.apply(action));
+        }
+        assert!(connect_state.pending_operation.is_none());
+
+        let mut refresh_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(refresh_state.apply(GuiShellAction::BeginPublicServerRefresh));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::RefreshPublicServers(vec![(
+                "Primary".to_owned(),
+                "syncplay.pl:8999".to_owned(),
+            )]),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &refresh_state);
+        let refresh_actions = handle.drain_actions();
+        assert_eq!(
+            refresh_actions,
+            vec![
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: true,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Public server refresh requires a session runtime connection; the server list was not refreshed."
+                        .to_owned(),
+                },
+            ]
+        );
+        for action in refresh_actions {
+            assert!(refresh_state.apply(action));
+        }
+        assert!(refresh_state.pending_operation.is_none());
+
+        let mut missing_media_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                media_search_directories: Some(vec!["C:/Media".to_owned()]),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(missing_media_state.apply(GuiShellAction::BeginMissingMediaSearch));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &missing_media_state);
+        let missing_media_actions = handle.drain_actions();
+        assert_eq!(
+            missing_media_actions,
+            vec![
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: true,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Missing-media search requires a session runtime connection; no search was performed."
+                        .to_owned(),
+                },
+            ]
+        );
+        for action in missing_media_actions {
+            assert!(missing_media_state.apply(action));
+        }
+        assert!(missing_media_state.pending_operation.is_none());
+
+        let mut cancel_chat_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                chat_input_enabled: Some(true),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(
+            cancel_chat_state.apply(GuiShellAction::BeginLocalChatSend("cancel me".to_owned(),))
+        );
+        handle.push_request(GuiRuntimeRequest::CancelPendingOperation(
+            GuiPendingOperationKind::SendChatMessage,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &cancel_chat_state);
+        let cancel_actions = handle.drain_actions();
+        assert_eq!(cancel_actions, vec![GuiShellAction::CancelPendingOperation]);
+        for action in cancel_actions {
+            assert!(cancel_chat_state.apply(action));
+        }
+        assert!(cancel_chat_state.pending_operation.is_none());
+        assert!(cancel_chat_state.outgoing_chat_message.is_none());
+
+        let mut toggle_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        toggle_state.main_window.playback.can_toggle_pause = true;
+        toggle_state.commands.can_toggle_pause = true;
+        assert!(toggle_state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::TogglePlaybackPause,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &toggle_state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::CancelPlaybackPauseToggle,
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Playback toggle requires a playback runtime connection; the pause request was not applied."
+                        .to_owned(),
+                },
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "(no room joined)".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: false,
+                    can_seek: false,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+
+        let mut chat_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                chat_input_enabled: Some(true),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(chat_state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &chat_state);
+        let chat_actions = handle.drain_actions();
+        assert_eq!(
+            chat_actions,
+            vec![
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: true,
+                    },
+                    pending_operation: None,
+                }),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Chat sending requires a session runtime connection; the message was not sent."
+                        .to_owned(),
+                },
+            ]
+        );
+        for action in chat_actions {
+            assert!(chat_state.apply(action));
+        }
+        assert_eq!(chat_state.outgoing_chat_message.as_deref(), Some("hello"));
+        assert!(chat_state.pending_operation.is_none());
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifications() {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            chat_output_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+        assert!(startup_lines[0].contains("\"Hello\""));
+        assert!(startup_lines[0].contains("\"alice\""));
+        assert!(startup_lines[0].contains("\"room1\""));
+        assert!(startup_lines[0].contains("\"chat\":true"));
+        assert!(
+            super::GuiSessionRuntimeAdapter::send_chat_message(
+                &mut adapter,
+                "hello room".to_owned(),
+            )
+            .is_err(),
+            "chat should stay blocked until the adapter receives a server Hello"
+        );
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        assert!(
+            super::GuiSessionRuntimeAdapter::send_chat_message(
+                &mut adapter,
+                "hello room".to_owned(),
+            )
+            .is_ok(),
+            "chat-capable client-core adapter should queue outbound chat"
+        );
+        let outbound_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("queued outbound protocol lines should encode");
+        assert_eq!(outbound_lines.len(), 1);
+        assert!(outbound_lines[0].contains("\"Chat\""));
+        assert!(outbound_lines[0].contains("hello room"));
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+
+        adapter
+            .apply_message_json(r#"{"Chat":{"username":"alice","message":"hello room"}}"#)
+            .expect("inbound server echo should apply");
+        assert_eq!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state),
+            vec![GuiShellAction::PushChatMessage {
+                sender: "alice".to_owned(),
+                message: "hello room".to_owned(),
+            }]
+        );
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main_window_snapshot()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut playback_ready_snapshot =
+            MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        playback_ready_snapshot.can_toggle_pause = true;
+        playback_ready_snapshot.can_seek = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            playback_ready_snapshot
+        )));
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist-change set message should apply");
+        adapter
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist-index set message should apply");
+        adapter
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#,
+            )
+            .expect("playstate message should apply");
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(actions.len(), 3);
+        let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
+            panic!("session state changes should become a main-window runtime snapshot");
+        };
+        assert_eq!(snapshot.room_name, "room1");
+        assert!(snapshot.shared_playlist_enabled);
+        assert_eq!(
+            snapshot.users,
+            vec![MainWindowRuntimeUserSnapshot {
+                username: "alice".to_owned(),
+                is_self: true,
+                is_ready: false,
+                is_controller: false,
+            }]
+        );
+        assert_eq!(
+            snapshot.playlist,
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
+        );
+        assert!(snapshot.playback_paused);
+        let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction) = &actions[1] else {
+            panic!("session playlist index should become a GUI interaction runtime snapshot");
+        };
+        assert_eq!(interaction.selection.selected_main_window_playlist, Some(1));
+        let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
+            panic!("session playlist availability should become a menu runtime snapshot");
+        };
+        assert_eq!(
+            menu_snapshot.action_overrides,
+            vec![
+                MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: true,
+                },
+                MenuActionRuntimeOverride {
+                    section_title: "Playback",
+                    action_label: "Playlist Actions",
+                    enabled: true,
+                },
+            ]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.main_window.shared_playlist_enabled);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Playlist")
+                })
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Playback")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Playlist Actions")
+                })
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_chat_events() {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"controller":true}}}}"#,
+            )
+            .expect("user join message should apply");
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(actions.len(), 2);
+        let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
+            panic!("user changes should still refresh the main-window runtime snapshot");
+        };
+        assert_eq!(
+            snapshot.users,
+            vec![
+                MainWindowRuntimeUserSnapshot {
+                    username: "alice".to_owned(),
+                    is_self: true,
+                    is_ready: false,
+                    is_controller: false,
+                },
+                MainWindowRuntimeUserSnapshot {
+                    username: "bob".to_owned(),
+                    is_self: false,
+                    is_ready: false,
+                    is_controller: true,
+                },
+            ]
+        );
+        assert_eq!(
+            actions[1],
+            GuiShellAction::AnnounceSystemChatEvent("bob joined room1.".to_owned())
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_to_system_chat()
+    {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .runtime
+            .run_reconnect_retry(0)
+            .expect("reconnect retry should queue notifications");
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        assert_eq!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message: "Reconnect attempt 1 in 0.1 seconds.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Reconnect attempt 1 in 0.1 seconds.".to_owned(),
+                ),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: "Session reconnected.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent("Session reconnected.".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_state_restore_details_to_system_chat()
+     {
+        assert_eq!(
+            super::GuiClientCoreChatSessionRuntimeAdapter::reconnect_transition_actions(
+                super::ReconnectTransitionNotification::StateRestoreValidationMismatch {
+                    local_paused: false,
+                    room_paused: true,
+                    local_position: 5.0,
+                    room_position: 7.5,
+                    position_diff_seconds: 2.5,
+                },
+            ),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message: "Session state restore mismatch detected (2.500 seconds).".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Session state restore mismatch detected (2.500 seconds).".to_owned(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transitions_as_notifications()
+     {
+        let room = "+room:ABCDEF123456";
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some(room.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", room)
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .runtime
+            .session_mut()
+            .remember_control_password_for_room(room, "ab-123-456");
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        let hello_actions =
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+
+        adapter
+            .runtime
+            .run_controller_reidentify_if_needed()
+            .expect("controller reidentify should dispatch");
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
+            )
+            .expect("controller auth success should apply");
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Info
+                        && message == "Requesting controller access for +room:ABCDEF123456."
+            )),
+            "controller reidentify should surface an attempt notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Requesting controller access for +room:ABCDEF123456."
+            )),
+            "controller reidentify should persist the attempt message in system chat"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message == "alice received controller access for +room:ABCDEF123456."
+            )),
+            "controller auth success should surface a success notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "alice received controller access for +room:ABCDEF123456."
+            )),
+            "controller auth success should persist the success message in system chat"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if snapshot.controlled_room_active
+                        && snapshot.users.iter().any(|user| {
+                            user.username == "alice" && user.is_self && user.is_controller
+                        })
+            )),
+            "controller auth success should refresh the main-window runtime snapshot"
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_notifications() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        let hello_actions =
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+
+        adapter
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
+            )
+            .expect("remote ready user should apply");
+        adapter.runtime.session_mut().set_autoplay_enabled(true);
+        adapter
+            .runtime
+            .session_mut()
+            .readiness_autoplay_config_mut()
+            .auto_play_threshold = Some(2);
+        adapter
+            .runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+            );
+        adapter
+            .runtime
+            .update_autoplay_check(true, true, false, false);
+        adapter
+            .runtime
+            .tick_autoplay(true, true, false, false)
+            .expect("first autoplay tick should emit notification");
+        adapter
+            .runtime
+            .tick_autoplay(true, true, false, false)
+            .expect("second autoplay tick should emit notification");
+
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Info
+                        && message == "Autoplay in 3 seconds with 2 ready users."
+            )),
+            "first autoplay tick should surface a countdown notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Autoplay in 3 seconds with 2 ready users."
+            )),
+            "first autoplay tick should persist a countdown entry in system chat"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Info
+                        && message == "Autoplay in 2 seconds with 2 ready users."
+            )),
+            "second autoplay tick should surface a countdown notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Autoplay in 2 seconds with 2 ready users."
+            )),
+            "second autoplay tick should persist a countdown entry in system chat"
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() {
+        let (mut owner, session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let startup_actions = handle.drain_actions();
+        assert_eq!(
+            startup_actions,
+            vec![
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Chat",
+                        enabled: false,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+        for action in startup_actions {
+            assert!(state.apply(action));
+        }
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Chat")
+                })
+                .is_some_and(|action| !action.enabled)
+        );
+        assert!(!state.commands.can_send_chat_message);
+
+        let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+        assert_eq!(startup_protocol_lines.len(), 1);
+        assert!(startup_protocol_lines[0].contains("\"Hello\""));
+        session_transport.push_inbound_protocol_line(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        );
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let hello_actions = handle.drain_actions();
+        assert_eq!(
+            hello_actions,
+            vec![
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Chat",
+                        enabled: true,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: true,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+
+        let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+        assert!(outbound_protocol_lines.is_empty());
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Chat")
+                })
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(state.commands.can_send_chat_message);
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned(),)));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello room".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let outbound_actions = handle.drain_actions();
+        assert!(
+            outbound_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend)),
+            "queued owner should still complete the local chat send when the session runtime accepts it"
+        );
+        for action in outbound_actions {
+            assert!(state.apply(action));
+        }
+
+        let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+        assert_eq!(outbound_protocol_lines.len(), 1);
+        assert!(outbound_protocol_lines[0].contains("\"Chat\""));
+        assert!(outbound_protocol_lines[0].contains("hello room"));
+
+        session_transport
+            .push_inbound_protocol_line(r#"{"Chat":{"username":"alice","message":"hello room"}}"#);
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(
+            handle.drain_actions().iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushChatMessage { sender, message }
+                    if sender == "alice" && message == "hello room"
+            )),
+            "queued owner should turn inbound protocol chat into a GUI chat message action"
+        );
+        assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_reports_support() {
+        let (mut owner, session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let startup_actions = handle.drain_actions();
+        assert_eq!(
+            startup_actions,
+            vec![
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Chat",
+                        enabled: false,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+        for action in startup_actions {
+            assert!(state.apply(action));
+        }
+        assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Chat")
+                })
+                .is_some_and(|action| !action.enabled)
+        );
+        assert!(!state.commands.can_send_chat_message);
+
+        session_transport.push_inbound_protocol_line(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        );
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let hello_actions = handle.drain_actions();
+        assert_eq!(
+            hello_actions,
+            vec![
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Chat",
+                        enabled: true,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: false,
+                        can_send_chat_message: true,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Chat")
+                })
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(state.commands.can_send_chat_message);
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_after_server_hello()
+    {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_snapshot.can_set_ready = false;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_snapshot
+        )));
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        expected_snapshot.can_set_ready = true;
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                expected_snapshot
+            )]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.main_window.playback.can_set_ready);
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_when_session_has_none()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_snapshot.shared_playlist_enabled = true;
+        stale_snapshot.playlist = vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()];
+        stale_snapshot.can_manage_playlist = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_snapshot
+        )));
+        let mut stale_interaction = GuiInteractionRuntimeSnapshot::from_shell_state(&state);
+        stale_interaction.selection.selected_main_window_playlist = Some(1);
+        assert!(
+            state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+                stale_interaction
+            ))
+        );
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: vec![
+                    MenuActionRuntimeOverride {
+                        section_title: "Window",
+                        action_label: "Show Playlist",
+                        enabled: true,
+                    },
+                    MenuActionRuntimeOverride {
+                        section_title: "Playback",
+                        action_label: "Playlist Actions",
+                        enabled: true,
+                    },
+                ],
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            },
+        )));
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(actions.len(), 3);
+        let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
+            panic!(
+                "stale shared-playlist state should be corrected through a main-window snapshot"
+            );
+        };
+        assert!(!snapshot.shared_playlist_enabled);
+        assert!(snapshot.playlist.is_empty());
+        assert!(!snapshot.can_manage_playlist);
+        let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction_snapshot) = &actions[1]
+        else {
+            panic!(
+                "stale shared-playlist selection should be corrected through an interaction snapshot"
+            );
+        };
+        assert_eq!(
+            interaction_snapshot.selection.selected_main_window_playlist,
+            None
+        );
+        let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
+            panic!("stale shared-playlist menu state should be corrected through a menu snapshot");
+        };
+        assert_eq!(
+            menu_snapshot.action_overrides,
+            vec![
+                MenuActionRuntimeOverride {
+                    section_title: "Window",
+                    action_label: "Show Playlist",
+                    enabled: false,
+                },
+                MenuActionRuntimeOverride {
+                    section_title: "Playback",
+                    action_label: "Playlist Actions",
+                    enabled: false,
+                },
+            ]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(!state.main_window.shared_playlist_enabled);
+        assert!(state.main_window.playlist.is_empty());
+        assert!(!state.main_window.playback.can_manage_playlist);
+        assert_eq!(state.selection.selected_main_window_playlist, None);
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Window")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Show Playlist")
+                })
+                .is_some_and(|action| !action.enabled)
+        );
+        assert!(
+            state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Playback")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == "Playlist Actions")
+                })
+                .is_some_and(|action| !action.enabled)
+        );
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when_session_has_no_playstate()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_snapshot.playback_paused = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_snapshot
+        )));
+        assert!(state.main_window.playback_paused);
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        expected_snapshot.playback_paused = false;
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                expected_snapshot
+            )]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(!state.main_window.playback_paused);
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when_session_has_no_override()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        stale_snapshot.autoplay_active = true;
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            stale_snapshot
+        )));
+        assert!(state.main_window.autoplay_active);
+
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        expected_snapshot.autoplay_active = false;
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                expected_snapshot
+            )]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(!state.main_window.autoplay_active);
+        assert!(
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test session transport listener should expose a local address");
+        let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test session transport server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("test session transport server should clone the accepted stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("test session transport server should read one startup hello line");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+                )
+                .expect("test session transport server should write one inbound hello line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound hello line");
+            hello_ready_tx
+                .send(())
+                .expect("test session transport server should signal hello readiness");
+            let mut chat_line = String::new();
+            reader
+                .read_line(&mut chat_line)
+                .expect("test session transport server should read one outbound chat line");
+            stream
+                .write_all(br#"{"Chat":{"username":"alice","message":"hello room"}}"#)
+                .expect("test session transport server should write one inbound line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound line");
+            (hello_line, chat_line)
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let mut combined_actions = handle.drain_actions();
+        for action in combined_actions.iter().cloned() {
+            assert!(state.apply(action));
+        }
+        hello_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should send its hello promptly");
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let hello_sync_actions = handle.drain_actions();
+        for action in hello_sync_actions.iter().cloned() {
+            assert!(state.apply(action));
+        }
+        combined_actions.extend(hello_sync_actions);
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned(),)));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello room".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let second_actions = handle.drain_actions();
+        for action in second_actions.iter().cloned() {
+            assert!(state.apply(action));
+        }
+        combined_actions.extend(second_actions);
+
+        let (hello_line, chat_line) = server_thread
+            .join()
+            .expect("test session transport server thread should complete");
+        assert!(hello_line.contains("\"Hello\""));
+        assert!(hello_line.contains("\"alice\""));
+        assert!(chat_line.contains("\"Chat\""));
+        assert!(chat_line.contains("hello room"));
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let third_actions = handle.drain_actions();
+        for action in third_actions.iter().cloned() {
+            assert!(state.apply(action));
+        }
+        combined_actions.extend(third_actions);
+
+        assert!(
+            combined_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend)),
+            "tcp transport should preserve the local send completion"
+        );
+        assert!(
+            combined_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushChatMessage { sender, message }
+                    if sender == "alice" && message == "hello room"
+            )),
+            "tcp transport should feed the server response back through the client-core chat adapter"
+        );
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|entry| (entry.sender.clone(), entry.message.clone())),
+            Some(("alice".to_owned(), "hello room".to_owned()))
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_public_server_connect()
+     {
+        use std::{
+            io::{BufRead, BufReader},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let first_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("first test session transport listener should bind");
+        let first_address = first_listener
+            .local_addr()
+            .expect("first test session transport listener should expose a local address");
+        let second_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("second test session transport listener should bind");
+        let second_address = second_listener
+            .local_addr()
+            .expect("second test session transport listener should expose a local address");
+
+        let (first_hello_tx, first_hello_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first_server_thread = std::thread::spawn(move || {
+            let (stream, _) = first_listener
+                .accept()
+                .expect("first test session transport server should accept one client");
+            let mut reader = BufReader::new(stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("first test session transport server should read one startup hello line");
+            first_hello_tx
+                .send(hello_line)
+                .expect("first test session transport server should report its hello");
+            release_first_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first test session transport server should be released after reconnect");
+        });
+
+        let (second_hello_tx, second_hello_rx) = mpsc::channel();
+        let second_server_thread = std::thread::spawn(move || {
+            let (stream, _) = second_listener
+                .accept()
+                .expect("second test session transport server should accept one client");
+            let mut reader = BufReader::new(stream);
+            let mut hello_line = String::new();
+            reader.read_line(&mut hello_line).expect(
+                "second test session transport server should read one reconnect hello line",
+            );
+            second_hello_tx
+                .send(hello_line)
+                .expect("second test session transport server should report its hello");
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+
+        let first_hello_line = first_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first test session transport server should receive the startup hello");
+        assert!(first_hello_line.contains("\"Hello\""));
+        assert!(first_hello_line.contains("\"alice\""));
+
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let reconnect_actions = handle.drain_actions();
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteSelectedPublicServerConnect
+            )),
+            "public-server connect should complete through the client-core session runtime"
+        );
+        for action in reconnect_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        let second_hello_line = second_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second test session transport server should receive the reconnect hello");
+        assert!(second_hello_line.contains("\"Hello\""));
+        assert!(second_hello_line.contains("\"alice\""));
+        assert!(second_hello_line.contains("\"room1\""));
+
+        release_first_tx
+            .send(())
+            .expect("first test session transport server should be releasable");
+        first_server_thread
+            .join()
+            .expect("first test session transport server thread should complete");
+        second_server_thread
+            .join()
+            .expect("second test session transport server thread should complete");
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_loopback_transport_echoes_client_core_chat() {
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned(),)));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello room".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+
+        let actions = handle.drain_actions();
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend)),
+            "loopback transport should preserve the local send completion"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushChatMessage { sender, message }
+                    if sender == "alice" && message == "hello room"
+            )),
+            "loopback transport should feed the encoded chat line back through inbound handling"
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|entry| (entry.sender.clone(), entry.message.clone())),
+            Some(("alice".to_owned(), "hello room".to_owned()))
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_requests() {
+        #[derive(Debug, Default)]
+        struct RecordingSessionState {
+            queued_gui_actions: Vec<GuiShellAction>,
+            sent_chat_messages: Vec<String>,
+            connect_requests: Vec<Option<(String, String)>>,
+            refresh_requests: Vec<Vec<(String, String)>>,
+            search_requests: Vec<Vec<String>>,
+        }
+
+        struct RecordingSessionRuntimeAdapter {
+            state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
+        }
+
+        impl super::GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
+            fn drain_gui_actions(
+                &mut self,
+                _state: &SyncplayGuiShellAppState,
+            ) -> Vec<GuiShellAction> {
+                std::mem::take(
+                    &mut self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .queued_gui_actions,
+                )
+            }
+
+            fn send_chat_message(&mut self, message: String) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .sent_chat_messages
+                    .push(message);
+                Ok(())
+            }
+
+            fn connect_public_server(
+                &mut self,
+                selected_server: Option<(String, String)>,
+            ) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .connect_requests
+                    .push(selected_server);
+                Ok(())
+            }
+
+            fn refresh_public_servers(
+                &mut self,
+                current_servers: Vec<(String, String)>,
+            ) -> Result<Vec<(String, String)>, String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .refresh_requests
+                    .push(current_servers);
+                Ok(vec![(
+                    "Runtime".to_owned(),
+                    "runtime.example:9000".to_owned(),
+                )])
+            }
+
+            fn search_missing_media(
+                &mut self,
+                directories: Vec<String>,
+            ) -> Result<Option<String>, String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .search_requests
+                    .push(directories);
+                Ok(Some("C:/Media/found.mkv".to_owned()))
+            }
+        }
+
+        let session_state =
+            std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_session_runtime(Box::new(RecordingSessionRuntimeAdapter {
+                state: session_state.clone(),
+            }));
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            chat_input_enabled: Some(true),
+            public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut inbound_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        inbound_snapshot.chat.push(MainWindowRuntimeChatSnapshot {
+            sender: "Server".to_owned(),
+            message: "Welcome.".to_owned(),
+        });
+
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .queued_gui_actions = vec![
+            GuiShellAction::PushChatMessage {
+                sender: "Server".to_owned(),
+                message: "Welcome.".to_owned(),
+            },
+            GuiShellAction::ApplyGuiRuntimeSnapshot(SyncplayGuiRuntimeSnapshot {
+                active_view: GuiShellView::PublicServers,
+                open_modal: None,
+                main_window: inbound_snapshot,
+                public_servers: state.public_servers.clone(),
+                media_search: state.media_search.clone(),
+                tls_prompt_expected: state.menus.tls_prompt_expected,
+                update_notice_expected: state.menus.update_notice_expected,
+                about_dialog_available: state.menus.about_dialog_available,
+            }),
+        ];
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let inbound_actions = handle.drain_actions();
+        assert_eq!(inbound_actions.len(), 2);
+        assert!(matches!(
+            &inbound_actions[0],
+            GuiShellAction::PushChatMessage { sender, message }
+                if sender == "Server" && message == "Welcome."
+        ));
+        assert!(matches!(
+            &inbound_actions[1],
+            GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot)
+                if snapshot.active_view == GuiShellView::PublicServers
+        ));
+        for action in inbound_actions {
+            assert!(state.apply(action));
+        }
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("Welcome.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hello".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let chat_actions = handle.drain_actions();
+        assert_eq!(chat_actions, vec![GuiShellAction::CompleteLocalChatSend]);
+        for action in chat_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("hello")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let connect_actions = handle.drain_actions();
+        assert_eq!(
+            connect_actions,
+            vec![GuiShellAction::CompleteSelectedPublicServerConnect]
+        );
+        for action in connect_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+
+        assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::RefreshPublicServers(vec![(
+                "Ignored".to_owned(),
+                "ignored.example:8999".to_owned(),
+            )]),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let refresh_actions = handle.drain_actions();
+        assert_eq!(
+            refresh_actions,
+            vec![GuiShellAction::CompletePublicServerRefresh(vec![(
+                "Runtime".to_owned(),
+                "runtime.example:9000".to_owned(),
+            )])]
+        );
+        for action in refresh_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .iter()
+                .map(|row| (row.label.as_str(), row.address.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Runtime", "runtime.example:9000")]
+        );
+
+        assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let search_actions = handle.drain_actions();
+        assert_eq!(
+            search_actions,
+            vec![GuiShellAction::CompleteMissingMediaSearch(Some(
+                "C:/Media/found.mkv".to_owned(),
+            ))]
+        );
+        for action in search_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Missing media found: C:/Media/found.mkv.")
+        );
+
+        let session_state = session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(session_state.sent_chat_messages, vec!["hello".to_owned()]);
+        assert_eq!(
+            session_state.connect_requests,
+            vec![Some(("Primary".to_owned(), "syncplay.pl:8999".to_owned()))]
+        );
+        assert_eq!(
+            session_state.refresh_requests,
+            vec![vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]]
+        );
+        assert_eq!(
+            session_state.search_requests,
+            vec![vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]]
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
+        #[derive(Debug, Default)]
+        struct TelemetryPlayerState {
+            local_file_updates: Vec<syncplay_player_api::LocalFileUpdate>,
+            playback_updates: Vec<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+        }
+
+        struct TelemetryPlayerAdapter {
+            state: std::sync::Arc<std::sync::Mutex<TelemetryPlayerState>>,
+        }
+
+        impl super::PlayerAdapter for TelemetryPlayerAdapter {
+            fn name(&self) -> &'static str {
+                "telemetry"
+            }
+
+            fn take_playback_telemetry_update(
+                &mut self,
+            ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .playback_updates
+                    .pop()
+            }
+
+            fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .local_file_updates
+                    .pop()
+            }
+        }
+
+        let player_state =
+            std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+        let mut owner = super::GuiPersistedConfigRuntimeOwner {
+            config_path: None,
+            session: None,
+            session_transport: None,
+            session_transport_driver: None,
+            player: Some(Box::new(TelemetryPlayerAdapter {
+                state: player_state.clone(),
+            })),
+            player_unavailability_reason: None,
+            player_local_file: None,
+            player_position_seconds: None,
+            player_paused: None,
+        };
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let bootstrap_actions = handle.drain_actions();
+        assert_eq!(
+            bootstrap_actions,
+            vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "(no room joined)".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: Vec::new(),
+                    chat: Vec::new(),
+                    can_toggle_pause: true,
+                    can_seek: true,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Toggle Pause",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Seek",
+                            enabled: true,
+                        },
+                    ],
+                    tls_prompt_expected: false,
+                    update_notice_expected: false,
+                    about_dialog_available: true,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: true,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
+                }),
+            ]
+        );
+        for action in bootstrap_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.main_window.playback.can_toggle_pause);
+        assert!(state.main_window.playback.can_seek);
+        assert!(state.commands.can_toggle_pause);
+
+        assert!(state.apply(GuiShellAction::EditConfigurationBool {
+            section: "Chat",
+            label: "Chat Input",
+            value: true,
+        }));
+        assert!(
+            state.commands.can_send_chat_message,
+            "config-driven chat availability should update immediately when no runtime field override is active"
+        );
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let refreshed_command_actions = handle.drain_actions();
+        assert!(refreshed_command_actions.is_empty());
+        for action in refreshed_command_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.commands.can_send_chat_message);
+        assert!(state.commands.can_reset_configuration);
+
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .local_file_updates
+            .push(
+                syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_duration_seconds(93.5)
+                    .with_size_bytes(734003200),
+            );
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let local_file_actions = handle.drain_actions();
+        assert_eq!(
+            local_file_actions,
+            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                MainWindowRuntimeSnapshot {
+                    room_name: "(no room joined)".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: vec!["episode1.mkv [93.500s, 734003200 bytes]".to_owned(),],
+                    chat: Vec::new(),
+                    can_toggle_pause: true,
+                    can_seek: true,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                },
+            )]
+        );
+        for action in local_file_actions {
+            assert!(state.apply(action));
+        }
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["episode1.mkv [93.500s, 734003200 bytes]"]
+        );
+
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .playback_updates
+            .push(syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                MainWindowRuntimeSnapshot {
+                    room_name: "(no room joined)".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: vec!["episode1.mkv [93.500s, 734003200 bytes]".to_owned(),],
+                    chat: Vec::new(),
+                    can_toggle_pause: true,
+                    can_seek: true,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: true,
+                    autoplay_active: false,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_seek() {
+        #[derive(Debug, Default)]
+        struct RecordingPlayerState {
+            opened_paths: Vec<String>,
+            set_paused_values: Vec<bool>,
+            set_positions: Vec<f64>,
+        }
+
+        struct RecordingPlayerAdapter {
+            state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+        }
+
+        impl super::PlayerAdapter for RecordingPlayerAdapter {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+
+            fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .opened_paths
+                    .push(path.to_owned());
+                Ok(())
+            }
+
+            fn set_position(
+                &mut self,
+                position_seconds: f64,
+            ) -> Result<(), syncplay_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_positions
+                    .push(position_seconds);
+                Ok(())
+            }
+
+            fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_paused_values
+                    .push(paused);
+                Ok(())
+            }
+        }
+
+        let player_state =
+            std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+        let mut owner = super::GuiPersistedConfigRuntimeOwner {
+            config_path: None,
+            session: None,
+            session_transport: None,
+            session_transport_driver: None,
+            player: Some(Box::new(RecordingPlayerAdapter {
+                state: player_state.clone(),
+            })),
+            player_unavailability_reason: None,
+            player_local_file: None,
+            player_position_seconds: None,
+            player_paused: None,
+        };
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("mpv".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec![
+                "C:/Media/episode1.mkv".to_owned(),
+                "C:/Media/episode2.mkv".to_owned(),
+            ],
+            load_into_shared_playlist: false,
+        });
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let open_actions = handle.drain_actions();
+        assert_eq!(
+            open_actions,
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: "Opened the first selected media file through the attached recording player: C:/Media/episode1.mkv. Ignored 1 additional selections."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Opened the first selected media file through the attached recording player: C:/Media/episode1.mkv. Ignored 1 additional selections."
+                        .to_owned(),
+                ),
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+                    room_name: "(no room joined)".to_owned(),
+                    shared_playlist_enabled: false,
+                    controlled_room_active: false,
+                    users: vec![MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    }],
+                    playlist: vec!["episode1.mkv".to_owned()],
+                    chat: Vec::new(),
+                    can_toggle_pause: true,
+                    can_seek: true,
+                    can_set_ready: true,
+                    can_manage_playlist: false,
+                    playback_paused: false,
+                    autoplay_active: false,
+                }),
+            ]
+        );
+        for action in open_actions {
+            assert!(state.apply(action));
+        }
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["episode1.mkv"]
+        );
+
+        assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::TogglePlaybackPause,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let toggle_actions = handle.drain_actions();
+        assert_eq!(
+            toggle_actions,
+            vec![GuiShellAction::CompletePlaybackPauseToggle]
+        );
+        for action in toggle_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.main_window.playback_paused);
+        assert_eq!(
+            player_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths,
+            vec!["C:/Media/episode1.mkv".to_owned()]
+        );
+        assert_eq!(
+            player_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values,
+            vec![true]
+        );
+
+        handle.push_request(GuiRuntimeRequest::SeekOffset(12.5));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: "Applied a 12.5 second seek via the attached recording player (target 12.500 seconds)."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Applied a 12.5 second seek via the attached recording player (target 12.500 seconds)."
+                        .to_owned(),
+                ),
+            ]
+        );
+
+        handle.push_request(GuiRuntimeRequest::SeekOffset(-2.5));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert_eq!(
+            handle.drain_actions(),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: "Applied a -2.5 second seek via the attached recording player (target 10.000 seconds)."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Applied a -2.5 second seek via the attached recording player (target 10.000 seconds)."
+                        .to_owned(),
+                ),
+            ]
+        );
+        assert_eq!(
+            player_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions,
+            vec![12.5, 10.0]
+        );
+    }
+
+    #[test]
+    fn gui_native_app_and_preview_runtime_map_seek_prompt_input_to_runtime_actions() {
+        assert_eq!(
+            GuiNativeApp::parse_seek_offset_seconds(" 12.5 "),
+            Some(12.5)
+        );
+        assert_eq!(GuiNativeApp::parse_seek_offset_seconds("NaN"), None);
+        assert_eq!(GuiNativeApp::parse_seek_offset_seconds(""), None);
+
+        let mut runtime = GuiPreviewRuntimeBridge;
+        assert_eq!(
+            runtime.actions_for_seek_offset(12.5),
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Seek requested: 12.5 seconds.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent("Seek requested: 12.5 seconds.".to_owned(),),
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_widget_text_preview_renderer_formats_widget_nodes() {
+        let mut renderer = GuiWidgetTextPreviewRenderer::default();
+        let widget = GuiWidgetNode::leaf(
+            "widget:test",
+            "Test Widget",
+            GuiWidgetKind::Button,
+            Some("click".to_owned()),
+            false,
+            true,
+        );
+
+        widget.render_with(&mut renderer);
+
+        assert_eq!(
+            renderer.finish(),
+            "- Test Widget [button] id=widget:test, enabled=no, selected=yes, value=click"
+        );
+    }
+}

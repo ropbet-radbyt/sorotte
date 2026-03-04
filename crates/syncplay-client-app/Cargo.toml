@@ -1,0 +1,11 @@
+[package]
+name = "syncplay-client-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+syncplay-client-core = { path = "../syncplay-client-core" }

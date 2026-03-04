@@ -4,9 +4,11 @@ members = [
     "crates/syncplay-core",
     "crates/syncplay-server",
     "crates/syncplay-client-core",
+    "crates/syncplay-client-app",
     "crates/syncplay-player-api",
     "crates/syncplay-player-mpv",
     "crates/syncplay-cli",
+    "crates/syncplay-gui",
     "crates/syncplay-sim",
     "crates/syncplay-compat",
 ]

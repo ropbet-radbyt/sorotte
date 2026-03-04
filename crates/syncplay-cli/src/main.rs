@@ -3,16 +3,120 @@ use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
+#[cfg(test)]
+use syncplay_client_app::app_boundary::commands::{
+    LocalInputCommand, LocalOffsetCommand, controlled_room_base_name_legacy_compatible,
+    generate_room_password_legacy_compatible, parse_local_input_chat_message,
+    playlist_index_in_bounds_legacy_compatible,
+};
+#[cfg(test)]
+use syncplay_client_app::app_boundary::diagnostics::{
+    reconnect_correction_metrics_delta_alert_lines,
+    reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible,
+    reconnect_correction_metrics_delta_json_line, reconnect_correction_metrics_delta_message,
+    reconnect_correction_metrics_delta_message_localized_legacy_compatible,
+    reconnect_correction_state_snapshot_json_line, reconnect_correction_state_snapshot_message,
+    reconnect_correction_state_snapshot_message_localized_legacy_compatible,
+    reconnect_correction_state_threshold_alert_lines,
+};
+#[cfg(test)]
+use syncplay_client_app::app_boundary::notifications::{
+    controller_auth_transition_notification_message as shared_controller_auth_transition_notification_message,
+    format_duration_legacy as shared_format_duration_legacy,
+    format_file_difference_summary as shared_format_file_difference_summary,
+    localized_file_difference_summary_legacy_compatible as shared_localized_file_difference_summary_legacy_compatible,
+    reconnect_transition_notification_message as shared_reconnect_transition_notification_message,
+    user_change_notification_message as shared_user_change_notification_message,
+};
+#[cfg(test)]
+use syncplay_client_app::app_boundary::persistence::{
+    parse_syncplay_ini_stored_client_settings_mvp as shared_parse_syncplay_ini_stored_client_settings_mvp,
+    upsert_syncplay_ini_stored_client_settings_mvp as shared_upsert_syncplay_ini_stored_client_settings_mvp,
+};
+use syncplay_client_app::app_boundary::{
+    commands::{
+        LocalInputCommandPlanningContext, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
+        parse_local_input_command, parse_seek_time_seconds_legacy_like,
+        plan_local_input_command_legacy_compatible, plan_local_input_dispatch_legacy_compatible,
+        plan_local_runtime_dispatch_legacy_compatible,
+        render_local_input_display_lines_legacy_compatible as shared_render_local_input_display_lines_legacy_compatible,
+    },
+    compatibility::{
+        legacy_configuration_getter_ini_compat_entries,
+        legacy_configuration_getter_startup_compat_entries,
+    },
+    diagnostics::{
+        ReconnectCorrectionDiagnosticsAlertThresholds, ReconnectCorrectionDiagnosticsFormat,
+        ReconnectCorrectionDiagnosticsState,
+        next_reconnect_correction_diagnostic_lines_legacy_compatible as shared_next_reconnect_correction_diagnostic_lines_legacy_compatible,
+    },
+    language::{
+        legacy_runtime_language_selection_line_legacy_compatible,
+        normalized_legacy_runtime_language_tag_legacy_compatible,
+        resolve_legacy_runtime_language_tag_legacy_compatible,
+    },
+    notifications::{
+        FileDifferenceNotificationState,
+        controller_auth_notification_hidden_from_osd as shared_controller_auth_notification_hidden_from_osd,
+        controller_auth_transition_notification_message_localized_legacy_compatible as shared_controller_auth_transition_notification_message_localized_legacy_compatible,
+        localized_file_difference_notification_line_legacy_compatible as shared_localized_file_difference_notification_line_legacy_compatible,
+        next_file_difference_notification_summary_legacy_compatible as shared_next_file_difference_notification_summary_legacy_compatible,
+        reconnect_transition_notification_message_localized_legacy_compatible as shared_reconnect_transition_notification_message_localized_legacy_compatible,
+        user_change_notification_hidden_from_osd as shared_user_change_notification_hidden_from_osd,
+        user_change_notification_message_localized_legacy_compatible as shared_user_change_notification_message_localized_legacy_compatible,
+    },
+    persistence::{
+        clear_syncplay_ini_stored_client_settings_mvp_at_path as shared_clear_syncplay_ini_stored_client_settings_mvp_at_path,
+        load_syncplay_ini_stored_client_settings_mvp_from_path as shared_load_syncplay_ini_stored_client_settings_mvp_from_path,
+        update_syncplay_ini_stored_client_settings_mvp_at_path as shared_update_syncplay_ini_stored_client_settings_mvp_at_path,
+        upsert_syncplay_ini_stored_client_settings_mvp_at_path as shared_upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    },
+    session::{
+        ClientNetworkLoopAttemptDisposition, ClientNetworkLoopAttemptExecutionPlan,
+        ClientNetworkLoopAttemptPlan, ClientNetworkLoopEventPlan,
+        ClientNetworkLoopExecutionOutcome, ClientNetworkLoopReconnectExhaustedErrorAction,
+        ClientNetworkLoopReconnectExhaustedErrorKind, ClientNetworkLoopStartupPlan,
+        ClientNetworkLoopStartupPlanInputs, ConnectedSessionBranchPlan,
+        ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction, ConnectedSessionDrainPlan,
+        ConnectedSessionEventExecutionPlan, ConnectedSessionInboundApplyPlan,
+        ConnectedSessionInboundPostApplyAction, ConnectedSessionInboundPostApplyPlan,
+        ConnectedSessionOuterLoopExitKind as ConnectedSessionExit, ConnectedSessionProtocolPlan,
+        ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
+        ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
+        client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible,
+        client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible,
+        client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible,
+        client_network_loop_execution_outcome_legacy_compatible,
+        client_network_loop_reconnect_exhausted_error_action_legacy_compatible,
+        client_network_loop_startup_plan_legacy_compatible,
+        client_reconnect_backoff_plan_legacy_compatible,
+        connected_session_autoplay_tick_event_execution_plan_legacy_compatible,
+        connected_session_drain_actions_legacy_compatible,
+        connected_session_inbound_message_event_execution_plan_legacy_compatible,
+        connected_session_inbound_post_apply_actions_legacy_compatible,
+        connected_session_local_input_event_execution_plan_legacy_compatible,
+        connected_session_runtime_step_actions_legacy_compatible,
+    },
+    state::{
+        AutoplayThresholdOverride, StoredClientSettingsEnvPresence, StoredClientSettingsMvp,
+        normalize_controlled_room_input_legacy_compatible as shared_normalize_controlled_room_input_legacy_compatible,
+        parse_autoplay_min_users_override_legacy_compatible,
+        parse_host_and_optional_port_from_host_arg_legacy_compatible as shared_parse_host_and_optional_port_from_host_arg_legacy_compatible,
+        parse_unpause_action_mode_legacy_compatible,
+        stored_client_settings_config_plan_legacy_compatible,
+    },
+};
+#[cfg(test)]
+use syncplay_client_core::FileDifferenceSummary;
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
-    ClientSession, ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
-    QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
-    ReconnectStateRestoreCorrectionPolicyMode, ReconnectStateRestoreCorrectionStateSnapshot,
+    ClientSession, ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
+    ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionPolicyMode,
     ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
 };
 use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
@@ -27,15 +131,13 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::Instant;
 
-const ROUND_HALF_EPSILON: f64 = 1e-12;
-const CONTROL_ROOM_HASH_LEN: usize = 12;
-const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
-const UNKNOWN_COMMAND_MESSAGE_LEGACY: &str = "Unrecognized command";
-const PLAYLIST_INVALID_INDEX_ERROR_LEGACY: &str = "Invalid playlist index";
-const QUEUE_MISSING_FILE_ERROR_LEGACY: &str = "No file/url given";
-const PROJECT_URL_LEGACY: &str = "https://syncplay.pl/";
 const PLAYER_DRIFT_DIAGNOSTIC_THRESHOLD_SECONDS: f64 = 1.0;
-static ROOM_PASSWORD_NONCE: AtomicU64 = AtomicU64::new(0);
+const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 7 * 86400;
+const LEGACY_FOLDER_SEARCH_FIRST_FILE_TIMEOUT_SECONDS_DEFAULT: f64 = 25.0;
+const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
+const LEGACY_FOLDER_SEARCH_WARNING_THRESHOLD_SECONDS_DEFAULT: f64 = 2.0;
+const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
+static LEGACY_RUNTIME_LANGUAGE_TAG_UTC_SAFE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct ClientLoopConfig {
@@ -86,6 +188,7 @@ struct LegacyClientArgOverrides {
     no_store: bool,
     debug_requested: bool,
     force_gui_prompt_requested: bool,
+    no_gui_requested: bool,
     clear_gui_data_requested: bool,
     language: Option<String>,
     player_path: Option<String>,
@@ -114,303 +217,226 @@ impl LegacyClientArgOverrides {
             || self.file.is_some()
             || !self.player_args.is_empty()
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegacyConfigurationGetterCompatibilityStatus {
-    Supported,
-    Deferred,
-    Ignored,
-}
-
-impl LegacyConfigurationGetterCompatibilityStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Supported => "supported",
-            Self::Deferred => "deferred",
-            Self::Ignored => "ignored",
-        }
+    fn should_halt_for_legacy_force_gui_prompt_compatibility(&self) -> bool {
+        self.force_gui_prompt_requested && !self.no_gui_requested
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LegacyConfigurationGetterStartupCompatEntry {
-    input: &'static str,
-    status: LegacyConfigurationGetterCompatibilityStatus,
-    note: &'static str,
+fn legacy_runtime_language_tag_storage_legacy_compatible() -> &'static Mutex<Option<String>> {
+    LEGACY_RUNTIME_LANGUAGE_TAG_UTC_SAFE.get_or_init(|| Mutex::new(None))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LegacyConfigurationGetterIniCompatEntry {
-    key: &'static str,
-    status: LegacyConfigurationGetterCompatibilityStatus,
-    note: &'static str,
+fn set_legacy_runtime_language_for_process_legacy_compatible(language: Option<String>) {
+    let mut guard = legacy_runtime_language_tag_storage_legacy_compatible()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = language;
 }
 
-fn legacy_configuration_getter_startup_compat_entries()
--> &'static [LegacyConfigurationGetterStartupCompatEntry] {
-    use LegacyConfigurationGetterCompatibilityStatus::{Deferred, Ignored, Supported};
-
-    &[
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--no-gui",
-            status: Supported,
-            note: "starts client mode in syncplay-cli",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--host",
-            status: Supported,
-            note: "legacy host[:port] parsing supported",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--name",
-            status: Supported,
-            note: "legacy username override supported",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--debug",
-            status: Ignored,
-            note: "accepted with compatibility warning; no debug mode effect",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--force-gui-prompt",
-            status: Ignored,
-            note: "GUI-only flag; accepted with compatibility warning",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--no-store",
-            status: Supported,
-            note: "disables stored-settings persistence",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--room",
-            status: Supported,
-            note: "legacy room / controlled-room password parsing supported",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--password",
-            status: Supported,
-            note: "controlled-room password override supported",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--player-path",
-            status: Deferred,
-            note: "managed mpv launch supported; unmanaged external player startup is best-effort (no adapter integration)",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "-psn",
-            status: Ignored,
-            note: "macOS launcher artifact; consumed and ignored",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--language",
-            status: Deferred,
-            note: "persisted to syncplay.ini [general] only; runtime localization not implemented",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "file",
-            status: Supported,
-            note: "startup parsing and routing supported across managed mpv, unmanaged external launch, and explicit-mpv-IPC open-file; non-startup side effects (GUI/relative-config) are tracked separately",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--clear-gui-data",
-            status: Supported,
-            note: "clears syncplay.ini stored settings and legacy GUI QSettings stores (PlayerList, MediaBrowseDialog, MainWindow, Interface, MoreSettings)",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--version",
-            status: Supported,
-            note: "prints syncplay-cli version and exits",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "--load-playlist-from-file",
-            status: Supported,
-            note: "connect-time one-shot playlistChange + playlistIndex(0) after server Hello",
-        },
-        LegacyConfigurationGetterStartupCompatEntry {
-            input: "_args",
-            status: Deferred,
-            note: "forwarded to managed mpv/unmanaged external launch; explicit-mpv-IPC supports best-effort runtime subset (--pause/--start/--speed/--volume/--mute/--deinterlace/--keepaspect/--keepaspect-window/--sub-visibility/--osd-bar/--fullscreen/--ontop/--border/--force-window/--keep-open/--keep-open-pause/--cursor-autohide-fs-only/--stop-screensaver/--window-maximized/--window-minimized) only",
-        },
-    ]
+fn current_legacy_runtime_language_tag_legacy_compatible() -> Option<String> {
+    legacy_runtime_language_tag_storage_legacy_compatible()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
-fn legacy_configuration_getter_ini_compat_entries()
--> &'static [LegacyConfigurationGetterIniCompatEntry] {
-    use LegacyConfigurationGetterCompatibilityStatus::{Deferred, Ignored, Supported};
+fn legacy_utc_timestamp_string_legacy_compatible(now: SystemTime) -> String {
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let total_seconds = duration.as_secs() as i64;
+    let days_since_epoch = total_seconds.div_euclid(86_400);
+    let seconds_of_day = total_seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let millis = duration.subsec_millis();
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}")
+}
 
-    &[
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "server_data.host",
-            status: Supported,
-            note: "loaded/persisted into client host",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "server_data.port",
-            status: Supported,
-            note: "loaded/persisted into client port",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "server_data.password",
-            status: Supported,
-            note: "loaded from syncplay.ini/env into outbound client Hello password field (parse/upsert preservation also supported)",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.name",
-            status: Supported,
-            note: "loaded/persisted into username",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.room",
-            status: Supported,
-            note: "loaded/persisted into room (controlled-room suffix normalization preserved)",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.autoplayInitialState",
-            status: Supported,
-            note: "loaded/persisted into autoplay enabled default",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.autoplayRequireSameFilenames",
-            status: Supported,
-            note: "loaded/persisted into readiness autoplay config",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.readyAtStart",
-            status: Supported,
-            note: "loaded/persisted into connect-time readiness auto-ready behavior",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.sharedPlaylistEnabled",
-            status: Supported,
-            note: "loaded/persisted into CLI shared-playlist feature advertisement and outbound playlist action gating (GUI playlist UX semantics remain out of scope)",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.pauseOnLeave",
-            status: Supported,
-            note: "loaded/persisted into client behavior config",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.loopAtEndOfPlaylist",
-            status: Supported,
-            note: "loaded/persisted into client behavior config",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.loopSingleFiles",
-            status: Supported,
-            note: "loaded/persisted into client behavior config",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.unpauseAction",
-            status: Supported,
-            note: "loaded/persisted into readiness autoplay config",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.autoplayMinUsers",
-            status: Supported,
-            note: "loaded/persisted into readiness autoplay threshold",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.filenamePrivacyMode",
-            status: Supported,
-            note: "loaded/persisted into filename privacy mode",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.filesizePrivacyMode",
-            status: Supported,
-            note: "loaded/persisted into filesize privacy mode",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.playerPath",
-            status: Supported,
-            note: "loaded/persisted into legacy player startup path default (managed/unmanaged startup semantics remain partial)",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.perPlayerArguments",
-            status: Supported,
-            note: "Python-serialized dict is loaded/persisted for startup player-arg defaults keyed by playerPath (startup runtime semantics remain partial)",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.roomList",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI/history room-list behavior is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}",
-            status: Supported,
-            note: "loaded/persisted into desync correction threshold tuning",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
-            status: Supported,
-            note: "loaded/persisted into desync correction feature toggles",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.dontSlowDownWithMe",
-            status: Supported,
-            note: "loaded/persisted into CLI desync fast-forward gating runtime flag",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{mediaSearchDirectories,publicServers}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI file-discovery and server-browser runtime behavior is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; folder-search runtime tuning is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.forceGuiPrompt",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI prompt/reset behavior is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "client_settings.{onlySwitchToTrustedDomains,trustedDomains}",
-            status: Supported,
-            note: "loaded/persisted into trusted-domain playlist URL policy",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI-only behavior toggles are not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI chat layout/timeout behavior is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI chat input/output presentation behavior is not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.showDurationNotification",
-            status: Supported,
-            note: "loaded/persisted into readiness notification behavior",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.{showSameRoomOSD,showOSDWarnings,showNonControllerOSD,showDifferentRoomOSD}",
-            status: Supported,
-            note: "loaded/persisted into OSD visibility behavior toggles",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "gui.* (remaining unenumerated GUI keys / QSettings visual state)",
-            status: Ignored,
-            note: "remaining GUI-only keys not explicitly enumerated above and non-INI GUI QSettings visual state are not implemented in syncplay-cli",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "general.language",
-            status: Supported,
-            note: "persisted and loaded in syncplay.ini; runtime localization remains deferred",
-        },
-        LegacyConfigurationGetterIniCompatEntry {
-            key: "general.{checkForUpdatesAutomatically,lastCheckedForUpdates}",
-            status: Deferred,
-            note: "syncplay.ini parse/upsert preservation supported; GUI/update-check runtime state is not implemented in syncplay-cli",
-        },
-    ]
+fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Option<SystemTime> {
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    if bytes.len() != 23
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b' '
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'.'
+    {
+        return None;
+    }
+
+    let year = value[0..4].parse::<i64>().ok()?;
+    let month = value[5..7].parse::<u32>().ok()?;
+    let day = value[8..10].parse::<u32>().ok()?;
+    let hour = value[11..13].parse::<u64>().ok()?;
+    let minute = value[14..16].parse::<u64>().ok()?;
+    let second = value[17..19].parse::<u64>().ok()?;
+    let millis = value[20..23].parse::<u64>().ok()?;
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+        || millis > 999
+    {
+        return None;
+    }
+
+    let days_since_epoch =
+        days_since_unix_epoch_from_civil_legacy_compatible(year, month as i64, day as i64);
+    if days_since_epoch < 0 {
+        return None;
+    }
+
+    let total_seconds = days_since_epoch as u64 * 86_400 + hour * 3_600 + minute * 60 + second;
+    Some(UNIX_EPOCH + Duration::from_secs(total_seconds) + Duration::from_millis(millis))
+}
+
+fn civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch: i64) -> (i64, i64, i64) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
+}
+
+fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day: i64) -> i64 {
+    let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let yoe = adjusted_year - era * 400;
+    let mp = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn should_run_headless_automatic_update_check_legacy_compatible(
+    settings: Option<&StoredClientSettingsMvp>,
+    now: SystemTime,
+) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    if settings.check_for_updates_automatically != Some(true) {
+        return false;
+    }
+    let Some(last_checked) = settings
+        .last_checked_for_updates
+        .as_deref()
+        .and_then(parse_legacy_utc_timestamp_legacy_compatible)
+    else {
+        return true;
+    };
+
+    now.duration_since(last_checked)
+        .map(|elapsed| elapsed.as_secs() > LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS)
+        .unwrap_or(false)
+}
+
+fn persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible(
+    timestamp: &str,
+) -> anyhow::Result<()> {
+    let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
+        return Ok(());
+    };
+    shared_update_syncplay_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+        settings.last_checked_for_updates = Some(timestamp.to_owned());
+    })
+}
+
+fn apply_headless_automatic_update_check_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+    settings: Option<&StoredClientSettingsMvp>,
+) {
+    let now = SystemTime::now();
+    if !should_run_headless_automatic_update_check_legacy_compatible(settings, now) {
+        return;
+    }
+
+    eprintln!(
+        "info: legacy automatic update check is due; syncplay-cli records the headless check timestamp but does not perform GUI update dialogs or remote update probing"
+    );
+    if overrides.no_store {
+        return;
+    }
+
+    let timestamp = legacy_utc_timestamp_string_legacy_compatible(now);
+    if let Err(error) =
+        persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible(&timestamp)
+    {
+        eprintln!("warning: failed to persist legacy lastCheckedForUpdates setting: {error}");
+    }
+}
+
+fn resolved_legacy_runtime_language_tag_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+    stored_settings: Option<&StoredClientSettingsMvp>,
+) -> Option<String> {
+    resolve_legacy_runtime_language_tag_legacy_compatible(
+        overrides.language.as_deref(),
+        stored_settings.and_then(|settings| settings.language.as_deref()),
+    )
+    .map(ToOwned::to_owned)
+}
+
+fn legacy_force_gui_prompt_compatibility_line_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+) -> Option<&'static str> {
+    if !overrides.force_gui_prompt_requested {
+        return None;
+    }
+    if overrides.no_gui_requested {
+        Some(
+            "note: legacy --force-gui-prompt was overridden by --no-gui; continuing in headless mode",
+        )
+    } else {
+        Some(
+            "note: legacy --force-gui-prompt requested GUI configuration flow; syncplay-cli has no GUI, so startup is halted. Re-run with --no-gui to continue headless.",
+        )
+    }
+}
+
+fn should_halt_for_stored_force_gui_prompt_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+    settings: &StoredClientSettingsMvp,
+) -> bool {
+    !overrides.force_gui_prompt_requested
+        && settings.force_gui_prompt == Some(true)
+        && !overrides.no_gui_requested
+}
+
+fn stored_force_gui_prompt_compatibility_line_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+    settings: &StoredClientSettingsMvp,
+) -> Option<&'static str> {
+    if overrides.force_gui_prompt_requested || settings.force_gui_prompt != Some(true) {
+        return None;
+    }
+    if overrides.no_gui_requested {
+        Some(
+            "note: stored client_settings.forceGuiPrompt = True was overridden by --no-gui; continuing in headless mode",
+        )
+    } else {
+        Some(
+            "note: stored client_settings.forceGuiPrompt = True requested GUI configuration flow; syncplay-cli has no GUI, so startup is halted. Re-run with --no-gui or clear the stored setting to continue headless.",
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -444,12 +470,6 @@ struct ClientBehaviorOverrides {
     reconnect_state_restore_correction_recovery_cooldown_reconnect_cycles: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AutoplayThresholdOverride {
-    Disable,
-    Set(usize),
-}
-
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ReadinessAutoplayOverrides {
     unpause_action: Option<UnpauseActionMode>,
@@ -462,23 +482,6 @@ struct ReadinessAutoplayOverrides {
 struct ChatPolicyOverrides {
     max_chat_message_length: Option<usize>,
     apply_server_max_chat_message_length: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectedSessionExit {
-    RuntimeWindowElapsed,
-    TransportClosed,
-}
-
-#[derive(Debug, Default)]
-struct FileDifferenceNotificationState {
-    last_summary: Option<String>,
-}
-
-#[derive(Debug, Default)]
-struct ReconnectCorrectionDiagnosticsState {
-    last_metrics: Option<ReconnectStateRestoreCorrectionMetrics>,
-    last_snapshot: Option<ReconnectStateRestoreCorrectionStateSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -519,7 +522,6 @@ struct LegacyExplicitMpvIpcStartupPlayerArgs {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
     supported_tokens: Vec<String>,
-    recognized_but_deferred_tokens: Vec<String>,
     malformed_tokens: Vec<String>,
     unsupported_tokens: Vec<String>,
 }
@@ -536,93 +538,19 @@ struct LegacyExternalPlayerLaunchSpec {
     args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ReconnectCorrectionDiagnosticsAlertThresholds {
-    action_failures_delta: Option<u64>,
-    retry_exhaustions_delta: Option<u64>,
-    disables_after_repeated_mismatches_delta: Option<u64>,
-    consecutive_mismatch_cycles: Option<u32>,
-    consecutive_retry_exhaustions: Option<u32>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReconnectCorrectionDiagnosticsFormat {
-    Text,
-    Json,
+struct ClientLoopDiagnosticsConfig {
+    log_player_telemetry: bool,
+    log_player_drift: bool,
+    reconnect_correction_diagnostics_format: Option<ReconnectCorrectionDiagnosticsFormat>,
+    reconnect_correction_diagnostics_alert_thresholds:
+        ReconnectCorrectionDiagnosticsAlertThresholds,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-struct StoredClientSettingsMvp {
-    language: Option<String>,
-    check_for_updates_automatically: Option<bool>,
-    last_checked_for_updates: Option<String>,
-    host: Option<String>,
-    port: Option<u16>,
-    server_password: Option<String>,
-    username: Option<String>,
-    room: Option<String>,
-    room_list: Option<Vec<String>>,
-    player_path: Option<String>,
-    per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
-    media_search_directories: Option<Vec<String>>,
-    public_servers: Option<Vec<(String, String)>>,
-    folder_search_first_file_timeout_seconds: Option<f64>,
-    folder_search_timeout_seconds: Option<f64>,
-    folder_search_double_check_interval_seconds: Option<f64>,
-    folder_search_warning_threshold_seconds: Option<f64>,
-    force_gui_prompt: Option<bool>,
-    autoplay_initial_state: Option<bool>,
-    autoplay_require_same_filenames: Option<bool>,
-    ready_at_start: Option<bool>,
-    shared_playlist_enabled: Option<bool>,
-    pause_on_leave: Option<bool>,
-    loop_at_end_of_playlist: Option<bool>,
-    loop_single_files: Option<bool>,
-    only_switch_to_trusted_domains: Option<bool>,
-    trusted_domains: Option<Vec<String>>,
-    rewind_on_desync: Option<bool>,
-    fastforward_on_desync: Option<bool>,
-    slow_on_desync: Option<bool>,
-    dont_slow_down_with_me: Option<bool>,
-    rewind_threshold_seconds: Option<f64>,
-    fastforward_threshold_seconds: Option<f64>,
-    slowdown_threshold_seconds: Option<f64>,
-    unpause_action: Option<UnpauseActionMode>,
-    autoplay_min_users: Option<AutoplayThresholdOverride>,
-    filename_privacy_mode: Option<PrivacyMode>,
-    filesize_privacy_mode: Option<PrivacyMode>,
-    show_duration_notification: Option<bool>,
-    autosave_joins_to_list: Option<bool>,
-    show_osd: Option<bool>,
-    chat_input_enabled: Option<bool>,
-    chat_input_font_underline: Option<bool>,
-    chat_input_font_family: Option<String>,
-    chat_input_relative_font_size: Option<i64>,
-    chat_input_font_weight: Option<i64>,
-    chat_input_font_color: Option<String>,
-    chat_input_position: Option<String>,
-    chat_direct_input: Option<bool>,
-    chat_output_enabled: Option<bool>,
-    chat_output_font_underline: Option<bool>,
-    chat_output_font_family: Option<String>,
-    chat_output_relative_font_size: Option<i64>,
-    chat_output_font_weight: Option<i64>,
-    chat_output_mode: Option<String>,
-    chat_move_osd: Option<bool>,
-    chat_max_lines: Option<i64>,
-    chat_top_margin: Option<i64>,
-    chat_left_margin: Option<i64>,
-    chat_bottom_margin: Option<i64>,
-    chat_osd_margin: Option<i64>,
-    notification_timeout_seconds: Option<i64>,
-    alert_timeout_seconds: Option<i64>,
-    chat_timeout_seconds: Option<i64>,
-    show_same_room_osd: Option<bool>,
-    show_osd_warnings: Option<bool>,
-    show_slowdown_osd: Option<bool>,
-    show_noncontroller_osd: Option<bool>,
-    show_different_room_osd: Option<bool>,
-    show_contact_info: Option<bool>,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LegacyStartupMediaSearchResolution {
+    file: Option<String>,
+    warning_lines: Vec<String>,
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -664,6 +592,40 @@ fn reconnect_correction_diagnostics_alert_thresholds_from_env()
             "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_RETRY_EXHAUSTIONS_THRESHOLD",
         ),
     }
+}
+
+fn client_loop_diagnostics_config_from_env() -> ClientLoopDiagnosticsConfig {
+    ClientLoopDiagnosticsConfig {
+        log_player_telemetry: env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY"),
+        log_player_drift: env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS"),
+        reconnect_correction_diagnostics_format: reconnect_correction_diagnostics_format_from_env(),
+        reconnect_correction_diagnostics_alert_thresholds:
+            reconnect_correction_diagnostics_alert_thresholds_from_env(),
+    }
+}
+
+fn apply_legacy_client_arg_diagnostics_overrides(
+    mut config: ClientLoopDiagnosticsConfig,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> ClientLoopDiagnosticsConfig {
+    if legacy_overrides.is_some_and(|overrides| overrides.debug_requested) {
+        config.log_player_telemetry = true;
+        config.log_player_drift = true;
+        if config.reconnect_correction_diagnostics_format.is_none() {
+            config.reconnect_correction_diagnostics_format =
+                Some(ReconnectCorrectionDiagnosticsFormat::Text);
+        }
+    }
+    config
+}
+
+fn client_loop_diagnostics_config(
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> ClientLoopDiagnosticsConfig {
+    apply_legacy_client_arg_diagnostics_overrides(
+        client_loop_diagnostics_config_from_env(),
+        legacy_overrides,
+    )
 }
 
 fn managed_mpv_launch_env_config_from_env() -> ManagedMpvLaunchEnvConfig {
@@ -786,1249 +748,17 @@ fn resolve_syncplay_cli_config_path_legacy_compatible() -> Option<PathBuf> {
     Some(root.join("syncplay.ini"))
 }
 
+#[cfg(test)]
 fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredClientSettingsMvp {
-    let mut settings = StoredClientSettingsMvp::default();
-    let mut current_section: Option<String> = None;
-    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
-            continue;
-        }
-        if let Some(section_name) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            current_section = Some(section_name.trim().to_ascii_lowercase());
-            continue;
-        }
-        let Some((raw_key, raw_value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = raw_key.trim().to_ascii_lowercase();
-        let value = raw_value.trim().replace("%%", "%");
-        match current_section.as_deref() {
-            Some("general") => match key.as_str() {
-                "language" if !value.is_empty() => settings.language = Some(value),
-                "checkforupdatesautomatically" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.check_for_updates_automatically = Some(parsed);
-                    }
-                }
-                "lastcheckedforupdates" if !value.is_empty() => {
-                    settings.last_checked_for_updates = Some(value)
-                }
-                _ => {}
-            },
-            Some("server_data") => match key.as_str() {
-                "host" if !value.is_empty() => settings.host = Some(value),
-                "port" => {
-                    if let Some(port) = parse_env_port_legacy_compatible(&value) {
-                        settings.port = Some(port);
-                    }
-                }
-                "password" if !value.is_empty() => settings.server_password = Some(value),
-                _ => {}
-            },
-            Some("client_settings") => match key.as_str() {
-                "name" if !value.is_empty() => settings.username = Some(value),
-                "room" if !value.is_empty() => settings.room = Some(value),
-                "roomlist" => {
-                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
-                        settings.room_list = Some(parsed);
-                    }
-                }
-                "playerpath" if !value.is_empty() => settings.player_path = Some(value),
-                "perplayerarguments" => {
-                    if let Some(parsed) =
-                        parse_serialized_per_player_arguments_map_legacy_compatible(&value)
-                    {
-                        settings.per_player_arguments = Some(parsed);
-                    }
-                }
-                "mediasearchdirectories" => {
-                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
-                        settings.media_search_directories = Some(parsed);
-                    }
-                }
-                "publicservers" => {
-                    if let Some(parsed) =
-                        parse_serialized_public_servers_list_legacy_compatible(&value)
-                    {
-                        settings.public_servers = Some(parsed);
-                    }
-                }
-                "foldersearchfirstfiletimeout" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.folder_search_first_file_timeout_seconds = Some(parsed);
-                    }
-                }
-                "foldersearchtimeout" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.folder_search_timeout_seconds = Some(parsed);
-                    }
-                }
-                "foldersearchdoublecheckinterval" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.folder_search_double_check_interval_seconds = Some(parsed);
-                    }
-                }
-                "foldersearchwarningthreshold" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.folder_search_warning_threshold_seconds = Some(parsed);
-                    }
-                }
-                "forceguiprompt" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.force_gui_prompt = Some(parsed);
-                    }
-                }
-                "autoplayinitialstate" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.autoplay_initial_state = Some(parsed);
-                    }
-                }
-                "autoplayrequiresamefilenames" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.autoplay_require_same_filenames = Some(parsed);
-                    }
-                }
-                "readyatstart" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.ready_at_start = Some(parsed);
-                    }
-                }
-                "sharedplaylistenabled" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.shared_playlist_enabled = Some(parsed);
-                    }
-                }
-                "pauseonleave" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.pause_on_leave = Some(parsed);
-                    }
-                }
-                "loopatendofplaylist" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.loop_at_end_of_playlist = Some(parsed);
-                    }
-                }
-                "loopsinglefiles" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.loop_single_files = Some(parsed);
-                    }
-                }
-                "onlyswitchtotrusteddomains" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.only_switch_to_trusted_domains = Some(parsed);
-                    }
-                }
-                "trusteddomains" => {
-                    if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
-                        settings.trusted_domains = Some(parsed);
-                    }
-                }
-                "rewindondesync" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.rewind_on_desync = Some(parsed);
-                    }
-                }
-                "fastforwardondesync" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.fastforward_on_desync = Some(parsed);
-                    }
-                }
-                "slowondesync" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.slow_on_desync = Some(parsed);
-                    }
-                }
-                "dontslowdownwithme" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.dont_slow_down_with_me = Some(parsed);
-                    }
-                }
-                "rewindthreshold" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.rewind_threshold_seconds = Some(parsed);
-                    }
-                }
-                "fastforwardthreshold" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.fastforward_threshold_seconds = Some(parsed);
-                    }
-                }
-                "slowdownthreshold" => {
-                    if let Some(parsed) = parse_env_non_negative_f64_legacy_compatible(&value) {
-                        settings.slowdown_threshold_seconds = Some(parsed);
-                    }
-                }
-                "unpauseaction" => {
-                    if let Some(parsed) = parse_unpause_action_mode_legacy_compatible(&value) {
-                        settings.unpause_action = Some(parsed);
-                    }
-                }
-                "autoplayminusers" => {
-                    if let Some(parsed) =
-                        parse_autoplay_min_users_override_legacy_compatible(&value)
-                    {
-                        settings.autoplay_min_users = Some(parsed);
-                    }
-                }
-                "filenameprivacymode" => {
-                    if let Some(mode) = PrivacyMode::from_legacy_name(&value) {
-                        settings.filename_privacy_mode = Some(mode);
-                    }
-                }
-                "filesizeprivacymode" => {
-                    if let Some(mode) = PrivacyMode::from_legacy_name(&value) {
-                        settings.filesize_privacy_mode = Some(mode);
-                    }
-                }
-                _ => {}
-            },
-            Some("gui") => match key.as_str() {
-                "autosavejoinstolist" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.autosave_joins_to_list = Some(parsed);
-                    }
-                }
-                "showosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_osd = Some(parsed);
-                    }
-                }
-                "chatinputenabled" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_input_enabled = Some(parsed);
-                    }
-                }
-                "chatinputfontunderline" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_input_font_underline = Some(parsed);
-                    }
-                }
-                "chatinputfontfamily" if !value.is_empty() => {
-                    settings.chat_input_font_family = Some(value);
-                }
-                "chatinputrelativefontsize" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_input_relative_font_size = Some(parsed);
-                    }
-                }
-                "chatinputfontweight" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_input_font_weight = Some(parsed);
-                    }
-                }
-                "chatinputfontcolor" if !value.is_empty() => {
-                    settings.chat_input_font_color = Some(value);
-                }
-                "chatinputposition" if !value.is_empty() => {
-                    settings.chat_input_position = Some(value);
-                }
-                "chatdirectinput" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_direct_input = Some(parsed);
-                    }
-                }
-                "chatoutputenabled" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_output_enabled = Some(parsed);
-                    }
-                }
-                "chatoutputfontunderline" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_output_font_underline = Some(parsed);
-                    }
-                }
-                "chatoutputfontfamily" if !value.is_empty() => {
-                    settings.chat_output_font_family = Some(value);
-                }
-                "chatoutputrelativefontsize" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_output_relative_font_size = Some(parsed);
-                    }
-                }
-                "chatoutputfontweight" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_output_font_weight = Some(parsed);
-                    }
-                }
-                "chatoutputmode" if !value.is_empty() => {
-                    settings.chat_output_mode = Some(value);
-                }
-                "chatmoveosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.chat_move_osd = Some(parsed);
-                    }
-                }
-                "chatmaxlines" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_max_lines = Some(parsed);
-                    }
-                }
-                "chattopmargin" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_top_margin = Some(parsed);
-                    }
-                }
-                "chatleftmargin" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_left_margin = Some(parsed);
-                    }
-                }
-                "chatbottommargin" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_bottom_margin = Some(parsed);
-                    }
-                }
-                "chatosdmargin" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_osd_margin = Some(parsed);
-                    }
-                }
-                "notificationtimeout" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.notification_timeout_seconds = Some(parsed);
-                    }
-                }
-                "alerttimeout" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.alert_timeout_seconds = Some(parsed);
-                    }
-                }
-                "chattimeout" => {
-                    if let Some(parsed) = parse_ini_i64_legacy_compatible(&value) {
-                        settings.chat_timeout_seconds = Some(parsed);
-                    }
-                }
-                "showdurationnotification" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_duration_notification = Some(parsed);
-                    }
-                }
-                "showsameroomosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_same_room_osd = Some(parsed);
-                    }
-                }
-                "showosdwarnings" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_osd_warnings = Some(parsed);
-                    }
-                }
-                "showslowdownosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_slowdown_osd = Some(parsed);
-                    }
-                }
-                "shownoncontrollerosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_noncontroller_osd = Some(parsed);
-                    }
-                }
-                "showdifferentroomosd" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_different_room_osd = Some(parsed);
-                    }
-                }
-                "showcontactinfo" => {
-                    if let Some(parsed) = parse_env_bool_legacy_compatible(&value) {
-                        settings.show_contact_info = Some(parsed);
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-    settings
+    shared_parse_syncplay_ini_stored_client_settings_mvp(contents)
 }
 
-fn escape_syncplay_ini_value_legacy_compatible(value: &str) -> String {
-    value.replace('%', "%%")
-}
-
-fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {
-    if value { "True" } else { "False" }
-}
-
-fn format_ini_non_negative_f64_legacy_compatible(value: f64) -> Option<String> {
-    (value.is_finite() && value >= 0.0).then(|| value.to_string())
-}
-
-fn parse_ini_i64_legacy_compatible(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok()
-}
-
-fn parse_serialized_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        let inner = inner.trim();
-        if inner.is_empty() {
-            return Some(Vec::new());
-        }
-        let values = inner
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-            .map(|entry| {
-                let unquoted = entry
-                    .strip_prefix('\'')
-                    .and_then(|s| s.strip_suffix('\''))
-                    .or_else(|| entry.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
-                    .unwrap_or(entry);
-                unquoted
-                    .replace("\\\\", "\\")
-                    .replace("\\'", "'")
-                    .replace("\\\"", "\"")
-            })
-            .collect::<Vec<_>>();
-        return Some(values);
-    }
-    parse_env_string_list_legacy_compatible(trimmed)
-}
-
-fn format_serialized_string_list_legacy_compatible(values: &[String]) -> String {
-    let rendered = values
-        .iter()
-        .map(|value| {
-            let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-            format!("'{escaped}'")
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{rendered}]")
-}
-
-fn format_serialized_python_string_legacy_compatible(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-    format!("'{escaped}'")
-}
-
-fn skip_serialized_python_whitespace_cursor_legacy_compatible(input: &str, index: &mut usize) {
-    while let Some(ch) = input.get(*index..).and_then(|rest| rest.chars().next()) {
-        if !ch.is_whitespace() {
-            break;
-        }
-        *index += ch.len_utf8();
-    }
-}
-
-fn parse_serialized_python_string_cursor_legacy_compatible(
-    input: &str,
-    index: &mut usize,
-) -> Option<String> {
-    let quote = input.get(*index..).and_then(|rest| rest.chars().next())?;
-    if quote != '\'' && quote != '"' {
-        return None;
-    }
-    *index += quote.len_utf8();
-
-    let mut parsed = String::new();
-    while let Some(ch) = input.get(*index..).and_then(|rest| rest.chars().next()) {
-        *index += ch.len_utf8();
-        if ch == quote {
-            return Some(parsed);
-        }
-        if ch == '\\' {
-            let escaped = input.get(*index..).and_then(|rest| rest.chars().next())?;
-            *index += escaped.len_utf8();
-            match escaped {
-                '\\' => parsed.push('\\'),
-                '\'' => parsed.push('\''),
-                '"' => parsed.push('"'),
-                'n' => parsed.push('\n'),
-                'r' => parsed.push('\r'),
-                't' => parsed.push('\t'),
-                other => parsed.push(other),
-            }
-            continue;
-        }
-        parsed.push(ch);
-    }
-    None
-}
-
-fn parse_serialized_python_string_list_cursor_legacy_compatible(
-    input: &str,
-    index: &mut usize,
-) -> Option<Vec<String>> {
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    let ch = input.get(*index..).and_then(|rest| rest.chars().next())?;
-    if ch != '[' {
-        return None;
-    }
-    *index += 1;
-    let mut values = Vec::new();
-    loop {
-        skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-        let next = input.get(*index..).and_then(|rest| rest.chars().next())?;
-        if next == ']' {
-            *index += 1;
-            return Some(values);
-        }
-        let value = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
-        values.push(value);
-        skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-        let delim = input.get(*index..).and_then(|rest| rest.chars().next())?;
-        if delim == ',' {
-            *index += 1;
-            continue;
-        }
-        if delim == ']' {
-            *index += 1;
-            return Some(values);
-        }
-        return None;
-    }
-}
-
-fn parse_serialized_per_player_arguments_map_legacy_compatible(
-    value: &str,
-) -> Option<BTreeMap<String, Vec<String>>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let mut index = 0usize;
-    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-    if trimmed.get(index..).and_then(|rest| rest.chars().next())? != '{' {
-        return None;
-    }
-    index += 1;
-
-    let mut parsed = BTreeMap::new();
-    loop {
-        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let next = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
-        if next == '}' {
-            index += 1;
-            break;
-        }
-        let key = parse_serialized_python_string_cursor_legacy_compatible(trimmed, &mut index)?;
-        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        if trimmed.get(index..).and_then(|rest| rest.chars().next())? != ':' {
-            return None;
-        }
-        index += 1;
-        let args =
-            parse_serialized_python_string_list_cursor_legacy_compatible(trimmed, &mut index)?;
-        parsed.insert(key, args);
-        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let delim = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
-        if delim == ',' {
-            index += 1;
-            continue;
-        }
-        if delim == '}' {
-            index += 1;
-            break;
-        }
-        return None;
-    }
-    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-    if index != trimmed.len() {
-        return None;
-    }
-    Some(parsed)
-}
-
-fn parse_serialized_python_string_pair_cursor_legacy_compatible(
-    input: &str,
-    index: &mut usize,
-) -> Option<(String, String)> {
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    let open = input.get(*index..).and_then(|rest| rest.chars().next())?;
-    let close = match open {
-        '[' => ']',
-        '(' => ')',
-        _ => return None,
-    };
-    *index += open.len_utf8();
-
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    let label = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    if input.get(*index..).and_then(|rest| rest.chars().next())? != ',' {
-        return None;
-    }
-    *index += 1;
-
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    let address = parse_serialized_python_string_cursor_legacy_compatible(input, index)?;
-    skip_serialized_python_whitespace_cursor_legacy_compatible(input, index);
-    if input.get(*index..).and_then(|rest| rest.chars().next())? != close {
-        return None;
-    }
-    *index += close.len_utf8();
-
-    Some((label, address))
-}
-
-fn parse_serialized_public_servers_list_legacy_compatible(
-    value: &str,
-) -> Option<Vec<(String, String)>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut index = 0usize;
-    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-    if trimmed.get(index..).and_then(|rest| rest.chars().next())? != '[' {
-        return None;
-    }
-    index += 1;
-
-    let mut parsed = Vec::new();
-    loop {
-        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let next = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
-        if next == ']' {
-            index += 1;
-            break;
-        }
-        parsed.push(
-            parse_serialized_python_string_pair_cursor_legacy_compatible(trimmed, &mut index)?,
-        );
-        skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-        let delim = trimmed.get(index..).and_then(|rest| rest.chars().next())?;
-        if delim == ',' {
-            index += 1;
-            continue;
-        }
-        if delim == ']' {
-            index += 1;
-            break;
-        }
-        return None;
-    }
-
-    skip_serialized_python_whitespace_cursor_legacy_compatible(trimmed, &mut index);
-    if index != trimmed.len() {
-        return None;
-    }
-    Some(parsed)
-}
-
-fn format_serialized_per_player_arguments_map_legacy_compatible(
-    values: &BTreeMap<String, Vec<String>>,
-) -> String {
-    let rendered = values
-        .iter()
-        .map(|(player_path, args)| {
-            format!(
-                "{}: {}",
-                format_serialized_python_string_legacy_compatible(player_path),
-                format_serialized_string_list_legacy_compatible(args)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{{{rendered}}}")
-}
-
-fn format_serialized_public_servers_list_legacy_compatible(values: &[(String, String)]) -> String {
-    let rendered = values
-        .iter()
-        .map(|(label, address)| {
-            format!(
-                "[{}, {}]",
-                format_serialized_python_string_legacy_compatible(label),
-                format_serialized_python_string_legacy_compatible(address)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{rendered}]")
-}
-
-fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {
-    match mode {
-        PrivacyMode::SendRaw => "SendRaw",
-        PrivacyMode::SendHashed => "SendHashed",
-        PrivacyMode::DoNotSend => "DoNotSend",
-    }
-}
-
-fn unpause_action_mode_legacy_name_compatible(mode: UnpauseActionMode) -> &'static str {
-    match mode {
-        UnpauseActionMode::IfAlreadyReady => "IfAlreadyReady",
-        UnpauseActionMode::IfOthersReady => "IfOthersReady",
-        UnpauseActionMode::IfMinUsersReady => "IfMinUsersReady",
-        UnpauseActionMode::Always => "Always",
-    }
-}
-
-fn autoplay_threshold_override_legacy_value_compatible(
-    value: &AutoplayThresholdOverride,
-) -> String {
-    match value {
-        AutoplayThresholdOverride::Disable => "0".to_owned(),
-        AutoplayThresholdOverride::Set(count) => count.to_string(),
-    }
-}
-
-fn upsert_ini_value_legacy_compatible(
-    lines: &mut Vec<String>,
-    section: &str,
-    key: &str,
-    value: &str,
-) {
-    let section_header = format!("[{section}]");
-    let mut section_start = None;
-    for (idx, line) in lines.iter().enumerate() {
-        if line.trim().eq_ignore_ascii_case(&section_header) {
-            section_start = Some(idx);
-            break;
-        }
-    }
-
-    let rendered = format!(
-        "{key} = {}",
-        escape_syncplay_ini_value_legacy_compatible(value)
-    );
-
-    if let Some(section_start_idx) = section_start {
-        let mut insert_at = lines.len();
-        let mut key_index = None;
-        for (idx, line) in lines.iter().enumerate().skip(section_start_idx + 1) {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                insert_at = idx;
-                break;
-            }
-            if let Some((candidate_key, _)) = trimmed.split_once('=')
-                && candidate_key.trim().eq_ignore_ascii_case(key)
-            {
-                key_index = Some(idx);
-                break;
-            }
-        }
-        if let Some(idx) = key_index {
-            lines[idx] = rendered;
-        } else {
-            lines.insert(insert_at, rendered);
-        }
-        return;
-    }
-
-    if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.push(String::new());
-    }
-    lines.push(section_header);
-    lines.push(rendered);
-}
-
+#[cfg(test)]
 fn upsert_syncplay_ini_stored_client_settings_mvp(
     existing_contents: &str,
     settings: &StoredClientSettingsMvp,
 ) -> String {
-    let had_bom = existing_contents.starts_with('\u{feff}');
-    let mut lines = existing_contents
-        .strip_prefix('\u{feff}')
-        .unwrap_or(existing_contents)
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-
-    if let Some(host) = settings.host.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "host", host);
-    }
-    if let Some(port) = settings.port {
-        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "port", &port.to_string());
-    }
-    if let Some(server_password) = settings.server_password.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "server_data", "password", server_password);
-    }
-    if let Some(username) = settings.username.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "name", username);
-    }
-    if let Some(room) = settings.room.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "room", room);
-    }
-    if let Some(room_list) = settings.room_list.as_ref() {
-        let serialized = format_serialized_string_list_legacy_compatible(room_list);
-        upsert_ini_value_legacy_compatible(&mut lines, "client_settings", "roomList", &serialized);
-    }
-    if let Some(player_path) = settings.player_path.as_deref() {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "playerPath",
-            player_path,
-        );
-    }
-    if let Some(per_player_arguments) = settings.per_player_arguments.as_ref() {
-        let serialized =
-            format_serialized_per_player_arguments_map_legacy_compatible(per_player_arguments);
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "perPlayerArguments",
-            &serialized,
-        );
-    }
-    if let Some(media_search_directories) = settings.media_search_directories.as_ref() {
-        let serialized = format_serialized_string_list_legacy_compatible(media_search_directories);
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "mediaSearchDirectories",
-            &serialized,
-        );
-    }
-    if let Some(public_servers) = settings.public_servers.as_ref() {
-        let serialized = format_serialized_public_servers_list_legacy_compatible(public_servers);
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "publicServers",
-            &serialized,
-        );
-    }
-    if let Some(value) = settings.folder_search_first_file_timeout_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "folderSearchFirstFileTimeout",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.folder_search_timeout_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "folderSearchTimeout",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.folder_search_double_check_interval_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "folderSearchDoubleCheckInterval",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.folder_search_warning_threshold_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "folderSearchWarningThreshold",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.force_gui_prompt {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "forceGuiPrompt",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.autoplay_initial_state {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "autoplayInitialState",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.autoplay_require_same_filenames {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "autoplayRequireSameFilenames",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.ready_at_start {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "readyAtStart",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.shared_playlist_enabled {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "sharedPlaylistEnabled",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.pause_on_leave {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "pauseOnLeave",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.loop_at_end_of_playlist {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "loopAtEndOfPlaylist",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.loop_single_files {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "loopSingleFiles",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.only_switch_to_trusted_domains {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "onlySwitchToTrustedDomains",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(trusted_domains) = settings.trusted_domains.as_ref() {
-        let serialized = format_serialized_string_list_legacy_compatible(trusted_domains);
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "trustedDomains",
-            &serialized,
-        );
-    }
-    if let Some(value) = settings.rewind_on_desync {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "rewindOnDesync",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.fastforward_on_desync {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "fastforwardOnDesync",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.slow_on_desync {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "slowOnDesync",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.dont_slow_down_with_me {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "dontSlowDownWithMe",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.rewind_threshold_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "rewindThreshold",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.fastforward_threshold_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "fastforwardThreshold",
-            &formatted,
-        );
-    }
-    if let Some(value) = settings.slowdown_threshold_seconds
-        && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
-    {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "slowdownThreshold",
-            &formatted,
-        );
-    }
-    if let Some(unpause_action) = settings.unpause_action.as_ref() {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "unpauseAction",
-            unpause_action_mode_legacy_name_compatible(unpause_action.clone()),
-        );
-    }
-    if let Some(autoplay_min_users) = settings.autoplay_min_users.as_ref() {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "autoplayMinUsers",
-            &autoplay_threshold_override_legacy_value_compatible(autoplay_min_users),
-        );
-    }
-    if let Some(mode) = settings.filename_privacy_mode {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "filenamePrivacyMode",
-            privacy_mode_legacy_name_compatible(mode),
-        );
-    }
-    if let Some(mode) = settings.filesize_privacy_mode {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "client_settings",
-            "filesizePrivacyMode",
-            privacy_mode_legacy_name_compatible(mode),
-        );
-    }
-    if let Some(language) = settings.language.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "general", "language", language);
-    }
-    if let Some(value) = settings.check_for_updates_automatically {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "general",
-            "checkForUpdatesAutomatically",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.last_checked_for_updates.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "general", "lastCheckedForUpdates", value);
-    }
-    if let Some(value) = settings.autosave_joins_to_list {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "autosaveJoinsToList",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_input_enabled {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatInputEnabled",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_input_font_underline {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatInputFontUnderline",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_input_font_family.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputFontFamily", value);
-    }
-    if let Some(value) = settings.chat_input_relative_font_size {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatInputRelativeFontSize",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.chat_input_font_weight {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatInputFontWeight",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.chat_input_font_color.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputFontColor", value);
-    }
-    if let Some(value) = settings.chat_input_position.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatInputPosition", value);
-    }
-    if let Some(value) = settings.chat_direct_input {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatDirectInput",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_output_enabled {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatOutputEnabled",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_output_font_underline {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatOutputFontUnderline",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_output_font_family.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOutputFontFamily", value);
-    }
-    if let Some(value) = settings.chat_output_relative_font_size {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatOutputRelativeFontSize",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.chat_output_font_weight {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatOutputFontWeight",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.chat_output_mode.as_deref() {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOutputMode", value);
-    }
-    if let Some(value) = settings.chat_move_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatMoveOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.chat_max_lines {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatMaxLines", &value.to_string());
-    }
-    if let Some(value) = settings.chat_top_margin {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatTopMargin", &value.to_string());
-    }
-    if let Some(value) = settings.chat_left_margin {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatLeftMargin", &value.to_string());
-    }
-    if let Some(value) = settings.chat_bottom_margin {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "chatBottomMargin",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.chat_osd_margin {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatOSDMargin", &value.to_string());
-    }
-    if let Some(value) = settings.notification_timeout_seconds {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "notificationTimeout",
-            &value.to_string(),
-        );
-    }
-    if let Some(value) = settings.alert_timeout_seconds {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "alertTimeout", &value.to_string());
-    }
-    if let Some(value) = settings.chat_timeout_seconds {
-        upsert_ini_value_legacy_compatible(&mut lines, "gui", "chatTimeout", &value.to_string());
-    }
-    if let Some(value) = settings.show_duration_notification {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showDurationNotification",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_same_room_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showSameRoomOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_osd_warnings {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showOSDWarnings",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_slowdown_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showSlowdownOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_noncontroller_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showNonControllerOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_different_room_osd {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showDifferentRoomOSD",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-    if let Some(value) = settings.show_contact_info {
-        upsert_ini_value_legacy_compatible(
-            &mut lines,
-            "gui",
-            "showContactInfo",
-            format_ini_bool_legacy_compatible(value),
-        );
-    }
-
-    let mut output = lines.join("\n");
-    if !output.is_empty() && !output.ends_with('\n') {
-        output.push('\n');
-    }
-    if had_bom {
-        format!("\u{feff}{output}")
-    } else {
-        output
-    }
+    shared_upsert_syncplay_ini_stored_client_settings_mvp(existing_contents, settings)
 }
 
 fn load_syncplay_cli_stored_settings_mvp_legacy_compatible()
@@ -2036,180 +766,385 @@ fn load_syncplay_cli_stored_settings_mvp_legacy_compatible()
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(None);
     };
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|error| anyhow!("failed reading stored settings {}: {error}", path.display()))?;
-    Ok(Some(parse_syncplay_ini_stored_client_settings_mvp(
-        &contents,
-    )))
+    shared_load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
 }
 
 fn apply_stored_client_settings_mvp_if_env_absent(
     config: &mut ClientLoopConfig,
     settings: &StoredClientSettingsMvp,
 ) {
-    if env_trimmed("SYNCPLAY_CLIENT_HOST").is_none()
-        && let Some(host) = settings.host.as_deref()
-        && !host.is_empty()
-    {
-        config.host = host.to_owned();
+    let config_plan = stored_client_settings_config_plan_legacy_compatible(
+        settings,
+        &StoredClientSettingsEnvPresence {
+            host: env_trimmed("SYNCPLAY_CLIENT_HOST").is_some(),
+            port: env_port("SYNCPLAY_CLIENT_PORT").is_some(),
+            server_password: env_trimmed("SYNCPLAY_CLIENT_SERVER_PASSWORD").is_some(),
+            username: env_trimmed("SYNCPLAY_CLIENT_USERNAME").is_some()
+                || env_trimmed("SYNCPLAY_CLIENT_NAME").is_some(),
+            room: env_trimmed("SYNCPLAY_CLIENT_ROOM").is_some(),
+            autoplay: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY").is_some(),
+            autoplay_require_same_filenames: env_trimmed(
+                "SYNCPLAY_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES",
+            )
+            .is_some(),
+            ready_at_start: env_trimmed("SYNCPLAY_CLIENT_READY_AT_START").is_some(),
+            shared_playlist_enabled: env_trimmed("SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED")
+                .is_some(),
+            pause_on_leave: env_trimmed("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE").is_some(),
+            loop_at_end_of_playlist: env_trimmed("SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST")
+                .is_some(),
+            loop_single_files: env_trimmed("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES").is_some(),
+            only_switch_to_trusted_domains: env_trimmed(
+                "SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
+            )
+            .is_some(),
+            trusted_domains: env_trimmed("SYNCPLAY_CLIENT_TRUSTED_DOMAINS").is_some(),
+            rewind_on_desync: env_trimmed("SYNCPLAY_CLIENT_REWIND_ON_DESYNC").is_some(),
+            fastforward_on_desync: env_trimmed("SYNCPLAY_CLIENT_FASTFORWARD_ON_DESYNC").is_some(),
+            slow_on_desync: env_trimmed("SYNCPLAY_CLIENT_SLOW_ON_DESYNC").is_some(),
+            dont_slow_down_with_me: env_trimmed("SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME").is_some(),
+            rewind_threshold_seconds: env_trimmed("SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS")
+                .is_some(),
+            fastforward_threshold_seconds: env_trimmed(
+                "SYNCPLAY_CLIENT_FASTFORWARD_THRESHOLD_SECONDS",
+            )
+            .is_some(),
+            slowdown_threshold_seconds: env_trimmed("SYNCPLAY_CLIENT_SLOWDOWN_THRESHOLD_SECONDS")
+                .is_some(),
+            unpause_action: env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION").is_some(),
+            autoplay_min_users: env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS").is_some(),
+            filename_privacy_mode: env_trimmed("SYNCPLAY_CLIENT_FILENAME_PRIVACY_MODE").is_some(),
+            filesize_privacy_mode: env_trimmed("SYNCPLAY_CLIENT_FILESIZE_PRIVACY_MODE").is_some(),
+            show_duration_notification: env_trimmed("SYNCPLAY_CLIENT_SHOW_DURATION_NOTIFICATION")
+                .is_some(),
+            show_same_room_osd: env_trimmed("SYNCPLAY_CLIENT_SHOW_SAME_ROOM_OSD").is_some(),
+            show_osd_warnings: env_trimmed("SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS").is_some(),
+            show_noncontroller_osd: env_trimmed("SYNCPLAY_CLIENT_SHOW_NONCONTROLLER_OSD").is_some(),
+            show_different_room_osd: env_trimmed("SYNCPLAY_CLIENT_SHOW_DIFFERENT_ROOM_OSD")
+                .is_some(),
+        },
+    );
+
+    if let Some(host) = config_plan.host {
+        config.host = host;
     }
-    if env_port("SYNCPLAY_CLIENT_PORT").is_none()
-        && let Some(port) = settings.port
-    {
+    if let Some(port) = config_plan.port {
         config.port = port;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SERVER_PASSWORD").is_none()
-        && let Some(password) = settings.server_password.as_deref()
-        && !password.is_empty()
-    {
-        config.server_password = Some(password.to_owned());
+    if let Some(password) = config_plan.server_password {
+        config.server_password = Some(password);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_USERNAME").is_none()
-        && env_trimmed("SYNCPLAY_CLIENT_NAME").is_none()
-        && let Some(username) = settings.username.as_deref()
-        && !username.is_empty()
-    {
-        config.username = username.to_owned();
+    if let Some(username) = config_plan.username {
+        config.username = username;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_ROOM").is_none()
-        && let Some(room) = settings.room.as_deref()
-        && !room.is_empty()
-    {
-        let (normalized_room, normalized_password) =
-            normalize_controlled_room_input(room.to_owned());
-        config.room = normalized_room;
+    if let Some(room) = config_plan.room {
+        config.room = room;
         if config.controlled_room_password_override.is_none() {
-            config.controlled_room_password_override = normalized_password;
+            config.controlled_room_password_override =
+                config_plan.controlled_room_password_override;
         }
     }
-    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY").is_none()
-        && let Some(value) = settings.autoplay_initial_state
-    {
+    if let Some(value) = config_plan.autoplay_enabled {
         config.autoplay_enabled = value;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES").is_none()
-        && let Some(value) = settings.autoplay_require_same_filenames
-    {
+    if let Some(value) = config_plan.autoplay_require_same_filenames {
         config.autoplay_require_same_filenames = value;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_READY_AT_START").is_none()
-        && let Some(value) = settings.ready_at_start
-    {
+    if let Some(value) = config_plan.ready_at_start_override {
         config.ready_at_start_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED").is_none()
-        && let Some(value) = settings.shared_playlist_enabled
-    {
+    if let Some(value) = config_plan.shared_playlists_enabled_override {
         config.shared_playlists_enabled_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_PAUSE_ON_LEAVE").is_none()
-        && let Some(value) = settings.pause_on_leave
-    {
+    if let Some(value) = config_plan.pause_on_leave_override {
         config.pause_on_leave_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_LOOP_AT_END_OF_PLAYLIST").is_none()
-        && let Some(value) = settings.loop_at_end_of_playlist
-    {
+    if let Some(value) = config_plan.loop_at_end_of_playlist_override {
         config.loop_at_end_of_playlist_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_LOOP_SINGLE_FILES").is_none()
-        && let Some(value) = settings.loop_single_files
-    {
+    if let Some(value) = config_plan.loop_single_files_override {
         config.loop_single_files_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS").is_none()
-        && let Some(value) = settings.only_switch_to_trusted_domains
-    {
+    if let Some(value) = config_plan.only_switch_to_trusted_domains_override {
         config.only_switch_to_trusted_domains_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_TRUSTED_DOMAINS").is_none()
-        && let Some(values) = settings.trusted_domains.as_ref()
-    {
-        config.trusted_domains_override = Some(values.clone());
+    if let Some(values) = config_plan.trusted_domains_override {
+        config.trusted_domains_override = Some(values);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_REWIND_ON_DESYNC").is_none()
-        && let Some(value) = settings.rewind_on_desync
-    {
+    if let Some(value) = config_plan.rewind_on_desync_override {
         config.rewind_on_desync_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_FASTFORWARD_ON_DESYNC").is_none()
-        && let Some(value) = settings.fastforward_on_desync
-    {
+    if let Some(value) = config_plan.fastforward_on_desync_override {
         config.fastforward_on_desync_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SLOW_ON_DESYNC").is_none()
-        && let Some(value) = settings.slow_on_desync
-    {
+    if let Some(value) = config_plan.slow_on_desync_override {
         config.slow_on_desync_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_DONT_SLOW_DOWN_WITH_ME").is_none()
-        && let Some(value) = settings.dont_slow_down_with_me
-    {
+    if let Some(value) = config_plan.dont_slow_down_with_me_override {
         config.dont_slow_down_with_me_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_REWIND_THRESHOLD_SECONDS").is_none()
-        && let Some(value) = settings.rewind_threshold_seconds
-    {
+    if let Some(value) = config_plan.rewind_threshold_seconds_override {
         config.rewind_threshold_seconds_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_FASTFORWARD_THRESHOLD_SECONDS").is_none()
-        && let Some(value) = settings.fastforward_threshold_seconds
-    {
+    if let Some(value) = config_plan.fastforward_threshold_seconds_override {
         config.fastforward_threshold_seconds_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SLOWDOWN_THRESHOLD_SECONDS").is_none()
-        && let Some(value) = settings.slowdown_threshold_seconds
-    {
+    if let Some(value) = config_plan.slowdown_threshold_seconds_override {
         config.slowdown_threshold_seconds_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_UNPAUSE_ACTION").is_none()
-        && let Some(value) = settings.unpause_action.as_ref()
-    {
-        config.unpause_action_override = Some(value.clone());
+    if let Some(value) = config_plan.unpause_action_override {
+        config.unpause_action_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_AUTOPLAY_MIN_USERS").is_none()
-        && let Some(value) = settings.autoplay_min_users.as_ref()
-    {
-        config.auto_play_threshold_override = Some(value.clone());
+    if let Some(value) = config_plan.auto_play_threshold_override {
+        config.auto_play_threshold_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_FILENAME_PRIVACY_MODE").is_none()
-        && let Some(mode) = settings.filename_privacy_mode
-    {
+    if let Some(mode) = config_plan.filename_privacy_mode {
         config.filename_privacy_mode = mode;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_FILESIZE_PRIVACY_MODE").is_none()
-        && let Some(mode) = settings.filesize_privacy_mode
-    {
+    if let Some(mode) = config_plan.filesize_privacy_mode {
         config.filesize_privacy_mode = mode;
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHOW_DURATION_NOTIFICATION").is_none()
-        && let Some(value) = settings.show_duration_notification
-    {
+    if let Some(value) = config_plan.show_duration_notification_override {
         config.show_duration_notification_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHOW_SAME_ROOM_OSD").is_none()
-        && let Some(value) = settings.show_same_room_osd
-    {
+    if let Some(value) = config_plan.show_same_room_osd_override {
         config.show_same_room_osd_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHOW_OSD_WARNINGS").is_none()
-        && let Some(value) = settings.show_osd_warnings
-    {
+    if let Some(value) = config_plan.show_osd_warnings_override {
         config.show_osd_warnings_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHOW_NONCONTROLLER_OSD").is_none()
-        && let Some(value) = settings.show_noncontroller_osd
-    {
+    if let Some(value) = config_plan.show_noncontroller_osd_override {
         config.show_noncontroller_osd_override = Some(value);
     }
-    if env_trimmed("SYNCPLAY_CLIENT_SHOW_DIFFERENT_ROOM_OSD").is_none()
-        && let Some(value) = settings.show_different_room_osd
-    {
+    if let Some(value) = config_plan.show_different_room_osd_override {
         config.show_different_room_osd_override = Some(value);
     }
+}
+
+fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
+    overrides: &mut LegacyClientArgOverrides,
+    settings: Option<&StoredClientSettingsMvp>,
+) {
+    let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+        overrides.file.as_deref(),
+        settings,
+    );
+    for line in resolution.warning_lines {
+        eprintln!("{line}");
+    }
+    overrides.file = resolution.file;
+}
+
+fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+    requested_file: Option<&str>,
+    settings: Option<&StoredClientSettingsMvp>,
+) -> LegacyStartupMediaSearchResolution {
+    let Some(requested_file) = requested_file
+        .map(str::trim)
+        .filter(|file| !file.is_empty())
+    else {
+        return LegacyStartupMediaSearchResolution::default();
+    };
+
+    let requested_path = Path::new(requested_file);
+    if requested_file.contains("://")
+        || requested_file.starts_with("magnet:")
+        || requested_path.is_file()
+        || requested_path.is_absolute()
+    {
+        return LegacyStartupMediaSearchResolution {
+            file: Some(requested_file.to_owned()),
+            warning_lines: Vec::new(),
+        };
+    }
+
+    let Some(settings) = settings else {
+        return LegacyStartupMediaSearchResolution {
+            file: Some(requested_file.to_owned()),
+            warning_lines: Vec::new(),
+        };
+    };
+    let Some(media_directories) = settings.media_search_directories.as_ref() else {
+        return LegacyStartupMediaSearchResolution {
+            file: Some(requested_file.to_owned()),
+            warning_lines: Vec::new(),
+        };
+    };
+
+    let simple_file_name = requested_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| *name == requested_file);
+
+    let first_file_timeout_seconds = settings
+        .folder_search_first_file_timeout_seconds
+        .unwrap_or(LEGACY_FOLDER_SEARCH_FIRST_FILE_TIMEOUT_SECONDS_DEFAULT);
+    let folder_timeout_seconds = settings
+        .folder_search_timeout_seconds
+        .unwrap_or(LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT);
+    let warning_threshold_seconds = settings
+        .folder_search_warning_threshold_seconds
+        .unwrap_or(LEGACY_FOLDER_SEARCH_WARNING_THRESHOLD_SECONDS_DEFAULT);
+    let warning_repeat_interval_seconds = settings
+        .folder_search_double_check_interval_seconds
+        .unwrap_or(LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT);
+
+    let mut warning_lines = Vec::new();
+    for directory in media_directories
+        .iter()
+        .map(String::as_str)
+        .filter(|directory| !directory.trim().is_empty())
+    {
+        let directory_path = Path::new(directory);
+        if !directory_path.is_dir() {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories ignored missing media directory '{}'",
+                directory
+            ));
+            continue;
+        }
+
+        let direct_candidate = directory_path.join(requested_file);
+        if direct_candidate.is_file() {
+            return LegacyStartupMediaSearchResolution {
+                file: Some(direct_candidate.to_string_lossy().into_owned()),
+                warning_lines,
+            };
+        }
+
+        let Some(simple_file_name) = simple_file_name else {
+            continue;
+        };
+
+        if first_file_timeout_seconds <= 0.0 {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{}' because folderSearchFirstFileTimeout is 0",
+                directory
+            ));
+            continue;
+        }
+
+        let first_probe_started = Instant::now();
+        if std::fs::read_dir(directory_path).is_err() {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories could not access media directory '{}'",
+                directory
+            ));
+            continue;
+        }
+        if first_probe_started.elapsed().as_secs_f64() > first_file_timeout_seconds {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{}' because folderSearchFirstFileTimeout was exceeded",
+                directory
+            ));
+            continue;
+        }
+
+        if folder_timeout_seconds <= 0.0 {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' because folderSearchTimeout is 0",
+                directory
+            ));
+            continue;
+        }
+
+        if let Some(found_path) = search_media_directories_for_startup_file_name_legacy_compatible(
+            directory_path,
+            simple_file_name,
+            folder_timeout_seconds,
+            warning_threshold_seconds,
+            warning_repeat_interval_seconds,
+            &mut warning_lines,
+        ) {
+            return LegacyStartupMediaSearchResolution {
+                file: Some(found_path.to_string_lossy().into_owned()),
+                warning_lines,
+            };
+        }
+    }
+
+    LegacyStartupMediaSearchResolution {
+        file: Some(requested_file.to_owned()),
+        warning_lines,
+    }
+}
+
+fn search_media_directories_for_startup_file_name_legacy_compatible(
+    root_directory: &Path,
+    target_file_name: &str,
+    folder_timeout_seconds: f64,
+    warning_threshold_seconds: f64,
+    warning_repeat_interval_seconds: f64,
+    warning_lines: &mut Vec<String>,
+) -> Option<PathBuf> {
+    let search_started = Instant::now();
+    let mut last_warning_elapsed_seconds = None::<f64>;
+    let mut scanned_file_count = 0usize;
+    let mut pending_directories = vec![root_directory.to_path_buf()];
+    let warning_repeat_interval_seconds = warning_repeat_interval_seconds.max(1.0);
+
+    while let Some(directory) = pending_directories.pop() {
+        if search_started.elapsed().as_secs_f64() > folder_timeout_seconds {
+            warning_lines.push(format!(
+                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
+                root_directory.display(),
+                scanned_file_count
+            ));
+            return None;
+        }
+
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let elapsed_seconds = search_started.elapsed().as_secs_f64();
+            if elapsed_seconds > folder_timeout_seconds {
+                warning_lines.push(format!(
+                    "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
+                    root_directory.display(),
+                    scanned_file_count
+                ));
+                return None;
+            }
+            if elapsed_seconds > warning_threshold_seconds
+                && last_warning_elapsed_seconds
+                    .is_none_or(|last| elapsed_seconds - last >= warning_repeat_interval_seconds)
+            {
+                warning_lines.push(format!(
+                    "warning: legacy mediaSearchDirectories has scanned {} file(s) in '{}' for {} second(s) while resolving the startup file",
+                    scanned_file_count,
+                    root_directory.display(),
+                    elapsed_seconds.floor() as u64
+                ));
+                last_warning_elapsed_seconds = Some(elapsed_seconds);
+            }
+
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                pending_directories.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            scanned_file_count = scanned_file_count.saturating_add(1);
+            let file_name = entry.file_name();
+            if file_name
+                .to_str()
+                .is_some_and(|name| name == target_file_name)
+            {
+                return Some(entry.path());
+            }
+        }
+    }
+
+    None
 }
 
 fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
@@ -2222,15 +1157,18 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
     {
         overrides.player_path = Some(player_path.to_owned());
     }
-    if overrides.player_args.is_empty()
-        && let Some(player_path) = overrides.player_path.as_deref()
+    if let Some(player_path) = overrides.player_path.as_deref()
         && let Some(per_player_arguments) = settings.per_player_arguments.as_ref()
         && let Some(args) = lookup_stored_per_player_arguments_for_player_path_legacy_compatible(
             per_player_arguments,
             player_path,
         )
     {
-        overrides.player_args = args.clone();
+        if overrides.player_args.is_empty() {
+            overrides.player_args = args.clone();
+        } else {
+            overrides.player_args.extend(args.iter().cloned());
+        }
     }
 }
 
@@ -2283,25 +1221,6 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
 ) -> anyhow::Result<()> {
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(());
-    };
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            anyhow!(
-                "failed creating stored settings directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let existing_contents = if path.is_file() {
-        std::fs::read_to_string(&path).map_err(|error| {
-            anyhow!("failed reading stored settings {}: {error}", path.display())
-        })?
-    } else {
-        String::new()
     };
     let settings = StoredClientSettingsMvp {
         language: None,
@@ -2375,43 +1294,19 @@ fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         show_different_room_osd: config.show_different_room_osd_override,
         show_contact_info: None,
     };
-    let updated_contents =
-        upsert_syncplay_ini_stored_client_settings_mvp(&existing_contents, &settings);
-    std::fs::write(&path, updated_contents)
-        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+    shared_upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &settings)
 }
 
 fn persist_syncplay_cli_language_setting_legacy_compatible(language: &str) -> anyhow::Result<()> {
+    let Some(language) = normalized_legacy_runtime_language_tag_legacy_compatible(language) else {
+        return Ok(());
+    };
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(());
     };
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            anyhow!(
-                "failed creating stored settings directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    let existing_contents = if path.is_file() {
-        std::fs::read_to_string(&path).map_err(|error| {
-            anyhow!("failed reading stored settings {}: {error}", path.display())
-        })?
-    } else {
-        String::new()
-    };
-    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
-        &existing_contents,
-        &StoredClientSettingsMvp {
-            language: Some(language.to_owned()),
-            ..StoredClientSettingsMvp::default()
-        },
-    );
-    std::fs::write(&path, updated_contents)
-        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+    shared_update_syncplay_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+        settings.language = Some(language.to_owned());
+    })
 }
 
 fn persist_syncplay_cli_player_path_setting_legacy_compatible(
@@ -2420,33 +1315,9 @@ fn persist_syncplay_cli_player_path_setting_legacy_compatible(
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(());
     };
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            anyhow!(
-                "failed creating stored settings directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    let existing_contents = if path.is_file() {
-        std::fs::read_to_string(&path).map_err(|error| {
-            anyhow!("failed reading stored settings {}: {error}", path.display())
-        })?
-    } else {
-        String::new()
-    };
-    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
-        &existing_contents,
-        &StoredClientSettingsMvp {
-            player_path: Some(player_path.to_owned()),
-            ..StoredClientSettingsMvp::default()
-        },
-    );
-    std::fs::write(&path, updated_contents)
-        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+    shared_update_syncplay_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+        settings.player_path = Some(player_path.to_owned());
+    })
 }
 
 fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
@@ -2456,79 +1327,39 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(());
     };
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            anyhow!(
-                "failed creating stored settings directory {}: {error}",
-                parent.display()
+    shared_update_syncplay_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+        let mut per_player_arguments = settings.per_player_arguments.take().unwrap_or_default();
+        if let Some(normalized_player_path) =
+            normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+                player_path,
             )
-        })?;
-    }
-    let existing_contents = if path.is_file() {
-        std::fs::read_to_string(&path).map_err(|error| {
-            anyhow!("failed reading stored settings {}: {error}", path.display())
-        })?
-    } else {
-        String::new()
-    };
-    let mut per_player_arguments =
-        parse_syncplay_ini_stored_client_settings_mvp(&existing_contents)
-            .per_player_arguments
-            .unwrap_or_default();
-    if let Some(normalized_player_path) =
-        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(player_path)
-    {
-        let duplicate_keys = per_player_arguments
-            .keys()
-            .filter(|stored_player_path| stored_player_path.as_str() != player_path)
-            .filter_map(|stored_player_path| {
-                let normalized_stored_path =
-                    normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
-                        stored_player_path,
-                    )?;
-                (normalized_stored_path == normalized_player_path)
-                    .then_some(stored_player_path.clone())
-            })
-            .collect::<Vec<_>>();
-        for duplicate_key in duplicate_keys {
-            per_player_arguments.remove(&duplicate_key);
+        {
+            let duplicate_keys = per_player_arguments
+                .keys()
+                .filter(|stored_player_path| stored_player_path.as_str() != player_path)
+                .filter_map(|stored_player_path| {
+                    let normalized_stored_path =
+                        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+                            stored_player_path,
+                        )?;
+                    (normalized_stored_path == normalized_player_path)
+                        .then_some(stored_player_path.clone())
+                })
+                .collect::<Vec<_>>();
+            for duplicate_key in duplicate_keys {
+                per_player_arguments.remove(&duplicate_key);
+            }
         }
-    }
-    per_player_arguments.insert(player_path.to_owned(), player_args.to_vec());
-    let updated_contents = upsert_syncplay_ini_stored_client_settings_mvp(
-        &existing_contents,
-        &StoredClientSettingsMvp {
-            per_player_arguments: Some(per_player_arguments),
-            ..StoredClientSettingsMvp::default()
-        },
-    );
-    std::fs::write(&path, updated_contents)
-        .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
+        per_player_arguments.insert(player_path.to_owned(), player_args.to_vec());
+        settings.per_player_arguments = Some(per_player_arguments);
+    })
 }
 
 fn clear_syncplay_cli_stored_settings_legacy_compatible() -> anyhow::Result<bool> {
     let Some(path) = resolve_syncplay_cli_config_path_legacy_compatible() else {
         return Ok(false);
     };
-    if !path.exists() {
-        return Ok(false);
-    }
-    if !path.is_file() {
-        return Err(anyhow!(
-            "stored settings path is not a file and cannot be cleared: {}",
-            path.display()
-        ));
-    }
-    std::fs::remove_file(&path).map_err(|error| {
-        anyhow!(
-            "failed clearing stored settings {}: {error}",
-            path.display()
-        )
-    })?;
-    Ok(true)
+    shared_clear_syncplay_ini_stored_client_settings_mvp_at_path(&path)
 }
 
 fn legacy_gui_qsettings_store_names_legacy_compatible() -> [&'static str; 5] {
@@ -2701,36 +1532,7 @@ async fn emit_startup_playlist_load_from_file_legacy_compatible(
 fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
     host_value: &str,
 ) -> (String, Option<u16>) {
-    if host_value.matches(':').count() == 1 {
-        let mut pieces = host_value.rsplitn(2, ':');
-        let maybe_port = pieces.next().unwrap_or_default();
-        let maybe_host = pieces.next().unwrap_or_default();
-        if let Ok(port) = maybe_port.parse::<u16>() {
-            return (maybe_host.to_owned(), Some(port));
-        }
-        return (maybe_host.to_owned(), None);
-    }
-
-    if host_value.starts_with('[') {
-        if let Some(end_bracket) = host_value.find(']') {
-            let host = &host_value[..=end_bracket];
-            if let Some(port_text) = host_value
-                .get(end_bracket + 1..)
-                .and_then(|s| s.strip_prefix(':'))
-            {
-                if let Ok(port) = port_text.parse::<u16>() {
-                    return (host.to_owned(), Some(port));
-                }
-            }
-            return (host.to_owned(), None);
-        }
-    }
-
-    if host_value.matches(':').count() > 1 {
-        return (format!("[{host_value}]"), None);
-    }
-
-    (host_value.to_owned(), None)
+    shared_parse_host_and_optional_port_from_host_arg_legacy_compatible(host_value)
 }
 
 fn take_next_non_flag_arg_legacy_compatible<I>(args: &mut std::iter::Peekable<I>) -> Option<String>
@@ -2808,6 +1610,7 @@ where
             }
             "--no-gui" => {
                 overrides.connect_requested = true;
+                overrides.no_gui_requested = true;
             }
             "-a" | "--host" => {
                 overrides.connect_requested = true;
@@ -2852,7 +1655,11 @@ where
     overrides
 }
 
-fn print_legacy_client_help() {
+fn print_legacy_client_help(language: Option<&str>) {
+    if let Some(line) = legacy_runtime_language_selection_line_legacy_compatible(language) {
+        println!("{line}");
+        println!();
+    }
     let help_lines = [
         "Usage: syncplay-cli [OPTIONS]",
         "  --no-gui",
@@ -2864,6 +1671,7 @@ fn print_legacy_client_help() {
         "  -d, --debug",
         "  -g, --force-gui-prompt",
         "  --language <language>",
+        "    Supported values: de/en/es/eo/fi/fr/it/pt_PT/pt_BR/tr/ru/zh_CN/ko",
         "  [file] [options...]",
         "  --clear-gui-data",
         "  --load-playlist-from-file <path>",
@@ -2935,8 +1743,16 @@ fn print_legacy_client_help() {
         println!("{line}");
     }
     println!();
-    println!("Legacy Python ConfigurationGetter Startup Compatibility:");
-    println!("  {:<26} {:<10} Note", "Input", "Status");
+    println!(
+        "{}",
+        localized_legacy_startup_compatibility_heading_legacy_compatible(language)
+    );
+    println!(
+        "  {:<26} {:<10} {}",
+        localized_compatibility_input_label_legacy_compatible(language),
+        localized_compatibility_status_label_legacy_compatible(language),
+        localized_compatibility_note_label_legacy_compatible(language),
+    );
     for entry in legacy_configuration_getter_startup_compat_entries() {
         println!(
             "  {:<26} {:<10} {}",
@@ -2946,8 +1762,16 @@ fn print_legacy_client_help() {
         );
     }
     println!();
-    println!("Legacy Python ConfigurationGetter syncplay.ini Compatibility:");
-    println!("  {:<66} {:<10} Note", "Field", "Status");
+    println!(
+        "{}",
+        localized_legacy_ini_compatibility_heading_legacy_compatible(language)
+    );
+    println!(
+        "  {:<66} {:<10} {}",
+        localized_compatibility_field_label_legacy_compatible(language),
+        localized_compatibility_status_label_legacy_compatible(language),
+        localized_compatibility_note_label_legacy_compatible(language),
+    );
     for entry in legacy_configuration_getter_ini_compat_entries() {
         println!(
             "  {:<66} {:<10} {}",
@@ -2955,6 +1779,116 @@ fn print_legacy_client_help() {
             entry.status.as_str(),
             entry.note
         );
+    }
+}
+
+fn localized_legacy_startup_compatibility_heading_legacy_compatible(
+    language: Option<&str>,
+) -> &'static str {
+    match language {
+        Some("de") => "Legacy-Python-ConfigurationGetter Startkompatibilitaet:",
+        Some("es") => "Compatibilidad de inicio de Legacy Python ConfigurationGetter:",
+        Some("eo") => "Ekfunkcia kongrueco de Legacy Python ConfigurationGetter:",
+        Some("fi") => "Legacy Python ConfigurationGetterin kaynnistysyhteensopivuus:",
+        Some("fr") => "Compatibilite de demarrage de Legacy Python ConfigurationGetter :",
+        Some("it") => "Compatibilita di avvio di Legacy Python ConfigurationGetter:",
+        Some("pt_PT" | "pt_BR") => {
+            "Compatibilidade de inicializacao do Legacy Python ConfigurationGetter:"
+        }
+        Some("tr") => "Legacy Python ConfigurationGetter baslangic uyumlulugu:",
+        Some("ru") => "Sovmestimost zapuska Legacy Python ConfigurationGetter:",
+        Some("zh_CN") => "Legacy Python ConfigurationGetter qidong jianrongxing:",
+        Some("ko") => "Legacy Python ConfigurationGetter sijak hohwanseong:",
+        _ => "Legacy Python ConfigurationGetter Startup Compatibility:",
+    }
+}
+
+fn localized_legacy_ini_compatibility_heading_legacy_compatible(
+    language: Option<&str>,
+) -> &'static str {
+    match language {
+        Some("de") => "Legacy-Python-ConfigurationGetter syncplay.ini-Kompatibilitaet:",
+        Some("es") => "Compatibilidad syncplay.ini de Legacy Python ConfigurationGetter:",
+        Some("eo") => "syncplay.ini-kongrueco de Legacy Python ConfigurationGetter:",
+        Some("fi") => "Legacy Python ConfigurationGetterin syncplay.ini-yhteensopivuus:",
+        Some("fr") => "Compatibilite syncplay.ini de Legacy Python ConfigurationGetter :",
+        Some("it") => "Compatibilita syncplay.ini di Legacy Python ConfigurationGetter:",
+        Some("pt_PT" | "pt_BR") => {
+            "Compatibilidade syncplay.ini do Legacy Python ConfigurationGetter:"
+        }
+        Some("tr") => "Legacy Python ConfigurationGetter syncplay.ini uyumlulugu:",
+        Some("ru") => "Sovmestimost syncplay.ini Legacy Python ConfigurationGetter:",
+        Some("zh_CN") => "Legacy Python ConfigurationGetter syncplay.ini jianrongxing:",
+        Some("ko") => "Legacy Python ConfigurationGetter syncplay.ini hohwanseong:",
+        _ => "Legacy Python ConfigurationGetter syncplay.ini Compatibility:",
+    }
+}
+
+fn localized_compatibility_input_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Eingabe",
+        Some("es") => "Entrada",
+        Some("eo") => "Enigo",
+        Some("fi") => "Syote",
+        Some("fr") => "Entree",
+        Some("it") => "Input",
+        Some("pt_PT" | "pt_BR") => "Entrada",
+        Some("tr") => "Girdi",
+        Some("ru") => "Vvod",
+        Some("zh_CN") => "Shuru",
+        Some("ko") => "Iblyeog",
+        _ => "Input",
+    }
+}
+
+fn localized_compatibility_field_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Feld",
+        Some("es") => "Campo",
+        Some("eo") => "Kampo",
+        Some("fi") => "Kenta",
+        Some("fr") => "Champ",
+        Some("it") => "Campo",
+        Some("pt_PT" | "pt_BR") => "Campo",
+        Some("tr") => "Alan",
+        Some("ru") => "Pole",
+        Some("zh_CN") => "Ziduan",
+        Some("ko") => "Pildeu",
+        _ => "Field",
+    }
+}
+
+fn localized_compatibility_status_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Status",
+        Some("es") => "Estado",
+        Some("eo") => "Stato",
+        Some("fi") => "Tila",
+        Some("fr") => "Statut",
+        Some("it") => "Stato",
+        Some("pt_PT" | "pt_BR") => "Status",
+        Some("tr") => "Durum",
+        Some("ru") => "Status",
+        Some("zh_CN") => "Zhuangtai",
+        Some("ko") => "Sangtae",
+        _ => "Status",
+    }
+}
+
+fn localized_compatibility_note_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Hinweis",
+        Some("es") => "Nota",
+        Some("eo") => "Noto",
+        Some("fi") => "Huomio",
+        Some("fr") => "Note",
+        Some("it") => "Nota",
+        Some("pt_PT" | "pt_BR") => "Nota",
+        Some("tr") => "Not",
+        Some("ru") => "Primechanie",
+        Some("zh_CN") => "Beizhu",
+        Some("ko") => "Bigo",
+        _ => "Note",
     }
 }
 
@@ -2986,22 +1920,18 @@ fn apply_legacy_client_arg_overrides(
 
 fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOverrides) {
     if overrides.debug_requested {
-        eprintln!(
-            "warning: legacy --debug is accepted for compatibility but ignored by syncplay-cli"
-        );
+        eprintln!("note: legacy --debug enables syncplay-cli diagnostics output");
     }
-    if overrides.force_gui_prompt_requested {
-        eprintln!("warning: legacy --force-gui-prompt is GUI-only and is ignored by syncplay-cli");
+    if let Some(line) = legacy_force_gui_prompt_compatibility_line_legacy_compatible(overrides) {
+        eprintln!("{line}");
     }
-    if overrides.language.is_some() {
-        eprintln!(
-            "warning: legacy --language is accepted for config compatibility, but syncplay-cli runtime localization is not implemented yet"
-        );
+    if let Some(line) =
+        legacy_runtime_language_selection_line_legacy_compatible(overrides.language.as_deref())
+    {
+        eprintln!("{line}");
     }
-    if overrides.player_path.is_some() {
-        eprintln!(
-            "warning: legacy --player-path is used for managed mpv launch (when enabled) or a best-effort unmanaged external player spawn; non-managed adapter integration remains unimplemented"
-        );
+    if let Some(line) = legacy_player_path_compatibility_warning_line_legacy_compatible(overrides) {
+        eprintln!("{line}");
     }
     if overrides.file.is_some() {
         eprintln!(
@@ -3069,23 +1999,6 @@ fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
     }
 }
 
-fn parse_unpause_action_mode_legacy_compatible(value: &str) -> Option<UnpauseActionMode> {
-    let normalized = value.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "ifalreadyready" | "if_already_ready" | "if-already-ready" => {
-            Some(UnpauseActionMode::IfAlreadyReady)
-        }
-        "ifothersready" | "if_others_ready" | "if-others-ready" => {
-            Some(UnpauseActionMode::IfOthersReady)
-        }
-        "ifminusersready" | "if_min_users_ready" | "if-min-users-ready" => {
-            Some(UnpauseActionMode::IfMinUsersReady)
-        }
-        "always" => Some(UnpauseActionMode::Always),
-        _ => None,
-    }
-}
-
 fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
     value: &str,
 ) -> Option<ReconnectStateRestoreCorrectionPolicyMode> {
@@ -3109,18 +2022,6 @@ fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
         }
         _ => None,
     }
-}
-
-fn parse_autoplay_min_users_override_legacy_compatible(
-    value: &str,
-) -> Option<AutoplayThresholdOverride> {
-    let parsed = value.trim().parse::<i64>().ok()?;
-    if parsed <= 0 {
-        return Some(AutoplayThresholdOverride::Disable);
-    }
-    usize::try_from(parsed)
-        .ok()
-        .map(AutoplayThresholdOverride::Set)
 }
 
 fn readiness_overrides_from_env() -> ReadinessAutoplayOverrides {
@@ -3310,712 +2211,10 @@ fn env_privacy_mode(name: &str) -> Option<PrivacyMode> {
 }
 
 fn normalize_controlled_room_input(room: String) -> (String, Option<String>) {
-    if !room.starts_with('+') {
-        return (room, None);
-    }
-
-    let mut parts = room.split(':');
-    let Some(base_name) = parts.next() else {
-        return (room, None);
-    };
-    let Some(hash_suffix) = parts.next() else {
-        return (room, None);
-    };
-    let Some(password) = parts.next() else {
-        return (room, None);
-    };
-
-    let normalized_password = password
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect::<String>()
-        .to_ascii_uppercase();
-    let canonical_room = format!("{base_name}:{hash_suffix}");
-    if normalized_password.is_empty() {
-        return (canonical_room, None);
-    }
-    (canonical_room, Some(normalized_password))
+    shared_normalize_controlled_room_input_legacy_compatible(room)
 }
 
-fn controlled_room_base_name_legacy_compatible(room: &str) -> String {
-    if !room.starts_with('+') {
-        return room.to_owned();
-    }
-
-    let Some(room_without_prefix) = room.strip_prefix('+') else {
-        return room.to_owned();
-    };
-    let Some((room_base, hash_suffix)) = room_without_prefix.rsplit_once(':') else {
-        return room.to_owned();
-    };
-    if room_base.is_empty()
-        || hash_suffix.len() != CONTROL_ROOM_HASH_LEN
-        || !hash_suffix
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        return room.to_owned();
-    }
-    room_base.to_owned()
-}
-
-fn generate_room_password_legacy_compatible() -> String {
-    fn next_seed() -> u64 {
-        let nanos_since_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        let nonce = ROOM_PASSWORD_NONCE.fetch_add(1, Ordering::Relaxed);
-        nanos_since_epoch
-            ^ nonce.rotate_left(17)
-            ^ ((std::process::id() as u64) << 32)
-            ^ 0x9E37_79B9_7F4A_7C15
-    }
-
-    fn lcg(seed: &mut u64) -> u64 {
-        *seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *seed
-    }
-
-    fn next_letter(seed: &mut u64) -> char {
-        let value = (lcg(seed) % 26) as u8;
-        (b'A' + value) as char
-    }
-
-    fn next_digit(seed: &mut u64) -> char {
-        let value = (lcg(seed) % 10) as u8;
-        (b'0' + value) as char
-    }
-
-    let mut seed = next_seed();
-    format!(
-        "{}{}-{}{}{}-{}{}{}",
-        next_letter(&mut seed),
-        next_letter(&mut seed),
-        next_digit(&mut seed),
-        next_digit(&mut seed),
-        next_digit(&mut seed),
-        next_digit(&mut seed),
-        next_digit(&mut seed),
-        next_digit(&mut seed)
-    )
-}
-
-fn parse_local_input_chat_message(input: &str) -> Option<String> {
-    if input.chars().next().is_some_and(char::is_whitespace) {
-        return None;
-    }
-
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    for alias in ["chat", "ch"] {
-        if input == alias {
-            return Some(String::new());
-        }
-
-        let Some(message) = input
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix(' '))
-        else {
-            continue;
-        };
-
-        if message.is_empty() {
-            return Some(String::new());
-        }
-
-        return Some(message.to_owned());
-    }
-
-    None
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum LocalOffsetCommand {
-    Absolute(f64),
-    Relative(f64),
-    RelativeFromCurrentPositionMinus(f64),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum LocalInputCommand {
-    Chat(String),
-    RequestUserList,
-    ShowUnknownCommandHelp,
-    ShowHelp,
-    ShowPlaylistInvalidIndexError,
-    ShowQueueMissingFileError,
-    ShowPlaylist,
-    SelectPlaylistIndex(i64),
-    NextPlaylistItem,
-    QueuePlaylistItem {
-        file_name: String,
-        select_after_queue: bool,
-    },
-    DeletePlaylistIndex(i64),
-    UndoPlaylistChange,
-    ShuffleRemainingPlaylist,
-    ShuffleEntirePlaylist,
-    UndoSeek,
-    SetUserOffset(LocalOffsetCommand),
-    SeekAbsolute(f64),
-    SeekRelative(f64),
-    TogglePause,
-    ToggleReady,
-    SetUserReady {
-        username: String,
-        ready: bool,
-    },
-    CreateControlledRoom(Option<String>),
-    AuthController(String),
-    SetRoomWithLegacyFallback,
-    SetRoom(String),
-}
-
-fn parse_create_command_legacy_compatible(input: &str) -> Option<Option<String>> {
-    for alias in ["create", "c"] {
-        if input == alias {
-            return Some(None);
-        }
-
-        let Some(parameter) = input
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix(' '))
-        else {
-            continue;
-        };
-
-        if parameter.is_empty() {
-            return Some(None);
-        }
-
-        return Some(Some(parameter.to_owned()));
-    }
-
-    None
-}
-
-fn parse_user_ready_command_legacy_compatible(
-    input: &str,
-    aliases: &[&str],
-    ready: bool,
-) -> Option<LocalInputCommand> {
-    for alias in aliases {
-        if input == *alias {
-            return Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready,
-            });
-        }
-
-        let Some(parameter) = input
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix(' '))
-        else {
-            continue;
-        };
-
-        if parameter.is_empty() {
-            return Some(LocalInputCommand::SetUserReady {
-                username: String::new(),
-                ready,
-            });
-        }
-
-        return Some(LocalInputCommand::SetUserReady {
-            username: parameter.to_owned(),
-            ready,
-        });
-    }
-
-    None
-}
-
-fn parse_room_command_legacy_compatible(input: &str) -> Option<Option<LocalInputCommand>> {
-    for alias in ["room", "r"] {
-        if input == alias {
-            return Some(Some(LocalInputCommand::SetRoomWithLegacyFallback));
-        }
-
-        let Some(parameter) = input
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix(' '))
-        else {
-            continue;
-        };
-
-        if parameter.is_empty() {
-            return Some(Some(LocalInputCommand::SetRoomWithLegacyFallback));
-        }
-
-        return Some(Some(LocalInputCommand::SetRoom(parameter.to_owned())));
-    }
-
-    None
-}
-
-fn parse_time_seconds_with_component_limits_legacy(
-    value: &str,
-    max_first_digits: usize,
-    max_other_digits: usize,
-) -> Option<f64> {
-    if value.is_empty() {
-        return None;
-    }
-
-    let mut parts: Vec<&str> = Vec::with_capacity(3);
-    let mut start = 0usize;
-    for (idx, ch) in value.char_indices() {
-        if ch.is_ascii_digit() || ch == '.' {
-            continue;
-        }
-        if idx == start {
-            return None;
-        }
-        parts.push(&value[start..idx]);
-        start = idx + ch.len_utf8();
-    }
-    if start >= value.len() {
-        return None;
-    }
-    parts.push(&value[start..]);
-
-    if parts.len() > 3 {
-        return None;
-    }
-
-    for (index, part) in parts.iter().enumerate() {
-        let is_last = index == parts.len() - 1;
-        let (whole, fractional) = if is_last {
-            let mut split = part.split('.');
-            let whole = split.next().unwrap_or_default();
-            let fractional = split.next();
-            if split.next().is_some() {
-                return None;
-            }
-            (whole, fractional)
-        } else {
-            (*part, None)
-        };
-
-        if whole.is_empty() || !whole.chars().all(|ch| ch.is_ascii_digit()) {
-            return None;
-        }
-        let max_digits = if index == 0 {
-            max_first_digits
-        } else {
-            max_other_digits
-        };
-        if whole.len() > max_digits {
-            return None;
-        }
-
-        if let Some(fractional) = fractional {
-            if fractional.is_empty()
-                || fractional.len() > 3
-                || !fractional.chars().all(|ch| ch.is_ascii_digit())
-            {
-                return None;
-            }
-        }
-    }
-
-    let seconds = match parts.as_slice() {
-        [seconds] => seconds.parse::<f64>().ok()?,
-        [minutes, seconds] => {
-            let minutes = minutes.parse::<u64>().ok()?;
-            let seconds = seconds.parse::<f64>().ok()?;
-            minutes as f64 * 60.0 + seconds
-        }
-        [hours, minutes, seconds] => {
-            let hours = hours.parse::<u64>().ok()?;
-            let minutes = minutes.parse::<u64>().ok()?;
-            let seconds = seconds.parse::<f64>().ok()?;
-            hours as f64 * 3600.0 + minutes as f64 * 60.0 + seconds
-        }
-        _ => return None,
-    };
-    seconds.is_finite().then_some(seconds)
-}
-
-fn parse_seek_time_seconds_legacy_like(value: &str) -> Option<f64> {
-    parse_time_seconds_with_component_limits_legacy(value, 4, 6)
-}
-
-fn parse_offset_time_seconds_legacy_like(value: &str) -> Option<f64> {
-    parse_time_seconds_with_component_limits_legacy(value, 9, 9)
-}
-
-fn parse_seek_parameter(parameter: &str) -> Option<LocalInputCommand> {
-    if parameter.is_empty() {
-        return None;
-    }
-
-    if let Some(value) = parameter.strip_prefix('+') {
-        let seconds = parse_seek_time_seconds_legacy_like(value)?;
-        return Some(LocalInputCommand::SeekRelative(seconds));
-    }
-    if let Some(value) = parameter.strip_prefix('-') {
-        let seconds = parse_seek_time_seconds_legacy_like(value)?;
-        return Some(LocalInputCommand::SeekRelative(-seconds));
-    }
-
-    let seconds = parse_seek_time_seconds_legacy_like(parameter)?;
-    Some(LocalInputCommand::SeekAbsolute(seconds))
-}
-
-fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffsetCommand> {
-    if parameter.is_empty() {
-        return None;
-    }
-
-    if let Some(value) = parameter.strip_prefix('+') {
-        let seconds = parse_offset_time_seconds_legacy_like(value)?;
-        return Some(LocalOffsetCommand::Relative(seconds));
-    }
-    if let Some(value) = parameter.strip_prefix('-') {
-        let seconds = parse_offset_time_seconds_legacy_like(value)?;
-        return Some(LocalOffsetCommand::Relative(-seconds));
-    }
-    if let Some(value) = parameter.strip_prefix('/') {
-        let seconds = parse_offset_time_seconds_legacy_like(value)?;
-        return Some(LocalOffsetCommand::RelativeFromCurrentPositionMinus(
-            seconds,
-        ));
-    }
-
-    let seconds = parse_offset_time_seconds_legacy_like(parameter)?;
-    Some(LocalOffsetCommand::Absolute(seconds))
-}
-
-fn parse_offset_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
-    let remainder = if let Some(remainder) = input.strip_prefix("offset") {
-        remainder
-    } else if let Some(remainder) = input.strip_prefix('o') {
-        remainder
-    } else {
-        return None;
-    };
-
-    let parameter = if let Some(parameter) = remainder.strip_prefix(' ') {
-        if parameter.starts_with(' ') {
-            return None;
-        }
-        parameter
-    } else {
-        remainder
-    };
-    if parameter.is_empty() {
-        return None;
-    }
-
-    let offset_command = parse_offset_parameter_legacy_compatible(parameter)?;
-    Some(LocalInputCommand::SetUserOffset(offset_command))
-}
-
-fn parse_seek_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
-    if input.is_empty() {
-        return None;
-    }
-
-    let (parameter, had_seek_prefix) = if let Some(value) = input.strip_prefix("seek") {
-        (value, true)
-    } else if let Some(value) = input.strip_prefix('s') {
-        (value, true)
-    } else {
-        (input, false)
-    };
-
-    if had_seek_prefix {
-        let parameter = if let Some(parameter) = parameter.strip_prefix(' ') {
-            if parameter.starts_with(' ') {
-                return None;
-            }
-            parameter
-        } else {
-            parameter
-        };
-        if parameter.is_empty() {
-            return None;
-        }
-        return parse_seek_parameter(parameter);
-    } else {
-        let starts_like_seek_value = parameter
-            .chars()
-            .next()
-            .is_some_and(|ch| ch == '+' || ch == '-' || ch.is_ascii_digit());
-        if !starts_like_seek_value {
-            return None;
-        }
-    }
-
-    parse_seek_parameter(parameter)
-}
-
-fn parse_playlist_index_parameter_legacy_compatible(parameter: &str) -> Option<i64> {
-    let one_based_index = parameter.trim().parse::<i64>().ok()?;
-    if one_based_index <= 0 {
-        return None;
-    }
-    one_based_index.checked_sub(1)
-}
-
-fn parse_queue_command_legacy_compatible(
-    input: &str,
-    aliases: &[&str],
-    select_after_queue: bool,
-) -> Option<LocalInputCommand> {
-    for alias in aliases {
-        if input == *alias {
-            return Some(LocalInputCommand::ShowQueueMissingFileError);
-        }
-
-        let Some(file_name) = input
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix(' '))
-        else {
-            continue;
-        };
-
-        if file_name.is_empty() {
-            return Some(LocalInputCommand::ShowQueueMissingFileError);
-        }
-
-        return Some(LocalInputCommand::QueuePlaylistItem {
-            file_name: file_name.to_owned(),
-            select_after_queue,
-        });
-    }
-
-    None
-}
-
-fn matches_local_command_alias_legacy_compatible(input: &str, aliases: &[&str]) -> bool {
-    aliases.iter().any(|alias| {
-        if input == *alias {
-            return true;
-        }
-        input
-            .strip_prefix(alias)
-            .is_some_and(|rest| rest.starts_with(' '))
-    })
-}
-
-fn is_known_local_command_token_legacy_compatible(token: &str) -> bool {
-    matches!(
-        token,
-        "help"
-            | "h"
-            | "?"
-            | "\\?"
-            | "undoplaylist"
-            | "shuffleremainingplaylist"
-            | "shuffleentireplaylist"
-            | "undo"
-            | "u"
-            | "revert"
-            | "list"
-            | "l"
-            | "users"
-            | "playlist"
-            | "ql"
-            | "pl"
-            | "select"
-            | "qs"
-            | "next"
-            | "qn"
-            | "queue"
-            | "qa"
-            | "add"
-            | "queueandselect"
-            | "qas"
-            | "delete"
-            | "d"
-            | "qd"
-            | "setready"
-            | "sr"
-            | "setnotready"
-            | "sn"
-            | "snr"
-            | "create"
-            | "c"
-            | "auth"
-            | "a"
-            | "seek"
-            | "s"
-            | "pause"
-            | "play"
-            | "p"
-            | "room"
-            | "r"
-            | "toggle"
-            | "t"
-            | "offset"
-            | "o"
-            | "chat"
-            | "ch"
-    )
-}
-
-fn parse_local_input_command(input: &str) -> Option<LocalInputCommand> {
-    if input.starts_with(' ') {
-        return None;
-    }
-    if input.chars().next().is_some_and(char::is_whitespace) {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-
-    let trimmed = input.trim_end_matches(' ');
-    if matches_local_command_alias_legacy_compatible(trimmed, &["help", "h", "?", "/?", "\\?"]) {
-        return Some(LocalInputCommand::ShowHelp);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["undoplaylist"]) {
-        return Some(LocalInputCommand::UndoPlaylistChange);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["shuffleremainingplaylist"]) {
-        return Some(LocalInputCommand::ShuffleRemainingPlaylist);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["shuffleentireplaylist"]) {
-        return Some(LocalInputCommand::ShuffleEntirePlaylist);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["undo", "u", "revert"]) {
-        return Some(LocalInputCommand::UndoSeek);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["list", "l", "users"]) {
-        return Some(LocalInputCommand::RequestUserList);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["playlist", "ql", "pl"]) {
-        return Some(LocalInputCommand::ShowPlaylist);
-    }
-    if let Some(index) = trimmed
-        .strip_prefix("select ")
-        .or_else(|| trimmed.strip_prefix("qs "))
-    {
-        return parse_playlist_index_parameter_legacy_compatible(index)
-            .map(LocalInputCommand::SelectPlaylistIndex)
-            .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
-    }
-    if matches!(trimmed, "select" | "qs") {
-        return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["next", "qn"]) {
-        return Some(LocalInputCommand::NextPlaylistItem);
-    }
-    if let Some(command) =
-        parse_queue_command_legacy_compatible(input, &["queueandselect", "qas"], true)
-    {
-        return Some(command);
-    }
-    if let Some(command) =
-        parse_queue_command_legacy_compatible(input, &["queue", "qa", "add"], false)
-    {
-        return Some(command);
-    }
-    if let Some(index) = trimmed
-        .strip_prefix("delete ")
-        .or_else(|| trimmed.strip_prefix("d "))
-        .or_else(|| trimmed.strip_prefix("qd "))
-    {
-        return parse_playlist_index_parameter_legacy_compatible(index)
-            .map(LocalInputCommand::DeletePlaylistIndex)
-            .or(Some(LocalInputCommand::ShowPlaylistInvalidIndexError));
-    }
-    if matches!(trimmed, "delete" | "d" | "qd") {
-        return Some(LocalInputCommand::ShowPlaylistInvalidIndexError);
-    }
-    if let Some(command) =
-        parse_user_ready_command_legacy_compatible(input, &["setready", "sr"], true)
-    {
-        return Some(command);
-    }
-    if let Some(command) =
-        parse_user_ready_command_legacy_compatible(input, &["setnotready", "sn", "snr"], false)
-    {
-        return Some(command);
-    }
-    if let Some(room_name) = parse_create_command_legacy_compatible(input) {
-        return Some(LocalInputCommand::CreateControlledRoom(room_name));
-    }
-    if let Some(password) = trimmed
-        .strip_prefix("auth ")
-        .or_else(|| trimmed.strip_prefix("a "))
-    {
-        let password = password.trim();
-        return Some(LocalInputCommand::AuthController(password.to_owned()));
-    }
-    if matches!(trimmed, "auth" | "a") {
-        return Some(LocalInputCommand::AuthController(String::new()));
-    }
-    if let Some(parameter) = input
-        .strip_prefix("seek ")
-        .or_else(|| input.strip_prefix("s "))
-    {
-        return parse_seek_parameter(parameter).or(Some(LocalInputCommand::ShowUnknownCommandHelp));
-    }
-    if matches!(trimmed, "seek" | "s") {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["p", "pause", "play"]) {
-        return Some(LocalInputCommand::TogglePause);
-    }
-    if let Some(room_command) = parse_room_command_legacy_compatible(input) {
-        return room_command;
-    }
-    if matches_local_command_alias_legacy_compatible(trimmed, &["t", "toggle"]) {
-        return Some(LocalInputCommand::ToggleReady);
-    }
-    if let Some(command) = parse_offset_input_legacy_compatible(input) {
-        return Some(command);
-    }
-    let command_token = trimmed.split_whitespace().next().unwrap_or_default();
-    if matches!(command_token, "o" | "offset" | "/o" | "/offset")
-        || trimmed.starts_with("o+")
-        || trimmed.starts_with("o-")
-        || trimmed.starts_with("o/")
-        || trimmed.starts_with("offset+")
-        || trimmed.starts_with("offset-")
-        || trimmed.starts_with("offset/")
-    {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if let Some(command) = parse_seek_input_legacy_compatible(input) {
-        return Some(command);
-    }
-    if trimmed.starts_with("s+")
-        || trimmed.starts_with("s-")
-        || trimmed.starts_with("seek+")
-        || trimmed.starts_with("seek-")
-    {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if let Some(chat_message) = parse_local_input_chat_message(input) {
-        return Some(LocalInputCommand::Chat(chat_message));
-    }
-    if is_known_local_command_token_legacy_compatible(command_token) {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if trimmed.starts_with('/') {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if input.chars().any(|ch| ch.is_whitespace() && ch != ' ') {
-        return Some(LocalInputCommand::ShowUnknownCommandHelp);
-    }
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(LocalInputCommand::ShowUnknownCommandHelp)
-}
-
-fn spawn_local_input_receiver_if_enabled() -> Option<UnboundedReceiver<String>> {
-    if !env_flag_enabled("SYNCPLAY_CLIENT_STDIN") {
-        return None;
-    }
-
+fn spawn_local_input_receiver_legacy_compatible() -> UnboundedReceiver<String> {
     let (sender, receiver) = unbounded_channel::<String>();
     std::thread::spawn(move || {
         use std::io::BufRead;
@@ -4033,7 +2232,7 @@ fn spawn_local_input_receiver_if_enabled() -> Option<UnboundedReceiver<String>> 
         }
     });
 
-    Some(receiver)
+    receiver
 }
 
 async fn recv_local_input_line(
@@ -4283,9 +2482,16 @@ fn apply_legacy_client_arg_managed_mpv_overrides(
     let Some(overrides) = legacy_overrides else {
         return;
     };
+    let legacy_player_path = overrides.player_path.as_deref();
+    let legacy_player_requests_managed_mpv =
+        legacy_player_path.is_some_and(legacy_player_path_requests_managed_mpv_legacy_compatible);
 
-    if managed_config.mpv_bin.is_none() {
-        if let Some(player_path) = overrides.player_path.as_deref() {
+    if !managed_config.enabled && legacy_player_requests_managed_mpv {
+        managed_config.enabled = true;
+    }
+
+    if managed_config.mpv_bin.is_none() && legacy_player_requests_managed_mpv {
+        if let Some(player_path) = legacy_player_path {
             managed_config.mpv_bin = Some(PathBuf::from(player_path));
         }
     }
@@ -4297,6 +2503,51 @@ fn apply_legacy_client_arg_managed_mpv_overrides(
     if managed_config.extra_args.is_empty() && !overrides.player_args.is_empty() {
         managed_config.extra_args = overrides.player_args.clone();
     }
+}
+
+fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) -> bool {
+    let file_name = Path::new(player_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(player_path);
+    let normalized = file_name.trim().to_ascii_lowercase();
+    matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com")
+}
+
+fn legacy_player_path_compatibility_warning_line_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+) -> Option<&'static str> {
+    let player_path = overrides.player_path.as_deref()?;
+    if legacy_player_path_requests_managed_mpv_legacy_compatible(player_path) {
+        Some(
+            "warning: legacy --player-path selects managed mpv integration for mpv binaries; non-mpv values remain launch-only unmanaged fallback",
+        )
+    } else {
+        Some(
+            "warning: legacy non-mpv --player-path is launch-only unmanaged fallback; it is not adapter-integrated and is ignored when managed mpv or explicit-mpv-IPC is active",
+        )
+    }
+}
+
+fn legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(
+    overrides: &LegacyClientArgOverrides,
+) -> Option<&'static str> {
+    let player_path = overrides.player_path.as_deref()?;
+    if legacy_player_path_requests_managed_mpv_legacy_compatible(player_path) {
+        None
+    } else {
+        Some(
+            "warning: legacy non-mpv --player-path was ignored because managed mpv or explicit-mpv-IPC integration is active",
+        )
+    }
+}
+
+fn should_use_automatic_managed_mpv_for_legacy_player_path_legacy_compatible(
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> bool {
+    legacy_overrides
+        .and_then(|overrides| overrides.player_path.as_deref())
+        .is_some_and(legacy_player_path_requests_managed_mpv_legacy_compatible)
 }
 
 fn explicit_mpv_ipc_path_from_env() -> Option<String> {
@@ -4328,10 +2579,6 @@ fn parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible(
 ) -> Option<f64> {
     parse_env_non_negative_f64_legacy_compatible(value)
         .or_else(|| parse_seek_time_seconds_legacy_like(value))
-}
-
-fn is_legacy_explicit_mpv_ipc_known_deferred_flag_legacy_compatible(_arg: &str) -> bool {
-    false
 }
 
 fn format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
@@ -4843,15 +3090,6 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
             continue;
         }
 
-        if is_legacy_explicit_mpv_ipc_known_deferred_flag_legacy_compatible(arg) {
-            analysis
-                .diagnostics
-                .recognized_but_deferred_tokens
-                .push(arg.to_owned());
-            index += 1;
-            continue;
-        }
-
         analysis.diagnostics.unsupported_tokens.push(arg.to_owned());
         index += 1;
     }
@@ -4869,9 +3107,7 @@ fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible
     diagnostics: &LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
     applied_supported_commands: usize,
 ) -> Vec<String> {
-    let ignored_count = diagnostics.recognized_but_deferred_tokens.len()
-        + diagnostics.malformed_tokens.len()
-        + diagnostics.unsupported_tokens.len();
+    let ignored_count = diagnostics.malformed_tokens.len() + diagnostics.unsupported_tokens.len();
     if applied_supported_commands == 0 && ignored_count == 0 {
         return Vec::new();
     }
@@ -4879,17 +3115,10 @@ fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible
 
     let mut lines = Vec::new();
     lines.push(format!(
-        "info: explicit-mpv-IPC startup _args summary: applied={applied_supported_commands} ignored={ignored_count} (recognized-supported-tokens={recognized_supported_count}, deferred={}, malformed={}, unsupported={})",
-        diagnostics.recognized_but_deferred_tokens.len(),
+        "info: explicit-mpv-IPC startup _args summary: applied={applied_supported_commands} ignored={ignored_count} (recognized-supported-tokens={recognized_supported_count}, malformed={}, unsupported={})",
         diagnostics.malformed_tokens.len(),
         diagnostics.unsupported_tokens.len()
     ));
-    if !diagnostics.recognized_but_deferred_tokens.is_empty() {
-        lines.push(format!(
-            "warning: explicit-mpv-IPC recognized-but-deferred _args were ignored: {}",
-            diagnostics.recognized_but_deferred_tokens.join(", ")
-        ));
-    }
     if !diagnostics.malformed_tokens.is_empty() {
         lines.push(format!(
             "warning: explicit-mpv-IPC malformed _args were ignored: {}",
@@ -4898,7 +3127,7 @@ fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible
     }
     if !diagnostics.unsupported_tokens.is_empty() {
         lines.push(format!(
-            "warning: explicit-mpv-IPC unsupported _args were ignored: {}",
+            "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: {}",
             diagnostics.unsupported_tokens.join(", ")
         ));
     }
@@ -4925,6 +3154,16 @@ fn spawn_legacy_external_player_if_requested_legacy_compatible(
         return Ok(false);
     };
     if should_skip_legacy_external_player_launch_due_to_mpv_integration_env() {
+        if let Some(line) =
+            legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(
+                overrides,
+            )
+        {
+            eprintln!("{line}");
+        }
+        return Ok(false);
+    }
+    if should_use_automatic_managed_mpv_for_legacy_player_path_legacy_compatible(Some(overrides)) {
         return Ok(false);
     }
 
@@ -5474,27 +3713,28 @@ fn publish_pending_local_file_updates(
     Ok(())
 }
 
+#[cfg(test)]
 fn format_file_difference_summary(summary: FileDifferenceSummary) -> Option<String> {
-    let mut differences = Vec::new();
-    if summary.filename {
-        differences.push("filename");
-    }
-    if summary.filesize {
-        differences.push("filesize");
-    }
-    if summary.fileduration {
-        differences.push("duration");
-    }
+    shared_format_file_difference_summary(summary)
+}
 
-    if differences.is_empty() {
-        None
-    } else {
-        Some(differences.join(", "))
-    }
+#[cfg(test)]
+fn localized_file_difference_summary_legacy_compatible(
+    summary: &str,
+    language: Option<&str>,
+) -> String {
+    shared_localized_file_difference_summary_legacy_compatible(summary, language)
 }
 
 fn emit_file_difference_notification(summary: &str) -> anyhow::Result<()> {
-    println!("file differences: {summary}");
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    println!(
+        "{}",
+        shared_localized_file_difference_notification_line_legacy_compatible(
+            summary,
+            language.as_deref(),
+        )
+    );
     Ok(())
 }
 
@@ -5506,26 +3746,17 @@ fn flush_file_difference_notifications_to_sink<F>(
 where
     F: FnMut(&str) -> anyhow::Result<()>,
 {
-    let summary = runtime
-        .session()
-        .file_differences_for_current_room()
-        .and_then(format_file_difference_summary);
-
-    match summary {
-        Some(summary) => {
-            if state.last_summary.as_deref() != Some(summary.as_str()) {
-                notify(summary.as_str())?;
-            }
-            state.last_summary = Some(summary);
-        }
-        None => {
-            state.last_summary = None;
-        }
+    if let Some(summary) = shared_next_file_difference_notification_summary_legacy_compatible(
+        state,
+        runtime.session().file_differences_for_current_room(),
+    ) {
+        notify(summary.as_str())?;
     }
 
     Ok(())
 }
 
+#[cfg(test)]
 fn player_playback_telemetry_update_message(
     update: &PlayerPlaybackTelemetryUpdate,
 ) -> Option<String> {
@@ -5547,19 +3778,118 @@ fn player_playback_telemetry_update_message(
     }
 }
 
+fn localized_player_telemetry_prefix_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Player-Telemetrie",
+        Some("es") => "Telemetria del reproductor",
+        Some("eo") => "Ludila telemetrio",
+        Some("fi") => "Soittimen telemetria",
+        Some("fr") => "Telemetrie du lecteur",
+        Some("it") => "Telemetria del player",
+        Some("pt_PT" | "pt_BR") => "Telemetria do player",
+        Some("tr") => "Oynatici telemetrisi",
+        Some("ru") => "Telemetriia pleera",
+        Some("zh_CN") => "Bofangqi ceju",
+        Some("ko") => "Peulleieo tellemetri",
+        _ => "player telemetry",
+    }
+}
+
+fn player_playback_telemetry_update_message_localized_legacy_compatible(
+    update: &PlayerPlaybackTelemetryUpdate,
+    language: Option<&str>,
+) -> Option<String> {
+    let mut fields = Vec::new();
+    if let Some(paused) = update.paused {
+        fields.push(format!("paused={paused}"));
+    }
+    if let Some(position_seconds) = update.position_seconds {
+        fields.push(format!("position={position_seconds:.3}"));
+    }
+    if let Some(playback_rate) = update.playback_rate {
+        fields.push(format!("speed={playback_rate:.3}"));
+    }
+
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{}: {}",
+            localized_player_telemetry_prefix_legacy_compatible(language),
+            fields.join(" ")
+        ))
+    }
+}
+
 fn emit_player_playback_telemetry_update(
     update: &PlayerPlaybackTelemetryUpdate,
 ) -> anyhow::Result<()> {
-    let Some(message) = player_playback_telemetry_update_message(update) else {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let Some(message) = player_playback_telemetry_update_message_localized_legacy_compatible(
+        update,
+        language.as_deref(),
+    ) else {
         return Ok(());
     };
     println!("{message}");
     Ok(())
 }
 
-fn player_playback_drift_diagnostic_messages(
+fn localized_player_drift_prefix_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Player-Abweichung",
+        Some("es") => "Desajuste del reproductor",
+        Some("eo") => "Ludila diferenco",
+        Some("fi") => "Soittimen poikkeama",
+        Some("fr") => "Derive du lecteur",
+        Some("it") => "Deriva del player",
+        Some("pt_PT" | "pt_BR") => "Desvio do player",
+        Some("tr") => "Oynatici kaymasi",
+        Some("ru") => "Rassinkhronizatsiia pleera",
+        Some("zh_CN") => "Bofangqi piancha",
+        Some("ko") => "Peulleieo eotnamm",
+        _ => "player drift",
+    }
+}
+
+fn localized_paused_mismatch_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Pause-Abweichung",
+        Some("es") => "desajuste de pausa",
+        Some("eo") => "pauza malsamo",
+        Some("fi") => "tauon ero",
+        Some("fr") => "ecart de pause",
+        Some("it") => "disallineamento pausa",
+        Some("pt_PT" | "pt_BR") => "desalinhamento de pausa",
+        Some("tr") => "duraklatma uyusmazligi",
+        Some("ru") => "rassoglasovanie pausy",
+        Some("zh_CN") => "zanting bu pipei",
+        Some("ko") => "ilsi jeongji bul-ilchi",
+        _ => "paused mismatch",
+    }
+}
+
+fn localized_position_mismatch_label_legacy_compatible(language: Option<&str>) -> &'static str {
+    match language {
+        Some("de") => "Positionsabweichung",
+        Some("es") => "desajuste de posicion",
+        Some("eo") => "pozicia malsamo",
+        Some("fi") => "sijainnin ero",
+        Some("fr") => "ecart de position",
+        Some("it") => "disallineamento posizione",
+        Some("pt_PT" | "pt_BR") => "desalinhamento de posicao",
+        Some("tr") => "konum uyusmazligi",
+        Some("ru") => "rassoglasovanie pozitsii",
+        Some("zh_CN") => "weizhi bu pipei",
+        Some("ko") => "wichi bul-ilchi",
+        _ => "position mismatch",
+    }
+}
+
+fn player_playback_drift_diagnostic_messages_localized_legacy_compatible(
     update: &PlayerPlaybackTelemetryUpdate,
     room_playstate: Option<&RoomPlaystateView>,
+    language: Option<&str>,
 ) -> Vec<String> {
     let Some(room_playstate) = room_playstate else {
         return Vec::new();
@@ -5570,7 +3900,9 @@ fn player_playback_drift_diagnostic_messages(
     if let (Some(player_paused), Some(room_paused)) = (update.paused, room_playstate.paused) {
         if player_paused != room_paused {
             messages.push(format!(
-                "player drift: paused mismatch player={player_paused} room={room_paused}"
+                "{}: {} player={player_paused} room={room_paused}",
+                localized_player_drift_prefix_legacy_compatible(language),
+                localized_paused_mismatch_label_legacy_compatible(language),
             ));
         }
     }
@@ -5581,7 +3913,9 @@ fn player_playback_drift_diagnostic_messages(
         let diff = (player_position - room_position).abs();
         if diff > PLAYER_DRIFT_DIAGNOSTIC_THRESHOLD_SECONDS {
             messages.push(format!(
-                "player drift: position mismatch player={player_position:.3} room={room_position:.3} diff={diff:.3}"
+                "{}: {} player={player_position:.3} room={room_position:.3} diff={diff:.3}",
+                localized_player_drift_prefix_legacy_compatible(language),
+                localized_position_mismatch_label_legacy_compatible(language),
             ));
         }
     }
@@ -5603,6 +3937,7 @@ fn flush_player_playback_telemetry_diagnostics(
         return Ok(());
     }
 
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
     let room_playstate = runtime.session().current_room_playstate().cloned();
     let updates = runtime.drain_player_playback_telemetry_updates();
     for update in &updates {
@@ -5610,350 +3945,17 @@ fn flush_player_playback_telemetry_diagnostics(
             emit_player_playback_telemetry_update(update)?;
         }
         if log_drift {
-            for message in
-                player_playback_drift_diagnostic_messages(update, room_playstate.as_ref())
-            {
+            for message in player_playback_drift_diagnostic_messages_localized_legacy_compatible(
+                update,
+                room_playstate.as_ref(),
+                language.as_deref(),
+            ) {
                 emit_player_playback_drift_diagnostic(&message)?;
             }
         }
     }
 
     Ok(())
-}
-
-fn reconnect_correction_policy_mode_label(
-    mode: ReconnectStateRestoreCorrectionPolicyMode,
-) -> &'static str {
-    match mode {
-        ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect => "auto",
-        ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly => "notify-only",
-        ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion => {
-            "warn-only-on-exhaustion"
-        }
-        ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches => {
-            "disable-after-n-mismatches"
-        }
-    }
-}
-
-fn reconnect_correction_metrics_delta_message(
-    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
-    current: &ReconnectStateRestoreCorrectionMetrics,
-) -> Option<String> {
-    let baseline = previous.copied().unwrap_or_default();
-    let mut fields = Vec::new();
-
-    macro_rules! push_delta {
-        ($field:ident, $label:literal) => {
-            if current.$field != baseline.$field {
-                let delta = current.$field.saturating_sub(baseline.$field);
-                fields.push(format!("{}=+{} (total={})", $label, delta, current.$field));
-            }
-        };
-    }
-
-    push_delta!(validation_cycles_started, "cycles_started");
-    push_delta!(validation_cycles_completed_without_mismatch, "cycles_clean");
-    push_delta!(
-        validation_cycles_completed_with_successful_correction,
-        "cycles_corrected"
-    );
-    push_delta!(mismatch_cycles_detected, "mismatch_cycles");
-    push_delta!(mismatch_notifications_emitted, "mismatch_notifications");
-    push_delta!(correction_actions_attempted, "actions_attempted");
-    push_delta!(correction_actions_succeeded, "actions_succeeded");
-    push_delta!(correction_action_failures, "actions_failed");
-    push_delta!(correction_retries_scheduled, "retries_scheduled");
-    push_delta!(correction_retry_exhaustions, "retry_exhaustions");
-    push_delta!(
-        correction_disables_after_repeated_mismatches,
-        "disables_after_repeated_mismatches"
-    );
-    push_delta!(
-        correction_recovery_cooldown_suppressed_cycles,
-        "recovery_suppressed_cycles"
-    );
-    push_delta!(
-        correction_recovery_cooldown_reenabled_cycles,
-        "recovery_reenabled_cycles"
-    );
-
-    if fields.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "reconnect correction metrics: {}",
-            fields.join(" ")
-        ))
-    }
-}
-
-fn reconnect_correction_metrics_delta_json_line(
-    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
-    current: &ReconnectStateRestoreCorrectionMetrics,
-) -> Option<String> {
-    let baseline = previous.copied().unwrap_or_default();
-    let mut deltas = Map::new();
-
-    macro_rules! push_delta_json {
-        ($field:ident, $label:literal) => {
-            if current.$field != baseline.$field {
-                let delta = current.$field.saturating_sub(baseline.$field);
-                deltas.insert(
-                    $label.to_owned(),
-                    json!({
-                        "delta": delta,
-                        "total": current.$field,
-                    }),
-                );
-            }
-        };
-    }
-
-    push_delta_json!(validation_cycles_started, "cycles_started");
-    push_delta_json!(validation_cycles_completed_without_mismatch, "cycles_clean");
-    push_delta_json!(
-        validation_cycles_completed_with_successful_correction,
-        "cycles_corrected"
-    );
-    push_delta_json!(mismatch_cycles_detected, "mismatch_cycles");
-    push_delta_json!(mismatch_notifications_emitted, "mismatch_notifications");
-    push_delta_json!(correction_actions_attempted, "actions_attempted");
-    push_delta_json!(correction_actions_succeeded, "actions_succeeded");
-    push_delta_json!(correction_action_failures, "actions_failed");
-    push_delta_json!(correction_retries_scheduled, "retries_scheduled");
-    push_delta_json!(correction_retry_exhaustions, "retry_exhaustions");
-    push_delta_json!(
-        correction_disables_after_repeated_mismatches,
-        "disables_after_repeated_mismatches"
-    );
-    push_delta_json!(
-        correction_recovery_cooldown_suppressed_cycles,
-        "recovery_suppressed_cycles"
-    );
-    push_delta_json!(
-        correction_recovery_cooldown_reenabled_cycles,
-        "recovery_reenabled_cycles"
-    );
-
-    if deltas.is_empty() {
-        None
-    } else {
-        Some(
-            json!({
-                "type": "reconnect_correction_metrics_delta",
-                "deltas": Value::Object(deltas),
-            })
-            .to_string(),
-        )
-    }
-}
-
-fn reconnect_correction_state_snapshot_message(
-    snapshot: &ReconnectStateRestoreCorrectionStateSnapshot,
-) -> String {
-    format!(
-        "reconnect correction state: pending={} policy={} tolerance={:.3} retry_attempts={} effective_retry_max_attempts={} retry_cooldown_ticks={} mismatch_notified={} mismatch_seen={} consecutive_mismatch_cycles={} consecutive_retry_exhaustions={} recovery_cooldown_reconnect_cycles_remaining={} recovery_suppressed_this_cycle={} recovery_reenabled_this_cycle={}",
-        snapshot.validation_pending,
-        reconnect_correction_policy_mode_label(snapshot.effective_policy_mode),
-        snapshot.position_tolerance_seconds,
-        snapshot.retry_attempts,
-        snapshot.effective_retry_max_attempts,
-        snapshot.retry_cooldown_ticks,
-        snapshot.mismatch_notified_in_cycle,
-        snapshot.mismatch_seen_in_cycle,
-        snapshot.consecutive_mismatch_cycles,
-        snapshot.consecutive_retry_exhaustions,
-        snapshot.recovery_cooldown_reconnect_cycles_remaining,
-        snapshot.correction_suppressed_for_recovery_cycle,
-        snapshot.correction_reenabled_for_recovery_cycle,
-    )
-}
-
-fn reconnect_correction_state_snapshot_json_line(
-    snapshot: &ReconnectStateRestoreCorrectionStateSnapshot,
-) -> String {
-    json!({
-        "type": "reconnect_correction_state",
-        "state": {
-            "validation_pending": snapshot.validation_pending,
-            "effective_policy_mode": reconnect_correction_policy_mode_label(snapshot.effective_policy_mode),
-            "position_tolerance_seconds": snapshot.position_tolerance_seconds,
-            "retry_attempts": snapshot.retry_attempts,
-            "effective_retry_max_attempts": snapshot.effective_retry_max_attempts,
-            "retry_cooldown_ticks": snapshot.retry_cooldown_ticks,
-            "mismatch_notified_in_cycle": snapshot.mismatch_notified_in_cycle,
-            "mismatch_seen_in_cycle": snapshot.mismatch_seen_in_cycle,
-            "consecutive_mismatch_cycles": snapshot.consecutive_mismatch_cycles,
-            "consecutive_retry_exhaustions": snapshot.consecutive_retry_exhaustions,
-            "recovery_cooldown_reconnect_cycles_remaining": snapshot.recovery_cooldown_reconnect_cycles_remaining,
-            "correction_suppressed_for_recovery_cycle": snapshot.correction_suppressed_for_recovery_cycle,
-            "correction_reenabled_for_recovery_cycle": snapshot.correction_reenabled_for_recovery_cycle,
-        }
-    })
-    .to_string()
-}
-
-fn reconnect_correction_metric_delta_alert_text(
-    metric: &str,
-    delta: u64,
-    total: u64,
-    threshold: u64,
-) -> String {
-    format!(
-        "reconnect correction alert: metric={metric} delta={delta} total={total} threshold={threshold}"
-    )
-}
-
-fn reconnect_correction_metric_delta_alert_json_line(
-    metric: &str,
-    delta: u64,
-    total: u64,
-    threshold: u64,
-) -> String {
-    json!({
-        "type": "reconnect_correction_alert",
-        "alert_kind": "metric_delta_threshold",
-        "metric": metric,
-        "delta": delta,
-        "total": total,
-        "threshold": threshold,
-    })
-    .to_string()
-}
-
-fn reconnect_correction_state_threshold_alert_text(
-    metric: &str,
-    value: u32,
-    threshold: u32,
-) -> String {
-    format!("reconnect correction alert: state={metric} value={value} threshold={threshold}")
-}
-
-fn reconnect_correction_state_threshold_alert_json_line(
-    metric: &str,
-    value: u32,
-    threshold: u32,
-) -> String {
-    json!({
-        "type": "reconnect_correction_alert",
-        "alert_kind": "state_threshold_crossed",
-        "metric": metric,
-        "value": value,
-        "threshold": threshold,
-    })
-    .to_string()
-}
-
-fn reconnect_correction_metrics_delta_alert_lines(
-    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
-    current: &ReconnectStateRestoreCorrectionMetrics,
-    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
-    format: ReconnectCorrectionDiagnosticsFormat,
-) -> Vec<String> {
-    let baseline = previous.copied().unwrap_or_default();
-    let mut alerts = Vec::new();
-
-    macro_rules! push_metric_alert {
-        ($threshold_field:ident, $metric_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let current_total = current.$metric_field;
-                let baseline_total = baseline.$metric_field;
-                let delta = current_total.saturating_sub(baseline_total);
-                if delta >= threshold && delta > 0 {
-                    let message = match format {
-                        ReconnectCorrectionDiagnosticsFormat::Text => {
-                            reconnect_correction_metric_delta_alert_text(
-                                $metric_label,
-                                delta,
-                                current_total,
-                                threshold,
-                            )
-                        }
-                        ReconnectCorrectionDiagnosticsFormat::Json => {
-                            reconnect_correction_metric_delta_alert_json_line(
-                                $metric_label,
-                                delta,
-                                current_total,
-                                threshold,
-                            )
-                        }
-                    };
-                    alerts.push(message);
-                }
-            }
-        };
-    }
-
-    push_metric_alert!(
-        action_failures_delta,
-        correction_action_failures,
-        "actions_failed"
-    );
-    push_metric_alert!(
-        retry_exhaustions_delta,
-        correction_retry_exhaustions,
-        "retry_exhaustions"
-    );
-    push_metric_alert!(
-        disables_after_repeated_mismatches_delta,
-        correction_disables_after_repeated_mismatches,
-        "disables_after_repeated_mismatches"
-    );
-
-    alerts
-}
-
-fn reconnect_correction_state_threshold_alert_lines(
-    previous: Option<&ReconnectStateRestoreCorrectionStateSnapshot>,
-    current: &ReconnectStateRestoreCorrectionStateSnapshot,
-    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
-    format: ReconnectCorrectionDiagnosticsFormat,
-) -> Vec<String> {
-    let mut alerts = Vec::new();
-
-    macro_rules! push_crossing_alert {
-        ($threshold_field:ident, $snapshot_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let previous_value = previous
-                    .map(|snapshot| snapshot.$snapshot_field)
-                    .unwrap_or(0);
-                let current_value = current.$snapshot_field;
-                if previous_value < threshold && current_value >= threshold {
-                    let message = match format {
-                        ReconnectCorrectionDiagnosticsFormat::Text => {
-                            reconnect_correction_state_threshold_alert_text(
-                                $metric_label,
-                                current_value,
-                                threshold,
-                            )
-                        }
-                        ReconnectCorrectionDiagnosticsFormat::Json => {
-                            reconnect_correction_state_threshold_alert_json_line(
-                                $metric_label,
-                                current_value,
-                                threshold,
-                            )
-                        }
-                    };
-                    alerts.push(message);
-                }
-            }
-        };
-    }
-
-    push_crossing_alert!(
-        consecutive_mismatch_cycles,
-        consecutive_mismatch_cycles,
-        "consecutive_mismatch_cycles"
-    );
-    push_crossing_alert!(
-        consecutive_retry_exhaustions,
-        consecutive_retry_exhaustions,
-        "consecutive_retry_exhaustions"
-    );
-
-    alerts
 }
 
 fn emit_reconnect_correction_diagnostic(message: &str) -> anyhow::Result<()> {
@@ -5971,59 +3973,87 @@ fn flush_reconnect_correction_diagnostics_to_sink<F>(
 where
     F: FnMut(&str) -> anyhow::Result<()>,
 {
-    let metrics = *runtime.reconnect_state_restore_correction_metrics();
-    let metrics_message = match format {
-        ReconnectCorrectionDiagnosticsFormat::Text => {
-            reconnect_correction_metrics_delta_message(state.last_metrics.as_ref(), &metrics)
-        }
-        ReconnectCorrectionDiagnosticsFormat::Json => {
-            reconnect_correction_metrics_delta_json_line(state.last_metrics.as_ref(), &metrics)
-        }
-    };
-    if let Some(message) = metrics_message {
-        notify(&message)?;
-    }
-    for alert in reconnect_correction_metrics_delta_alert_lines(
-        state.last_metrics.as_ref(),
-        &metrics,
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let lines = shared_next_reconnect_correction_diagnostic_lines_legacy_compatible(
+        state,
+        *runtime.reconnect_state_restore_correction_metrics(),
+        runtime.reconnect_state_restore_correction_state_snapshot(),
         alert_thresholds,
         format,
-    ) {
-        notify(&alert)?;
+        language.as_deref(),
+    );
+    for line in lines {
+        notify(&line)?;
     }
-
-    let snapshot = runtime.reconnect_state_restore_correction_state_snapshot();
-    if state.last_snapshot.as_ref() != Some(&snapshot) {
-        let message = match format {
-            ReconnectCorrectionDiagnosticsFormat::Text => {
-                reconnect_correction_state_snapshot_message(&snapshot)
-            }
-            ReconnectCorrectionDiagnosticsFormat::Json => {
-                reconnect_correction_state_snapshot_json_line(&snapshot)
-            }
-        };
-        notify(&message)?;
-    }
-    for alert in reconnect_correction_state_threshold_alert_lines(
-        state.last_snapshot.as_ref(),
-        &snapshot,
-        alert_thresholds,
-        format,
-    ) {
-        notify(&alert)?;
-    }
-
-    state.last_metrics = Some(metrics);
-    state.last_snapshot = Some(snapshot);
     Ok(())
+}
+
+fn autoplay_countdown_notification_message_localized_legacy_compatible(
+    notification: &AutoplayCountdownNotification,
+    language: Option<&str>,
+) -> String {
+    match language {
+        Some("de") => format!(
+            "Autoplay-Countdown: bereit_benutzer={} sekunden_uebrig={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("es") => format!(
+            "Cuenta regresiva de autoplay: usuarios_listos={} segundos_restantes={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("eo") => format!(
+            "Auta luda retronombrado: pretaj_uzantoj={} ceteraj_sekundoj={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("fi") => format!(
+            "Autoplayn laskenta: valmiit_kayttajat={} sekuntia_jaljella={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("fr") => format!(
+            "Compte a rebours autoplay : utilisateurs_prets={} secondes_restantes={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("it") => format!(
+            "Conto alla rovescia autoplay: utenti_pronti={} secondi_rimanenti={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("pt_PT" | "pt_BR") => format!(
+            "Contagem regressiva do autoplay: usuarios_prontos={} segundos_restantes={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("tr") => format!(
+            "Autoplay geri sayim: hazir_kullanicilar={} kalan_saniye={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("ru") => format!(
+            "Obratnyi otschet autoplay: gotovye_polzovateli={} ostalos_sekund={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("zh_CN") => format!(
+            "Autoplay daojishi: zhunbei_yonghu={} shengyu_miaoshu={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        Some("ko") => format!(
+            "Autoplay kaunteudaun: junbi_sayongja={} namaeun_cho={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+        _ => format!(
+            "autoplay countdown: ready_users={} seconds_left={}",
+            notification.ready_user_count, notification.seconds_left
+        ),
+    }
 }
 
 fn emit_autoplay_countdown_notification(
     notification: &AutoplayCountdownNotification,
 ) -> anyhow::Result<()> {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
     println!(
-        "autoplay countdown: ready_users={} seconds_left={}",
-        notification.ready_user_count, notification.seconds_left
+        "{}",
+        autoplay_countdown_notification_message_localized_legacy_compatible(
+            notification,
+            language.as_deref(),
+        )
     );
     Ok(())
 }
@@ -6038,71 +4068,33 @@ where
     runtime.drain_autoplay_notifications_to_sink(|notification| notify(notification))
 }
 
+#[cfg(test)]
 fn reconnect_transition_notification_message(
     notification: &ReconnectTransitionNotification,
 ) -> String {
-    match notification {
-        ReconnectTransitionNotification::Attempting {
-            retries,
-            delay_seconds,
-        } => format!(
-            "Connection with server lost, attempting to reconnect (retry={retries}, delay_seconds={delay_seconds:.3})"
-        ),
-        ReconnectTransitionNotification::Connected => "Reconnected to server".to_owned(),
-        ReconnectTransitionNotification::Disconnected => {
-            "Connection with server lost, reconnect attempts exhausted".to_owned()
-        }
-        ReconnectTransitionNotification::RestoringState => {
-            "Restoring local state after reconnect...".to_owned()
-        }
-        ReconnectTransitionNotification::StateRestoreValidationMismatch {
-            local_paused,
-            room_paused,
-            local_position,
-            room_position,
-            position_diff_seconds,
-        } => format!(
-            "Reconnect state restore validation mismatch; correcting local player: player(paused={local_paused}, position={local_position:.3}) room(paused={room_paused}, position={room_position:.3}) diff={position_diff_seconds:.3}"
-        ),
-        ReconnectTransitionNotification::StateRestoreValidationCorrectionRetryScheduled {
-            attempt,
-            max_attempts,
-            cooldown_ticks,
-        } => format!(
-            "Reconnect state restore correction failed; scheduling retry (attempt={attempt}/{max_attempts}, cooldown_ticks={cooldown_ticks})"
-        ),
-        ReconnectTransitionNotification::StateRestoreValidationCorrectionRetriesExhausted {
-            attempts,
-            max_attempts,
-        } => format!(
-            "Reconnect state restore correction failed; retry budget exhausted (attempts={attempts}, max_attempts={max_attempts}), stopping auto-correction for this restore cycle"
-        ),
-        ReconnectTransitionNotification::StateRestoreValidationCorrectionDisabledAfterRepeatedMismatches {
-            consecutive_mismatch_cycles,
-            disable_after_mismatch_cycles,
-        } => format!(
-            "Reconnect state restore correction disabled after repeated mismatches (consecutive_mismatch_cycles={consecutive_mismatch_cycles}, threshold={disable_after_mismatch_cycles})"
-        ),
-        ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownSuppressed {
-            remaining_reconnect_cycles_after_this_cycle,
-        } => format!(
-            "Reconnect state restore correction suppressed for recovery cooldown (remaining_reconnect_cycles_after_this_cycle={remaining_reconnect_cycles_after_this_cycle})"
-        ),
-        ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled => {
-            "Reconnect state restore correction re-enabled after recovery cooldown".to_owned()
-        }
-        ReconnectTransitionNotification::RestoringPlaylist => {
-            "Restoring playlist on reconnect...".to_owned()
-        }
-    }
+    shared_reconnect_transition_notification_message(notification)
+}
+
+fn reconnect_transition_notification_message_localized_legacy_compatible(
+    notification: &ReconnectTransitionNotification,
+    language: Option<&str>,
+) -> String {
+    shared_reconnect_transition_notification_message_localized_legacy_compatible(
+        notification,
+        language,
+    )
 }
 
 fn emit_reconnect_transition_notification(
     notification: &ReconnectTransitionNotification,
 ) -> anyhow::Result<()> {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
     println!(
         "{}",
-        reconnect_transition_notification_message(notification)
+        reconnect_transition_notification_message_localized_legacy_compatible(
+            notification,
+            language.as_deref(),
+        )
     );
     Ok(())
 }
@@ -6117,30 +4109,27 @@ where
     runtime.drain_reconnect_notifications_to_sink(|notification| notify(notification))
 }
 
+#[cfg(test)]
 fn controller_auth_transition_notification_message(
     notification: &ControllerAuthTransitionNotification,
 ) -> String {
-    match notification {
-        ControllerAuthTransitionNotification::Attempting { room } => {
-            format!("Identifying as room operator in room {room}...")
-        }
-        ControllerAuthTransitionNotification::Succeeded { username, room, .. } => {
-            format!("{username} authenticated as a room operator in room {room}")
-        }
-        ControllerAuthTransitionNotification::Failed { username, room, .. } => {
-            format!("{username} failed to identify as a room operator in room {room}")
-        }
-    }
+    shared_controller_auth_transition_notification_message(notification)
+}
+
+fn controller_auth_transition_notification_message_localized_legacy_compatible(
+    notification: &ControllerAuthTransitionNotification,
+    language: Option<&str>,
+) -> String {
+    shared_controller_auth_transition_notification_message_localized_legacy_compatible(
+        notification,
+        language,
+    )
 }
 
 fn controller_auth_notification_hidden_from_osd(
     notification: &ControllerAuthTransitionNotification,
 ) -> bool {
-    match notification {
-        ControllerAuthTransitionNotification::Attempting { .. } => false,
-        ControllerAuthTransitionNotification::Succeeded { hide_from_osd, .. }
-        | ControllerAuthTransitionNotification::Failed { hide_from_osd, .. } => *hide_from_osd,
-    }
+    shared_controller_auth_notification_hidden_from_osd(notification)
 }
 
 fn emit_controller_auth_transition_notification(
@@ -6149,9 +4138,13 @@ fn emit_controller_auth_transition_notification(
     if controller_auth_notification_hidden_from_osd(notification) {
         return Ok(());
     }
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
     println!(
         "{}",
-        controller_auth_transition_notification_message(notification)
+        controller_auth_transition_notification_message_localized_legacy_compatible(
+            notification,
+            language.as_deref(),
+        )
     );
     Ok(())
 }
@@ -6180,149 +4173,73 @@ fn emit_chat_notification(notification: &ChatNotification) -> anyhow::Result<()>
     Ok(())
 }
 
-fn local_command_help_lines_legacy_compatible() -> &'static [&'static str] {
-    &[
-        "Available commands:",
-        "\tr [name] - change room",
-        "\tl - show user list",
-        "\tu - undo last seek",
-        "\tp - toggle pause",
-        "\t[s][+-]time - seek to the given value of time, if + or - is not specified it's absolute time in seconds or min:sec",
-        "\to[+-]duration - offset local playback by the given duration (in seconds or min:sec) from the server seek position - this is a deprecated feature",
-        "\th - this help",
-        "\tt - toggles whether you are ready to watch or not",
-        "\tsr [name] - sets user as ready",
-        "\tsn [name] - sets user as not ready",
-        "\tc [name] - create managed room using name of current room",
-        "\ta [password] - authenticate as room operator with operator password",
-        "\tch [message] - send a chat message in a room",
-        "\tqa [file/url] - add file or url to bottom of playlist",
-        "\tqas [file/url] - add file or url to bottom of playlist and select it",
-        "\tql - show the current playlist",
-        "\tqs [index] - select given entry in the playlist",
-        "\tqn - select next entry in the playlist",
-        "\tqd [index] - delete the given entry from the playlist",
-        "\tshuffleremainingplaylist - shuffle remaining playlist entries",
-        "\tshuffleentireplaylist - shuffle entire playlist and reset index to 1",
-        "\tundoplaylist - undo last playlist change",
-    ]
-}
-
-fn local_command_help_footer_lines_legacy_compatible(version: &str) -> [String; 2] {
-    [
-        format!("Syncplay version: {version}"),
-        format!("More info available at: {PROJECT_URL_LEGACY}"),
-    ]
-}
-
-fn emit_local_command_help_legacy_compatible(version: &str) -> anyhow::Result<()> {
-    for line in local_command_help_lines_legacy_compatible() {
-        println!("{line}");
-    }
-    for line in local_command_help_footer_lines_legacy_compatible(version) {
-        println!("{line}");
-    }
-    Ok(())
-}
-
-fn emit_unknown_command_help_legacy_compatible(version: &str) -> anyhow::Result<()> {
-    println!("{UNKNOWN_COMMAND_MESSAGE_LEGACY}");
-    emit_local_command_help_legacy_compatible(version)
-}
-
-fn emit_local_error_message_legacy_compatible(message: &str) -> anyhow::Result<()> {
-    println!("ERROR:\t{message}");
-    Ok(())
-}
-
-fn apply_local_offset_command_legacy_compatible(
+fn run_planned_local_runtime_action_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     user_offset_seconds: &mut f64,
-    command: LocalOffsetCommand,
+    action: PlannedLocalRuntimeAction,
 ) -> anyhow::Result<bool> {
-    let global_position = runtime
-        .session()
-        .current_room_playstate()
-        .and_then(|playstate| playstate.position)
-        .unwrap_or(0.0);
-    let current_local_position = global_position + *user_offset_seconds;
-    *user_offset_seconds = match command {
-        LocalOffsetCommand::Absolute(offset_seconds) => offset_seconds,
-        LocalOffsetCommand::Relative(offset_delta_seconds) => {
-            *user_offset_seconds + offset_delta_seconds
-        }
-        LocalOffsetCommand::RelativeFromCurrentPositionMinus(offset_seconds) => {
-            current_local_position - offset_seconds
-        }
-    };
-    println!("Current offset: {} seconds", *user_offset_seconds);
-    Ok(runtime.run_seek_to_position(global_position + *user_offset_seconds)?)
-}
-
-fn playlist_listing_message_legacy_compatible(session: &ClientSession) -> String {
-    let Some(playlist) = session.current_room_playlist() else {
-        return PLAYLIST_EMPTY_MESSAGE_LEGACY.to_owned();
-    };
-    if playlist.files.is_empty() {
-        return PLAYLIST_EMPTY_MESSAGE_LEGACY.to_owned();
-    }
-
-    let mut playlist_elements: Vec<String> = playlist
-        .files
-        .iter()
-        .enumerate()
-        .map(|(index, file_name)| format!("\t{}: {}", index + 1, file_name))
-        .collect();
-    if let Some(selected_index) = playlist.index.and_then(|index| usize::try_from(index).ok()) {
-        if selected_index < playlist_elements.len() {
-            playlist_elements[selected_index] = format!(" *{}", playlist_elements[selected_index]);
-        }
-    }
-    playlist_elements.join("\n")
-}
-
-fn emit_playlist_listing_for_current_room(
-    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-) -> anyhow::Result<()> {
-    println!(
-        "{}",
-        playlist_listing_message_legacy_compatible(runtime.session())
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let dispatch = plan_local_runtime_dispatch_legacy_compatible(
+        runtime.session(),
+        *user_offset_seconds,
+        action,
+        language.as_deref(),
     );
-    Ok(())
-}
-
-fn playlist_index_in_bounds_legacy_compatible(session: &ClientSession, index: i64) -> bool {
-    if index < 0 {
-        return false;
+    if let Some(updated_user_offset_seconds) = dispatch.updated_user_offset_seconds {
+        *user_offset_seconds = updated_user_offset_seconds;
     }
-    let Ok(index) = usize::try_from(index) else {
-        return false;
-    };
-    session
-        .current_room_playlist()
-        .is_some_and(|playlist| index < playlist.files.len())
-}
-
-fn run_local_playlist_select_index_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    index: i64,
-) -> anyhow::Result<bool> {
-    if !playlist_index_in_bounds_legacy_compatible(runtime.session(), index) {
-        emit_local_error_message_legacy_compatible(PLAYLIST_INVALID_INDEX_ERROR_LEGACY)?;
-        return Ok(false);
+    if let Some(line_to_emit) = dispatch.line_to_emit {
+        println!("{line_to_emit}");
     }
-    Ok(runtime.run_set_playlist_index(index)?)
-}
-
-fn run_local_playlist_delete_index_legacy_compatible(
-    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    index: i64,
-) -> anyhow::Result<bool> {
-    if !playlist_index_in_bounds_legacy_compatible(runtime.session(), index) {
-        emit_local_error_message_legacy_compatible(PLAYLIST_INVALID_INDEX_ERROR_LEGACY)?;
-        return Ok(false);
+    match dispatch.action {
+        Some(PlannedLocalRuntimeAction::SendChat(chat_message)) => {
+            Ok(runtime.run_send_chat_message(chat_message)?)
+        }
+        Some(PlannedLocalRuntimeAction::RequestUserList) => Ok(runtime.run_request_user_list()?),
+        Some(PlannedLocalRuntimeAction::SetPlaylistIndex(index)) => {
+            Ok(runtime.run_set_playlist_index(index)?)
+        }
+        Some(PlannedLocalRuntimeAction::AdvancePlaylistIndex) => {
+            Ok(runtime.run_advance_playlist_index()?)
+        }
+        Some(PlannedLocalRuntimeAction::QueuePlaylistItem {
+            file_name,
+            select_after_queue,
+        }) => Ok(runtime.run_queue_playlist_item(file_name, select_after_queue)?),
+        Some(PlannedLocalRuntimeAction::DeletePlaylistIndex(index)) => {
+            Ok(runtime.run_delete_playlist_index(index)?)
+        }
+        Some(PlannedLocalRuntimeAction::UndoPlaylistChange) => {
+            Ok(runtime.run_undo_playlist_change()?)
+        }
+        Some(PlannedLocalRuntimeAction::ShuffleRemainingPlaylist) => {
+            Ok(runtime.run_shuffle_remaining_playlist()?)
+        }
+        Some(PlannedLocalRuntimeAction::ShuffleEntirePlaylist) => {
+            Ok(runtime.run_shuffle_entire_playlist()?)
+        }
+        Some(PlannedLocalRuntimeAction::UndoSeek) => Ok(runtime.run_undo_seek()?),
+        Some(PlannedLocalRuntimeAction::SetUserOffset(_)) => Ok(false),
+        Some(PlannedLocalRuntimeAction::SeekToPosition(position_seconds)) => {
+            Ok(runtime.run_seek_to_position(position_seconds)?)
+        }
+        Some(PlannedLocalRuntimeAction::SeekByOffset(offset_seconds)) => {
+            Ok(runtime.run_seek_by_offset(offset_seconds)?)
+        }
+        Some(PlannedLocalRuntimeAction::TogglePause) => Ok(runtime.run_toggle_pause()?),
+        Some(PlannedLocalRuntimeAction::ToggleReady) => Ok(runtime.run_toggle_ready(true)?),
+        Some(PlannedLocalRuntimeAction::SetUserReady { username, ready }) => {
+            Ok(runtime.run_set_ready_for_user(username, ready, true)?)
+        }
+        Some(PlannedLocalRuntimeAction::RequestControllerAuth { room, password }) => {
+            Ok(runtime.run_request_controller_auth(room, password)?)
+        }
+        Some(PlannedLocalRuntimeAction::SetRoomWithLegacyFallback(room)) => {
+            Ok(runtime.run_set_room_with_legacy_fallback(room)?)
+        }
+        Some(PlannedLocalRuntimeAction::SetRoom(room)) => Ok(runtime.run_set_room(room)?),
+        None => Ok(false),
     }
-    Ok(runtime.run_delete_playlist_index(index)?)
 }
 
 fn flush_chat_notifications_to_sink<F>(
@@ -6335,110 +4252,39 @@ where
     runtime.drain_chat_notifications_to_sink(|notification| notify(notification))
 }
 
-fn round_half_to_even(value: f64) -> f64 {
-    let floor = value.floor();
-    let fraction = value - floor;
-
-    if fraction + ROUND_HALF_EPSILON < 0.5 {
-        return floor;
-    }
-    if fraction - ROUND_HALF_EPSILON > 0.5 {
-        return floor + 1.0;
-    }
-
-    if floor.rem_euclid(2.0) == 0.0 {
-        floor
-    } else {
-        floor + 1.0
-    }
-}
-
+#[cfg(test)]
 fn format_duration_legacy(time_seconds: f64) -> String {
-    let sign = if time_seconds < 0.0 { "-" } else { "" };
-    let rounded_seconds = round_half_to_even(time_seconds.abs()) as u64;
-
-    let mut weeks = rounded_seconds / 604_800;
-    let title = if weeks > 0 {
-        let title = weeks;
-        weeks = 0;
-        title
-    } else {
-        0
-    };
-    let days = (rounded_seconds % 604_800) / 86_400;
-    let hours = (rounded_seconds % 86_400) / 3_600;
-    let minutes = (rounded_seconds % 3_600) / 60;
-    let seconds = rounded_seconds % 60;
-
-    let mut formatted = if weeks > 0 {
-        format!("{sign}{weeks}w, {days}d, {hours:02}:{minutes:02}:{seconds:02}")
-    } else if days > 0 {
-        format!("{sign}{days}d, {hours:02}:{minutes:02}:{seconds:02}")
-    } else if hours > 0 {
-        format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{sign}{minutes:02}:{seconds:02}")
-    };
-
-    if title > 0 {
-        formatted.push_str(&format!(" (Title {title})"));
-    }
-
-    formatted
+    shared_format_duration_legacy(time_seconds)
 }
 
+#[cfg(test)]
 fn user_change_notification_message(notification: &UserChangeNotification) -> String {
-    match notification {
-        UserChangeNotification::Joined { username, room, .. } => {
-            format!("{username} has joined the room: '{room}'")
-        }
-        UserChangeNotification::Playing {
-            username,
-            room,
-            file_name,
-            file_duration,
-            include_room_addendum,
-            ..
-        } => match file_name.as_deref() {
-            Some(file_name) => {
-                let mut message = if let Some(duration_seconds) = file_duration
-                    .as_ref()
-                    .and_then(|duration| duration.as_f64())
-                {
-                    format!(
-                        "{username} is playing '{file_name}' ({})",
-                        format_duration_legacy(duration_seconds)
-                    )
-                } else {
-                    format!("{username} is playing '{file_name}'")
-                };
-                if *include_room_addendum {
-                    message.push_str(&format!(" in room: '{room}'"));
-                }
-                message
-            }
-            None if *include_room_addendum => {
-                format!("{username} is playing a file in room: '{room}'")
-            }
-            None => format!("{username} is playing a file"),
-        },
-        UserChangeNotification::Left { username, .. } => format!("{username} has left"),
-    }
+    shared_user_change_notification_message(notification)
+}
+
+fn user_change_notification_message_localized_legacy_compatible(
+    notification: &UserChangeNotification,
+    language: Option<&str>,
+) -> String {
+    shared_user_change_notification_message_localized_legacy_compatible(notification, language)
 }
 
 fn user_change_notification_hidden_from_osd(notification: &UserChangeNotification) -> bool {
-    match notification {
-        UserChangeNotification::Joined { hide_from_osd, .. }
-        | UserChangeNotification::Playing { hide_from_osd, .. }
-        | UserChangeNotification::Left { hide_from_osd, .. } => *hide_from_osd,
-    }
+    shared_user_change_notification_hidden_from_osd(notification)
 }
 
 fn emit_user_change_notification(notification: &UserChangeNotification) -> anyhow::Result<()> {
     if user_change_notification_hidden_from_osd(notification) {
         return Ok(());
     }
-    println!("{}", user_change_notification_message(notification));
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    println!(
+        "{}",
+        user_change_notification_message_localized_legacy_compatible(
+            notification,
+            language.as_deref(),
+        )
+    );
     Ok(())
 }
 
@@ -6450,6 +4296,376 @@ where
     F: FnMut(&UserChangeNotification) -> anyhow::Result<()>,
 {
     runtime.drain_user_change_notifications_to_sink(|notification| notify(notification))
+}
+
+fn flush_connected_session_branch_outputs_legacy_compatible<F, G>(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    diagnostics_config: &ClientLoopDiagnosticsConfig,
+    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
+    file_difference_state: &mut FileDifferenceNotificationState,
+    plan: ConnectedSessionDrainPlan,
+    notification_sink: &mut F,
+    file_difference_sink: &mut G,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    for action in connected_session_drain_actions_legacy_compatible(plan) {
+        match action {
+            ConnectedSessionDrainAction::FlushPlayerPlaybackDiagnostics => {
+                flush_player_playback_telemetry_diagnostics(
+                    runtime,
+                    diagnostics_config.log_player_telemetry,
+                    diagnostics_config.log_player_drift,
+                )?;
+            }
+            ConnectedSessionDrainAction::FlushReconnectNotifications => {
+                flush_reconnect_notifications_to_sink(
+                    runtime,
+                    &mut emit_reconnect_transition_notification,
+                )?;
+            }
+            ConnectedSessionDrainAction::FlushReconnectCorrectionDiagnostics(format) => {
+                flush_reconnect_correction_diagnostics_to_sink(
+                    runtime,
+                    reconnect_correction_diagnostics_state,
+                    &diagnostics_config.reconnect_correction_diagnostics_alert_thresholds,
+                    format,
+                    &mut emit_reconnect_correction_diagnostic,
+                )?;
+            }
+            ConnectedSessionDrainAction::FlushControllerAuthNotifications => {
+                flush_controller_auth_notifications_to_sink(
+                    runtime,
+                    &mut emit_controller_auth_transition_notification,
+                )?;
+            }
+            ConnectedSessionDrainAction::FlushChatNotifications => {
+                flush_chat_notifications_to_sink(runtime, &mut emit_chat_notification)?;
+            }
+            ConnectedSessionDrainAction::FlushUserChangeNotifications => {
+                flush_user_change_notifications_to_sink(
+                    runtime,
+                    &mut emit_user_change_notification,
+                )?;
+            }
+            ConnectedSessionDrainAction::FlushAutoplayNotifications => {
+                flush_autoplay_notifications_to_sink(runtime, notification_sink)?;
+            }
+            ConnectedSessionDrainAction::FlushFileDifferenceNotifications => {
+                flush_file_difference_notifications_to_sink(
+                    runtime,
+                    file_difference_state,
+                    file_difference_sink,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_connected_session_inbound_post_apply_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    pending_ready_at_start_on_server_hello: &mut bool,
+    pending_chat_message_on_connect: &mut Option<String>,
+    plan: ConnectedSessionInboundPostApplyPlan,
+) -> anyhow::Result<()> {
+    for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
+        match action {
+            ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
+                let _ = runtime.run_set_ready_for_user("", true, false)?;
+                *pending_ready_at_start_on_server_hello = false;
+            }
+            ConnectedSessionInboundPostApplyAction::ConsumePendingChatMessageOnConnect => {
+                if let Some(message) = pending_chat_message_on_connect.take() {
+                    let _ = runtime.run_send_chat_message(message)?;
+                }
+            }
+            ConnectedSessionInboundPostApplyAction::RunReconnectTransition => {
+                runtime.run_reconnect_transition_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunControllerReidentify => {
+                runtime.run_controller_reidentify_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunControllerAuthNotifications => {
+                runtime.run_controller_auth_notifications_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunChatNotifications => {
+                runtime.run_chat_notifications_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunUserChangeNotifications => {
+                runtime.run_user_change_notifications_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunReconnectStateRestore => {
+                runtime.run_reconnect_state_restore_if_needed()?;
+            }
+            ConnectedSessionInboundPostApplyAction::RunReconnectPlaylistRestore => {
+                runtime.run_reconnect_playlist_restore_if_needed()?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_connected_session_inbound_message_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    line: &str,
+    decoded_inbound_message: Option<&ProtocolMessage>,
+    now_seconds: f64,
+    plan: ConnectedSessionInboundApplyPlan,
+) -> anyhow::Result<bool> {
+    if plan.reconcile_inbound_state
+        && let Some(ProtocolMessage::State(state_message)) = decoded_inbound_message
+    {
+        let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+            state_message.state.clone(),
+        );
+    }
+    if plan.apply_message_json_at {
+        runtime
+            .session_mut()
+            .apply_message_json_at(line, now_seconds)?;
+    }
+
+    Ok(plan.outbound_state_sync_enabled)
+}
+
+async fn apply_connected_session_protocol_plan_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    startup_playlist_file_on_connect: &mut Option<String>,
+    plan: ConnectedSessionProtocolPlan,
+) -> anyhow::Result<()> {
+    if plan.flush_runtime_protocol_lines {
+        flush_runtime_protocol_lines(runtime, writer).await?;
+    }
+
+    match plan.startup_playlist_disposition {
+        ConnectedSessionStartupPlaylistDisposition::LeavePending => {}
+        ConnectedSessionStartupPlaylistDisposition::EmitIfAvailable => {
+            if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
+                let _ =
+                    emit_startup_playlist_load_from_file_legacy_compatible(writer, &playlist_path)
+                        .await?;
+            }
+        }
+        ConnectedSessionStartupPlaylistDisposition::DiscardIfPending => {
+            let _ = startup_playlist_file_on_connect.take();
+        }
+    }
+
+    Ok(())
+}
+
+fn run_connected_session_branch_runtime_steps_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    config: &ClientLoopConfig,
+    now_seconds: f64,
+    dont_slow_down_with_me: bool,
+    outbound_state_sync_enabled: bool,
+    plan: ConnectedSessionRuntimeStepPlan,
+) -> anyhow::Result<()> {
+    let actions =
+        connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
+    let needs_runtime_inputs = actions.iter().any(|action| {
+        matches!(
+            action,
+            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt
+                | ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck
+                | ConnectedSessionRuntimeStepAction::RunTickAutoplay
+                | ConnectedSessionRuntimeStepAction::RunDesyncCorrection
+        )
+    });
+    let inputs =
+        needs_runtime_inputs.then(|| derive_runtime_loop_inputs(runtime, config, now_seconds));
+
+    for action in actions {
+        match action {
+            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
+                runtime.run_room_pause_sync_if_needed()?;
+            }
+            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => {
+                let inputs = inputs
+                    .as_ref()
+                    .expect("runtime inputs must exist for readiness unpause planning");
+                runtime.run_readiness_unpause_attempt(
+                    now_seconds,
+                    inputs.readiness_supported,
+                    inputs.local_can_control,
+                    inputs.is_playing_music,
+                )?;
+            }
+            ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck => {
+                let inputs = inputs
+                    .as_ref()
+                    .expect("runtime inputs must exist for autoplay update planning");
+                runtime.update_autoplay_check(
+                    inputs.readiness_supported,
+                    inputs.local_can_control,
+                    inputs.is_playing_music,
+                    inputs.recently_advanced,
+                );
+            }
+            ConnectedSessionRuntimeStepAction::RunTickAutoplay => {
+                let inputs = inputs
+                    .as_ref()
+                    .expect("runtime inputs must exist for autoplay tick planning");
+                runtime.tick_autoplay(
+                    inputs.readiness_supported,
+                    inputs.local_can_control,
+                    inputs.is_playing_music,
+                    inputs.recently_advanced,
+                )?;
+            }
+            ConnectedSessionRuntimeStepAction::RunDesyncCorrection => {
+                let inputs = inputs
+                    .as_ref()
+                    .expect("runtime inputs must exist for desync planning");
+                runtime.run_desync_correction_if_needed(
+                    now_seconds,
+                    inputs.local_can_control,
+                    dont_slow_down_with_me,
+                    true,
+                )?;
+            }
+            ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation => {
+                runtime.run_reconnect_state_restore_validation_if_needed()?;
+            }
+            ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
+                let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                    StatePayload::new(),
+                );
+            }
+            ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => {
+                publish_pending_local_file_updates(runtime, config)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_connected_session_branch_plan_legacy_compatible<F, G>(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    config: &ClientLoopConfig,
+    now_seconds: f64,
+    dont_slow_down_with_me: bool,
+    outbound_state_sync_enabled: bool,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    startup_playlist_file_on_connect: &mut Option<String>,
+    diagnostics_config: &ClientLoopDiagnosticsConfig,
+    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
+    file_difference_state: &mut FileDifferenceNotificationState,
+    plan: ConnectedSessionBranchPlan,
+    notification_sink: &mut F,
+    file_difference_sink: &mut G,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    if plan.run_protocol_before_runtime_steps {
+        apply_connected_session_protocol_plan_legacy_compatible(
+            runtime,
+            writer,
+            startup_playlist_file_on_connect,
+            plan.protocol,
+        )
+        .await?;
+    }
+    run_connected_session_branch_runtime_steps_legacy_compatible(
+        runtime,
+        config,
+        now_seconds,
+        dont_slow_down_with_me,
+        outbound_state_sync_enabled,
+        plan.runtime_steps,
+    )?;
+    if !plan.run_protocol_before_runtime_steps {
+        apply_connected_session_protocol_plan_legacy_compatible(
+            runtime,
+            writer,
+            startup_playlist_file_on_connect,
+            plan.protocol,
+        )
+        .await?;
+    }
+    flush_connected_session_branch_outputs_legacy_compatible(
+        runtime,
+        diagnostics_config,
+        reconnect_correction_diagnostics_state,
+        file_difference_state,
+        plan.drain,
+        notification_sink,
+        file_difference_sink,
+    )?;
+
+    Ok(())
+}
+
+async fn run_connected_session_event_plan_legacy_compatible<F, G>(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    pending_ready_at_start_on_server_hello: &mut bool,
+    pending_chat_message_on_connect: &mut Option<String>,
+    inbound_message_line: Option<&str>,
+    decoded_inbound_message: Option<&ProtocolMessage>,
+    config: &ClientLoopConfig,
+    now_seconds: f64,
+    dont_slow_down_with_me: bool,
+    outbound_state_sync_enabled: &mut bool,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    startup_playlist_file_on_connect: &mut Option<String>,
+    diagnostics_config: &ClientLoopDiagnosticsConfig,
+    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
+    file_difference_state: &mut FileDifferenceNotificationState,
+    event_execution_plan: ConnectedSessionEventExecutionPlan,
+    notification_sink: &mut F,
+    file_difference_sink: &mut G,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    if let Some(inbound_apply) = event_execution_plan.inbound_apply {
+        let inbound_message_line =
+            inbound_message_line.expect("inbound apply plan requires an inbound message line");
+        *outbound_state_sync_enabled = apply_connected_session_inbound_message_legacy_compatible(
+            runtime,
+            inbound_message_line,
+            decoded_inbound_message,
+            now_seconds,
+            inbound_apply,
+        )?;
+    }
+    if let Some(inbound_post_apply) = event_execution_plan.event.inbound_post_apply {
+        run_connected_session_inbound_post_apply_legacy_compatible(
+            runtime,
+            pending_ready_at_start_on_server_hello,
+            pending_chat_message_on_connect,
+            inbound_post_apply,
+        )?;
+    }
+    run_connected_session_branch_plan_legacy_compatible(
+        runtime,
+        config,
+        now_seconds,
+        dont_slow_down_with_me,
+        *outbound_state_sync_enabled,
+        writer,
+        startup_playlist_file_on_connect,
+        diagnostics_config,
+        reconnect_correction_diagnostics_state,
+        file_difference_state,
+        event_execution_plan.event.branch,
+        notification_sink,
+        file_difference_sink,
+    )
+    .await?;
+
+    Ok(())
 }
 
 fn derive_runtime_loop_inputs(
@@ -6485,22 +4701,6 @@ fn shared_playlists_enabled_cli_legacy_compatible(config: &ClientLoopConfig) -> 
     config.shared_playlists_enabled_override.unwrap_or(true)
 }
 
-fn local_input_command_uses_shared_playlists_legacy_compatible(
-    command: &LocalInputCommand,
-) -> bool {
-    matches!(
-        command,
-        LocalInputCommand::ShowPlaylist
-            | LocalInputCommand::SelectPlaylistIndex(_)
-            | LocalInputCommand::NextPlaylistItem
-            | LocalInputCommand::QueuePlaylistItem { .. }
-            | LocalInputCommand::DeletePlaylistIndex(_)
-            | LocalInputCommand::UndoPlaylistChange
-            | LocalInputCommand::ShuffleRemainingPlaylist
-            | LocalInputCommand::ShuffleEntirePlaylist
-    )
-}
-
 #[cfg(test)]
 async fn run_connected_client_session<F, G>(
     stream: TcpStream,
@@ -6530,6 +4730,7 @@ where
     Ok(exit)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn run_connected_client_session_with_legacy_startup_overrides<F, G>(
     stream: TcpStream,
@@ -6545,13 +4746,57 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
+    let diagnostics_config = client_loop_diagnostics_config(None);
+    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+        stream,
+        ConnectedSessionLaunchContext {
+            runtime,
+            config,
+            chat_message_on_connect,
+            startup_playlist_file_on_connect,
+            local_input_rx,
+            notification_sink,
+            file_difference_sink,
+            diagnostics_config,
+        },
+    )
+    .await
+}
+
+struct ConnectedSessionLaunchContext<'a, F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    runtime: &'a mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    config: &'a ClientLoopConfig,
+    chat_message_on_connect: Option<&'a str>,
+    startup_playlist_file_on_connect: &'a mut Option<String>,
+    local_input_rx: Option<&'a mut UnboundedReceiver<String>>,
+    notification_sink: &'a mut F,
+    file_difference_sink: &'a mut G,
+    diagnostics_config: ClientLoopDiagnosticsConfig,
+}
+
+async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<F, G>(
+    stream: TcpStream,
+    launch: ConnectedSessionLaunchContext<'_, F, G>,
+) -> anyhow::Result<ConnectedSessionExit>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    let ConnectedSessionLaunchContext {
+        runtime,
+        config,
+        chat_message_on_connect,
+        startup_playlist_file_on_connect,
+        local_input_rx,
+        notification_sink,
+        file_difference_sink,
+        diagnostics_config,
+    } = launch;
     let mut local_input_rx = local_input_rx;
-    let log_player_telemetry = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_TELEMETRY");
-    let log_player_drift = env_flag_enabled("SYNCPLAY_CLIENT_LOG_PLAYER_DRIFT_DIAGNOSTICS");
-    let reconnect_correction_diagnostics_format =
-        reconnect_correction_diagnostics_format_from_env();
-    let reconnect_correction_diagnostics_alert_thresholds =
-        reconnect_correction_diagnostics_alert_thresholds_from_env();
     let mut hello_payload = HelloPayload::new(
         config.username.clone(),
         config.room.clone(),
@@ -6595,6 +4840,12 @@ where
     let mut pending_ready_at_start_on_server_hello =
         config.ready_at_start_override.unwrap_or(false);
     let mut outbound_state_sync_enabled = false;
+    let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
+        log_player_telemetry: diagnostics_config.log_player_telemetry,
+        log_player_drift: diagnostics_config.log_player_drift,
+        reconnect_correction_diagnostics_format: diagnostics_config
+            .reconnect_correction_diagnostics_format,
+    };
     let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
     let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
 
@@ -6614,157 +4865,74 @@ where
                                 Some(ProtocolMessage::Hello(_))
                             );
                         let now_seconds = connected_start.elapsed().as_secs_f64();
-                        if let Some(ProtocolMessage::State(state_message)) =
-                            decoded_inbound_message.as_ref()
-                        {
-                            outbound_state_sync_enabled = true;
-                            let _ = runtime
-                                .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
-                                    state_message.state.clone(),
-                                );
-                        } else {
-                            runtime.session_mut().apply_message_json_at(&line, now_seconds)?;
-                        }
-                        if inbound_is_server_hello {
-                            let _ = runtime.run_set_ready_for_user("", true, false)?;
-                            pending_ready_at_start_on_server_hello = false;
-                        }
-                        if let Some(message) = pending_chat_message_on_connect.take() {
-                            let _ = runtime.run_send_chat_message(message)?;
-                        }
-                        runtime.run_reconnect_transition_if_needed()?;
-                        runtime.run_controller_reidentify_if_needed()?;
-                        runtime.run_controller_auth_notifications_if_needed()?;
-                        runtime.run_chat_notifications_if_needed()?;
-                        runtime.run_user_change_notifications_if_needed()?;
-                        runtime.run_reconnect_state_restore_if_needed()?;
-                        if shared_playlists_enabled {
-                            runtime.run_reconnect_playlist_restore_if_needed()?;
-                        }
-                        runtime.run_room_pause_sync_if_needed()?;
-                        let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
-                        runtime.run_readiness_unpause_attempt(
+                        let event_execution_plan =
+                            connected_session_inbound_message_event_execution_plan_legacy_compatible(
+                                inbound_is_server_hello,
+                                pending_chat_message_on_connect.is_some(),
+                                matches!(
+                                    decoded_inbound_message.as_ref(),
+                                    Some(ProtocolMessage::State(_))
+                                ),
+                                ConnectedSessionSharedExecutionInputs {
+                                    shared_playlists_enabled,
+                                    diagnostics: branch_diagnostics_plan,
+                                    outbound_state_sync_enabled,
+                                },
+                            );
+                        run_connected_session_event_plan_legacy_compatible(
+                            runtime,
+                            &mut pending_ready_at_start_on_server_hello,
+                            &mut pending_chat_message_on_connect,
+                            Some(&line),
+                            decoded_inbound_message.as_ref(),
+                            config,
                             now_seconds,
-                            inputs.readiness_supported,
-                            inputs.local_can_control,
-                            inputs.is_playing_music,
-                        )?;
-                        runtime.run_desync_correction_if_needed(
-                            now_seconds,
-                            inputs.local_can_control,
                             dont_slow_down_with_me,
-                            true,
-                        )?;
-                        runtime.run_reconnect_state_restore_validation_if_needed()?;
-                        publish_pending_local_file_updates(runtime, config)?;
-                        flush_runtime_protocol_lines(runtime, &mut writer).await?;
-                        if shared_playlists_enabled
-                            && let Some(playlist_path) = startup_playlist_file_on_connect.take()
-                        {
-                            let _ = emit_startup_playlist_load_from_file_legacy_compatible(
-                                &mut writer,
-                                &playlist_path,
-                            )
-                            .await?;
-                        } else if !shared_playlists_enabled {
-                            let _ = startup_playlist_file_on_connect.take();
-                        }
-                        if log_player_telemetry || log_player_drift {
-                            flush_player_playback_telemetry_diagnostics(
-                                runtime,
-                                log_player_telemetry,
-                                log_player_drift,
-                            )?;
-                        }
-                        flush_reconnect_notifications_to_sink(
-                            runtime,
-                            &mut emit_reconnect_transition_notification,
-                        )?;
-                        if let Some(format) = reconnect_correction_diagnostics_format {
-                            flush_reconnect_correction_diagnostics_to_sink(
-                                runtime,
-                                &mut reconnect_correction_diagnostics_state,
-                                &reconnect_correction_diagnostics_alert_thresholds,
-                                format,
-                                &mut emit_reconnect_correction_diagnostic,
-                            )?;
-                        }
-                        flush_controller_auth_notifications_to_sink(
-                            runtime,
-                            &mut emit_controller_auth_transition_notification,
-                        )?;
-                        flush_chat_notifications_to_sink(runtime, &mut emit_chat_notification)?;
-                        flush_user_change_notifications_to_sink(
-                            runtime,
-                            &mut emit_user_change_notification,
-                        )?;
-                        flush_autoplay_notifications_to_sink(runtime, notification_sink)?;
-                        flush_file_difference_notifications_to_sink(
-                            runtime,
+                            &mut outbound_state_sync_enabled,
+                            &mut writer,
+                            startup_playlist_file_on_connect,
+                            &diagnostics_config,
+                            &mut reconnect_correction_diagnostics_state,
                             &mut file_difference_state,
+                            event_execution_plan,
+                            notification_sink,
                             file_difference_sink,
-                        )?;
+                        )
+                        .await?;
                     }
                     None => return Ok(ConnectedSessionExit::TransportClosed),
                 }
             }
             _ = autoplay_tick.tick() => {
                 let now_seconds = connected_start.elapsed().as_secs_f64();
-                runtime.run_room_pause_sync_if_needed()?;
-                let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
-                runtime.update_autoplay_check(
-                    inputs.readiness_supported,
-                    inputs.local_can_control,
-                    inputs.is_playing_music,
-                    inputs.recently_advanced,
-                );
-                runtime.tick_autoplay(
-                    inputs.readiness_supported,
-                    inputs.local_can_control,
-                    inputs.is_playing_music,
-                    inputs.recently_advanced,
-                )?;
-                runtime.run_desync_correction_if_needed(
+                let event_execution_plan =
+                    connected_session_autoplay_tick_event_execution_plan_legacy_compatible(
+                        ConnectedSessionSharedExecutionInputs {
+                            shared_playlists_enabled,
+                            diagnostics: branch_diagnostics_plan,
+                            outbound_state_sync_enabled,
+                        },
+                    );
+                run_connected_session_event_plan_legacy_compatible(
+                    runtime,
+                    &mut pending_ready_at_start_on_server_hello,
+                    &mut pending_chat_message_on_connect,
+                    None,
+                    None,
+                    config,
                     now_seconds,
-                    inputs.local_can_control,
                     dont_slow_down_with_me,
-                    true,
-                )?;
-                runtime.run_reconnect_state_restore_validation_if_needed()?;
-                if outbound_state_sync_enabled {
-                    let _ = runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
-                            StatePayload::new(),
-                        );
-                }
-                publish_pending_local_file_updates(runtime, config)?;
-                flush_runtime_protocol_lines(runtime, &mut writer).await?;
-                if log_player_telemetry || log_player_drift {
-                    flush_player_playback_telemetry_diagnostics(
-                        runtime,
-                        log_player_telemetry,
-                        log_player_drift,
-                    )?;
-                }
-                flush_reconnect_notifications_to_sink(
-                    runtime,
-                    &mut emit_reconnect_transition_notification,
-                )?;
-                if let Some(format) = reconnect_correction_diagnostics_format {
-                    flush_reconnect_correction_diagnostics_to_sink(
-                        runtime,
-                        &mut reconnect_correction_diagnostics_state,
-                        &reconnect_correction_diagnostics_alert_thresholds,
-                        format,
-                        &mut emit_reconnect_correction_diagnostic,
-                    )?;
-                }
-                flush_autoplay_notifications_to_sink(runtime, notification_sink)?;
-                flush_file_difference_notifications_to_sink(
-                    runtime,
+                    &mut outbound_state_sync_enabled,
+                    &mut writer,
+                    startup_playlist_file_on_connect,
+                    &diagnostics_config,
+                    &mut reconnect_correction_diagnostics_state,
                     &mut file_difference_state,
+                    event_execution_plan,
+                    notification_sink,
                     file_difference_sink,
-                )?;
+                )
+                .await?;
             }
             local_line = recv_local_input_line(&mut local_input_rx) => {
                 let Some(local_line) = local_line else {
@@ -6773,130 +4941,71 @@ where
                 };
 
                 if let Some(command) = parse_local_input_command(&local_line) {
+                    let command = plan_local_input_command_legacy_compatible(
+                        command,
+                        &LocalInputCommandPlanningContext {
+                            current_room: runtime.session().room.as_deref(),
+                            configured_room: &config.room,
+                        },
+                    );
+                    let dispatch =
+                        plan_local_input_dispatch_legacy_compatible(command, shared_playlists_enabled);
                     let help_version = config.version.as_str();
-                    let emitted = if !shared_playlists_enabled
-                        && local_input_command_uses_shared_playlists_legacy_compatible(&command)
-                    {
-                        false
-                    } else {
-                        match command {
-                        LocalInputCommand::Chat(chat_message) => {
-                            runtime.run_send_chat_message(chat_message)?
-                        }
-                        LocalInputCommand::RequestUserList => runtime.run_request_user_list()?,
-                        LocalInputCommand::ShowUnknownCommandHelp => {
-                            emit_unknown_command_help_legacy_compatible(help_version)?;
+                    let emitted = {
+                        let language = current_legacy_runtime_language_tag_legacy_compatible();
+                        if let Some(lines) = shared_render_local_input_display_lines_legacy_compatible(
+                            &dispatch,
+                            runtime.session(),
+                            language.as_deref(),
+                            help_version,
+                        ) {
+                            for line in lines {
+                                println!("{line}");
+                            }
                             false
+                        } else {
+                            match dispatch {
+                                PlannedLocalInputDispatch::Suppressed => false,
+                                PlannedLocalInputDispatch::Run(action) => {
+                                    run_planned_local_runtime_action_legacy_compatible(
+                                        runtime,
+                                        &mut local_user_offset_seconds,
+                                        action,
+                                    )?
+                                }
+                                _ => false,
+                            }
                         }
-                        LocalInputCommand::ShowHelp => {
-                            emit_local_command_help_legacy_compatible(help_version)?;
-                            false
-                        }
-                        LocalInputCommand::ShowPlaylistInvalidIndexError => {
-                            emit_local_error_message_legacy_compatible(
-                                PLAYLIST_INVALID_INDEX_ERROR_LEGACY,
-                            )?;
-                            false
-                        }
-                        LocalInputCommand::ShowQueueMissingFileError => {
-                            emit_local_error_message_legacy_compatible(
-                                QUEUE_MISSING_FILE_ERROR_LEGACY,
-                            )?;
-                            false
-                        }
-                        LocalInputCommand::ShowPlaylist => {
-                            emit_playlist_listing_for_current_room(runtime)?;
-                            false
-                        }
-                        LocalInputCommand::SelectPlaylistIndex(index) => {
-                            run_local_playlist_select_index_legacy_compatible(runtime, index)?
-                        }
-                        LocalInputCommand::NextPlaylistItem => runtime.run_advance_playlist_index()?,
-                        LocalInputCommand::QueuePlaylistItem {
-                            file_name,
-                            select_after_queue,
-                        } => runtime.run_queue_playlist_item(file_name, select_after_queue)?,
-                        LocalInputCommand::DeletePlaylistIndex(index) => {
-                            run_local_playlist_delete_index_legacy_compatible(runtime, index)?
-                        }
-                        LocalInputCommand::UndoPlaylistChange => {
-                            runtime.run_undo_playlist_change()?
-                        }
-                        LocalInputCommand::ShuffleRemainingPlaylist => {
-                            runtime.run_shuffle_remaining_playlist()?
-                        }
-                        LocalInputCommand::ShuffleEntirePlaylist => {
-                            runtime.run_shuffle_entire_playlist()?
-                        }
-                        LocalInputCommand::UndoSeek => runtime.run_undo_seek()?,
-                        LocalInputCommand::SetUserOffset(offset_command) => {
-                            apply_local_offset_command_legacy_compatible(
-                                runtime,
-                                &mut local_user_offset_seconds,
-                                offset_command,
-                            )?
-                        }
-                        LocalInputCommand::SeekAbsolute(position_seconds) => {
-                            runtime.run_seek_to_position(position_seconds)?
-                        }
-                        LocalInputCommand::SeekRelative(offset_seconds) => {
-                            runtime.run_seek_by_offset(offset_seconds)?
-                        }
-                        LocalInputCommand::TogglePause => runtime.run_toggle_pause()?,
-                        LocalInputCommand::ToggleReady => runtime.run_toggle_ready(true)?,
-                        LocalInputCommand::SetUserReady { username, ready } => {
-                            runtime.run_set_ready_for_user(username, ready, true)?
-                        }
-                        LocalInputCommand::CreateControlledRoom(room_name) => {
-                            let room = room_name.unwrap_or_else(|| {
-                                runtime
-                                    .session()
-                                    .room
-                                    .clone()
-                                    .unwrap_or_else(|| config.room.clone())
-                            });
-                            let room = controlled_room_base_name_legacy_compatible(&room);
-                            let password = generate_room_password_legacy_compatible();
-                            runtime.run_request_controller_auth(room, password)?
-                        }
-                        LocalInputCommand::AuthController(password) => {
-                            let room = runtime
-                                .session()
-                                .room
-                                .clone()
-                                .unwrap_or_else(|| config.room.clone());
-                            runtime.run_request_controller_auth(room, password)?
-                        }
-                        LocalInputCommand::SetRoomWithLegacyFallback => {
-                            runtime.run_set_room_with_legacy_fallback(config.room.clone())?
-                        }
-                        LocalInputCommand::SetRoom(room) => runtime.run_set_room(room)?,
-                    }
                     };
-                    if emitted {
-                        flush_runtime_protocol_lines(runtime, &mut writer).await?;
-                    }
-                    runtime.run_reconnect_state_restore_validation_if_needed()?;
-                    if log_player_telemetry || log_player_drift {
-                        flush_player_playback_telemetry_diagnostics(
-                            runtime,
-                            log_player_telemetry,
-                            log_player_drift,
-                        )?;
-                    }
-                    flush_reconnect_notifications_to_sink(
+                    let event_execution_plan =
+                        connected_session_local_input_event_execution_plan_legacy_compatible(
+                            emitted,
+                            ConnectedSessionSharedExecutionInputs {
+                                shared_playlists_enabled,
+                                diagnostics: branch_diagnostics_plan,
+                                outbound_state_sync_enabled,
+                            },
+                        );
+                    run_connected_session_event_plan_legacy_compatible(
                         runtime,
-                        &mut emit_reconnect_transition_notification,
-                    )?;
-                    if let Some(format) = reconnect_correction_diagnostics_format {
-                        flush_reconnect_correction_diagnostics_to_sink(
-                            runtime,
-                            &mut reconnect_correction_diagnostics_state,
-                            &reconnect_correction_diagnostics_alert_thresholds,
-                            format,
-                            &mut emit_reconnect_correction_diagnostic,
-                        )?;
-                    }
+                        &mut pending_ready_at_start_on_server_hello,
+                        &mut pending_chat_message_on_connect,
+                        None,
+                        None,
+                        config,
+                        connected_start.elapsed().as_secs_f64(),
+                        dont_slow_down_with_me,
+                        &mut outbound_state_sync_enabled,
+                        &mut writer,
+                        startup_playlist_file_on_connect,
+                        &diagnostics_config,
+                        &mut reconnect_correction_diagnostics_state,
+                        &mut file_difference_state,
+                        event_execution_plan,
+                        notification_sink,
+                        file_difference_sink,
+                    )
+                    .await?;
                 }
             }
         }
@@ -6916,14 +5025,362 @@ async fn run_reconnect_backoff(
         || stop_requested = true,
     );
 
-    if stop_requested {
+    let plan =
+        client_reconnect_backoff_plan_legacy_compatible(*retries, stop_requested, reconnect_delay);
+
+    if plan.stop_retrying {
         return Ok(true);
     }
 
-    let delay_seconds = reconnect_delay.unwrap_or(0.1);
+    let delay_seconds = plan
+        .sleep_delay_seconds
+        .expect("active reconnect backoff plan must include a sleep delay");
     tokio::time::sleep(Duration::from_secs_f64(delay_seconds)).await;
-    *retries = retries.saturating_add(1);
+    *retries = plan.next_retries;
     Ok(false)
+}
+
+async fn run_client_network_loop_event_plan_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    retries: &mut u32,
+    network_start: &Instant,
+    plan: ClientNetworkLoopEventPlan,
+) -> anyhow::Result<ClientNetworkLoopExecutionOutcome> {
+    if plan.return_success {
+        return Ok(client_network_loop_execution_outcome_legacy_compatible(
+            plan, false,
+        ));
+    }
+    if plan.run_disconnect {
+        runtime.run_disconnect(network_start.elapsed().as_secs_f64())?;
+    }
+    let reconnect_exhausted =
+        plan.run_reconnect_backoff && run_reconnect_backoff(runtime, retries).await?;
+    Ok(client_network_loop_execution_outcome_legacy_compatible(
+        plan,
+        reconnect_exhausted,
+    ))
+}
+
+async fn run_client_network_loop_attempt_plan_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    retries: &mut u32,
+    network_start: &Instant,
+    plan: ClientNetworkLoopAttemptPlan,
+) -> anyhow::Result<ClientNetworkLoopExecutionOutcome> {
+    if plan.reset_retries_before_event {
+        *retries = 0;
+    }
+    run_client_network_loop_event_plan_legacy_compatible(
+        runtime,
+        retries,
+        network_start,
+        plan.event,
+    )
+    .await
+}
+
+fn reconnect_exhausted_error_from_attempt_disposition_legacy_compatible(
+    kind: ClientNetworkLoopReconnectExhaustedErrorKind,
+    connect_error: Option<anyhow::Error>,
+) -> anyhow::Error {
+    match client_network_loop_reconnect_exhausted_error_action_legacy_compatible(kind) {
+        ClientNetworkLoopReconnectExhaustedErrorAction::UseConnectError => {
+            connect_error.expect("connect-failure exhaustion must carry the original connect error")
+        }
+        ClientNetworkLoopReconnectExhaustedErrorAction::StaticMessage(message) => {
+            anyhow!(message)
+        }
+    }
+}
+
+enum ClientNetworkLoopTransportAttemptOutcome {
+    ReturnSuccess,
+    Continue,
+    ReconnectExhausted(anyhow::Error),
+}
+
+struct ClientNetworkLoopTransportAttemptContext<'a, F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    endpoint: &'a str,
+    launch: ConnectedSessionLaunchContext<'a, F, G>,
+    retries: &'a mut u32,
+    network_start: &'a Instant,
+}
+
+struct ClientNetworkLoopRetryState<F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    runtime: ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    chat_message_on_connect: Option<String>,
+    startup_playlist_file_on_connect: Option<String>,
+    local_input_rx: Option<UnboundedReceiver<String>>,
+    notification_sink: F,
+    file_difference_sink: G,
+    retries: u32,
+}
+
+struct ClientNetworkLoopBootstrapState<F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    endpoint: String,
+    retry_state: ClientNetworkLoopRetryState<F, G>,
+    _managed_mpv_process_guard: Option<ManagedMpvProcessGuard>,
+}
+
+struct ClientNetworkLoopStartupExecutionPlan {
+    diagnostics_config: ClientLoopDiagnosticsConfig,
+    startup_plan: ClientNetworkLoopStartupPlan,
+}
+
+fn client_network_loop_startup_execution_plan_legacy_compatible(
+    config: &ClientLoopConfig,
+    startup_playlist_file_on_connect: Option<&str>,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> ClientNetworkLoopStartupExecutionPlan {
+    ClientNetworkLoopStartupExecutionPlan {
+        diagnostics_config: client_loop_diagnostics_config(legacy_overrides),
+        startup_plan: client_network_loop_startup_plan_legacy_compatible(
+            ClientNetworkLoopStartupPlanInputs {
+                endpoint_host: &config.host,
+                endpoint_port: config.port,
+                stdin_enabled: env_flag_enabled("SYNCPLAY_CLIENT_STDIN"),
+                has_legacy_overrides: legacy_overrides.is_some(),
+                chat_message_on_connect: env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE").as_deref(),
+                startup_playlist_file_on_connect,
+            },
+        ),
+    }
+}
+
+fn bootstrap_client_network_loop_state_legacy_compatible<F, G>(
+    config: &ClientLoopConfig,
+    startup_plan: ClientNetworkLoopStartupPlan,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    notification_sink: F,
+    file_difference_sink: G,
+) -> anyhow::Result<ClientNetworkLoopBootstrapState<F, G>>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    let ClientNetworkLoopStartupPlan {
+        endpoint,
+        spawn_local_input_receiver,
+        apply_legacy_explicit_mpv_ipc_startup,
+        chat_message_on_connect,
+        startup_playlist_file_on_connect,
+    } = startup_plan;
+    let (mut runtime, managed_mpv_process_guard) =
+        create_client_runtime_with_managed_mpv_support(config, legacy_overrides)?;
+    if apply_legacy_explicit_mpv_ipc_startup
+        && let Some(overrides) = legacy_overrides
+        && let Err(error) =
+            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
+                runtime.player_mut(),
+                overrides,
+            )
+    {
+        eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
+    }
+    Ok(ClientNetworkLoopBootstrapState {
+        endpoint,
+        retry_state: ClientNetworkLoopRetryState {
+            runtime,
+            chat_message_on_connect,
+            startup_playlist_file_on_connect,
+            local_input_rx: spawn_local_input_receiver
+                .then(spawn_local_input_receiver_legacy_compatible),
+            notification_sink,
+            file_difference_sink,
+            retries: 0_u32,
+        },
+        _managed_mpv_process_guard: managed_mpv_process_guard,
+    })
+}
+
+fn client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible<'a, F, G>(
+    endpoint: &'a str,
+    config: &'a ClientLoopConfig,
+    diagnostics_config: ClientLoopDiagnosticsConfig,
+    network_start: &'a Instant,
+    retry_state: &'a mut ClientNetworkLoopRetryState<F, G>,
+) -> ClientNetworkLoopTransportAttemptContext<'a, F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    ClientNetworkLoopTransportAttemptContext {
+        endpoint,
+        launch: ConnectedSessionLaunchContext {
+            runtime: &mut retry_state.runtime,
+            config,
+            chat_message_on_connect: retry_state.chat_message_on_connect.as_deref(),
+            startup_playlist_file_on_connect: &mut retry_state.startup_playlist_file_on_connect,
+            local_input_rx: retry_state.local_input_rx.as_mut(),
+            notification_sink: &mut retry_state.notification_sink,
+            file_difference_sink: &mut retry_state.file_difference_sink,
+            diagnostics_config,
+        },
+        retries: &mut retry_state.retries,
+        network_start,
+    }
+}
+
+async fn run_client_network_loop_retry_loop_legacy_compatible<F, G>(
+    config: &ClientLoopConfig,
+    diagnostics_config: ClientLoopDiagnosticsConfig,
+    network_start: &Instant,
+    mut bootstrap: ClientNetworkLoopBootstrapState<F, G>,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    loop {
+        match run_client_network_loop_transport_attempt_legacy_compatible(
+            client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible(
+                &bootstrap.endpoint,
+                config,
+                diagnostics_config,
+                network_start,
+                &mut bootstrap.retry_state,
+            ),
+        )
+        .await?
+        {
+            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess => return Ok(()),
+            ClientNetworkLoopTransportAttemptOutcome::Continue => {}
+            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(error) => {
+                return Err(error);
+            }
+        }
+    }
+}
+
+async fn run_client_network_loop_from_startup_execution_plan_legacy_compatible(
+    config: &ClientLoopConfig,
+    startup: ClientNetworkLoopStartupExecutionPlan,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> anyhow::Result<()> {
+    let ClientNetworkLoopStartupExecutionPlan {
+        diagnostics_config,
+        startup_plan,
+    } = startup;
+    let bootstrap = bootstrap_client_network_loop_state_legacy_compatible(
+        config,
+        startup_plan,
+        legacy_overrides,
+        emit_autoplay_countdown_notification,
+        emit_file_difference_notification,
+    )?;
+    let network_start = Instant::now();
+    run_client_network_loop_retry_loop_legacy_compatible(
+        config,
+        diagnostics_config,
+        &network_start,
+        bootstrap,
+    )
+    .await
+}
+
+async fn client_network_loop_transport_attempt_execution_plan_legacy_compatible<F, G>(
+    endpoint: &str,
+    launch: ConnectedSessionLaunchContext<'_, F, G>,
+) -> anyhow::Result<(ClientNetworkLoopAttemptExecutionPlan, Option<anyhow::Error>)>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    Ok(match TcpStream::connect(endpoint).await {
+        Ok(stream) => (
+            client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
+                run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+                    stream, launch,
+                )
+                .await?,
+            ),
+            None,
+        ),
+        Err(connect_err) => (
+            client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+            Some(connect_err.into()),
+        ),
+    })
+}
+
+async fn run_client_network_loop_transport_attempt_legacy_compatible<F, G>(
+    attempt: ClientNetworkLoopTransportAttemptContext<'_, F, G>,
+) -> anyhow::Result<ClientNetworkLoopTransportAttemptOutcome>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    let ClientNetworkLoopTransportAttemptContext {
+        endpoint,
+        launch,
+        retries,
+        network_start,
+    } = attempt;
+    let ConnectedSessionLaunchContext {
+        runtime,
+        config,
+        chat_message_on_connect,
+        startup_playlist_file_on_connect,
+        local_input_rx,
+        notification_sink,
+        file_difference_sink,
+        diagnostics_config,
+    } = launch;
+    let (attempt_execution_plan, connect_error) =
+        client_network_loop_transport_attempt_execution_plan_legacy_compatible(
+            endpoint,
+            ConnectedSessionLaunchContext {
+                runtime: &mut *runtime,
+                config,
+                chat_message_on_connect,
+                startup_playlist_file_on_connect,
+                local_input_rx,
+                notification_sink,
+                file_difference_sink,
+                diagnostics_config,
+            },
+        )
+        .await?;
+    let attempt_disposition =
+        client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible(
+            attempt_execution_plan,
+            run_client_network_loop_attempt_plan_legacy_compatible(
+                runtime,
+                retries,
+                network_start,
+                attempt_execution_plan.attempt_plan,
+            )
+            .await?,
+        );
+    Ok(match attempt_disposition {
+        ClientNetworkLoopAttemptDisposition::ReturnSuccess => {
+            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess
+        }
+        ClientNetworkLoopAttemptDisposition::Continue => {
+            ClientNetworkLoopTransportAttemptOutcome::Continue
+        }
+        ClientNetworkLoopAttemptDisposition::ReconnectExhausted(kind) => {
+            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(
+                reconnect_exhausted_error_from_attempt_disposition_legacy_compatible(
+                    kind,
+                    connect_error,
+                ),
+            )
+        }
+    })
 }
 
 #[cfg(test)]
@@ -6936,61 +5393,16 @@ async fn run_client_network_loop_with_legacy_startup_overrides(
     startup_playlist_file_on_connect: Option<&str>,
     legacy_overrides: Option<&LegacyClientArgOverrides>,
 ) -> anyhow::Result<()> {
-    let (mut runtime, _managed_mpv_process_guard) =
-        create_client_runtime_with_managed_mpv_support(config, legacy_overrides)?;
-    if let Some(overrides) = legacy_overrides
-        && let Err(error) =
-            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-                runtime.player_mut(),
-                overrides,
-            )
-    {
-        eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
-    }
-    let mut local_input_rx = spawn_local_input_receiver_if_enabled();
-    let chat_message_on_connect = env_trimmed("SYNCPLAY_CLIENT_CHAT_MESSAGE");
-    let mut startup_playlist_file_on_connect = startup_playlist_file_on_connect.map(str::to_owned);
-    let mut notification_sink = emit_autoplay_countdown_notification;
-    let mut file_difference_sink = emit_file_difference_notification;
-    let endpoint = format!("{}:{}", config.host, config.port);
-    let network_start = Instant::now();
-    let mut retries = 0_u32;
-
-    loop {
-        match TcpStream::connect(&endpoint).await {
-            Ok(stream) => {
-                retries = 0;
-                match run_connected_client_session_with_legacy_startup_overrides(
-                    stream,
-                    &mut runtime,
-                    config,
-                    chat_message_on_connect.as_deref(),
-                    &mut startup_playlist_file_on_connect,
-                    local_input_rx.as_mut(),
-                    &mut notification_sink,
-                    &mut file_difference_sink,
-                )
-                .await?
-                {
-                    ConnectedSessionExit::RuntimeWindowElapsed => return Ok(()),
-                    ConnectedSessionExit::TransportClosed => {
-                        let now_seconds = network_start.elapsed().as_secs_f64();
-                        runtime.run_disconnect(now_seconds)?;
-                        if run_reconnect_backoff(&mut runtime, &mut retries).await? {
-                            return Err(anyhow!(
-                                "server connection closed and reconnect retries were exhausted"
-                            ));
-                        }
-                    }
-                }
-            }
-            Err(connect_err) => {
-                if run_reconnect_backoff(&mut runtime, &mut retries).await? {
-                    return Err(connect_err.into());
-                }
-            }
-        }
-    }
+    run_client_network_loop_from_startup_execution_plan_legacy_compatible(
+        config,
+        client_network_loop_startup_execution_plan_legacy_compatible(
+            config,
+            startup_playlist_file_on_connect,
+            legacy_overrides,
+        ),
+        legacy_overrides,
+    )
+    .await
 }
 
 #[tokio::main]
@@ -7036,7 +5448,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if client_arg_overrides.show_help {
-        print_legacy_client_help();
+        print_legacy_client_help(client_arg_overrides.language.as_deref());
         return Ok(());
     }
     if !client_arg_overrides.unknown_options.is_empty() {
@@ -7089,21 +5501,53 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("warning: failed to persist legacy per-player arguments setting: {error}");
     }
     emit_legacy_client_arg_compatibility_warnings(&client_arg_overrides);
+    if client_arg_overrides.should_halt_for_legacy_force_gui_prompt_compatibility() {
+        return Ok(());
+    }
+    let stored_settings = match load_syncplay_cli_stored_settings_mvp_legacy_compatible() {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("warning: failed to load stored Syncplay settings: {error}");
+            None
+        }
+    };
+    if let Some(stored_settings) = stored_settings.as_ref() {
+        if let Some(line) = stored_force_gui_prompt_compatibility_line_legacy_compatible(
+            &client_arg_overrides,
+            stored_settings,
+        ) {
+            eprintln!("{line}");
+        }
+        if should_halt_for_stored_force_gui_prompt_legacy_compatible(
+            &client_arg_overrides,
+            stored_settings,
+        ) {
+            return Ok(());
+        }
+    }
+    set_legacy_runtime_language_for_process_legacy_compatible(
+        resolved_legacy_runtime_language_tag_legacy_compatible(
+            &client_arg_overrides,
+            stored_settings.as_ref(),
+        ),
+    );
+    apply_headless_automatic_update_check_legacy_compatible(
+        &client_arg_overrides,
+        stored_settings.as_ref(),
+    );
     if env_flag_enabled("SYNCPLAY_CLIENT_CONNECT") || client_arg_overrides.should_connect_client() {
         let mut config = build_client_loop_config_from_env();
-        match load_syncplay_cli_stored_settings_mvp_legacy_compatible() {
-            Ok(Some(stored_settings)) => {
-                apply_stored_client_settings_mvp_if_env_absent(&mut config, &stored_settings);
-                apply_stored_legacy_startup_player_defaults_if_arg_absent(
-                    &mut client_arg_overrides,
-                    &stored_settings,
-                );
-            }
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("warning: failed to load stored Syncplay settings: {error}");
-            }
+        if let Some(stored_settings) = stored_settings.as_ref() {
+            apply_stored_client_settings_mvp_if_env_absent(&mut config, stored_settings);
+            apply_stored_legacy_startup_player_defaults_if_arg_absent(
+                &mut client_arg_overrides,
+                stored_settings,
+            );
         }
+        apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
+            &mut client_arg_overrides,
+            stored_settings.as_ref(),
+        );
         apply_legacy_client_arg_overrides(&mut config, &client_arg_overrides);
         if !client_arg_overrides.no_store
             && let Err(error) = persist_syncplay_cli_stored_settings_mvp_legacy_compatible(&config)
@@ -7141,18 +5585,17 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-        ConnectedSessionExit, LegacyClientArgOverrides,
-        LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
-        LegacyConfigurationGetterStartupCompatEntry, LegacyExternalPlayerLaunchSpec,
+        ConnectedSessionExit, LegacyClientArgOverrides, LegacyExternalPlayerLaunchSpec,
         LocalInputCommand, LocalOffsetCommand, ManagedMpvLaunchEnvConfig,
-        ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
-        ReconnectCorrectionDiagnosticsState, StoredClientSettingsMvp, apply_chat_policy_overrides,
-        apply_client_behavior_overrides, apply_legacy_client_arg_managed_mpv_overrides,
-        apply_legacy_client_arg_overrides,
+        PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
+        ReconnectCorrectionDiagnosticsFormat, ReconnectCorrectionDiagnosticsState,
+        StoredClientSettingsMvp, apply_chat_policy_overrides, apply_client_behavior_overrides,
+        apply_legacy_client_arg_managed_mpv_overrides, apply_legacy_client_arg_overrides,
         apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
         apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
-        apply_stored_legacy_startup_player_defaults_if_arg_absent, chat_notification_message,
-        clear_syncplay_cli_gui_qsettings_legacy_compatible,
+        apply_stored_legacy_startup_player_defaults_if_arg_absent,
+        apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
+        chat_notification_message, clear_syncplay_cli_gui_qsettings_legacy_compatible,
         clear_syncplay_cli_stored_settings_legacy_compatible,
         controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message, create_client_runtime,
@@ -7161,31 +5604,25 @@ mod tests {
         flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
         flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
         flush_user_change_notifications_to_sink, format_duration_legacy,
-        format_file_difference_summary,
-        format_serialized_per_player_arguments_map_legacy_compatible,
-        format_serialized_public_servers_list_legacy_compatible,
-        generate_room_password_legacy_compatible, legacy_configuration_getter_ini_compat_entries,
-        legacy_configuration_getter_startup_compat_entries,
+        format_file_difference_summary, generate_room_password_legacy_compatible,
         legacy_external_player_launch_spec_from_overrides_legacy_compatible,
+        legacy_utc_timestamp_string_legacy_compatible,
         load_syncplay_cli_stored_settings_mvp_legacy_compatible,
-        local_command_help_footer_lines_legacy_compatible,
-        local_command_help_lines_legacy_compatible, managed_mpv_launch_env_config_from_env,
-        normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
-        parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
-        parse_env_port_legacy_compatible, parse_env_string_list_legacy_compatible,
+        managed_mpv_launch_env_config_from_env, normalize_controlled_room_input,
+        parse_autoplay_min_users_override_legacy_compatible, parse_env_bool_legacy_compatible,
+        parse_env_non_negative_f64_legacy_compatible, parse_env_port_legacy_compatible,
+        parse_env_string_list_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
-        parse_legacy_client_arg_overrides, parse_local_input_chat_message,
-        parse_local_input_command,
+        parse_legacy_client_arg_overrides, parse_legacy_utc_timestamp_legacy_compatible,
+        parse_local_input_chat_message, parse_local_input_command,
         parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
-        parse_serialized_per_player_arguments_map_legacy_compatible,
-        parse_serialized_public_servers_list_legacy_compatible,
         parse_syncplay_ini_stored_client_settings_mvp, parse_unpause_action_mode_legacy_compatible,
         persist_syncplay_cli_language_setting_legacy_compatible,
+        persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible,
         persist_syncplay_cli_per_player_arguments_setting_legacy_compatible,
         persist_syncplay_cli_player_path_setting_legacy_compatible,
         persist_syncplay_cli_stored_settings_mvp_legacy_compatible,
         player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
-        playlist_listing_message_legacy_compatible,
         protocol_lines_for_startup_playlist_load_from_file_legacy_compatible,
         reconnect_correction_diagnostics_alert_thresholds_from_env,
         reconnect_correction_diagnostics_format_from_env,
@@ -7193,10 +5630,12 @@ mod tests {
         reconnect_correction_metrics_delta_json_line, reconnect_correction_metrics_delta_message,
         reconnect_correction_state_snapshot_json_line, reconnect_correction_state_snapshot_message,
         reconnect_correction_state_threshold_alert_lines,
-        reconnect_transition_notification_message, run_client_network_loop,
-        run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
-        run_local_playlist_delete_index_legacy_compatible,
-        run_local_playlist_select_index_legacy_compatible,
+        reconnect_transition_notification_message,
+        resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
+        run_client_network_loop, run_connected_client_session,
+        run_connected_client_session_with_legacy_startup_overrides,
+        run_planned_local_runtime_action_legacy_compatible,
+        should_run_headless_automatic_update_check_legacy_compatible,
         should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
         spawn_legacy_external_player_from_spec_legacy_compatible,
         upsert_syncplay_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
@@ -7206,6 +5645,18 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use syncplay_client_app::legacy_compat::{
+        LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
+        LegacyConfigurationGetterStartupCompatEntry,
+        legacy_configuration_getter_ini_compat_entries,
+        legacy_configuration_getter_startup_compat_entries,
+    };
+    use syncplay_client_app::legacy_ini_serde::{
+        format_serialized_per_player_arguments_map_legacy_compatible,
+        format_serialized_public_servers_list_legacy_compatible,
+        parse_serialized_per_player_arguments_map_legacy_compatible,
+        parse_serialized_public_servers_list_legacy_compatible,
+    };
     use syncplay_client_core::{
         AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
         ControllerAuthTransitionNotification, FileDifferenceSummary, PrivacyMode,
@@ -7490,6 +5941,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: true,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7520,6 +5972,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7548,6 +6001,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7585,6 +6039,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: true,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7609,6 +6064,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash_preserves_launch_only_args_verbatim()
+     {
+        let overrides = parse_legacy_client_arg_overrides([
+            "--no-gui",
+            "--",
+            "--profile=fast",
+            "--msg-level=all=v",
+        ]);
+
+        assert!(overrides.connect_requested);
+        assert_eq!(overrides.file, None);
+        assert_eq!(
+            overrides.player_args,
+            vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned(),]
+        );
+        assert!(overrides.unknown_options.is_empty());
+    }
+
+    #[test]
     fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
         let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--wat", "-x", "value"]);
         assert_eq!(
@@ -7618,6 +6092,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: true,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7646,6 +6121,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: true,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -7668,6 +6144,7 @@ mod tests {
     fn parse_legacy_client_arg_overrides_parses_no_store_flag() {
         let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--no-store"]);
         assert!(overrides.connect_requested);
+        assert!(overrides.no_gui_requested);
         assert!(overrides.no_store);
         assert!(overrides.unknown_options.is_empty());
     }
@@ -7693,6 +6170,160 @@ mod tests {
         );
         assert!(overrides.unknown_options.is_empty());
         assert!(!overrides.should_connect_client());
+    }
+
+    #[test]
+    fn normalized_legacy_runtime_language_tag_legacy_compatible_accepts_python_tags_and_aliases() {
+        assert_eq!(
+            super::normalized_legacy_runtime_language_tag_legacy_compatible("fr"),
+            Some("fr")
+        );
+        assert_eq!(
+            super::normalized_legacy_runtime_language_tag_legacy_compatible("PT-br"),
+            Some("pt_BR")
+        );
+        assert_eq!(
+            super::normalized_legacy_runtime_language_tag_legacy_compatible("zh-cn"),
+            Some("zh_CN")
+        );
+        assert_eq!(
+            super::normalized_legacy_runtime_language_tag_legacy_compatible("klingon"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolved_legacy_runtime_language_tag_legacy_compatible_prefers_cli_and_falls_back_to_stored()
+    {
+        let overrides = LegacyClientArgOverrides {
+            language: Some("PT-br".to_owned()),
+            ..Default::default()
+        };
+        let invalid_overrides = LegacyClientArgOverrides {
+            language: Some("klingon".to_owned()),
+            ..Default::default()
+        };
+        let stored_settings = StoredClientSettingsMvp {
+            language: Some("fr".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::resolved_legacy_runtime_language_tag_legacy_compatible(
+                &overrides,
+                Some(&stored_settings)
+            ),
+            Some("pt_BR".to_owned())
+        );
+        assert_eq!(
+            super::resolved_legacy_runtime_language_tag_legacy_compatible(
+                &invalid_overrides,
+                Some(&stored_settings)
+            ),
+            Some("fr".to_owned())
+        );
+    }
+
+    #[test]
+    fn legacy_runtime_language_selection_line_legacy_compatible_emits_note_for_supported_values_and_warning_for_invalid_values()
+     {
+        let supported =
+            super::legacy_runtime_language_selection_line_legacy_compatible(Some("PT-br"))
+                .expect("supported language should emit a banner");
+        let invalid =
+            super::legacy_runtime_language_selection_line_legacy_compatible(Some("klingon"))
+                .expect("invalid language should emit a warning");
+
+        assert!(supported.contains("pt_BR"));
+        assert_eq!(
+            invalid,
+            "warning: unsupported legacy --language value 'klingon' was ignored; supported values: de/en/es/eo/fi/fr/it/pt_PT/pt_BR/tr/ru/zh_CN/ko"
+        );
+    }
+
+    #[test]
+    fn legacy_force_gui_prompt_compatibility_requires_no_gui_for_headless_override() {
+        let blocked = LegacyClientArgOverrides {
+            force_gui_prompt_requested: true,
+            ..Default::default()
+        };
+        let overridden = LegacyClientArgOverrides {
+            force_gui_prompt_requested: true,
+            no_gui_requested: true,
+            ..Default::default()
+        };
+
+        assert!(blocked.should_halt_for_legacy_force_gui_prompt_compatibility());
+        assert!(!overridden.should_halt_for_legacy_force_gui_prompt_compatibility());
+        assert_eq!(
+            super::legacy_force_gui_prompt_compatibility_line_legacy_compatible(&blocked),
+            Some(
+                "note: legacy --force-gui-prompt requested GUI configuration flow; syncplay-cli has no GUI, so startup is halted. Re-run with --no-gui to continue headless."
+            )
+        );
+        assert_eq!(
+            super::legacy_force_gui_prompt_compatibility_line_legacy_compatible(&overridden),
+            Some(
+                "note: legacy --force-gui-prompt was overridden by --no-gui; continuing in headless mode"
+            )
+        );
+    }
+
+    #[test]
+    fn stored_force_gui_prompt_compatibility_requires_no_gui_for_headless_override() {
+        let settings = StoredClientSettingsMvp {
+            force_gui_prompt: Some(true),
+            ..Default::default()
+        };
+        let blocked = LegacyClientArgOverrides::default();
+        let overridden = LegacyClientArgOverrides {
+            no_gui_requested: true,
+            ..Default::default()
+        };
+        let explicit_flag = LegacyClientArgOverrides {
+            force_gui_prompt_requested: true,
+            ..Default::default()
+        };
+
+        assert!(
+            super::should_halt_for_stored_force_gui_prompt_legacy_compatible(&blocked, &settings)
+        );
+        assert!(
+            !super::should_halt_for_stored_force_gui_prompt_legacy_compatible(
+                &overridden,
+                &settings
+            )
+        );
+        assert!(
+            !super::should_halt_for_stored_force_gui_prompt_legacy_compatible(
+                &explicit_flag,
+                &settings
+            )
+        );
+        assert_eq!(
+            super::stored_force_gui_prompt_compatibility_line_legacy_compatible(
+                &blocked, &settings
+            ),
+            Some(
+                "note: stored client_settings.forceGuiPrompt = True requested GUI configuration flow; syncplay-cli has no GUI, so startup is halted. Re-run with --no-gui or clear the stored setting to continue headless."
+            )
+        );
+        assert_eq!(
+            super::stored_force_gui_prompt_compatibility_line_legacy_compatible(
+                &overridden,
+                &settings
+            ),
+            Some(
+                "note: stored client_settings.forceGuiPrompt = True was overridden by --no-gui; continuing in headless mode"
+            )
+        );
+        assert_eq!(
+            super::stored_force_gui_prompt_compatibility_line_legacy_compatible(
+                &explicit_flag,
+                &settings
+            ),
+            None
+        );
     }
 
     #[test]
@@ -7792,7 +6423,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_configuration_getter_startup_compat_matrix_classifies_deferred_and_ignored_inputs() {
+    fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ignored_inputs() {
         fn entry_for(input: &str) -> LegacyConfigurationGetterStartupCompatEntry {
             *legacy_configuration_getter_startup_compat_entries()
                 .iter()
@@ -7805,8 +6436,22 @@ mod tests {
             LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
+            entry_for("--debug").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
             entry_for("--player-path").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert!(
+            entry_for("--player-path")
+                .note
+                .contains("legacy mpv paths auto-select managed mpv integration")
+        );
+        assert!(
+            entry_for("--player-path")
+                .note
+                .contains("launch-only unmanaged fallback")
         );
         assert_eq!(
             entry_for("file").status,
@@ -7814,11 +6459,16 @@ mod tests {
         );
         assert_eq!(
             entry_for("--language").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert!(
+            entry_for("--language")
+                .note
+                .contains("runtime notification surfaces")
         );
         assert_eq!(
             entry_for("_args").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("--clear-gui-data").status,
@@ -7826,7 +6476,12 @@ mod tests {
         );
         assert_eq!(
             entry_for("--force-gui-prompt").status,
-            LegacyConfigurationGetterCompatibilityStatus::Ignored
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert!(
+            entry_for("--force-gui-prompt")
+                .note
+                .contains("halts syncplay-cli unless --no-gui explicitly overrides")
         );
     }
 
@@ -7850,7 +6505,8 @@ mod tests {
             "client_settings.playerPath",
             "client_settings.perPlayerArguments",
             "client_settings.roomList",
-            "client_settings.{mediaSearchDirectories,publicServers}",
+            "client_settings.mediaSearchDirectories",
+            "client_settings.publicServers",
             "client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}",
             "client_settings.forceGuiPrompt",
             "client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}",
@@ -7882,7 +6538,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_deferred_fields() {
+    fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_ignored_fields() {
         fn entry_for(key: &str) -> LegacyConfigurationGetterIniCompatEntry {
             *legacy_configuration_getter_ini_compat_entries()
                 .iter()
@@ -7920,19 +6576,28 @@ mod tests {
         );
         assert_eq!(
             entry_for("client_settings.roomList").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
-            entry_for("client_settings.{mediaSearchDirectories,publicServers}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            entry_for("client_settings.mediaSearchDirectories").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert_eq!(
+            entry_for("client_settings.publicServers").status,
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("client_settings.forceGuiPrompt").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
+        );
+        assert!(
+            entry_for("client_settings.forceGuiPrompt")
+                .note
+                .contains("headless startup gate")
         );
         assert_eq!(
             entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
@@ -7953,15 +6618,15 @@ mod tests {
         );
         assert_eq!(
             entry_for("gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
         assert_eq!(
             entry_for("gui.* (remaining unenumerated GUI keys / QSettings visual state)").status,
@@ -7969,7 +6634,7 @@ mod tests {
         );
         assert_eq!(
             entry_for("general.{checkForUpdatesAutomatically,lastCheckedForUpdates}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Deferred
+            LegacyConfigurationGetterCompatibilityStatus::Supported
         );
     }
 
@@ -7980,6 +6645,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: Some("C:/players/mpv.exe".to_owned()),
@@ -8012,12 +6678,50 @@ mod tests {
     }
 
     #[test]
+    fn legacy_external_player_launch_spec_from_overrides_preserves_launch_only_args_for_unmanaged_launch()
+     {
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            no_gui_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/players/mpv.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+            .expect("player-path should produce a launch spec");
+        assert_eq!(
+            spec.args,
+            vec![
+                "--profile=fast".to_owned(),
+                "--msg-level=all=v".to_owned(),
+                "C:/media/movie.mkv".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn legacy_external_player_launch_spec_from_overrides_returns_none_without_player_path() {
         let overrides = LegacyClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -8093,6 +6797,75 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
             None => unsafe { std::env::remove_var(key_fallback_ipc) },
         }
+    }
+
+    #[test]
+    fn legacy_player_path_requests_managed_mpv_legacy_compatible_recognizes_only_mpv_binaries() {
+        assert!(
+            super::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/mpv.exe")
+        );
+        assert!(
+            super::legacy_player_path_requests_managed_mpv_legacy_compatible(r"C:\players\MPV.COM")
+        );
+        assert!(super::legacy_player_path_requests_managed_mpv_legacy_compatible("/usr/bin/mpv"));
+        assert!(
+            !super::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/vlc.exe")
+        );
+        assert!(
+            !super::legacy_player_path_requests_managed_mpv_legacy_compatible(
+                "C:/players/mpvnet.exe"
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_player_path_compatibility_warning_line_legacy_compatible_distinguishes_mpv_and_non_mpv_values()
+     {
+        let mpv_overrides = LegacyClientArgOverrides {
+            player_path: Some("C:/players/mpv.exe".to_owned()),
+            ..Default::default()
+        };
+        let vlc_overrides = LegacyClientArgOverrides {
+            player_path: Some("C:/players/vlc.exe".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::legacy_player_path_compatibility_warning_line_legacy_compatible(&mpv_overrides),
+            Some(
+                "warning: legacy --player-path selects managed mpv integration for mpv binaries; non-mpv values remain launch-only unmanaged fallback"
+            )
+        );
+        assert_eq!(
+            super::legacy_player_path_compatibility_warning_line_legacy_compatible(&vlc_overrides),
+            Some(
+                "warning: legacy non-mpv --player-path is launch-only unmanaged fallback; it is not adapter-integrated and is ignored when managed mpv or explicit-mpv-IPC is active"
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible_only_warns_for_non_mpv_values()
+     {
+        let mpv_overrides = LegacyClientArgOverrides {
+            player_path: Some("C:/players/mpv.exe".to_owned()),
+            ..Default::default()
+        };
+        let vlc_overrides = LegacyClientArgOverrides {
+            player_path: Some("C:/players/vlc.exe".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(&mpv_overrides),
+            None
+        );
+        assert_eq!(
+            super::legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(&vlc_overrides),
+            Some(
+                "warning: legacy non-mpv --player-path was ignored because managed mpv or explicit-mpv-IPC integration is active"
+            )
+        );
     }
 
     #[test]
@@ -8252,7 +7025,6 @@ mod tests {
                     "--window-maximized=true".to_owned(),
                     "--window-minimized=false".to_owned(),
                 ],
-                recognized_but_deferred_tokens: vec![],
                 malformed_tokens: vec!["--pause=maybe".to_owned(), "--speed fast".to_owned()],
                 unsupported_tokens: vec!["--unknown".to_owned()],
             }
@@ -8312,7 +7084,6 @@ mod tests {
                 "--mute".to_owned(),
                 "--ontop".to_owned(),
             ],
-            recognized_but_deferred_tokens: vec![],
             malformed_tokens: vec!["--pause=maybe".to_owned()],
             unsupported_tokens: vec!["--profile=fast".to_owned()],
         };
@@ -8325,10 +7096,9 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=5, deferred=0, malformed=1, unsupported=1)".to_owned(),
+                "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=5, malformed=1, unsupported=1)".to_owned(),
                 "warning: explicit-mpv-IPC malformed _args were ignored: --pause=maybe".to_owned(),
-                "warning: explicit-mpv-IPC unsupported _args were ignored: --profile=fast"
-                    .to_owned(),
+                "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: --profile=fast".to_owned(),
             ]
         );
     }
@@ -8366,6 +7136,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -8528,6 +7299,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -8660,6 +7432,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -8722,6 +7495,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -8851,6 +7625,139 @@ mod tests {
                 show_contact_info: Some(true),
             }
         );
+    }
+
+    #[test]
+    fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_supported_language_tags_and_drops_invalid_values()
+     {
+        let normalized =
+            parse_syncplay_ini_stored_client_settings_mvp("[general]\nlanguage = PT-br\n");
+        let invalid =
+            parse_syncplay_ini_stored_client_settings_mvp("[general]\nlanguage = klingon\n");
+
+        assert_eq!(normalized.language.as_deref(), Some("pt_BR"));
+        assert_eq!(invalid.language, None);
+    }
+
+    #[test]
+    fn legacy_utc_timestamp_string_legacy_compatible_roundtrips_fixed_timestamp() {
+        let timestamp =
+            UNIX_EPOCH + Duration::from_secs(1_800_000_000) + Duration::from_millis(123);
+        let formatted = legacy_utc_timestamp_string_legacy_compatible(timestamp);
+        let parsed = parse_legacy_utc_timestamp_legacy_compatible(&formatted)
+            .expect("formatted timestamp should parse");
+
+        assert_eq!(
+            parsed
+                .duration_since(UNIX_EPOCH)
+                .expect("parsed timestamp should be after epoch"),
+            timestamp
+                .duration_since(UNIX_EPOCH)
+                .expect("seed timestamp should be after epoch")
+        );
+    }
+
+    #[test]
+    fn should_run_headless_automatic_update_check_legacy_compatible_honors_frequency() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let recent_timestamp = legacy_utc_timestamp_string_legacy_compatible(
+            now - Duration::from_secs(super::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS - 1),
+        );
+        let stale_timestamp = legacy_utc_timestamp_string_legacy_compatible(
+            now - Duration::from_secs(super::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS + 1),
+        );
+
+        assert!(
+            should_run_headless_automatic_update_check_legacy_compatible(
+                Some(&StoredClientSettingsMvp {
+                    check_for_updates_automatically: Some(true),
+                    last_checked_for_updates: None,
+                    ..StoredClientSettingsMvp::default()
+                }),
+                now,
+            ),
+            "missing timestamp should be treated as due"
+        );
+        assert!(
+            !should_run_headless_automatic_update_check_legacy_compatible(
+                Some(&StoredClientSettingsMvp {
+                    check_for_updates_automatically: Some(true),
+                    last_checked_for_updates: Some(recent_timestamp),
+                    ..StoredClientSettingsMvp::default()
+                }),
+                now,
+            ),
+            "recent timestamp should suppress the headless update-check notice"
+        );
+        assert!(
+            should_run_headless_automatic_update_check_legacy_compatible(
+                Some(&StoredClientSettingsMvp {
+                    check_for_updates_automatically: Some(true),
+                    last_checked_for_updates: Some(stale_timestamp),
+                    ..StoredClientSettingsMvp::default()
+                }),
+                now,
+            ),
+            "stale timestamp should re-enable the headless update-check notice"
+        );
+        assert!(
+            !should_run_headless_automatic_update_check_legacy_compatible(
+                Some(&StoredClientSettingsMvp {
+                    check_for_updates_automatically: Some(false),
+                    last_checked_for_updates: None,
+                    ..StoredClientSettingsMvp::default()
+                }),
+                now,
+            ),
+            "disabled automatic update checks should remain inert"
+        );
+    }
+
+    #[test]
+    fn persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible_updates_general_timestamp()
+     {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncplay-cli-update-check-persist-{unique_suffix}"));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(
+            &config_path,
+            "[general]\ncheckForUpdatesAutomatically = True\nlastCheckedForUpdates = 2020-01-01 00:00:00.000\n",
+        )
+        .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible(
+            "2026-03-02 12:34:56.789",
+        )
+        .expect("timestamp persistence should succeed");
+
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        assert_eq!(
+            loaded.last_checked_for_updates.as_deref(),
+            Some("2026-03-02 12:34:56.789")
+        );
+        assert_eq!(loaded.check_for_updates_automatically, Some(true));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -9366,6 +8273,262 @@ mod tests {
     }
 
     #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_uses_room_list_when_room_missing() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_room = "SYNCPLAY_CLIENT_ROOM";
+        let prior_room = std::env::var_os(key_room);
+        unsafe {
+            std::env::remove_var(key_room);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                room: None,
+                room_list: Some(vec![
+                    "".to_owned(),
+                    "+room:ABCDEF123456:AB-123-456".to_owned(),
+                    "room-z".to_owned(),
+                ]),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.room, "+room:ABCDEF123456");
+        assert_eq!(
+            config.controlled_room_password_override.as_deref(),
+            Some("AB-123-456")
+        );
+
+        match prior_room {
+            Some(value) => unsafe { std::env::set_var(key_room, value) },
+            None => unsafe { std::env::remove_var(key_room) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_prefers_room_over_room_list() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_room = "SYNCPLAY_CLIENT_ROOM";
+        let prior_room = std::env::var_os(key_room);
+        unsafe {
+            std::env::remove_var(key_room);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                room: Some("stored-room".to_owned()),
+                room_list: Some(vec!["fallback-room".to_owned()]),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.room, "stored-room");
+
+        match prior_room {
+            Some(value) => unsafe { std::env::set_var(key_room, value) },
+            None => unsafe { std::env::remove_var(key_room) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_uses_public_servers_when_host_missing() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_host = "SYNCPLAY_CLIENT_HOST";
+        let key_port = "SYNCPLAY_CLIENT_PORT";
+        let prior_host = std::env::var_os(key_host);
+        let prior_port = std::env::var_os(key_port);
+        unsafe {
+            std::env::remove_var(key_host);
+            std::env::remove_var(key_port);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                host: None,
+                port: None,
+                public_servers: Some(vec![
+                    ("Primary".to_owned(), "".to_owned()),
+                    ("Fallback".to_owned(), "public.example:7777".to_owned()),
+                ]),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.host, "public.example");
+        assert_eq!(config.port, 7777);
+
+        match prior_host {
+            Some(value) => unsafe { std::env::set_var(key_host, value) },
+            None => unsafe { std::env::remove_var(key_host) },
+        }
+        match prior_port {
+            Some(value) => unsafe { std::env::set_var(key_port, value) },
+            None => unsafe { std::env::remove_var(key_port) },
+        }
+    }
+
+    #[test]
+    fn apply_stored_client_settings_mvp_if_env_absent_prefers_stored_host_over_public_servers() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key_host = "SYNCPLAY_CLIENT_HOST";
+        let key_port = "SYNCPLAY_CLIENT_PORT";
+        let prior_host = std::env::var_os(key_host);
+        let prior_port = std::env::var_os(key_port);
+        unsafe {
+            std::env::remove_var(key_host);
+            std::env::remove_var(key_port);
+        }
+
+        let mut config = test_client_loop_config();
+        apply_stored_client_settings_mvp_if_env_absent(
+            &mut config,
+            &StoredClientSettingsMvp {
+                host: Some("stored.example".to_owned()),
+                port: Some(4444),
+                public_servers: Some(vec![(
+                    "Fallback".to_owned(),
+                    "public.example:7777".to_owned(),
+                )]),
+                ..StoredClientSettingsMvp::default()
+            },
+        );
+
+        assert_eq!(config.host, "stored.example");
+        assert_eq!(config.port, 4444);
+
+        match prior_host {
+            Some(value) => unsafe { std::env::set_var(key_host, value) },
+            None => unsafe { std::env::remove_var(key_host) },
+        }
+        match prior_port {
+            Some(value) => unsafe { std::env::set_var(key_port, value) },
+            None => unsafe { std::env::remove_var(key_port) },
+        }
+    }
+
+    #[test]
+    fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_resolves_recursive_media_match()
+     {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "syncplay-cli-media-search-recursive-{unique_suffix}"
+        ));
+        let nested_dir = temp_root.join("Season1");
+        std::fs::create_dir_all(&nested_dir).expect("nested media dir should be created");
+        let media_file = nested_dir.join("episode1.mkv");
+        std::fs::write(&media_file, b"").expect("media file should be created");
+
+        let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+            Some("episode1.mkv"),
+            Some(&StoredClientSettingsMvp {
+                media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
+                ..StoredClientSettingsMvp::default()
+            }),
+        );
+
+        assert_eq!(
+            resolution.file.as_deref(),
+            Some(media_file.to_string_lossy().as_ref())
+        );
+        assert!(
+            resolution.warning_lines.is_empty(),
+            "successful recursive startup-file resolution should not emit warnings: {:?}",
+            resolution.warning_lines
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_respects_folder_search_timeout_zero()
+     {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("syncplay-cli-media-search-timeout-{unique_suffix}"));
+        let nested_dir = temp_root.join("Season1");
+        std::fs::create_dir_all(&nested_dir).expect("nested media dir should be created");
+        let media_file = nested_dir.join("episode1.mkv");
+        std::fs::write(&media_file, b"").expect("media file should be created");
+
+        let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+            Some("episode1.mkv"),
+            Some(&StoredClientSettingsMvp {
+                media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
+                folder_search_timeout_seconds: Some(0.0),
+                ..StoredClientSettingsMvp::default()
+            }),
+        );
+
+        assert_eq!(resolution.file.as_deref(), Some("episode1.mkv"));
+        assert!(
+            resolution
+                .warning_lines
+                .iter()
+                .any(|line| line.contains("folderSearchTimeout is 0")),
+            "expected deterministic timeout warning, got {:?}",
+            resolution.warning_lines
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible_updates_startup_file()
+     {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("syncplay-cli-media-search-apply-{unique_suffix}"));
+        let nested_dir = temp_root.join("Season1");
+        std::fs::create_dir_all(&nested_dir).expect("nested media dir should be created");
+        let media_file = nested_dir.join("episode1.mkv");
+        std::fs::write(&media_file, b"").expect("media file should be created");
+
+        let mut overrides = LegacyClientArgOverrides {
+            file: Some("episode1.mkv".to_owned()),
+            ..LegacyClientArgOverrides::default()
+        };
+        let settings = StoredClientSettingsMvp {
+            media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
+            &mut overrides,
+            Some(&settings),
+        );
+
+        assert_eq!(
+            overrides.file.as_deref(),
+            Some(media_file.to_string_lossy().as_ref())
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn apply_stored_legacy_startup_player_defaults_if_arg_absent_uses_stored_player_path() {
         let mut overrides = LegacyClientArgOverrides {
             connect_requested: true,
@@ -9404,6 +8567,35 @@ mod tests {
         assert!(
             arg_overrides.player_args.is_empty(),
             "stored per-player args should only apply when the selected player path matches a stored entry"
+        );
+    }
+
+    #[test]
+    fn apply_stored_legacy_startup_player_defaults_if_arg_absent_appends_stored_per_player_arguments_after_cli_args()
+     {
+        let mut overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            player_path: Some("C:/players/stored-mpv.exe".to_owned()),
+            player_args: vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned()],
+            ..LegacyClientArgOverrides::default()
+        };
+        let settings = StoredClientSettingsMvp {
+            per_player_arguments: Some(std::collections::BTreeMap::from([(
+                "C:/players/stored-mpv.exe".to_owned(),
+                vec!["--fs".to_owned(), "--script-opts=osc=no".to_owned()],
+            )])),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+        assert_eq!(
+            overrides.player_args,
+            vec![
+                "--profile=fast".to_owned(),
+                "--msg-level=all=v".to_owned(),
+                "--fs".to_owned(),
+                "--script-opts=osc=no".to_owned(),
+            ]
         );
     }
 
@@ -9718,6 +8910,47 @@ mod tests {
         let written_contents =
             std::fs::read_to_string(&config_path).expect("written config should be readable");
         assert!(written_contents.contains("[general]\nlanguage = fr\n"));
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn persist_syncplay_cli_language_setting_legacy_compatible_normalizes_supported_aliases() {
+        let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
+            .lock()
+            .expect("lock poisoned");
+        let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
+        let prior = std::env::var_os(key);
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-config-language-normalize-test-{unique_suffix}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
+        let config_path = temp_dir.join("syncplay.ini");
+        std::fs::write(&config_path, "[general]\nlanguage = en\n")
+            .expect("seed config should write");
+        unsafe {
+            std::env::set_var(key, &config_path);
+        }
+
+        persist_syncplay_cli_language_setting_legacy_compatible("PT-br")
+            .expect("language alias should persist");
+        let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
+            .expect("load should succeed")
+            .expect("settings should exist");
+        assert_eq!(loaded.language.as_deref(), Some("pt_BR"));
+        let written_contents =
+            std::fs::read_to_string(&config_path).expect("written config should be readable");
+        assert!(written_contents.contains("[general]\nlanguage = pt_BR\n"));
 
         match prior {
             Some(value) => unsafe { std::env::set_var(key, value) },
@@ -10179,6 +9412,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -10215,6 +9449,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: None,
@@ -10328,6 +9563,42 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_transition_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
+     {
+        assert_eq!(
+            super::reconnect_transition_notification_message_localized_legacy_compatible(
+                &ReconnectTransitionNotification::Attempting {
+                    retries: 2,
+                    delay_seconds: 0.4,
+                },
+                Some("fr"),
+            ),
+            "Connexion au serveur perdue, tentative de reconnexion (retry=2, delay_seconds=0.400)"
+        );
+        assert_eq!(
+            super::reconnect_transition_notification_message_localized_legacy_compatible(
+                &ReconnectTransitionNotification::Connected,
+                Some("pt_BR"),
+            ),
+            "Reconectado ao servidor"
+        );
+        assert_eq!(
+            super::reconnect_transition_notification_message_localized_legacy_compatible(
+                &ReconnectTransitionNotification::RestoringPlaylist,
+                Some("de"),
+            ),
+            "Playlist nach Wiederverbindung wiederherstellen..."
+        );
+        assert_eq!(
+            super::reconnect_transition_notification_message_localized_legacy_compatible(
+                &ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
+                Some("fr"),
+            ),
+            "Reconnect state restore correction re-enabled after recovery cooldown"
+        );
+    }
+
+    #[test]
     fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_env_config_missing()
      {
         let mut managed = ManagedMpvLaunchEnvConfig {
@@ -10344,6 +9615,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: Some("C:/mpv/mpv.exe".to_owned()),
@@ -10362,6 +9634,7 @@ mod tests {
 
         apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
 
+        assert!(managed.enabled);
         assert_eq!(managed.mpv_bin, Some(PathBuf::from("C:/mpv/mpv.exe")));
         assert_eq!(
             managed.media_file,
@@ -10387,6 +9660,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: Some("C:/mpv/mpv.exe".to_owned()),
@@ -10411,6 +9685,85 @@ mod tests {
             Some(PathBuf::from("D:/custom/start.mkv"))
         );
         assert_eq!(managed.extra_args, vec!["--profile=fast".to_owned()]);
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_managed_mpv_overrides_does_not_auto_enable_for_non_mpv_player_path()
+    {
+        let mut managed = ManagedMpvLaunchEnvConfig::default();
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            no_gui_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/players/vlc.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--fullscreen".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+
+        assert!(!managed.enabled);
+        assert_eq!(managed.mpv_bin, None);
+        assert_eq!(
+            managed.media_file,
+            Some(PathBuf::from("C:/media/movie.mkv"))
+        );
+        assert_eq!(managed.extra_args, vec!["--fullscreen".to_owned()]);
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_managed_mpv_overrides_preserves_launch_only_args_for_managed_launch()
+    {
+        let mut managed = ManagedMpvLaunchEnvConfig {
+            enabled: true,
+            mpv_bin: None,
+            media_file: None,
+            extra_args: Vec::new(),
+            ipc_path: None,
+            connect_timeout_ms: None,
+            connect_poll_interval_ms: None,
+        };
+        let overrides = LegacyClientArgOverrides {
+            connect_requested: true,
+            no_store: false,
+            debug_requested: false,
+            force_gui_prompt_requested: false,
+            no_gui_requested: false,
+            clear_gui_data_requested: false,
+            language: None,
+            player_path: Some("C:/mpv/mpv.exe".to_owned()),
+            file: Some("C:/media/movie.mkv".to_owned()),
+            player_args: vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned()],
+            load_playlist_from_file: None,
+            host: None,
+            port: None,
+            username: None,
+            room: None,
+            controlled_room_password_override: None,
+            show_help: false,
+            show_version: false,
+            unknown_options: vec![],
+        };
+
+        apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+
+        assert_eq!(
+            managed.extra_args,
+            vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned(),]
+        );
     }
 
     #[test]
@@ -10440,6 +9793,42 @@ mod tests {
                     room: "+room:ABCDEF123456".to_owned(),
                     hide_from_osd: true,
                 }
+            ),
+            "alice failed to identify as a room operator in room +room:ABCDEF123456"
+        );
+    }
+
+    #[test]
+    fn controller_auth_transition_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
+     {
+        assert_eq!(
+            super::controller_auth_transition_notification_message_localized_legacy_compatible(
+                &ControllerAuthTransitionNotification::Attempting {
+                    room: "+room:ABCDEF123456".to_owned(),
+                },
+                Some("fr"),
+            ),
+            "Identification comme operateur de salle dans la salle +room:ABCDEF123456..."
+        );
+        assert_eq!(
+            super::controller_auth_transition_notification_message_localized_legacy_compatible(
+                &ControllerAuthTransitionNotification::Succeeded {
+                    username: "alice".to_owned(),
+                    room: "+room:ABCDEF123456".to_owned(),
+                    hide_from_osd: false,
+                },
+                Some("de"),
+            ),
+            "alice wurde als Raumoperator in Raum +room:ABCDEF123456 authentifiziert"
+        );
+        assert_eq!(
+            super::controller_auth_transition_notification_message_localized_legacy_compatible(
+                &ControllerAuthTransitionNotification::Failed {
+                    username: "alice".to_owned(),
+                    room: "+room:ABCDEF123456".to_owned(),
+                    hide_from_osd: true,
+                },
+                None,
             ),
             "alice failed to identify as a room operator in room +room:ABCDEF123456"
         );
@@ -10508,43 +9897,6 @@ mod tests {
     }
 
     #[test]
-    fn playlist_listing_message_legacy_compatible_formats_entries_and_selected_index() {
-        let mut session = ClientSession::default();
-        session
-            .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
-            )
-            .expect("hello should apply");
-        session
-            .apply_message_json(
-                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
-            )
-            .expect("playlist change should apply");
-        session
-            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
-            .expect("playlist index should apply");
-
-        assert_eq!(
-            playlist_listing_message_legacy_compatible(&session),
-            "\t1: episode1.mkv\n *\t2: episode2.mkv"
-        );
-    }
-
-    #[test]
-    fn playlist_listing_message_legacy_compatible_uses_empty_message_when_no_playlist() {
-        let mut session = ClientSession::default();
-        session
-            .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
-            )
-            .expect("hello should apply");
-        assert_eq!(
-            playlist_listing_message_legacy_compatible(&session),
-            "Playlist is currently empty."
-        );
-    }
-
-    #[test]
     fn playlist_index_in_bounds_legacy_compatible_checks_current_room_bounds() {
         let mut session = ClientSession::default();
         assert!(!playlist_index_in_bounds_legacy_compatible(&session, 0));
@@ -10569,7 +9921,8 @@ mod tests {
     }
 
     #[test]
-    fn run_local_playlist_index_helpers_suppress_out_of_range_and_dispatch_in_range() {
+    fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_playlist_and_dispatches_in_range()
+     {
         let mut session = ClientSession::default();
         session
             .apply_hello_json(
@@ -10588,15 +9941,24 @@ mod tests {
         let player = MpvAdapter::default();
         let control = QueuedRuntimeControl::default();
         let mut runtime = ClientRuntime::new(session, player, control);
+        let mut user_offset_seconds = 0.0;
 
         assert!(
-            !run_local_playlist_select_index_legacy_compatible(&mut runtime, 3)
-                .expect("out-of-range select should not fail"),
+            !run_planned_local_runtime_action_legacy_compatible(
+                &mut runtime,
+                &mut user_offset_seconds,
+                PlannedLocalRuntimeAction::SetPlaylistIndex(3),
+            )
+            .expect("out-of-range select should not fail"),
             "out-of-range select should be suppressed with legacy local error"
         );
         assert!(
-            !run_local_playlist_delete_index_legacy_compatible(&mut runtime, 3)
-                .expect("out-of-range delete should not fail"),
+            !run_planned_local_runtime_action_legacy_compatible(
+                &mut runtime,
+                &mut user_offset_seconds,
+                PlannedLocalRuntimeAction::DeletePlaylistIndex(3),
+            )
+            .expect("out-of-range delete should not fail"),
             "out-of-range delete should be suppressed with legacy local error"
         );
         assert_eq!(
@@ -10606,8 +9968,12 @@ mod tests {
         );
 
         assert!(
-            run_local_playlist_select_index_legacy_compatible(&mut runtime, 0)
-                .expect("in-range select should not fail"),
+            run_planned_local_runtime_action_legacy_compatible(
+                &mut runtime,
+                &mut user_offset_seconds,
+                PlannedLocalRuntimeAction::SetPlaylistIndex(0),
+            )
+            .expect("in-range select should not fail"),
             "in-range select should dispatch protocol updates"
         );
         assert_eq!(
@@ -11347,36 +10713,23 @@ mod tests {
     }
 
     #[test]
-    fn local_command_help_lines_legacy_compatible_includes_expected_entries() {
-        let lines = local_command_help_lines_legacy_compatible();
-        assert_eq!(lines.first(), Some(&"Available commands:"));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("\tql - show the current playlist"))
+    fn localized_legacy_compatibility_headings_legacy_compatible_use_selected_language() {
+        assert_eq!(
+            super::localized_legacy_startup_compatibility_heading_legacy_compatible(Some("fr")),
+            "Compatibilite de demarrage de Legacy Python ConfigurationGetter :"
         );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("\tqd [index] - delete the given entry"))
+        assert_eq!(
+            super::localized_legacy_ini_compatibility_heading_legacy_compatible(Some("de")),
+            "Legacy-Python-ConfigurationGetter syncplay.ini-Kompatibilitaet:"
         );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("\tundoplaylist - undo last playlist change"))
+        assert_eq!(
+            super::localized_compatibility_input_label_legacy_compatible(Some("es")),
+            "Entrada"
         );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("\to[+-]duration - offset local playback"))
+        assert_eq!(
+            super::localized_compatibility_note_label_legacy_compatible(Some("ko")),
+            "Bigo"
         );
-    }
-
-    #[test]
-    fn local_command_help_footer_lines_legacy_compatible_includes_expected_entries() {
-        let lines = local_command_help_footer_lines_legacy_compatible("1.7.5");
-        assert_eq!(lines[0], "Syncplay version: 1.7.5");
-        assert_eq!(lines[1], "More info available at: https://syncplay.pl/");
     }
 
     #[test]
@@ -12256,6 +11609,46 @@ mod tests {
                 hide_from_osd: true,
             }),
             "bob has left"
+        );
+    }
+
+    #[test]
+    fn user_change_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
+     {
+        assert_eq!(
+            super::user_change_notification_message_localized_legacy_compatible(
+                &UserChangeNotification::Joined {
+                    username: "bob".to_owned(),
+                    room: "room1".to_owned(),
+                    hide_from_osd: true,
+                },
+                Some("es"),
+            ),
+            "bob se ha unido a la sala: 'room1'"
+        );
+        assert_eq!(
+            super::user_change_notification_message_localized_legacy_compatible(
+                &UserChangeNotification::Playing {
+                    username: "bob".to_owned(),
+                    room: "room1".to_owned(),
+                    file_name: Some("movie.mkv".to_owned()),
+                    file_duration: None,
+                    include_room_addendum: true,
+                    hide_from_osd: false,
+                },
+                Some("fr"),
+            ),
+            "bob lit 'movie.mkv' dans la salle: 'room1'"
+        );
+        assert_eq!(
+            super::user_change_notification_message_localized_legacy_compatible(
+                &UserChangeNotification::Left {
+                    username: "bob".to_owned(),
+                    hide_from_osd: true,
+                },
+                Some("de"),
+            ),
+            "bob hat den Raum verlassen"
         );
     }
 
@@ -23692,6 +23085,30 @@ mod tests {
     }
 
     #[test]
+    fn autoplay_countdown_notification_message_localized_legacy_compatible_localizes_user_visible_message()
+     {
+        let notification = AutoplayCountdownNotification {
+            ready_user_count: 2,
+            seconds_left: 3,
+        };
+
+        assert_eq!(
+            super::autoplay_countdown_notification_message_localized_legacy_compatible(
+                &notification,
+                Some("fr"),
+            ),
+            "Compte a rebours autoplay : utilisateurs_prets=2 secondes_restantes=3"
+        );
+        assert_eq!(
+            super::autoplay_countdown_notification_message_localized_legacy_compatible(
+                &notification,
+                None,
+            ),
+            "autoplay countdown: ready_users=2 seconds_left=3"
+        );
+    }
+
+    #[test]
     fn player_playback_telemetry_update_message_formats_present_fields() {
         let update = PlayerPlaybackTelemetryUpdate::default()
             .with_paused(true)
@@ -23709,6 +23126,44 @@ mod tests {
             player_playback_telemetry_update_message(&PlayerPlaybackTelemetryUpdate::default()),
             None
         );
+    }
+
+    #[test]
+    fn player_playback_telemetry_update_message_localized_legacy_compatible_localizes_prefix() {
+        let update = PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(true)
+            .with_position_seconds(12.5);
+
+        let message = super::player_playback_telemetry_update_message_localized_legacy_compatible(
+            &update,
+            Some("fr"),
+        )
+        .expect("expected telemetry message for populated update");
+        assert_eq!(
+            message,
+            "Telemetrie du lecteur: paused=true position=12.500"
+        );
+    }
+
+    #[test]
+    fn player_playback_drift_diagnostic_messages_localized_legacy_compatible_localize_labels() {
+        let update = PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(true)
+            .with_position_seconds(12.5);
+        let room = syncplay_client_core::RoomPlaystateView {
+            paused: Some(false),
+            position: Some(10.0),
+            ..syncplay_client_core::RoomPlaystateView::default()
+        };
+
+        let messages = super::player_playback_drift_diagnostic_messages_localized_legacy_compatible(
+            &update,
+            Some(&room),
+            Some("de"),
+        );
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].starts_with("Player-Abweichung: Pause-Abweichung "));
+        assert!(messages[1].starts_with("Player-Abweichung: Positionsabweichung "));
     }
 
     #[test]
@@ -23741,6 +23196,28 @@ mod tests {
             None,
             "unchanged metrics should not emit duplicate diagnostics"
         );
+    }
+
+    #[test]
+    fn reconnect_correction_metrics_delta_message_localized_legacy_compatible_localizes_prefix() {
+        let previous = ReconnectStateRestoreCorrectionMetrics {
+            correction_actions_attempted: 1,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let current = ReconnectStateRestoreCorrectionMetrics {
+            correction_actions_attempted: 3,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+
+        let message =
+            super::reconnect_correction_metrics_delta_message_localized_legacy_compatible(
+                Some(&previous),
+                &current,
+                Some("pt_BR"),
+            )
+            .expect("changed counters should produce a metrics delta message");
+        assert!(message.starts_with("Metricas de correcao de reconexao: "));
+        assert!(message.contains("actions_attempted=+2 (total=3)"));
     }
 
     #[test]
@@ -23804,6 +23281,33 @@ mod tests {
         assert!(message.contains("effective_retry_max_attempts=4"));
         assert!(message.contains("retry_cooldown_ticks=3"));
         assert!(message.contains("recovery_reenabled_this_cycle=true"));
+    }
+
+    #[test]
+    fn reconnect_correction_state_snapshot_message_localized_legacy_compatible_localizes_prefix() {
+        let snapshot = ReconnectStateRestoreCorrectionStateSnapshot {
+            validation_pending: true,
+            retry_attempts: 1,
+            retry_cooldown_ticks: 0,
+            mismatch_notified_in_cycle: false,
+            mismatch_seen_in_cycle: false,
+            effective_policy_mode: ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect,
+            position_tolerance_seconds: 1.0,
+            effective_retry_max_attempts: 3,
+            consecutive_mismatch_cycles: 0,
+            consecutive_retry_exhaustions: 0,
+            recovery_cooldown_reconnect_cycles_remaining: 0,
+            correction_suppressed_for_recovery_cycle: false,
+            correction_reenabled_for_recovery_cycle: false,
+        };
+
+        let message =
+            super::reconnect_correction_state_snapshot_message_localized_legacy_compatible(
+                &snapshot,
+                Some("es"),
+            );
+        assert!(message.starts_with("Estado de correccion de reconexion: "));
+        assert!(message.contains("policy=auto"));
     }
 
     #[test]
@@ -23893,6 +23397,34 @@ mod tests {
             serde_json::from_str(&json_alerts[0]).expect("metrics alert JSON should parse");
         assert_eq!(first["type"], "reconnect_correction_alert");
         assert_eq!(first["alert_kind"], "metric_delta_threshold");
+    }
+
+    #[test]
+    fn reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible_localize_prefix()
+    {
+        let previous = ReconnectStateRestoreCorrectionMetrics {
+            correction_action_failures: 1,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let current = ReconnectStateRestoreCorrectionMetrics {
+            correction_action_failures: 3,
+            ..ReconnectStateRestoreCorrectionMetrics::default()
+        };
+        let thresholds = super::ReconnectCorrectionDiagnosticsAlertThresholds {
+            action_failures_delta: Some(2),
+            ..super::ReconnectCorrectionDiagnosticsAlertThresholds::default()
+        };
+
+        let alerts =
+            super::reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible(
+                Some(&previous),
+                &current,
+                &thresholds,
+                Some("fr"),
+            );
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].starts_with("Alerte de correction de reconnexion: "));
+        assert!(alerts[0].contains("metric=actions_failed"));
     }
 
     #[test]
@@ -24128,6 +23660,35 @@ mod tests {
                 std::env::set_var(key_mismatch, value);
             }
         }
+    }
+
+    #[test]
+    fn apply_legacy_client_arg_diagnostics_overrides_enables_debug_defaults() {
+        let config = super::ClientLoopDiagnosticsConfig {
+            log_player_telemetry: false,
+            log_player_drift: false,
+            reconnect_correction_diagnostics_format: None,
+            reconnect_correction_diagnostics_alert_thresholds:
+                super::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
+        };
+        let overrides = LegacyClientArgOverrides {
+            debug_requested: true,
+            ..LegacyClientArgOverrides::default()
+        };
+
+        let updated =
+            super::apply_legacy_client_arg_diagnostics_overrides(config, Some(&overrides));
+
+        assert!(updated.log_player_telemetry);
+        assert!(updated.log_player_drift);
+        assert_eq!(
+            updated.reconnect_correction_diagnostics_format,
+            Some(ReconnectCorrectionDiagnosticsFormat::Text)
+        );
+        assert_eq!(
+            updated.reconnect_correction_diagnostics_alert_thresholds,
+            super::ReconnectCorrectionDiagnosticsAlertThresholds::default()
+        );
     }
 
     #[test]
@@ -24426,6 +23987,7 @@ mod tests {
             no_store: false,
             debug_requested: false,
             force_gui_prompt_requested: false,
+            no_gui_requested: false,
             clear_gui_data_requested: false,
             language: None,
             player_path: Some(mpv_bin.to_string_lossy().into_owned()),
@@ -25964,6 +25526,7 @@ mod tests {
                 no_store: false,
                 debug_requested: false,
                 force_gui_prompt_requested: false,
+                no_gui_requested: false,
                 clear_gui_data_requested: false,
                 language: None,
                 player_path: None,
@@ -26832,6 +26395,28 @@ mod tests {
                 fileduration: false,
             }),
             None
+        );
+    }
+
+    #[test]
+    fn localized_file_difference_summary_legacy_compatible_localizes_user_visible_tokens() {
+        assert_eq!(
+            super::localized_file_difference_summary_legacy_compatible(
+                "filename, filesize, duration",
+                Some("de"),
+            ),
+            "Dateiname, Dateigroesse, Dauer"
+        );
+        assert_eq!(
+            super::localized_file_difference_summary_legacy_compatible(
+                "filename, filesize",
+                Some("fr"),
+            ),
+            "nom du fichier, taille du fichier"
+        );
+        assert_eq!(
+            super::localized_file_difference_summary_legacy_compatible("filename, duration", None,),
+            "filename, duration"
         );
     }
 
