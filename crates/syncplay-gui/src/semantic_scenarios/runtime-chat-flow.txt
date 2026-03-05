@@ -1,0 +1,22 @@
+# Runtime-backed main-window and chat flow
+setting	username	smoke-user
+setting	chat-input-enabled	true
+setting	chat-output-enabled	true
+activate	main-window-root
+assert-selected	main-window-root	true
+apply-main-window-runtime	sync-room	true	true	false	true	true	true	true	smoke-user,true,true,false|bob,false,false,true	episode1.mkv|episode2.mkv	system>connected
+apply-main-window-playlist-selection	1
+assert-value	main-window:room	sync-room
+assert-value	main-window:playback-paused	yes
+assert-selected	main-window:playlist:1	true
+assert-label	main-window:playlist:1	episode2.mkv
+assert-enabled	main-window:chat-input	true
+push-chat-message	bob	hello from tcp
+assert-value	main-window:chat:0	connected
+assert-value	main-window:chat:1	hello from tcp
+enter-text	main-window:chat-input	true	hello room
+assert-pending	send-chat-message
+complete-pending
+assert-pending	none
+assert-value	main-window:chat-input	<empty>
+assert-value	main-window:chat:2	hello room

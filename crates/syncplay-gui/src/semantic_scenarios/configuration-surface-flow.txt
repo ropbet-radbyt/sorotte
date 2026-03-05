@@ -1,0 +1,30 @@
+# Configuration save and follow-on cross-surface workflow
+setting	public-server	Primary	syncplay.pl:8999
+setting	media-search-directory	C:/Media
+assert-selected	configuration-root	true
+enter-text	config:Connection:Host	false	syncplay.example
+enter-text	config:Connection:Port	false	8999
+enter-text	config:Connection:Username	false	smoke-user
+enter-text	config:Connection:Room	false	smoke-room
+assert-value	config:Connection:Host	syncplay.example
+activate	config-command:save
+assert-pending	save-configuration
+complete-pending
+assert-pending	none
+activate	public-servers-root
+assert-selected	public-servers-root	true
+activate	public-servers:row:0
+assert-enabled	public-servers:command:connect	true
+assert-value	config:Connection:Host	syncplay.pl
+assert-value	config:Connection:Port	8999
+activate	public-servers:command:connect
+assert-pending	connect-public-server
+cancel-pending
+assert-pending	none
+activate	media-search-root
+assert-selected	media-search-root	true
+activate	media-search:directory:0
+activate	media-search:command:search
+assert-pending	search-missing-media
+complete-pending
+assert-pending	none

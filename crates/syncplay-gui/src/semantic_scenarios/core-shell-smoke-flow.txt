@@ -1,0 +1,84 @@
+# Core shell smoke flow ported from the non-transport path in scripts/gui-smoke.ps1
+setting	public-server	Alpha	alpha.example:8999
+setting	public-server	Beta	beta.example:9000
+setting	media-search-directory	C:/SmokeMedia
+setting	player-path	C:/Windows/System32/notepad.exe
+setting	shared-playlist-enabled	true
+assert-value	shell:active-view	configuration
+assert-selected	configuration-root	true
+assert-value	config:Connection:Public Servers	2
+activate	menus-root
+assert-selected	menus-root	true
+activate	menus:action:4:0
+assert-value	shell:open-modal	about
+close-modal
+assert-value	shell:open-modal	(none)
+activate	configuration-root
+enter-text	config:Connection:Host	false	syncplay.example
+enter-text	config:Connection:Port	false	8999
+enter-text	config:Connection:Username	false	smoke-user
+enter-text	config:Connection:Room	false	smoke-room
+enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
+enter-text	config:Media Search:First File Timeout	false	3.0
+enter-text	config:Media Search:Search Timeout	false	30.0
+enter-text	config:Media Search:Double Check Interval	false	2.5
+enter-text	config:Media Search:Warning Threshold	false	7.5
+clear-notifications
+activate	config-command:save
+assert-pending	save-configuration
+complete-pending
+assert-pending	none
+assert-value	shell:notification:1	Configuration saved.
+clear-notifications
+activate	public-servers-root
+assert-selected	public-servers-root	true
+assert-value	shell:active-view	public-servers
+activate	public-servers:row:0
+assert-value	config:Connection:Host	alpha.example
+assert-value	config:Connection:Port	8999
+activate	public-servers:command:connect
+assert-pending	connect-public-server
+complete-pending-runtime
+assert-pending	none
+assert-value	shell:notification:1	Public server connect requires a session runtime connection; the selected server was not contacted.
+clear-notifications
+activate	public-servers:command:refresh
+assert-pending	refresh-public-servers
+complete-pending-runtime
+assert-pending	none
+assert-value	shell:notification:1	Public server refresh requires a session runtime connection; the server list was not refreshed.
+clear-notifications
+activate	public-servers:command:add-custom
+enter-text	public-servers:edit:label	false	Custom
+enter-text	public-servers:edit:address	false	custom.example:9001
+assert-enabled	public-servers:edit:commit	true
+activate	public-servers:edit:commit
+assert-label	public-servers:row:2	Custom
+assert-value	public-servers:row:2	custom.example:9001
+assert-selected	public-servers:row:2	true
+assert-value	config:Connection:Public Servers	3
+assert-value	config:Connection:Host	custom.example
+assert-value	config:Connection:Port	9001
+activate	public-servers:command:connect
+assert-pending	connect-public-server
+complete-pending-runtime
+assert-pending	none
+assert-value	shell:notification:1	Public server connect requires a session runtime connection; the selected server was not contacted.
+clear-notifications
+activate	media-search-root
+assert-selected	media-search-root	true
+assert-value	shell:active-view	media-search
+assert-value	media-search:timing:first-file	3.00s
+assert-value	media-search:timing:search	30.00s
+assert-value	media-search:timing:double-check	2.50s
+assert-value	media-search:timing:warning-threshold	7.50s
+activate	media-search:directory:0
+activate	media-search:command:search
+assert-pending	search-missing-media
+complete-pending-runtime
+assert-pending	none
+assert-value	shell:notification:1	Missing-media search requires a session runtime connection; no search was performed.
+open-media-files	C:/SmokeMedia/open-target.mkv
+assert-selected	main-window-root	true
+assert-value	shell:active-view	main-window
+assert-label	main-window:playlist:0	C:/SmokeMedia/open-target.mkv

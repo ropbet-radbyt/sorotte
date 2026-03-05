@@ -651,6 +651,14 @@ impl GuiWidgetNode {
         self.children.iter().find_map(|child| child.find(id))
     }
 
+    fn node_count(&self) -> usize {
+        1 + self
+            .children
+            .iter()
+            .map(GuiWidgetNode::node_count)
+            .sum::<usize>()
+    }
+
     fn render_with(&self, renderer: &mut impl GuiWidgetRenderer) {
         self.render_with_depth(renderer, 0);
     }
@@ -1676,6 +1684,18 @@ trait GuiNativeRuntimeBridge {
 trait GuiNativeRuntimePump {
     fn pump(&mut self, state: &SyncplayGuiShellAppState);
 }
+
+pub(crate) mod semantic_driver;
+pub(crate) mod semantic_smoke;
+#[cfg(test)]
+use self::semantic_driver::GuiSemanticStep;
+use self::semantic_smoke::run_syncplay_gui_semantic_cli_from_env;
+#[cfg(test)]
+use self::semantic_smoke::{
+    gui_semantic_output_format_from_lookup, gui_semantic_scenario_name_from_lookup,
+    gui_semantic_scenario_named, gui_semantic_scenario_names,
+    run_gui_semantic_scenario_from_lookup, run_gui_semantic_scenario_named,
+};
 
 trait GuiQueuedRuntimeOwner {
     fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SyncplayGuiShellAppState);
@@ -6514,7 +6534,9 @@ impl SyncplayGuiShellAppState {
                 settings.public_servers = Some(servers);
                 self.resync_from_settings(settings);
                 self.public_server_edit_session = None;
-                self.set_selected_public_server_index(Some(selected_index));
+                if !self.apply_public_server_selection(selected_index) {
+                    return false;
+                }
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -7702,6 +7724,54 @@ impl SyncplayGuiShellAppState {
         ));
 
         children.push(GuiWidgetNode::branch(
+            "media-search:timing",
+            "Timing",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "media-search:timing:first-file",
+                    "First File Timeout",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.first_file_timeout_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:timing:search",
+                    "Search Timeout",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.search_timeout_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:timing:double-check",
+                    "Double Check Interval",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.double_check_interval_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "media-search:timing:warning-threshold",
+                    "Warning Threshold",
+                    GuiWidgetKind::Status,
+                    Some(optional_seconds_text(
+                        self.media_search.warning_threshold_seconds,
+                    )),
+                    true,
+                    false,
+                ),
+            ],
+        ));
+
+        children.push(GuiWidgetNode::branch(
             "media-search:directory-actions",
             "Directory Actions",
             GuiWidgetKind::Panel,
@@ -7728,34 +7798,6 @@ impl SyncplayGuiShellAppState {
                     GuiWidgetKind::Button,
                     None,
                     can_remove_directory,
-                    false,
-                ),
-            ],
-        ));
-
-        children.push(GuiWidgetNode::branch(
-            "media-search:timing",
-            "Timing",
-            GuiWidgetKind::Panel,
-            vec![
-                GuiWidgetNode::leaf(
-                    "media-search:timing:first-file",
-                    "First File Timeout",
-                    GuiWidgetKind::Status,
-                    Some(optional_seconds_text(
-                        self.media_search.first_file_timeout_seconds,
-                    )),
-                    true,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "media-search:timing:search",
-                    "Search Timeout",
-                    GuiWidgetKind::Status,
-                    Some(optional_seconds_text(
-                        self.media_search.search_timeout_seconds,
-                    )),
-                    true,
                     false,
                 ),
             ],
@@ -11523,7 +11565,19 @@ fn normalized_editable_text(value: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn main() {
+    match run_syncplay_gui_semantic_cli_from_env() {
+        Ok(Some(output)) => {
+            println!("{output}");
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("syncplay-gui failed to run semantic scenario: {error}");
+            std::process::exit(1);
+        }
+    }
     let (mut host, settings) = match gui_startup_host_and_settings() {
         Ok(startup) => startup,
         Err(error) => {
@@ -14144,6 +14198,10 @@ mod tests {
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
             media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            folder_search_first_file_timeout_seconds: Some(3.0),
+            folder_search_timeout_seconds: Some(30.0),
+            folder_search_double_check_interval_seconds: Some(2.5),
+            folder_search_warning_threshold_seconds: Some(7.5),
             ..StoredClientSettingsMvp::default()
         });
 
@@ -14202,6 +14260,22 @@ mod tests {
             .expect("media-search remove command should exist");
         assert_eq!(remove.kind, GuiWidgetKind::Button);
         assert!(remove.enabled);
+        let first_file_timing = media_tree
+            .find("media-search:timing:first-file")
+            .expect("media-search first-file timing status should exist");
+        assert_eq!(first_file_timing.value.as_deref(), Some("3.00s"));
+        let search_timing = media_tree
+            .find("media-search:timing:search")
+            .expect("media-search search timing status should exist");
+        assert_eq!(search_timing.value.as_deref(), Some("30.00s"));
+        let double_check_timing = media_tree
+            .find("media-search:timing:double-check")
+            .expect("media-search double-check timing status should exist");
+        assert_eq!(double_check_timing.value.as_deref(), Some("2.50s"));
+        let warning_timing = media_tree
+            .find("media-search:timing:warning-threshold")
+            .expect("media-search warning-threshold timing status should exist");
+        assert_eq!(warning_timing.value.as_deref(), Some("7.50s"));
     }
 
     #[test]
@@ -14492,6 +14566,9 @@ mod tests {
             state.configuration.to_stored_settings().public_servers,
             Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
         );
+        let saved = state.configuration.to_stored_settings();
+        assert_eq!(saved.host.as_deref(), Some("syncplay.pl"));
+        assert_eq!(saved.port, Some(8999));
 
         assert!(state.apply(GuiShellAction::BeginEditSelectedPublicServer));
         assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
@@ -14506,6 +14583,9 @@ mod tests {
             state.public_servers.servers[0].address,
             "syncplay.example:8995"
         );
+        let saved = state.configuration.to_stored_settings();
+        assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(saved.port, Some(8995));
 
         assert!(state.apply(GuiShellAction::BeginAddPublicServer));
         assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
@@ -17901,6 +17981,458 @@ mod tests {
     }
 
     #[test]
+    fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
+        let scenario = super::gui_semantic_scenario_named("configuration-surface-flow")
+            .expect("configuration semantic scenario should exist");
+        let driver = scenario.run().unwrap_or_else(|error| {
+            panic!("{} should execute successfully: {error}", scenario.name())
+        });
+
+        let stored = driver.state().configuration.to_stored_settings();
+        assert_eq!(stored.host.as_deref(), Some("syncplay.pl"));
+        assert_eq!(stored.port, Some(8999));
+        assert_eq!(stored.username.as_deref(), Some("smoke-user"));
+        assert_eq!(stored.room.as_deref(), Some("smoke-room"));
+        assert_eq!(
+            driver.state().saved_configuration.host.as_deref(),
+            Some("syncplay.example")
+        );
+        assert_eq!(driver.state().saved_configuration.port, Some(8999));
+        assert!(
+            driver
+                .widget("public-servers:row:0")
+                .expect("public-server row should exist")
+                .selected
+        );
+        assert_eq!(
+            driver.state().selection.selected_media_search_directory,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn gui_semantic_driver_runs_runtime_snapshot_chat_scenario_without_platform_ui() {
+        let scenario = super::gui_semantic_scenario_named("runtime-chat-flow")
+            .expect("runtime chat semantic scenario should exist");
+        let driver = scenario.run().unwrap_or_else(|error| {
+            panic!("{} should execute successfully: {error}", scenario.name())
+        });
+
+        assert_eq!(driver.state().main_window.room_name, "sync-room");
+        assert_eq!(
+            driver.state().selection.selected_main_window_playlist,
+            Some(1)
+        );
+        let last_chat = driver
+            .state()
+            .main_window
+            .chat
+            .last()
+            .expect("local chat completion should append a row");
+        assert_eq!(last_chat.sender, "smoke-user");
+        assert_eq!(last_chat.message, "hello room");
+    }
+
+    #[test]
+    fn gui_semantic_driver_runs_core_shell_smoke_scenario_without_platform_ui() {
+        let scenario = super::gui_semantic_scenario_named("core-shell-smoke-flow")
+            .expect("core shell smoke semantic scenario should exist");
+        let driver = scenario.run().unwrap_or_else(|error| {
+            panic!("{} should execute successfully: {error}", scenario.name())
+        });
+
+        let stored = driver.state().configuration.to_stored_settings();
+        assert_eq!(stored.host.as_deref(), Some("custom.example"));
+        assert_eq!(stored.port, Some(9001));
+        assert_eq!(stored.public_servers.as_ref().map(Vec::len), Some(3));
+        assert_eq!(driver.active_view_label(), "main-window");
+        assert_eq!(driver.active_modal_label(), "none");
+        assert_eq!(driver.pending_operation_label(), "none");
+        assert_eq!(
+            driver
+                .widget("shell:notification:1")
+                .expect("missing-media runtime error notification should exist")
+                .value
+                .as_deref(),
+            Some(
+                "Missing-media search requires a session runtime connection; no search was performed."
+            )
+        );
+    }
+
+    #[test]
+    fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
+        assert_eq!(
+            super::gui_semantic_scenario_names(),
+            &[
+                "configuration-surface-flow",
+                "core-shell-smoke-flow",
+                "runtime-chat-flow",
+                "runtime-transport-churn-flow"
+            ]
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("configuration-surface-flow")
+                .expect("built-in configuration scenario should expose a script")
+                .contains("setting\tpublic-server\tPrimary\tsyncplay.pl:8999")
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("core-shell-smoke-flow")
+                .expect("built-in core shell smoke scenario should expose a script")
+                .contains("close-modal")
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("runtime-chat-flow")
+                .expect("built-in runtime scenario should expose a script")
+                .contains("push-chat-message\tbob\thello from tcp")
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("runtime-transport-churn-flow")
+                .expect("built-in runtime churn scenario should expose a script")
+                .contains("apply-main-window-runtime\tsmoke-room\ttrue\ttrue\tfalse")
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("missing-scenario").is_none(),
+            "unknown semantic scenario scripts should not resolve"
+        );
+        let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
+        assert_eq!(descriptors.len(), 4);
+        assert_eq!(descriptors[0].name, "configuration-surface-flow");
+        assert!(descriptors[0].description.contains("configuration fields"));
+        assert!(
+            descriptors[0]
+                .script
+                .contains("setting\tpublic-server\tPrimary\tsyncplay.pl:8999")
+        );
+        assert_eq!(descriptors[1].name, "core-shell-smoke-flow");
+        assert!(descriptors[1].description.contains("non-transport"));
+        assert!(descriptors[1].script.contains("clear-notifications"));
+        assert_eq!(descriptors[3].name, "runtime-transport-churn-flow");
+        assert!(
+            descriptors[3]
+                .description
+                .contains("startup/post-chat/reconnect")
+        );
+        assert!(descriptors[3].script.contains("reconnect-post2.mkv"));
+        assert!(
+            super::gui_semantic_scenario_named("missing-scenario").is_none(),
+            "unknown semantic scenarios should not resolve"
+        );
+
+        let parsed = super::GuiSemanticStep::parse_script(
+            "\
+# comment\n\
+activate\tconfiguration-root\n\
+assert-selected\tconfiguration-root\ttrue\n\
+assert-value\tconfig:Connection:Host\t<none>\n\
+assert-pending\tnone\n\
+complete-pending\n\
+complete-pending-runtime\n\
+open-media-files\tC:/Media/open-target.mkv\n\
+close-modal\n\
+clear-notifications\n",
+        )
+        .expect("semantic step script should parse");
+        assert_eq!(
+            parsed,
+            vec![
+                super::GuiSemanticStep::activate("configuration-root"),
+                super::GuiSemanticStep::assert_widget_selected("configuration-root", true),
+                super::GuiSemanticStep::assert_widget_value("config:Connection:Host", None),
+                super::GuiSemanticStep::assert_pending(None),
+                super::GuiSemanticStep::CompletePending,
+                super::GuiSemanticStep::CompletePendingRuntime,
+                super::GuiSemanticStep::OpenMediaFiles(
+                    vec!["C:/Media/open-target.mkv".to_owned(),]
+                ),
+                super::GuiSemanticStep::CloseModal,
+                super::GuiSemanticStep::ClearNotifications,
+            ]
+        );
+
+        let parsed_runtime = super::GuiSemanticStep::parse_script(
+            "\
+apply-main-window-runtime\troom-a\ttrue\tfalse\tfalse\ttrue\ttrue\tfalse\ttrue\tself,true,true,false|bob,false,false,true\tvideo1.mkv|video2.mkv\tsystem>connected\n\
+apply-main-window-playlist-selection\t1\n\
+push-chat-message\tbob\thello\n\
+assert-value\tmain-window:chat-input\t<empty>\n",
+        )
+        .expect("runtime semantic step script should parse");
+        assert_eq!(parsed_runtime.len(), 4);
+        assert!(matches!(
+            &parsed_runtime[0],
+            super::GuiSemanticStep::ApplyMainWindowRuntimeSnapshot(snapshot)
+                if snapshot.room_name == "room-a"
+                && snapshot.shared_playlist_enabled
+                && !snapshot.playback_paused
+                && snapshot.playlist == vec!["video1.mkv".to_owned(), "video2.mkv".to_owned()]
+                && snapshot.users.len() == 2
+                && snapshot.chat.len() == 1
+        ));
+        assert_eq!(
+            parsed_runtime[1],
+            super::GuiSemanticStep::ApplyMainWindowPlaylistSelection(Some(1))
+        );
+        assert_eq!(
+            parsed_runtime[2],
+            super::GuiSemanticStep::PushChatMessage {
+                sender: "bob".to_owned(),
+                message: "hello".to_owned(),
+            }
+        );
+        assert_eq!(
+            parsed_runtime[3],
+            super::GuiSemanticStep::assert_widget_value("main-window:chat-input", Some(""))
+        );
+    }
+
+    #[test]
+    fn gui_semantic_scenario_runner_reports_named_results_from_lookup() {
+        assert_eq!(
+            super::gui_semantic_scenario_name_from_lookup(|name| {
+                (name == "SYNCPLAY_GUI_SEMANTIC_SCENARIO")
+                    .then(|| "configuration-surface-flow".to_owned())
+            }),
+            Some("configuration-surface-flow".to_owned())
+        );
+        let report = super::run_gui_semantic_scenario_from_lookup(|name| {
+            (name == "SYNCPLAY_GUI_SEMANTIC_SCENARIO")
+                .then(|| "configuration-surface-flow".to_owned())
+        })
+        .expect("named semantic scenario should run")
+        .expect("lookup should produce a report");
+        assert_eq!(report.scenario, "configuration-surface-flow");
+        assert_eq!(report.view, "media-search");
+        assert_eq!(report.modal, "none");
+        assert_eq!(report.pending, "none");
+        assert!(report.widgets > 0);
+        assert!(
+            report
+                .render(super::semantic_smoke::GuiSemanticOutputFormat::Text)
+                .contains("result=ok\n")
+        );
+
+        let json_report =
+            super::semantic_smoke::run_syncplay_gui_semantic_cli_from_lookup(|name| match name {
+                "SYNCPLAY_GUI_SEMANTIC_SCENARIO" => Some("configuration-surface-flow".to_owned()),
+                "SYNCPLAY_GUI_SEMANTIC_OUTPUT" => Some("json".to_owned()),
+                _ => None,
+            })
+            .expect("json semantic scenario should run")
+            .expect("lookup should produce json output");
+        assert!(json_report.starts_with("{\"result\":\"ok\","));
+        assert!(json_report.contains("\"scenario\":\"configuration-surface-flow\""));
+        assert!(
+            super::gui_semantic_output_format_from_lookup(|name| {
+                (name == "SYNCPLAY_GUI_SEMANTIC_OUTPUT").then(|| "yaml".to_owned())
+            })
+            .expect_err("unknown semantic output format should fail")
+            .contains("Expected 'text' or 'json'")
+        );
+
+        let mut script_path = std::env::temp_dir();
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        script_path.push(format!(
+            "syncplay-gui-semantic-scenario-{}-{unique_id}.txt",
+            std::process::id()
+        ));
+        std::fs::write(
+            &script_path,
+            "\
+meta\tname\tfile-seeded-flow\n\
+meta\texpect-view\tpublic-servers\n\
+meta\texpect-modal\tnone\n\
+meta\texpect-pending\tnone\n\
+setting\thost\tfile-script.example\n\
+setting\tport\t8999\n\
+setting\tpublic-server\tMirror\tmirror.example:8999\n\
+assert-selected\tconfiguration-root\ttrue\n\
+assert-value\tconfig:Connection:Host\tfile-script.example\n\
+assert-value\tconfig:Connection:Port\t8999\n\
+activate\tpublic-servers-root\n\
+assert-selected\tpublic-servers-root\ttrue\n\
+assert-label\tpublic-servers:row:0\tMirror\n",
+        )
+        .expect("semantic script file should be created");
+        let script_path_string = script_path.to_string_lossy().into_owned();
+        let script_report = super::run_gui_semantic_scenario_from_lookup(|name| match name {
+            "SYNCPLAY_GUI_SEMANTIC_SCENARIO_PATH" => Some(script_path_string.clone()),
+            "SYNCPLAY_GUI_SEMANTIC_SCENARIO" => Some("configuration-surface-flow".to_owned()),
+            _ => None,
+        })
+        .expect("script semantic scenario should run")
+        .expect("lookup should produce a script report");
+        assert_eq!(script_report.scenario, "file-seeded-flow");
+        assert_eq!(script_report.view, "public-servers");
+
+        std::fs::write(
+            &script_path,
+            "\
+meta\texpect-view\tmain-window\n\
+assert-selected\tconfiguration-root\ttrue\n",
+        )
+        .expect("mismatch semantic script file should be updated");
+        assert!(
+            super::run_gui_semantic_scenario_from_lookup(|name| match name {
+                "SYNCPLAY_GUI_SEMANTIC_SCENARIO_PATH" => Some(script_path_string.clone()),
+                _ => None,
+            })
+            .expect_err("mismatched script metadata should fail")
+            .contains("expected final view")
+        );
+
+        std::fs::remove_file(&script_path).expect("semantic script file should be removed");
+
+        assert!(
+            super::run_gui_semantic_scenario_named("missing-scenario")
+                .expect_err("unknown scenario should fail")
+                .contains(
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow"
+                )
+        );
+    }
+
+    #[test]
+    fn syncplay_gui_semantic_cli_wrapper_renders_lookup_output() {
+        let output =
+            super::semantic_smoke::run_syncplay_gui_semantic_cli_from_lookup(|name| match name {
+                "SYNCPLAY_GUI_SEMANTIC_SCENARIO" => Some("configuration-surface-flow".to_owned()),
+                "SYNCPLAY_GUI_SEMANTIC_OUTPUT" => Some("json".to_owned()),
+                _ => None,
+            })
+            .expect("semantic cli wrapper should run")
+            .expect("semantic cli wrapper should produce output");
+        assert!(output.starts_with("{\"result\":\"ok\","));
+        assert!(output.contains("\"view\":\"media-search\""));
+    }
+
+    #[test]
+    fn syncplay_gui_semantic_cli_wrapper_runs_explicit_args() {
+        let output = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
+            "--scenario",
+            "runtime-chat-flow",
+            "--format",
+            "json",
+        ])
+        .expect("semantic cli args wrapper should run")
+        .expect("semantic cli args wrapper should produce output");
+        assert!(output.starts_with("{\"result\":\"ok\","));
+        assert!(output.contains("\"scenario\":\"runtime-chat-flow\""));
+
+        let listed = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args(["--list"])
+            .expect("semantic cli list should run")
+            .expect("semantic cli list should produce output");
+        assert!(listed.contains("configuration-surface-flow"));
+        assert!(listed.contains("core-shell-smoke-flow"));
+        assert!(listed.contains("runtime-chat-flow"));
+        assert!(listed.contains("runtime-transport-churn-flow"));
+
+        let printed = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
+            "--print-script",
+            "configuration-surface-flow",
+        ])
+        .expect("semantic cli print-script should run")
+        .expect("semantic cli print-script should produce output");
+        assert!(printed.contains("setting\tpublic-server\tPrimary\tsyncplay.pl:8999"));
+        assert!(printed.contains("activate\tmedia-search:command:search"));
+
+        let mut append_script_path = std::env::temp_dir();
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        append_script_path.push(format!(
+            "syncplay-gui-semantic-append-{}-{unique_id}.txt",
+            std::process::id()
+        ));
+        std::fs::write(
+            &append_script_path,
+            "\
+# delta script\n\
+enter-text\tconfig:Connection:Host\tfalse\toverride.example\n\
+assert-value\tconfig:Connection:Host\toverride.example\n",
+        )
+        .expect("semantic append script file should be created");
+        let append_script_path_string = append_script_path.to_string_lossy().into_owned();
+        let appended = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
+            "--scenario",
+            "configuration-surface-flow",
+            "--append-script",
+            &append_script_path_string,
+            "--format",
+            "json",
+        ])
+        .expect("semantic cli append-script should run")
+        .expect("semantic cli append-script should produce output");
+        assert!(appended.starts_with("{\"result\":\"ok\","));
+        assert!(appended.contains("\"scenario\":\"configuration-surface-flow\""));
+        assert!(appended.contains("\"view\":\"media-search\""));
+        std::fs::remove_file(&append_script_path)
+            .expect("semantic append script file should be removed");
+
+        let described = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
+            "--describe-scenarios",
+            "--format",
+            "json",
+        ])
+        .expect("semantic cli describe-scenarios should run")
+        .expect("semantic cli describe-scenarios should produce output");
+        assert!(described.starts_with("{\"result\":\"ok\",\"scenarios\":["));
+        assert!(described.contains("\"name\":\"configuration-surface-flow\""));
+        assert!(described.contains("\"description\":\"Edits configuration fields, saves, then exercises public-server and media-search pending flows.\""));
+        assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
+        assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
+        assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));
+        assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the non-transport path in scripts/gui-smoke.ps1\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
+        assert!(described.contains("\"name\":\"runtime-transport-churn-flow\""));
+        assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
+        assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
+    }
+
+    #[test]
+    fn syncplay_gui_semantic_report_wrapper_returns_structured_lookup_output() {
+        let report =
+            super::semantic_smoke::run_syncplay_gui_semantic_report_from_lookup(
+                |name| match name {
+                    "SYNCPLAY_GUI_SEMANTIC_SCENARIO" => {
+                        Some("configuration-surface-flow".to_owned())
+                    }
+                    _ => None,
+                },
+            )
+            .expect("semantic report wrapper should run")
+            .expect("semantic report wrapper should return a report");
+        assert_eq!(report.scenario, "configuration-surface-flow");
+        assert_eq!(report.view, "media-search");
+        assert_eq!(report.modal, "none");
+        assert_eq!(report.pending, "none");
+        assert!(report.widgets > 0);
+    }
+
+    #[test]
+    fn syncplay_gui_semantic_report_wrapper_runs_inline_script() {
+        let report = super::semantic_smoke::run_syncplay_gui_semantic_report(
+            super::semantic_smoke::GuiSemanticScenarioSource::InlineScript(
+                "\
+meta\tname\tinline-check\n\
+meta\texpect-view\tconfiguration\n\
+assert-selected\tconfiguration-root\ttrue\n\
+assert-pending\tnone\n"
+                    .to_owned(),
+            ),
+        )
+        .expect("inline semantic script should run");
+        assert_eq!(report.scenario, "inline-check");
+        assert_eq!(report.view, "configuration");
+        assert_eq!(report.modal, "none");
+        assert_eq!(report.pending, "none");
+        assert!(report.widgets > 0);
+    }
+
+    #[test]
     fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         let state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
@@ -20486,6 +21018,940 @@ mod tests {
                 .map(|entry| (entry.sender.clone(), entry.message.clone())),
             Some(("alice".to_owned(), "hello room".to_owned()))
         );
+    }
+
+    #[test]
+    fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
+        use std::{
+            io::{BufRead, BufReader},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        // Persistence save + reload (portable equivalent of the isolated config checks).
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "syncplay-gui-portable-smoke-{}-{unique_suffix}.ini",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut persisted_owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+        let persisted_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut persisted_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        let saved_settings = StoredClientSettingsMvp {
+            host: Some("portable-save.example".to_owned()),
+            room: Some("portable-room-a".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
+        persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut persisted_owner,
+            &persisted_handle,
+            &persisted_state,
+        );
+        let save_actions = persisted_handle.drain_actions();
+        assert_eq!(
+            save_actions,
+            vec![GuiShellAction::CompleteConfigurationSave(
+                saved_settings.clone()
+            )]
+        );
+        for action in save_actions {
+            assert!(persisted_state.apply(action));
+        }
+        assert_eq!(
+            super::load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
+                .expect("portable smoke save should leave a readable config"),
+            Some(saved_settings.clone())
+        );
+
+        let reloaded_settings = StoredClientSettingsMvp {
+            host: Some("portable-reload.example".to_owned()),
+            room: Some("portable-room-b".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+            .expect("portable smoke reload seed should write config");
+        assert!(persisted_state.apply(GuiShellAction::BeginConfigurationReload));
+        persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut persisted_owner,
+            &persisted_handle,
+            &persisted_state,
+        );
+        let reload_actions = persisted_handle.drain_actions();
+        assert!(
+            reload_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteConfigurationReload(settings)
+                    if settings == &reloaded_settings
+            )),
+            "portable nontransport smoke reload should emit completion with reloaded settings"
+        );
+        for action in reload_actions {
+            assert!(persisted_state.apply(action));
+        }
+        assert_eq!(
+            persisted_state.saved_configuration.host.as_deref(),
+            Some("portable-reload.example")
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // Loopback transport chat echo.
+        let mut loopback_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("portable-user", "portable-room")
+            .expect("portable smoke loopback runtime owner should bootstrap");
+        let loopback_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut loopback_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                chat_input_enabled: Some(true),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(loopback_state.apply(GuiShellAction::BeginLocalChatSend(
+            "portable-loopback".to_owned()
+        )));
+        loopback_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("portable-loopback".to_owned()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut loopback_owner, &loopback_handle, &loopback_state);
+        let loopback_actions = loopback_handle.drain_actions();
+        assert!(
+            loopback_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend)),
+            "portable smoke loopback segment should complete local chat sends"
+        );
+        assert!(
+            loopback_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushChatMessage { sender, message }
+                    if sender == "portable-user" && message == "portable-loopback"
+            )),
+            "portable smoke loopback segment should echo chat through inbound handling"
+        );
+        for action in loopback_actions {
+            assert!(loopback_state.apply(action));
+        }
+        assert_eq!(
+            loopback_state
+                .main_window
+                .chat
+                .last()
+                .map(|entry| (entry.sender.clone(), entry.message.clone())),
+            Some(("portable-user".to_owned(), "portable-loopback".to_owned()))
+        );
+
+        // TCP startup + reconnect swap.
+        let first_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("portable smoke first tcp listener should bind");
+        let first_address = first_listener
+            .local_addr()
+            .expect("portable smoke first tcp listener should expose a local address");
+        let second_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("portable smoke second tcp listener should bind");
+        let second_address = second_listener
+            .local_addr()
+            .expect("portable smoke second tcp listener should expose a local address");
+
+        let (first_hello_tx, first_hello_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first_server_thread = std::thread::spawn(move || {
+            let (stream, _) = first_listener
+                .accept()
+                .expect("portable smoke first tcp server should accept one client");
+            let mut reader = BufReader::new(stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("portable smoke first tcp server should read one startup hello line");
+            first_hello_tx
+                .send(hello_line)
+                .expect("portable smoke first tcp server should report its hello");
+            release_first_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("portable smoke first tcp server should be released after reconnect");
+        });
+
+        let (second_hello_tx, second_hello_rx) = mpsc::channel();
+        let second_server_thread = std::thread::spawn(move || {
+            let (stream, _) = second_listener
+                .accept()
+                .expect("portable smoke second tcp server should accept one client");
+            let mut reader = BufReader::new(stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("portable smoke second tcp server should read one reconnect hello line");
+            second_hello_tx
+                .send(hello_line)
+                .expect("portable smoke second tcp server should report its hello");
+        });
+
+        let mut tcp_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime(
+                "portable-user",
+                "portable-room",
+                first_address.to_string(),
+            )
+            .expect("portable smoke tcp runtime owner should bootstrap");
+        let tcp_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut tcp_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                username: Some("portable-user".to_owned()),
+                room: Some("portable-room".to_owned()),
+                public_servers: Some(vec![("Reconnect".to_owned(), second_address.to_string())]),
+                ..StoredClientSettingsMvp::default()
+            });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut tcp_owner, &tcp_handle, &tcp_state);
+        for action in tcp_handle.drain_actions() {
+            assert!(tcp_state.apply(action));
+        }
+        let first_hello_line = first_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable smoke first tcp server should receive startup hello");
+        assert!(first_hello_line.contains("\"Hello\""));
+        assert!(first_hello_line.contains("\"portable-user\""));
+
+        assert!(tcp_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        tcp_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut tcp_owner, &tcp_handle, &tcp_state);
+        let reconnect_actions = tcp_handle.drain_actions();
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteSelectedPublicServerConnect
+            )),
+            "portable smoke reconnect segment should complete selected public-server connect"
+        );
+        for action in reconnect_actions {
+            assert!(tcp_state.apply(action));
+        }
+
+        let second_hello_line = second_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable smoke second tcp server should receive reconnect hello");
+        assert!(second_hello_line.contains("\"Hello\""));
+        assert!(second_hello_line.contains("\"portable-user\""));
+        assert!(second_hello_line.contains("\"portable-room\""));
+
+        release_first_tx
+            .send(())
+            .expect("portable smoke first tcp server should be releasable");
+        first_server_thread
+            .join()
+            .expect("portable smoke first tcp server thread should complete");
+        second_server_thread
+            .join()
+            .expect("portable smoke second tcp server thread should complete");
+    }
+
+    #[test]
+    fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "syncplay-gui-portable-nontransport-{}-{unique_suffix}.ini",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut persisted_owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+        let persisted_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut persisted_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        let saved_settings = StoredClientSettingsMvp {
+            host: Some("syncplay.example".to_owned()),
+            port: Some(8999),
+            username: Some("smoke-user".to_owned()),
+            room: Some("smoke-room".to_owned()),
+            player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
+        persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut persisted_owner,
+            &persisted_handle,
+            &persisted_state,
+        );
+        let save_actions = persisted_handle.drain_actions();
+        assert_eq!(
+            save_actions,
+            vec![GuiShellAction::CompleteConfigurationSave(
+                saved_settings.clone()
+            )]
+        );
+        for action in save_actions {
+            assert!(persisted_state.apply(action));
+        }
+        assert_eq!(
+            super::load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
+                .expect("portable nontransport smoke save should leave a readable config"),
+            Some(saved_settings.clone())
+        );
+
+        let saved_contents = std::fs::read_to_string(&path)
+            .expect("portable nontransport smoke save should leave ini text");
+        for expected_line in [
+            "host = syncplay.example",
+            "port = 8999",
+            "name = smoke-user",
+            "room = smoke-room",
+            "playerPath = C:/Windows/System32/notepad.exe",
+            "sharedPlaylistEnabled = True",
+        ] {
+            assert!(
+                saved_contents.contains(expected_line),
+                "portable nontransport smoke save should persist line: {expected_line}"
+            );
+        }
+
+        let reloaded_settings = StoredClientSettingsMvp {
+            host: Some("syncplay.reload.example".to_owned()),
+            port: Some(8998),
+            username: Some("smoke-reloaded".to_owned()),
+            room: Some("smoke-room-b".to_owned()),
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+            .expect("portable nontransport smoke reload seed should write config");
+        assert!(persisted_state.apply(GuiShellAction::BeginConfigurationReload));
+        persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut persisted_owner,
+            &persisted_handle,
+            &persisted_state,
+        );
+        let reload_actions = persisted_handle.drain_actions();
+        assert!(
+            reload_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteConfigurationReload(settings)
+                    if settings == &reloaded_settings
+            )),
+            "portable nontransport smoke reload should emit completion with reloaded settings"
+        );
+        for action in reload_actions {
+            assert!(persisted_state.apply(action));
+        }
+        assert_eq!(
+            persisted_state.saved_configuration, reloaded_settings,
+            "portable nontransport smoke reload should project saved settings into shell state"
+        );
+
+        let mut no_runtime_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let no_runtime_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut no_runtime_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                shared_playlist_enabled: Some(true),
+                public_servers: Some(vec![
+                    ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                    ("Beta".to_owned(), "beta.example:9000".to_owned()),
+                ]),
+                ..StoredClientSettingsMvp::default()
+            });
+
+        assert!(no_runtime_state.apply(GuiShellAction::SelectPublicServer(0)));
+        assert!(no_runtime_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        no_runtime_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut no_runtime_owner,
+            &no_runtime_handle,
+            &no_runtime_state,
+        );
+        for action in no_runtime_handle.drain_actions() {
+            assert!(no_runtime_state.apply(action));
+        }
+        assert!(no_runtime_state.pending_operation.is_none());
+        assert_eq!(
+            no_runtime_state
+                .notifications
+                .last()
+                .map(|notification| notification.message.as_str()),
+            Some(
+                "Public server connect requires a session runtime connection; the selected server was not contacted.",
+            )
+        );
+
+        assert!(no_runtime_state.apply(GuiShellAction::BeginPublicServerRefresh));
+        no_runtime_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::RefreshPublicServers(vec![
+                ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+                ("Beta".to_owned(), "beta.example:9000".to_owned()),
+            ]),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut no_runtime_owner,
+            &no_runtime_handle,
+            &no_runtime_state,
+        );
+        for action in no_runtime_handle.drain_actions() {
+            assert!(no_runtime_state.apply(action));
+        }
+        assert!(no_runtime_state.pending_operation.is_none());
+        assert_eq!(
+            no_runtime_state
+                .notifications
+                .last()
+                .map(|notification| notification.message.as_str()),
+            Some(
+                "Public server refresh requires a session runtime connection; the server list was not refreshed.",
+            )
+        );
+
+        assert!(
+            no_runtime_state.apply(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(
+                "C:/SmokeMedia".to_owned(),
+            ))
+        );
+        assert_eq!(no_runtime_state.media_search.directories.len(), 1);
+        assert!(
+            !no_runtime_state.apply(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(
+                "C:/SmokeMedia".to_owned(),
+            ))
+        );
+        assert_eq!(no_runtime_state.media_search.directories.len(), 1);
+
+        assert!(no_runtime_state.apply(GuiShellAction::BeginMissingMediaSearch));
+        no_runtime_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(
+            &mut no_runtime_owner,
+            &no_runtime_handle,
+            &no_runtime_state,
+        );
+        for action in no_runtime_handle.drain_actions() {
+            assert!(no_runtime_state.apply(action));
+        }
+        assert!(no_runtime_state.pending_operation.is_none());
+        assert_eq!(
+            no_runtime_state
+                .notifications
+                .last()
+                .map(|notification| notification.message.as_str()),
+            Some(
+                "Missing-media search requires a session runtime connection; no search was performed."
+            )
+        );
+
+        let preview_open_actions = super::GuiPreviewRuntimeBridge::preview_media_file_actions(
+            &no_runtime_state,
+            vec!["C:/SmokeMedia/open-target.mkv".to_owned()],
+        );
+        assert_eq!(
+            preview_open_actions,
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                    "C:/SmokeMedia/open-target.mkv".to_owned(),
+                ]),
+            ],
+        );
+        for action in preview_open_actions {
+            assert!(no_runtime_state.apply(action));
+        }
+        assert_eq!(no_runtime_state.active_view, GuiShellView::MainWindow);
+        assert_eq!(
+            no_runtime_state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C:/SmokeMedia/open-target.mkv"]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let first_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("portable tcp churn smoke first listener should bind");
+        let first_address = first_listener
+            .local_addr()
+            .expect("portable tcp churn smoke first listener should expose an address");
+        let second_listener = TcpListener::bind("127.0.0.1:0")
+            .expect("portable tcp churn smoke second listener should bind");
+        let second_address = second_listener
+            .local_addr()
+            .expect("portable tcp churn smoke second listener should expose an address");
+
+        let (first_hello_tx, first_hello_rx) = mpsc::channel();
+        let (first_chat_tx, first_chat_rx) = mpsc::channel();
+        let (first_state_tx, first_state_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first_server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = first_listener
+                .accept()
+                .expect("portable tcp churn smoke first server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("portable tcp churn smoke first server should clone stream");
+            let mut reader = BufReader::new(reader_stream);
+
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("portable tcp churn smoke first server should read startup hello");
+            first_hello_tx
+                .send(hello_line)
+                .expect("portable tcp churn smoke first server should report startup hello");
+
+            for line in [
+                r#"{"Hello":{"username":"portable-user","room":{"name":"portable-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"portable-user"}}}"#,
+                r#"{"Set":{"playlistIndex":{"index":1,"user":"portable-user"}}}"#,
+                r#"{"Set":{"ready":{"isReady":true,"username":"portable-user"}}}"#,
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"portable-user"}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"portable-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke first server should write initial line");
+                stream
+                    .write_all(b"\n")
+                    .expect("portable tcp churn smoke first server should terminate initial line");
+            }
+            first_state_tx
+                .send("initial".to_owned())
+                .expect("portable tcp churn smoke first server should signal initial state");
+
+            let mut first_chat_line = String::new();
+            reader
+                .read_line(&mut first_chat_line)
+                .expect("portable tcp churn smoke first server should read first chat");
+            first_chat_tx
+                .send(first_chat_line)
+                .expect("portable tcp churn smoke first server should report first chat");
+            for line in [
+                r#"{"Chat":{"username":"portable-user","message":"hellotcp"}}"#,
+                r#"{"Set":{"playlistChange":{"files":["postchat1.mkv","postchat2.mkv"],"user":"portable-user"}}}"#,
+                r#"{"Set":{"playlistIndex":{"index":1,"user":"portable-user"}}}"#,
+                r#"{"Set":{"ready":{"isReady":false,"username":"portable-user"}}}"#,
+                r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":false,"setBy":"portable-user"}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"portable-room"},"file":{"name":"bob-post.mp4"},"isReady":false,"controller":false}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke first server should write post-chat line");
+                stream.write_all(b"\n").expect(
+                    "portable tcp churn smoke first server should terminate post-chat line",
+                );
+            }
+            first_state_tx
+                .send("postchat".to_owned())
+                .expect("portable tcp churn smoke first server should signal post-chat state");
+
+            let mut second_chat_line = String::new();
+            reader
+                .read_line(&mut second_chat_line)
+                .expect("portable tcp churn smoke first server should read second chat");
+            first_chat_tx
+                .send(second_chat_line)
+                .expect("portable tcp churn smoke first server should report second chat");
+            for line in [
+                r#"{"Chat":{"username":"portable-user","message":"goodbyeprimary"}}"#,
+                r#"{"Set":{"user":{"bob":{"event":{"left":true}}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke first server should write user-left line");
+                stream.write_all(b"\n").expect(
+                    "portable tcp churn smoke first server should terminate user-left line",
+                );
+            }
+            first_state_tx
+                .send("user-left".to_owned())
+                .expect("portable tcp churn smoke first server should signal user-left state");
+
+            release_first_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("portable tcp churn smoke first server should be releasable");
+        });
+
+        let (second_hello_tx, second_hello_rx) = mpsc::channel();
+        let (second_chat_tx, second_chat_rx) = mpsc::channel();
+        let (second_state_tx, second_state_rx) = mpsc::channel();
+        let second_server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = second_listener
+                .accept()
+                .expect("portable tcp churn smoke second server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("portable tcp churn smoke second server should clone stream");
+            let mut reader = BufReader::new(reader_stream);
+
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("portable tcp churn smoke second server should read reconnect hello");
+            second_hello_tx
+                .send(hello_line)
+                .expect("portable tcp churn smoke second server should report reconnect hello");
+
+            for line in [
+                r#"{"Hello":{"username":"portable-user","room":{"name":"portable-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["reconnect1.mkv","reconnect2.mkv"],"user":"portable-user"}}}"#,
+                r#"{"Set":{"playlistIndex":{"index":1,"user":"portable-user"}}}"#,
+                r#"{"Set":{"ready":{"isReady":false,"username":"portable-user"}}}"#,
+                r#"{"State":{"playstate":{"position":30.0,"paused":false,"doSeek":false,"setBy":"portable-user"}}}"#,
+                r#"{"Set":{"user":{"carol":{"room":{"name":"portable-room"},"file":{"name":"carol.mp4"},"isReady":false,"controller":false}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke second server should write initial line");
+                stream
+                    .write_all(b"\n")
+                    .expect("portable tcp churn smoke second server should terminate initial line");
+            }
+            second_state_tx
+                .send("initial".to_owned())
+                .expect("portable tcp churn smoke second server should signal initial state");
+
+            let mut first_chat_line = String::new();
+            reader
+                .read_line(&mut first_chat_line)
+                .expect("portable tcp churn smoke second server should read first chat");
+            second_chat_tx
+                .send(first_chat_line)
+                .expect("portable tcp churn smoke second server should report first chat");
+            for line in [
+                r#"{"Chat":{"username":"portable-user","message":"helloreconnect"}}"#,
+                r#"{"Set":{"playlistChange":{"files":["reconnect-post1.mkv","reconnect-post2.mkv"],"user":"portable-user"}}}"#,
+                r#"{"Set":{"playlistIndex":{"index":1,"user":"portable-user"}}}"#,
+                r#"{"Set":{"ready":{"isReady":true,"username":"portable-user"}}}"#,
+                r#"{"State":{"playstate":{"position":40.0,"paused":true,"doSeek":false,"setBy":"portable-user"}}}"#,
+                r#"{"Set":{"user":{"carol":{"room":{"name":"portable-room"},"file":{"name":"carol-post.mp4"},"isReady":true,"controller":true}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke second server should write post-chat line");
+                stream.write_all(b"\n").expect(
+                    "portable tcp churn smoke second server should terminate post-chat line",
+                );
+            }
+            second_state_tx
+                .send("postchat".to_owned())
+                .expect("portable tcp churn smoke second server should signal post-chat state");
+
+            let mut second_chat_line = String::new();
+            reader
+                .read_line(&mut second_chat_line)
+                .expect("portable tcp churn smoke second server should read second chat");
+            second_chat_tx
+                .send(second_chat_line)
+                .expect("portable tcp churn smoke second server should report second chat");
+            for line in [
+                r#"{"Chat":{"username":"portable-user","message":"goodbyereconnect"}}"#,
+                r#"{"Set":{"user":{"carol":{"event":{"left":true}}}}}"#,
+            ] {
+                stream
+                    .write_all(line.as_bytes())
+                    .expect("portable tcp churn smoke second server should write user-left line");
+                stream.write_all(b"\n").expect(
+                    "portable tcp churn smoke second server should terminate user-left line",
+                );
+            }
+            second_state_tx
+                .send("user-left".to_owned())
+                .expect("portable tcp churn smoke second server should signal user-left state");
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime(
+                "portable-user",
+                "portable-room",
+                first_address.to_string(),
+            )
+            .expect("portable tcp churn smoke owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("portable-user".to_owned()),
+            room: Some("portable-room".to_owned()),
+            chat_input_enabled: Some(true),
+            public_servers: Some(vec![("Reconnect".to_owned(), second_address.to_string())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        let mut pump_and_apply = |state: &mut SyncplayGuiShellAppState| {
+            super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, state);
+            let actions = handle.drain_actions();
+            for action in actions.iter().cloned() {
+                assert!(state.apply(action));
+            }
+            actions
+        };
+
+        pump_and_apply(&mut state);
+        let first_hello = first_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke first server should receive startup hello");
+        assert!(first_hello.contains("\"Hello\""));
+        assert!(first_hello.contains("\"portable-user\""));
+        assert_eq!(
+            first_state_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("portable tcp churn smoke first server should publish initial state"),
+            "initial"
+        );
+        pump_and_apply(&mut state);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["episode1.mkv", "episode2.mkv"]
+        );
+        assert!(state.main_window.playback_paused);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "bob" && user.is_ready && user.is_controller)
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend("hellotcp".to_owned())));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("hellotcp".to_owned()),
+        ));
+        let first_chat_actions = pump_and_apply(&mut state);
+        assert!(
+            first_chat_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
+        );
+        assert!(state.pending_operation.is_none());
+        assert!(state.outgoing_chat_message.is_none());
+        let first_chat = first_chat_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke first server should receive first chat");
+        assert!(first_chat.contains("\"Chat\""));
+        assert!(first_chat.contains("hellotcp"));
+        assert_eq!(
+            first_state_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("portable tcp churn smoke first server should publish post-chat state"),
+            "postchat"
+        );
+        pump_and_apply(&mut state);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["postchat1.mkv", "postchat2.mkv"]
+        );
+        assert!(!state.main_window.playback_paused);
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "bob" && !user.is_ready && !user.is_controller)
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend(
+            "goodbyeprimary".to_owned(),
+        )));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("goodbyeprimary".to_owned()),
+        ));
+        let second_primary_chat_actions = pump_and_apply(&mut state);
+        assert!(
+            second_primary_chat_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
+        );
+        let second_primary_chat = first_chat_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke first server should receive second chat");
+        assert!(second_primary_chat.contains("\"Chat\""));
+        assert!(second_primary_chat.contains("goodbyeprimary"));
+        assert_eq!(
+            first_state_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("portable tcp churn smoke first server should publish user-left state"),
+            "user-left"
+        );
+        pump_and_apply(&mut state);
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .all(|user| user.username != "bob")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        let reconnect_actions = pump_and_apply(&mut state);
+        assert!(
+            reconnect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteSelectedPublicServerConnect
+            ))
+        );
+
+        let second_hello = second_hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke second server should receive reconnect hello");
+        assert!(second_hello.contains("\"Hello\""));
+        assert!(second_hello.contains("\"portable-user\""));
+        assert!(second_hello.contains("\"portable-room\""));
+        assert_eq!(
+            second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+                "portable tcp churn smoke second server should publish initial reconnect state"
+            ),
+            "initial"
+        );
+        pump_and_apply(&mut state);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reconnect1.mkv", "reconnect2.mkv"]
+        );
+        assert!(!state.main_window.playback_paused);
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "carol" && !user.is_ready && !user.is_controller)
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend(
+            "helloreconnect".to_owned(),
+        )));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("helloreconnect".to_owned()),
+        ));
+        let first_reconnect_chat_actions = pump_and_apply(&mut state);
+        assert!(
+            first_reconnect_chat_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
+        );
+        let first_reconnect_chat = second_chat_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke second server should receive first reconnect chat");
+        assert!(first_reconnect_chat.contains("\"Chat\""));
+        assert!(first_reconnect_chat.contains("helloreconnect"));
+        assert_eq!(
+            second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+                "portable tcp churn smoke second server should publish reconnect post-chat state"
+            ),
+            "postchat"
+        );
+        pump_and_apply(&mut state);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reconnect-post1.mkv", "reconnect-post2.mkv"]
+        );
+        assert!(state.main_window.playback_paused);
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "carol" && user.is_ready && user.is_controller)
+        );
+
+        assert!(state.apply(GuiShellAction::BeginLocalChatSend(
+            "goodbyereconnect".to_owned(),
+        )));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SendChatMessage("goodbyereconnect".to_owned()),
+        ));
+        let second_reconnect_chat_actions = pump_and_apply(&mut state);
+        assert!(
+            second_reconnect_chat_actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteLocalChatSend))
+        );
+        let second_reconnect_chat = second_chat_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("portable tcp churn smoke second server should receive second reconnect chat");
+        assert!(second_reconnect_chat.contains("\"Chat\""));
+        assert!(second_reconnect_chat.contains("goodbyereconnect"));
+        assert_eq!(
+            second_state_rx.recv_timeout(Duration::from_secs(1)).expect(
+                "portable tcp churn smoke second server should publish reconnect user-left state"
+            ),
+            "user-left"
+        );
+        pump_and_apply(&mut state);
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .all(|user| user.username != "carol")
+        );
+
+        release_first_tx
+            .send(())
+            .expect("portable tcp churn smoke first server should be releasable");
+        first_server_thread
+            .join()
+            .expect("portable tcp churn smoke first server thread should complete");
+        second_server_thread
+            .join()
+            .expect("portable tcp churn smoke second server thread should complete");
     }
 
     #[test]

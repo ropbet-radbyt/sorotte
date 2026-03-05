@@ -1,0 +1,40 @@
+param(
+    [switch]$Json,
+    [switch]$KeepOpen,
+    [string]$BinaryPath,
+    [int]$TimeoutMs = 10000,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs = @()
+)
+
+$suiteArgs = @()
+if ($Json) {
+    $suiteArgs += "--json"
+}
+if ($KeepOpen) {
+    $suiteArgs += "--keep-open"
+}
+if ($BinaryPath) {
+    $suiteArgs += "--binary"
+    $suiteArgs += $BinaryPath
+}
+if ($TimeoutMs -gt 0) {
+    $suiteArgs += "--timeout-ms"
+    $suiteArgs += [string]$TimeoutMs
+}
+if ($ExtraArgs.Length -gt 0) {
+    $suiteArgs += $ExtraArgs
+}
+
+$cargoArgs = @(
+    "run",
+    "--quiet",
+    "-p",
+    "syncplay-gui",
+    "--bin",
+    "syncplay-gui-native-smoke",
+    "--"
+) + $suiteArgs
+
+& cargo @cargoArgs
+exit $LASTEXITCODE
