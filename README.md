@@ -55,6 +55,9 @@ GUI semantic smoke suite (cross-platform):
 
 GUI native smoke suite (Windows UI Automation):
 
+- Build the GUI binary first: `cargo build -p syncplay-gui --bin syncplay-gui`
+- `scripts/gui-native-smoke.ps1` launches the existing `target/debug/syncplay-gui.exe`; it does not rebuild that binary for you.
+- Re-run the build step any time you change `syncplay-gui` code before running native smoke.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
 
 If you want the current end-to-end repo test pass used for Windows verification, run:
@@ -62,6 +65,7 @@ If you want the current end-to-end repo test pass used for Windows verification,
 ```powershell
 cargo test --workspace
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
+cargo build -p syncplay-gui --bin syncplay-gui
 powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
 ```
 
