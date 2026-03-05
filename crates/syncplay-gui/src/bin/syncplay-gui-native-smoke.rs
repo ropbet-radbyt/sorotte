@@ -9,6 +9,14 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use syncplay_client_app::{
+    legacy_settings::StoredClientSettingsMvp,
+    legacy_syncplay_ini::{
+        load_syncplay_ini_stored_client_settings_mvp_from_path,
+        upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    },
+};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Text,
@@ -112,6 +120,10 @@ const CUSTOM_SERVER_HOST: &str = "custom.example";
 const CUSTOM_SERVER_PORT: &str = "9001";
 const CUSTOM_SERVER_ADDRESS: &str = "custom.example:9001";
 const CUSTOM_SERVER_ROW_NAME: &str = "Custom: custom.example:9001";
+const MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS: f64 = 3.0;
+const MEDIA_SEARCH_TIMEOUT_SECONDS: f64 = 30.0;
+const MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS: f64 = 2.5;
+const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 const SMOKE_WINDOW_WIDTH: i32 = 1700;
 const SMOKE_WINDOW_HEIGHT: i32 = 1100;
 const CONNECT_NO_SESSION_ERROR: &str = "error: Public server connect requires a session runtime connection; the selected server was not contacted.";
@@ -591,6 +603,7 @@ impl PlatformNativeGuiDriver {
             };
 
             let mut candidates = Vec::new();
+            let mut matching_states = Vec::new();
             for index in 0..length {
                 let element = unsafe {
                     match elements.GetElement(index) {
@@ -624,15 +637,20 @@ impl PlatformNativeGuiDriver {
                         Err(_) => false,
                     }
                 };
-                if !is_enabled {
-                    continue;
-                }
                 let is_offscreen = unsafe {
                     match element.CurrentIsOffscreen() {
                         Ok(offscreen) => offscreen.as_bool(),
                         Err(_) => false,
                     }
                 };
+                matching_states.push(format!(
+                    "enabled={}, offscreen={}",
+                    bool_label(is_enabled),
+                    bool_label(is_offscreen)
+                ));
+                if !is_enabled {
+                    continue;
+                }
                 if is_offscreen {
                     continue;
                 }
@@ -641,9 +659,15 @@ impl PlatformNativeGuiDriver {
             }
 
             if candidates.is_empty() {
+                let matching_state_summary = if matching_states.is_empty() {
+                    "none".to_owned()
+                } else {
+                    matching_states.join(", ")
+                };
                 return Err(format!(
-                    "did not find an enabled {} named {name:?} in the accessibility tree",
+                    "did not find an enabled {} named {name:?} in the accessibility tree; matching states: {}",
                     control_kind.label(),
+                    matching_state_summary,
                 ));
             }
 
@@ -1588,6 +1612,26 @@ fn wait_for_process_exit(child: &mut Child, timeout: Duration) -> Result<(), Str
     }
 }
 
+fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
+    let settings = StoredClientSettingsMvp {
+        folder_search_first_file_timeout_seconds: Some(MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS),
+        folder_search_timeout_seconds: Some(MEDIA_SEARCH_TIMEOUT_SECONDS),
+        folder_search_double_check_interval_seconds: Some(
+            MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS,
+        ),
+        folder_search_warning_threshold_seconds: Some(MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(
+        |error| {
+            format!(
+                "failed to seed native smoke config {}: {error}",
+                config_path.display()
+            )
+        },
+    )
+}
+
 fn launch_syncplay_gui_with_retry<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -1718,6 +1762,22 @@ fn contains_accessible_name(accessible_names: &[String], expected: &str) -> bool
     accessible_names.iter().any(|name| name == expected)
 }
 
+fn render_accessible_name_snapshot_for_patterns(
+    accessible_names: &[String],
+    patterns: &[&str],
+) -> String {
+    let snapshot = accessible_names
+        .iter()
+        .filter(|name| patterns.iter().any(|pattern| name.contains(pattern)))
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>();
+    if snapshot.is_empty() {
+        "none".to_owned()
+    } else {
+        snapshot.join(", ")
+    }
+}
+
 fn wait_for_accessible_name<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -1726,12 +1786,23 @@ fn wait_for_accessible_name<D: NativeGuiDriver>(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
+    let mut last_snapshot = None;
     loop {
         match driver.accessible_names(window) {
             Ok(names) => {
                 if contains_accessible_name(&names, expected_name) {
                     return Ok(());
                 }
+                last_snapshot = Some(render_accessible_name_snapshot_for_patterns(
+                    &names,
+                    &[
+                        "Timeout",
+                        "Warning",
+                        "Interval",
+                        "Media Search",
+                        "view: media-search",
+                    ],
+                ));
             }
             Err(error) => {
                 last_error = Some(error);
@@ -1740,11 +1811,13 @@ fn wait_for_accessible_name<D: NativeGuiDriver>(
         if Instant::now() >= deadline {
             return if let Some(error) = last_error {
                 Err(format!(
-                    "timed out waiting for accessibility name {expected_name:?}; last accessibility read error: {error}"
+                    "timed out waiting for accessibility name {expected_name:?}; last accessibility read error: {error}; last snapshot: {}",
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned())
                 ))
             } else {
                 Err(format!(
-                    "timed out waiting for accessibility name {expected_name:?}"
+                    "timed out waiting for accessibility name {expected_name:?}; last snapshot: {}",
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned())
                 ))
             };
         }
@@ -1802,16 +1875,37 @@ fn invoke_named_control_with_wait<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
+    let mut last_snapshot = None;
     loop {
         match driver.invoke_named_control(window, name, control_kind) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 if Instant::now() >= deadline {
+                    let snapshot = driver
+                        .accessible_names(window)
+                        .map(|names| {
+                            render_accessible_name_snapshot_for_patterns(
+                                &names,
+                                &[name, "Save", "Reset", "Reload", "Configuration", "view:"],
+                            )
+                        })
+                        .unwrap_or_else(|_| "unavailable".to_owned());
                     return Err(format!(
-                        "timed out invoking {} named {name:?}; last error: {error}",
+                        "timed out invoking {} named {name:?}; last error: {error}; last snapshot: {}",
                         control_kind.label(),
+                        if last_snapshot.is_some() {
+                            last_snapshot.take().unwrap()
+                        } else {
+                            snapshot
+                        }
                     ));
                 }
+                last_snapshot = driver.accessible_names(window).ok().map(|names| {
+                    render_accessible_name_snapshot_for_patterns(
+                        &names,
+                        &[name, "Save", "Reset", "Reload", "Configuration", "view:"],
+                    )
+                });
             }
         }
         thread::sleep(Duration::from_millis(50));
@@ -2050,12 +2144,22 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     let config_persist_timeout = timeout.min(Duration::from_millis(8_000));
     let mut steps = Vec::new();
 
-    wait_for_any_accessible_name(
+    let initial_view = wait_for_any_accessible_name(
         driver,
         window,
         &["view: configuration", "view: main-window"],
         step_timeout,
     )?;
+    if initial_view == "view: main-window" {
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Configuration",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+    }
     let editable_count = driver.editable_text_input_count(window)?;
     if editable_count < 6 {
         return Err(format!(
@@ -2279,12 +2383,13 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
     steps.push("surface-media-search".to_owned());
-    wait_for_accessible_name(driver, window, "First File Timeout", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Search Timeout", step_timeout)?;
+    wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
     let mut double_check_visible =
-        wait_for_accessible_name(driver, window, "Double Check Interval", step_timeout).is_ok();
+        wait_for_accessible_name(driver, window, "Double Check Interval: 2.50s", step_timeout)
+            .is_ok();
     let mut warning_threshold_visible =
-        wait_for_accessible_name(driver, window, "Warning Threshold", step_timeout).is_ok();
+        wait_for_accessible_name(driver, window, "Warning Threshold: 7.50s", step_timeout).is_ok();
     let mut page_down_count = 0usize;
     let timing_retry_timeout = step_timeout.min(Duration::from_millis(1_000));
     while page_down_count < 2 && (!double_check_visible || !warning_threshold_visible) {
@@ -2294,15 +2399,19 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             double_check_visible = wait_for_accessible_name(
                 driver,
                 window,
-                "Double Check Interval",
+                "Double Check Interval: 2.50s",
                 timing_retry_timeout,
             )
             .is_ok();
         }
         if !warning_threshold_visible {
-            warning_threshold_visible =
-                wait_for_accessible_name(driver, window, "Warning Threshold", timing_retry_timeout)
-                    .is_ok();
+            warning_threshold_visible = wait_for_accessible_name(
+                driver,
+                window,
+                "Warning Threshold: 7.50s",
+                timing_retry_timeout,
+            )
+            .is_ok();
         }
     }
     for _ in 0..page_down_count {
@@ -2310,9 +2419,10 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     }
     if double_check_visible && warning_threshold_visible {
         steps.push("media-search-timing-visible".to_owned());
+        steps.push("media-search-timing-values-visible".to_owned());
     } else {
-        steps.push(format!(
-            "media-search-timing-partial:double_check={},warning_threshold={}",
+        return Err(format!(
+            "media-search timing values were not all visible: first_file=yes, search=yes, double_check={}, warning_threshold={}",
             bool_label(double_check_visible),
             bool_label(warning_threshold_visible)
         ));
@@ -2505,6 +2615,44 @@ fn wait_for_named_edit_value<D: NativeGuiDriver>(
     }
 }
 
+fn wait_for_edit_value_by_index<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    edit_index: usize,
+    expected_value: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_value = None;
+    let mut last_error = None;
+    loop {
+        match driver.get_edit_value_by_index(window, edit_index) {
+            Ok(value) => {
+                if value == expected_value {
+                    return Ok(());
+                }
+                last_value = Some(value);
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+        if Instant::now() >= deadline {
+            return if let Some(error) = last_error {
+                Err(format!(
+                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last read error: {error}"
+                ))
+            } else {
+                Err(format!(
+                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last value: {:?}",
+                    last_value
+                ))
+            };
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn assert_chat_input_cleared<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -2554,6 +2702,36 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
     open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
+    let persisted_contents = fs::read_to_string(config_path).map_err(|error| {
+        format!(
+            "failed reading reloaded configuration {} before relaunch: {error}",
+            config_path.display()
+        )
+    })?;
+    let persisted_settings = load_syncplay_ini_stored_client_settings_mvp_from_path(config_path)
+        .map_err(|error| {
+            format!(
+                "failed to parse reloaded configuration {} before relaunch: {error}",
+                config_path.display()
+            )
+        })?
+        .unwrap_or_default();
+    if persisted_settings.host.as_deref() != Some(CONFIG_HOST_VALUE)
+        || persisted_settings.port != Some(CONFIG_PORT_VALUE.parse().unwrap())
+        || persisted_settings.username.as_deref() != Some(CONFIG_USERNAME_VALUE)
+        || persisted_settings.room.as_deref() != Some(CONFIG_ROOM_VALUE)
+        || persisted_settings.player_path.as_deref() != Some(CONFIG_PLAYER_PATH_VALUE)
+    {
+        return Err(format!(
+            "reloaded configuration file did not retain saved connection values before relaunch: host={:?}, port={:?}, username={:?}, room={:?}, player_path={:?}; file contents:\n{}",
+            persisted_settings.host,
+            persisted_settings.port,
+            persisted_settings.username,
+            persisted_settings.room,
+            persisted_settings.player_path,
+            persisted_contents,
+        ));
+    }
     let launch = GuiLaunchConfig {
         config_path,
         media_search_browse_path,
@@ -2598,12 +2776,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             (3usize, CONFIG_ROOM_VALUE),
             (5usize, CONFIG_PLAYER_PATH_VALUE),
         ] {
-            let actual = driver.get_edit_value_by_index(window, index)?;
-            if actual != expected_value {
-                return Err(format!(
-                    "reloaded configuration edit field [{index}] mismatch: expected {expected_value:?}, got {actual:?}"
-                ));
-            }
+            wait_for_edit_value_by_index(driver, window, index, expected_value, step_timeout)?;
         }
         steps.push("config-reload-persisted".to_owned());
 
@@ -3021,6 +3194,7 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
         .map_err(|error| format!("failed to create native smoke media directory: {error}"))?;
     fs::write(&open_media_file_path, b"open-target")
         .map_err(|error| format!("failed to create native smoke media file: {error}"))?;
+    seed_native_smoke_config(&config_path)?;
 
     let started_at = Instant::now();
     let driver = PlatformNativeGuiDriver::default();

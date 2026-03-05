@@ -1069,10 +1069,14 @@ impl GuiWidgetEguiRenderer {
                 });
             }
             GuiWidgetKind::ReadOnly | GuiWidgetKind::Status => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(&node.label).strong());
-                    ui.label(node.value.as_deref().unwrap_or("(none)"));
-                });
+                if Self::should_render_combined_status_label(node) {
+                    ui.label(Self::display_text(node));
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(&node.label).strong());
+                        ui.label(node.value.as_deref().unwrap_or("(none)"));
+                    });
+                }
             }
             GuiWidgetKind::Panel | GuiWidgetKind::List => {}
         }
@@ -1191,6 +1195,10 @@ impl GuiWidgetEguiRenderer {
             Some(value) if !value.is_empty() => format!("{}: {}", node.label, value),
             _ => node.label.clone(),
         }
+    }
+
+    fn should_render_combined_status_label(node: &GuiWidgetNode) -> bool {
+        node.id.starts_with("media-search:timing:")
     }
 
     fn action_for_surface_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
@@ -5173,17 +5181,17 @@ impl FirstRunConfigurationDialogState {
                     GuiDialogControl {
                         label: "Rewind Threshold",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(self.desync.rewind_threshold_seconds),
+                        value: optional_f64_text(self.desync.rewind_threshold_seconds),
                     },
                     GuiDialogControl {
                         label: "Fastforward Threshold",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(self.desync.fastforward_threshold_seconds),
+                        value: optional_f64_text(self.desync.fastforward_threshold_seconds),
                     },
                     GuiDialogControl {
                         label: "Slowdown Threshold",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(self.desync.slowdown_threshold_seconds),
+                        value: optional_f64_text(self.desync.slowdown_threshold_seconds),
                     },
                 ],
             },
@@ -5198,21 +5206,19 @@ impl FirstRunConfigurationDialogState {
                     GuiDialogControl {
                         label: "First File Timeout",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(
+                        value: optional_f64_text(
                             self.media_search.folder_search_first_file_timeout_seconds,
                         ),
                     },
                     GuiDialogControl {
                         label: "Search Timeout",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(
-                            self.media_search.folder_search_timeout_seconds,
-                        ),
+                        value: optional_f64_text(self.media_search.folder_search_timeout_seconds),
                     },
                     GuiDialogControl {
                         label: "Double Check Interval",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(
+                        value: optional_f64_text(
                             self.media_search
                                 .folder_search_double_check_interval_seconds,
                         ),
@@ -5220,7 +5226,7 @@ impl FirstRunConfigurationDialogState {
                     GuiDialogControl {
                         label: "Warning Threshold",
                         kind: GuiDialogControlKind::NumericInput,
-                        value: optional_seconds_text(
+                        value: optional_f64_text(
                             self.media_search.folder_search_warning_threshold_seconds,
                         ),
                     },
@@ -11544,6 +11550,10 @@ fn optional_seconds_text(value: Option<f64>) -> String {
     value.map_or_else(|| "(unset)".to_owned(), |value| format!("{value:.2}s"))
 }
 
+fn optional_f64_text(value: Option<f64>) -> String {
+    value.map_or_else(|| "(unset)".to_owned(), |value| value.to_string())
+}
+
 fn optional_i64_text(value: Option<i64>) -> String {
     value.map_or_else(|| "(unset)".to_owned(), |value| value.to_string())
 }
@@ -11900,6 +11910,53 @@ mod tests {
         assert_eq!(state.search_timeout_seconds, Some(5.0));
         assert_eq!(state.double_check_interval_seconds, Some(0.25));
         assert_eq!(state.warning_threshold_seconds, Some(2.0));
+    }
+
+    #[test]
+    fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            rewind_threshold_seconds: Some(1.25),
+            fastforward_threshold_seconds: Some(3.5),
+            slowdown_threshold_seconds: Some(2.25),
+            folder_search_first_file_timeout_seconds: Some(3.0),
+            folder_search_timeout_seconds: Some(30.0),
+            folder_search_double_check_interval_seconds: Some(2.5),
+            folder_search_warning_threshold_seconds: Some(7.5),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Desync", "Rewind Threshold"),
+            Some("1.25")
+        );
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Media Search", "First File Timeout"),
+            Some("3")
+        );
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Media Search", "Search Timeout"),
+            Some("30")
+        );
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Media Search", "Double Check Interval"),
+            Some("2.5")
+        );
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Media Search", "Warning Threshold"),
+            Some("7.5")
+        );
+        assert!(state.validation.issues.is_empty());
+        assert!(state.commands.can_save_configuration);
     }
 
     #[test]
