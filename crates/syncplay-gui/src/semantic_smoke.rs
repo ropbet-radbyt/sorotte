@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use super::StoredClientSettingsMvp;
 use super::semantic_driver::GuiSemanticScenario;
 
@@ -349,18 +351,39 @@ fn run_gui_semantic_scenario(
 
 const GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/configuration-surface-flow.txt");
+static GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_DESCRIPTION: &str = "Edits configuration fields, saves, then exercises public-server and media-search pending flows.";
 const GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/core-shell-smoke-flow.txt");
+static GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_DESCRIPTION: &str =
     "Ports the non-transport Windows smoke path into a platform-neutral shell scenario.";
 const GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/runtime-chat-flow.txt");
+static GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_DESCRIPTION: &str =
     "Applies runtime session state, verifies playlist projection, and completes a local chat send.";
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/runtime-transport-churn-flow.txt");
+static GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION: &str = "Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.";
+
+fn normalize_script_line_endings(script: &str) -> String {
+    script.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn normalized_builtin_script(
+    raw_script: &'static str,
+    cache: &'static OnceLock<String>,
+) -> &'static str {
+    cache
+        .get_or_init(|| normalize_script_line_endings(raw_script))
+        .as_str()
+}
 
 fn gui_semantic_scenario_from_builtin_script(
     name: &'static str,
@@ -379,14 +402,22 @@ fn gui_semantic_scenario_from_builtin_script(
 #[allow(dead_code)]
 pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
     match name {
-        "configuration-surface-flow" => {
-            Some(GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT)
-        }
-        "core-shell-smoke-flow" => Some(GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT),
-        "runtime-chat-flow" => Some(GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT),
-        "runtime-transport-churn-flow" => {
-            Some(GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT)
-        }
+        "configuration-surface-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT_NORMALIZED,
+        )),
+        "core-shell-smoke-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT_NORMALIZED,
+        )),
+        "runtime-chat-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT_NORMALIZED,
+        )),
+        "runtime-transport-churn-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED,
+        )),
         _ => None,
     }
 }
@@ -457,7 +488,8 @@ pub(super) fn gui_semantic_scenario_configuration_surface_flow() -> GuiSemanticS
     gui_semantic_scenario_from_builtin_script(
         "configuration-surface-flow",
         "configuration-surface-flow",
-        GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT,
+        gui_semantic_scenario_script("configuration-surface-flow")
+            .expect("configuration semantic scenario script should exist"),
     )
 }
 
@@ -465,7 +497,8 @@ pub(super) fn gui_semantic_scenario_core_shell_smoke_flow() -> GuiSemanticScenar
     gui_semantic_scenario_from_builtin_script(
         "core-shell-smoke-flow",
         "core-shell-smoke-flow",
-        GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT,
+        gui_semantic_scenario_script("core-shell-smoke-flow")
+            .expect("core shell smoke semantic scenario script should exist"),
     )
 }
 
@@ -872,7 +905,8 @@ pub(super) fn gui_semantic_scenario_runtime_chat_flow() -> GuiSemanticScenario {
     gui_semantic_scenario_from_builtin_script(
         "runtime-chat-flow",
         "runtime-chat-flow",
-        GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT,
+        gui_semantic_scenario_script("runtime-chat-flow")
+            .expect("runtime chat semantic scenario script should exist"),
     )
 }
 
@@ -880,6 +914,19 @@ pub(super) fn gui_semantic_scenario_runtime_transport_churn_flow() -> GuiSemanti
     gui_semantic_scenario_from_builtin_script(
         "runtime-transport-churn-flow",
         "runtime-transport-churn-flow",
-        GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT,
+        gui_semantic_scenario_script("runtime-transport-churn-flow")
+            .expect("runtime transport churn semantic scenario script should exist"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn normalize_script_line_endings_converts_crlf_to_lf() {
+        let raw = "# header\r\nsetting\tpublic-server\tPrimary\tsyncplay.pl:8999\r\n";
+        assert_eq!(
+            super::normalize_script_line_endings(raw),
+            "# header\nsetting\tpublic-server\tPrimary\tsyncplay.pl:8999\n"
+        );
+    }
 }
