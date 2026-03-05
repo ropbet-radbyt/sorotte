@@ -41,11 +41,34 @@ Workspace-level parity and planning docs (one directory up):
 - `crates/syncplay-sim`: deterministic simulation helpers
 - `crates/syncplay-compat`: compatibility/interop test support
 
-## Quick commands
+## Running tests
+
+Run these from the `syncplay-rs` repo root.
+
+Standard workspace test suite:
+
+- `cargo test --workspace`
+
+GUI semantic smoke suite (cross-platform):
+
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json`
+
+GUI native smoke suite (Windows UI Automation):
+
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
+
+If you want the current end-to-end repo test pass used for Windows verification, run:
+
+```powershell
+cargo test --workspace
+powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
+powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
+```
+
+## Other useful commands
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
 - `cargo build --release`
 
 ## Coverage (cargo-llvm-cov)
