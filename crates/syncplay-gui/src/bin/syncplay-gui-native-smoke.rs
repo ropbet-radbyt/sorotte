@@ -107,6 +107,11 @@ const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
 const CONFIG_ROOM_VALUE: &str = "smoke-room";
 const CONFIG_PLAYER_PATH_VALUE: &str = "C:\\Windows\\System32\\notepad.exe";
+const CUSTOM_SERVER_LABEL: &str = "Custom";
+const CUSTOM_SERVER_HOST: &str = "custom.example";
+const CUSTOM_SERVER_PORT: &str = "9001";
+const CUSTOM_SERVER_ADDRESS: &str = "custom.example:9001";
+const CUSTOM_SERVER_ROW_NAME: &str = "Custom: custom.example:9001";
 const SMOKE_WINDOW_WIDTH: i32 = 1700;
 const SMOKE_WINDOW_HEIGHT: i32 = 1100;
 const CONNECT_NO_SESSION_ERROR: &str = "error: Public server connect requires a session runtime connection; the selected server was not contacted.";
@@ -2174,6 +2179,96 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, REFRESH_NO_SESSION_ERROR, step_timeout)?;
     steps.push("public-server-refresh-error".to_owned());
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Add Custom Server",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Edit Session", step_timeout)?;
+    let edit_count = driver.editable_text_input_count(window)?;
+    if edit_count != 2 {
+        return Err(format!(
+            "expected 2 editable public-server edit-session fields, found {edit_count}"
+        ));
+    }
+    driver.set_edit_value_by_index(window, 0, CUSTOM_SERVER_LABEL)?;
+    driver.set_edit_value_by_index(window, 1, CUSTOM_SERVER_ADDRESS)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Save Changes",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_named_control_count(
+        driver,
+        window,
+        "Save Changes",
+        NativeControlKind::Button,
+        0,
+        step_timeout,
+    )?;
+    let custom_row_name = wait_for_any_accessible_name(
+        driver,
+        window,
+        &[CUSTOM_SERVER_ROW_NAME, CUSTOM_SERVER_LABEL],
+        step_timeout,
+    )?;
+    if custom_row_name == CUSTOM_SERVER_LABEL {
+        wait_for_accessible_name(driver, window, CUSTOM_SERVER_ADDRESS, step_timeout)?;
+    }
+    steps.push("public-server-add-custom".to_owned());
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        &custom_row_name,
+        NativeControlKind::Any,
+        step_timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Connect",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "pending: connect-public-server",
+        step_timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Complete",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, CONNECT_NO_SESSION_ERROR, step_timeout)?;
+    steps.push("public-server-connect-custom-pending".to_owned());
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Configuration",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+    for (index, expected_value) in [(0usize, CUSTOM_SERVER_HOST), (1usize, CUSTOM_SERVER_PORT)] {
+        let actual = driver.get_edit_value_by_index(window, index)?;
+        if actual != expected_value {
+            return Err(format!(
+                "custom public-server selection did not update configuration edit field [{index}]: expected {expected_value:?}, got {actual:?}"
+            ));
+        }
+    }
+    steps.push("public-server-custom-applied".to_owned());
 
     invoke_named_control_with_wait(
         driver,
