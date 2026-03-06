@@ -1906,10 +1906,10 @@ fn apply_legacy_client_arg_overrides(
         config.room = normalized_room;
         config.controlled_room_password_override = normalized_password;
     }
-    if let Some(password) = overrides.controlled_room_password_override.as_deref() {
-        if !password.is_empty() {
-            config.controlled_room_password_override = Some(password.to_owned());
-        }
+    if let Some(password) = overrides.controlled_room_password_override.as_deref()
+        && !password.is_empty()
+    {
+        config.controlled_room_password_override = Some(password.to_owned());
     }
 }
 
@@ -2485,15 +2485,16 @@ fn apply_legacy_client_arg_managed_mpv_overrides(
         managed_config.enabled = true;
     }
 
-    if managed_config.mpv_bin.is_none() && legacy_player_requests_managed_mpv {
-        if let Some(player_path) = legacy_player_path {
-            managed_config.mpv_bin = Some(PathBuf::from(player_path));
-        }
+    if managed_config.mpv_bin.is_none()
+        && legacy_player_requests_managed_mpv
+        && let Some(player_path) = legacy_player_path
+    {
+        managed_config.mpv_bin = Some(PathBuf::from(player_path));
     }
-    if managed_config.media_file.is_none() {
-        if let Some(file) = overrides.file.as_deref() {
-            managed_config.media_file = Some(PathBuf::from(file));
-        }
+    if managed_config.media_file.is_none()
+        && let Some(file) = overrides.file.as_deref()
+    {
+        managed_config.media_file = Some(PathBuf::from(file));
     }
     if managed_config.extra_args.is_empty() && !overrides.player_args.is_empty() {
         managed_config.extra_args = overrides.player_args.clone();
@@ -3515,13 +3516,13 @@ fn spawn_managed_mpv_and_attach(
             mpv_bin.display()
         ));
     }
-    if let Some(media_file) = config.media_file.as_ref() {
-        if !media_file.exists() {
-            return Err(anyhow!(
-                "managed mpv media file does not exist: {}",
-                media_file.display()
-            ));
-        }
+    if let Some(media_file) = config.media_file.as_ref()
+        && !media_file.exists()
+    {
+        return Err(anyhow!(
+            "managed mpv media file does not exist: {}",
+            media_file.display()
+        ));
     }
 
     let (ipc_path, ipc_cleanup_path) = if let Some(ipc_path) = config.ipc_path {
@@ -3892,14 +3893,14 @@ fn player_playback_drift_diagnostic_messages_localized_legacy_compatible(
 
     let mut messages = Vec::new();
 
-    if let (Some(player_paused), Some(room_paused)) = (update.paused, room_playstate.paused) {
-        if player_paused != room_paused {
-            messages.push(format!(
-                "{}: {} player={player_paused} room={room_paused}",
-                localized_player_drift_prefix_legacy_compatible(language),
-                localized_paused_mismatch_label_legacy_compatible(language),
-            ));
-        }
+    if let (Some(player_paused), Some(room_paused)) = (update.paused, room_playstate.paused)
+        && player_paused != room_paused
+    {
+        messages.push(format!(
+            "{}: {} player={player_paused} room={room_paused}",
+            localized_player_drift_prefix_legacy_compatible(language),
+            localized_paused_mismatch_label_legacy_compatible(language),
+        ));
     }
 
     if let (Some(player_position), Some(room_position)) =
@@ -17615,16 +17616,16 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if queued_files.is_none() {
-                    if let Some(change) = payload.set.playlist_change.as_ref() {
-                        queued_files = Some(change.files.clone());
-                        continue;
-                    }
+                if queued_files.is_none()
+                    && let Some(change) = payload.set.playlist_change.as_ref()
+                {
+                    queued_files = Some(change.files.clone());
+                    continue;
                 }
-                if queued_index.is_none() {
-                    if let Some(index) = payload.set.playlist_index.as_ref() {
-                        queued_index = Some(index.index);
-                    }
+                if queued_index.is_none()
+                    && let Some(index) = payload.set.playlist_index.as_ref()
+                {
+                    queued_index = Some(index.index);
                 }
                 if queued_files.is_some() && queued_index.is_some() {
                     break;
@@ -17915,16 +17916,16 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if deleted_files.is_none() {
-                    if let Some(change) = payload.set.playlist_change.as_ref() {
-                        deleted_files = Some(change.files.clone());
-                        continue;
-                    }
+                if deleted_files.is_none()
+                    && let Some(change) = payload.set.playlist_change.as_ref()
+                {
+                    deleted_files = Some(change.files.clone());
+                    continue;
                 }
-                if deleted_index.is_none() {
-                    if let Some(index) = payload.set.playlist_index.as_ref() {
-                        deleted_index = Some(index.index);
-                    }
+                if deleted_index.is_none()
+                    && let Some(index) = payload.set.playlist_index.as_ref()
+                {
+                    deleted_index = Some(index.index);
                 }
                 if deleted_files.is_some() && deleted_index.is_some() {
                     break;
@@ -18207,16 +18208,16 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if shuffled_files.is_none() {
-                    if let Some(change) = payload.set.playlist_change.as_ref() {
-                        shuffled_files = Some(change.files.clone());
-                        continue;
-                    }
+                if shuffled_files.is_none()
+                    && let Some(change) = payload.set.playlist_change.as_ref()
+                {
+                    shuffled_files = Some(change.files.clone());
+                    continue;
                 }
-                if shuffled_index.is_none() {
-                    if let Some(index) = payload.set.playlist_index.as_ref() {
-                        shuffled_index = Some(index.index);
-                    }
+                if shuffled_index.is_none()
+                    && let Some(index) = payload.set.playlist_index.as_ref()
+                {
+                    shuffled_index = Some(index.index);
                 }
                 if shuffled_files.is_some() && shuffled_index.is_some() {
                     break;
@@ -18374,16 +18375,16 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if shuffled_files.is_none() {
-                    if let Some(change) = payload.set.playlist_change.as_ref() {
-                        shuffled_files = Some(change.files.clone());
-                        continue;
-                    }
+                if shuffled_files.is_none()
+                    && let Some(change) = payload.set.playlist_change.as_ref()
+                {
+                    shuffled_files = Some(change.files.clone());
+                    continue;
                 }
-                if let Some(index) = payload.set.playlist_index.as_ref() {
-                    if index.index == 0 {
-                        saw_index_reset = true;
-                    }
+                if let Some(index) = payload.set.playlist_index.as_ref()
+                    && index.index == 0
+                {
+                    saw_index_reset = true;
                 }
                 if saw_index_reset {
                     break;
@@ -18532,11 +18533,11 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if let Some(ready) = payload.set.ready {
-                    if ready.username.as_deref() == Some("other-user") {
-                        target_ready_payload = Some(ready);
-                        break;
-                    }
+                if let Some(ready) = payload.set.ready
+                    && ready.username.as_deref() == Some("other-user")
+                {
+                    target_ready_payload = Some(ready);
+                    break;
                 }
             }
             let Some(ready_payload) = target_ready_payload else {
@@ -18671,11 +18672,11 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if let Some(ready) = payload.set.ready {
-                    if ready.username.as_deref() == Some("cli-user") {
-                        target_ready_payload = Some(ready);
-                        break;
-                    }
+                if let Some(ready) = payload.set.ready
+                    && ready.username.as_deref() == Some("cli-user")
+                {
+                    target_ready_payload = Some(ready);
+                    break;
                 }
             }
             let Some(ready_payload) = target_ready_payload else {
@@ -18811,11 +18812,11 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if let Some(ready) = payload.set.ready {
-                    if ready.username.as_deref() == Some(" ") {
-                        target_ready_payload = Some(ready);
-                        break;
-                    }
+                if let Some(ready) = payload.set.ready
+                    && ready.username.as_deref() == Some(" ")
+                {
+                    target_ready_payload = Some(ready);
+                    break;
                 }
             }
             let Some(ready_payload) = target_ready_payload else {
@@ -18951,10 +18952,10 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if let Some(ready) = payload.set.ready {
-                    if ready.username.is_none() {
-                        local_ready_updates.push((ready.is_ready, ready.manually_initiated));
-                    }
+                if let Some(ready) = payload.set.ready
+                    && ready.username.is_none()
+                {
+                    local_ready_updates.push((ready.is_ready, ready.manually_initiated));
                 }
             }
 

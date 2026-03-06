@@ -593,29 +593,29 @@ fn run_gui_semantic_external_script(
                 format!("failed to parse semantic scenario script {script_source_label}: {error}")
             })?;
     let mut report = run_gui_semantic_scenario(scenario)?;
-    if let Some(expected_view) = metadata.expected_view.as_deref() {
-        if report.view != expected_view {
-            return Err(format!(
-                "semantic scenario script {script_source_label} expected final view {expected_view:?}, got {:?}",
-                report.view
-            ));
-        }
+    if let Some(expected_view) = metadata.expected_view.as_deref()
+        && report.view != expected_view
+    {
+        return Err(format!(
+            "semantic scenario script {script_source_label} expected final view {expected_view:?}, got {:?}",
+            report.view
+        ));
     }
-    if let Some(expected_modal) = metadata.expected_modal.as_deref() {
-        if report.modal != expected_modal {
-            return Err(format!(
-                "semantic scenario script {script_source_label} expected final modal {expected_modal:?}, got {:?}",
-                report.modal
-            ));
-        }
+    if let Some(expected_modal) = metadata.expected_modal.as_deref()
+        && report.modal != expected_modal
+    {
+        return Err(format!(
+            "semantic scenario script {script_source_label} expected final modal {expected_modal:?}, got {:?}",
+            report.modal
+        ));
     }
-    if let Some(expected_pending) = metadata.expected_pending.as_deref() {
-        if report.pending != expected_pending {
-            return Err(format!(
-                "semantic scenario script {script_source_label} expected final pending {expected_pending:?}, got {:?}",
-                report.pending
-            ));
-        }
+    if let Some(expected_pending) = metadata.expected_pending.as_deref()
+        && report.pending != expected_pending
+    {
+        return Err(format!(
+            "semantic scenario script {script_source_label} expected final pending {expected_pending:?}, got {:?}",
+            report.pending
+        ));
     }
     if let Some(scenario_name) = metadata.scenario_name {
         report.scenario = scenario_name;

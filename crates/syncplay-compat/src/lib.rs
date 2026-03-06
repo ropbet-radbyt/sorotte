@@ -889,13 +889,12 @@ fn prepare_legacy_server_request_line(request_line: &str) -> Result<String, Inte
     if let Some(hello) = request_value
         .get_mut("Hello")
         .and_then(Value::as_object_mut)
+        && !hello.contains_key("features")
     {
-        if !hello.contains_key("features") {
-            hello.insert(
-                "features".to_owned(),
-                json!({ LEGACY_COMPAT_MISSING_FEATURES_MARKER: true }),
-            );
-        }
+        hello.insert(
+            "features".to_owned(),
+            json!({ LEGACY_COMPAT_MISSING_FEATURES_MARKER: true }),
+        );
     }
     Ok(serde_json::to_string(&request_value)?)
 }
@@ -2721,21 +2720,20 @@ mod tests {
                 );
             }
         }
-        if let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut) {
-            if let Some(users) = set_payload.get_mut("user").and_then(Value::as_object_mut) {
-                for user_payload in users.values_mut() {
-                    let Some(user_object) = user_payload.as_object_mut() else {
-                        continue;
-                    };
-                    if let Some(event) = user_object.get_mut("event").and_then(Value::as_object_mut)
-                    {
-                        if options.normalize_set_user_event_features {
-                            event.remove("features");
-                        }
-                    }
-                    if options.normalize_set_user_features {
-                        user_object.remove("features");
-                    }
+        if let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut)
+            && let Some(users) = set_payload.get_mut("user").and_then(Value::as_object_mut)
+        {
+            for user_payload in users.values_mut() {
+                let Some(user_object) = user_payload.as_object_mut() else {
+                    continue;
+                };
+                if let Some(event) = user_object.get_mut("event").and_then(Value::as_object_mut)
+                    && options.normalize_set_user_event_features
+                {
+                    event.remove("features");
+                }
+                if options.normalize_set_user_features {
+                    user_object.remove("features");
                 }
             }
         }
@@ -2751,11 +2749,11 @@ mod tests {
                     if options.normalize_list_features {
                         user_object.remove("features");
                     }
-                    if let Some(position_value) = user_object.get_mut("position") {
-                        if let Some(position) = position_value.as_f64() {
-                            let rounded_position = (position * 1000.0).round() / 1000.0;
-                            *position_value = Value::from(rounded_position);
-                        }
+                    if let Some(position_value) = user_object.get_mut("position")
+                        && let Some(position) = position_value.as_f64()
+                    {
+                        let rounded_position = (position * 1000.0).round() / 1000.0;
+                        *position_value = Value::from(rounded_position);
                     }
                     if options.normalize_list_position {
                         user_object.remove("position");
@@ -2777,20 +2775,18 @@ mod tests {
             if let Some(playstate) = state_payload
                 .get_mut("playstate")
                 .and_then(Value::as_object_mut)
+                && let Some(position_value) = playstate.get_mut("position")
+                && let Some(position) = position_value.as_f64()
             {
-                if let Some(position_value) = playstate.get_mut("position") {
-                    if let Some(position) = position_value.as_f64() {
-                        let rounded_position = (position * 1000.0).round() / 1000.0;
-                        *position_value = Value::from(rounded_position);
-                    }
-                }
+                let rounded_position = (position * 1000.0).round() / 1000.0;
+                *position_value = Value::from(rounded_position);
             }
             if let Some(ping) = state_payload.get_mut("ping").and_then(Value::as_object_mut) {
-                if let Some(latency_value) = ping.get_mut("latencyCalculation") {
-                    if let Some(latency) = latency_value.as_f64() {
-                        let rounded_latency = (latency * 1000.0).round() / 1000.0;
-                        *latency_value = Value::from(rounded_latency);
-                    }
+                if let Some(latency_value) = ping.get_mut("latencyCalculation")
+                    && let Some(latency) = latency_value.as_f64()
+                {
+                    let rounded_latency = (latency * 1000.0).round() / 1000.0;
+                    *latency_value = Value::from(rounded_latency);
                 }
                 if options.normalize_ping_latency_calculation
                     && ping.contains_key("latencyCalculation")
@@ -2800,18 +2796,18 @@ mod tests {
                         Value::String("__normalized_latency__".to_owned()),
                     );
                 }
-                if let Some(client_latency_value) = ping.get_mut("clientLatencyCalculation") {
-                    if let Some(client_latency) = client_latency_value.as_f64() {
-                        let canonical_client_latency =
-                            if options.normalize_ping_client_latency_calculation {
-                                (client_latency * 1000.0).round() / 1000.0
-                            } else {
-                                // Legacy server mutates this field slightly in-flight; compare at
-                                // a stable tenth-second granularity when preserving the value.
-                                (client_latency * 10.0).trunc() / 10.0
-                            };
-                        *client_latency_value = Value::from(canonical_client_latency);
-                    }
+                if let Some(client_latency_value) = ping.get_mut("clientLatencyCalculation")
+                    && let Some(client_latency) = client_latency_value.as_f64()
+                {
+                    let canonical_client_latency =
+                        if options.normalize_ping_client_latency_calculation {
+                            (client_latency * 1000.0).round() / 1000.0
+                        } else {
+                            // Legacy server mutates this field slightly in-flight; compare at
+                            // a stable tenth-second granularity when preserving the value.
+                            (client_latency * 10.0).trunc() / 10.0
+                        };
+                    *client_latency_value = Value::from(canonical_client_latency);
                 }
                 if options.normalize_ping_client_latency_calculation
                     && ping.contains_key("clientLatencyCalculation")
@@ -2821,11 +2817,11 @@ mod tests {
                         Value::String("__normalized_client_latency__".to_owned()),
                     );
                 }
-                if let Some(client_rtt_value) = ping.get_mut("clientRtt") {
-                    if let Some(client_rtt) = client_rtt_value.as_f64() {
-                        let rounded_client_rtt = (client_rtt * 1000.0).round() / 1000.0;
-                        *client_rtt_value = Value::from(rounded_client_rtt);
-                    }
+                if let Some(client_rtt_value) = ping.get_mut("clientRtt")
+                    && let Some(client_rtt) = client_rtt_value.as_f64()
+                {
+                    let rounded_client_rtt = (client_rtt * 1000.0).round() / 1000.0;
+                    *client_rtt_value = Value::from(rounded_client_rtt);
                 }
                 if options.normalize_ping_client_rtt && ping.contains_key("clientRtt") {
                     ping.insert(
@@ -2833,11 +2829,11 @@ mod tests {
                         Value::String("__normalized_client_rtt__".to_owned()),
                     );
                 }
-                if let Some(server_rtt_value) = ping.get_mut("serverRtt") {
-                    if let Some(server_rtt) = server_rtt_value.as_f64() {
-                        let rounded_server_rtt = (server_rtt * 1000.0).round() / 1000.0;
-                        *server_rtt_value = Value::from(rounded_server_rtt);
-                    }
+                if let Some(server_rtt_value) = ping.get_mut("serverRtt")
+                    && let Some(server_rtt) = server_rtt_value.as_f64()
+                {
+                    let rounded_server_rtt = (server_rtt * 1000.0).round() / 1000.0;
+                    *server_rtt_value = Value::from(rounded_server_rtt);
                 }
                 if options.normalize_ping_server_rtt && ping.contains_key("serverRtt") {
                     ping.insert(
@@ -5440,13 +5436,12 @@ mod tests {
                                 saw_bob_room2_update_to_alice = true;
                             }
                         }
-                        if let Some(ready) = payload.set.ready.as_ref() {
-                            if outbound.client_id == "client-2"
-                                && ready.username.as_deref() == Some("alice")
-                                && ready.is_ready
-                            {
-                                saw_ready_broadcast_to_bob = true;
-                            }
+                        if let Some(ready) = payload.set.ready.as_ref()
+                            && outbound.client_id == "client-2"
+                            && ready.username.as_deref() == Some("alice")
+                            && ready.is_ready
+                        {
+                            saw_ready_broadcast_to_bob = true;
                         }
                     }
                     ProtocolMessage::State(payload) => {
@@ -6351,29 +6346,26 @@ mod tests {
                     .expect("fanout output line should decode as protocol message");
                 match message {
                     ProtocolMessage::Set(payload) => {
-                        if let Some(playlist_change) = payload.set.playlist_change.as_ref() {
-                            if playlist_change.user.as_deref() == Some("alice")
-                                && playlist_change.files == vec!["episode1.mkv", "episode2.mkv"]
-                            {
-                                saw_playlist_change_broadcast = true;
-                            }
+                        if let Some(playlist_change) = payload.set.playlist_change.as_ref()
+                            && playlist_change.user.as_deref() == Some("alice")
+                            && playlist_change.files == vec!["episode1.mkv", "episode2.mkv"]
+                        {
+                            saw_playlist_change_broadcast = true;
                         }
 
-                        if let Some(playlist_index) = payload.set.playlist_index.as_ref() {
-                            if playlist_index.user.as_deref() == Some("bob")
-                                && playlist_index.index == 1
-                            {
-                                saw_playlist_index_broadcast = true;
-                            }
+                        if let Some(playlist_index) = payload.set.playlist_index.as_ref()
+                            && playlist_index.user.as_deref() == Some("bob")
+                            && playlist_index.index == 1
+                        {
+                            saw_playlist_index_broadcast = true;
                         }
 
-                        if let Some(controller_auth) = payload.set.controller_auth.as_ref() {
-                            if controller_auth.user.as_deref() == Some("alice")
-                                && controller_auth.room.as_deref() == Some("room1")
-                                && controller_auth.success == Some(false)
-                            {
-                                saw_controller_auth_broadcast = true;
-                            }
+                        if let Some(controller_auth) = payload.set.controller_auth.as_ref()
+                            && controller_auth.user.as_deref() == Some("alice")
+                            && controller_auth.room.as_deref() == Some("room1")
+                            && controller_auth.success == Some(false)
+                        {
+                            saw_controller_auth_broadcast = true;
                         }
                     }
                     ProtocolMessage::List(payload) => {

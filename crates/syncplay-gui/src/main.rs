@@ -2369,10 +2369,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             state.main_window.playback.can_toggle_pause || state.main_window.playback.can_seek;
         snapshot.can_manage_playlist =
             snapshot.shared_playlist_enabled && playback_runtime_available;
-        if let Some(playstate) = session.current_room_playstate() {
-            if let Some(paused) = playstate.paused {
-                snapshot.playback_paused = paused;
-            }
+        if let Some(playstate) = session.current_room_playstate()
+            && let Some(paused) = playstate.paused
+        {
+            snapshot.playback_paused = paused;
         }
         if session.server_chat_supported().is_none() {
             snapshot.can_set_ready = false;
@@ -2606,10 +2606,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 .map(|snapshot| snapshot.shared_playlist_enabled)
                 .unwrap_or(state.main_window.shared_playlist_enabled),
         );
-        if let Some(snapshot) = main_window_runtime_snapshot {
-            if snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window) {
-                actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
-            }
+        if let Some(snapshot) = main_window_runtime_snapshot
+            && snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window)
+        {
+            actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
         }
         if let Some(snapshot) = interaction_runtime_snapshot {
             actions.push(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot));
@@ -3469,13 +3469,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 main_window_changed = true;
             }
         }
-        if player_attached {
-            if let Some(paused) = self.player_paused {
-                if desired_main_window.playback_paused != paused {
-                    desired_main_window.playback_paused = paused;
-                    main_window_changed = true;
-                }
-            }
+        if player_attached
+            && let Some(paused) = self.player_paused
+            && desired_main_window.playback_paused != paused
+        {
+            desired_main_window.playback_paused = paused;
+            main_window_changed = true;
         }
         if main_window_changed {
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -3679,13 +3678,13 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     }
                 }
                 GuiRuntimeRequest::SetLocalReady(ready) => {
-                    if let Some(session) = self.session.as_mut() {
-                        if let Err(error) = session.set_local_ready(ready) {
-                            handle.push_action(GuiShellAction::PushTransientNotification {
-                                level: GuiTransientNotificationLevel::Error,
-                                message: error,
-                            });
-                        }
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_local_ready(ready)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
                     }
                 }
                 GuiRuntimeRequest::CompletePendingOperation(

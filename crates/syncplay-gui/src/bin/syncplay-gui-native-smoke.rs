@@ -1526,12 +1526,12 @@ fn unique_suffix() -> u128 {
 }
 
 fn default_binary_path() -> PathBuf {
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            let candidate = parent.join("syncplay-gui.exe");
-            if candidate.exists() {
-                return candidate;
-            }
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        let candidate = parent.join("syncplay-gui.exe");
+        if candidate.exists() {
+            return candidate;
         }
     }
     PathBuf::from("target")
@@ -2209,13 +2209,13 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         }
     }
     let password_value = driver.get_edit_value_by_index(window, 4)?;
-    if !password_value.is_empty() {
-        if let Err(error) = driver.set_edit_value_by_index(window, 4, "") {
-            steps.push(format!(
-                "config-password-set-skipped:{}",
-                error.replace('|', "/").replace('\n', " ")
-            ));
-        }
+    if !password_value.is_empty()
+        && let Err(error) = driver.set_edit_value_by_index(window, 4, "")
+    {
+        steps.push(format!(
+            "config-password-set-skipped:{}",
+            error.replace('|', "/").replace('\n', " ")
+        ));
     }
     if let Err(error) =
         wait_for_edit_value_by_index(driver, window, 0, CONFIG_HOST_VALUE, step_timeout)
@@ -2856,28 +2856,26 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             "Open Media File",
             NativeControlKind::MenuItem,
             step_timeout,
+        ) && let Err(fallback_error) = invoke_menu_command_with_wait(
+            driver,
+            window,
+            "File",
+            "Open Media File",
+            NativeControlKind::Any,
+            step_timeout,
         ) {
-            if let Err(fallback_error) = invoke_menu_command_with_wait(
+            invoke_named_control_with_wait(
                 driver,
                 window,
-                "File",
                 "Open Media File",
                 NativeControlKind::Any,
                 step_timeout,
-            ) {
-                invoke_named_control_with_wait(
-                    driver,
-                    window,
-                    "Open Media File",
-                    NativeControlKind::Any,
-                    step_timeout,
+            )
+            .map_err(|control_error| {
+                format!(
+                    "failed to invoke File->Open Media File after relaunch through menu item ({primary_error}); menu fallback failed ({fallback_error}); direct control fallback also failed: {control_error}"
                 )
-                .map_err(|control_error| {
-                    format!(
-                        "failed to invoke File->Open Media File after relaunch through menu item ({primary_error}); menu fallback failed ({fallback_error}); direct control fallback also failed: {control_error}"
-                    )
-                })?;
-            }
+            })?;
         }
         wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         wait_for_accessible_name(
