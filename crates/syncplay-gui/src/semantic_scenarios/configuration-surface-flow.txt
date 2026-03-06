@@ -6,7 +6,12 @@ enter-text	config:Connection:Host	false	syncplay.example
 enter-text	config:Connection:Port	false	8999
 enter-text	config:Connection:Username	false	smoke-user
 enter-text	config:Connection:Room	false	smoke-room
+enter-text	config:Privacy:Trusted Domains	false	youtube.com; *.example.com/videos
+activate	config:Privacy:Trusted Domains Only
 assert-value	config:Connection:Host	syncplay.example
+assert-value	config:Privacy:Trusted Domains	youtube.com; *.example.com/videos
+assert-value	config:Privacy:Trusted Domains Only	yes
+assert-value	config:Privacy:Trusted Domain Count	2
 activate	config-command:save
 assert-pending	save-configuration
 complete-pending

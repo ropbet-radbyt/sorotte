@@ -24,6 +24,7 @@ use syncplay_client_app::app_boundary::{
     persistence::{
         load_syncplay_ini_stored_client_settings_mvp_from_path,
         parse_serialized_public_servers_list_legacy_compatible,
+        parse_serialized_string_list_legacy_compatible,
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
     state::{
@@ -85,6 +86,7 @@ struct GuiPrivacySection {
     filename_privacy_mode_label: String,
     filesize_privacy_mode_label: String,
     only_switch_to_trusted_domains: bool,
+    trusted_domains_label: String,
     trusted_domain_count: usize,
 }
 
@@ -5049,6 +5051,9 @@ impl FirstRunConfigurationDialogState {
                 only_switch_to_trusted_domains: settings
                     .only_switch_to_trusted_domains
                     .unwrap_or(false),
+                trusted_domains_label: optional_string_list_text(
+                    settings.trusted_domains.as_deref(),
+                ),
                 trusted_domain_count: settings.trusted_domains.as_ref().map_or(0, Vec::len),
             },
             desync: GuiDesyncSection {
@@ -5216,6 +5221,11 @@ impl FirstRunConfigurationDialogState {
                         label: "Trusted Domains Only",
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.privacy.only_switch_to_trusted_domains).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Trusted Domains",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: self.privacy.trusted_domains_label.clone(),
                     },
                     GuiDialogControl {
                         label: "Trusted Domain Count",
@@ -5434,6 +5444,7 @@ impl FirstRunConfigurationDialogDraft {
 
         control.value = value.to_owned();
         let normalized = normalized_editable_text(value);
+        let mut trusted_domain_count = None;
 
         match (section_title, label) {
             ("Connection", "Host") => {
@@ -5473,6 +5484,11 @@ impl FirstRunConfigurationDialogDraft {
                 self.settings.filesize_privacy_mode = normalized
                     .as_deref()
                     .and_then(PrivacyMode::from_legacy_name);
+            }
+            ("Privacy", "Trusted Domains") => {
+                let parsed = normalized.as_deref().and_then(parse_trusted_domains_text);
+                trusted_domain_count = Some(parsed.as_ref().map_or(0, Vec::len));
+                self.settings.trusted_domains = parsed;
             }
             ("Desync", "Rewind Threshold") => {
                 self.settings.rewind_threshold_seconds =
@@ -5519,6 +5535,16 @@ impl FirstRunConfigurationDialogDraft {
                     .map(str::to_owned);
             }
             _ => {}
+        }
+
+        if let Some(count) = trusted_domain_count
+            && let Some(count_control) = self
+                .sections
+                .iter_mut()
+                .find(|section| section.title == "Privacy")
+                .and_then(|section| section.control_mut("Trusted Domain Count"))
+        {
+            count_control.value = count.to_string();
         }
 
         true
@@ -10888,6 +10914,13 @@ impl SyncplayGuiShellAppState {
             |value| PrivacyMode::from_legacy_name(value).is_some(),
             "must be a supported privacy mode.",
         );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Privacy",
+            "Trusted Domains",
+            |value| parse_trusted_domains_text(value).is_some(),
+            "must be a comma/semicolon-separated list or legacy bracketed list.",
+        );
         for (section, label) in [
             ("Desync", "Rewind Threshold"),
             ("Desync", "Fastforward Threshold"),
@@ -11607,6 +11640,24 @@ fn optional_text(value: Option<&str>) -> &str {
         .unwrap_or("(unset)")
 }
 
+fn optional_string_list_text(value: Option<&[String]>) -> String {
+    value
+        .filter(|entries| !entries.is_empty())
+        .map(|entries| entries.join("; "))
+        .unwrap_or_else(|| "(unset)".to_owned())
+}
+
+fn parse_trusted_domains_text(value: &str) -> Option<Vec<String>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('[') != trimmed.ends_with(']') {
+        return None;
+    }
+    parse_serialized_string_list_legacy_compatible(trimmed)
+}
+
 fn optional_port_text(value: Option<u16>) -> String {
     value.map_or_else(|| "(unset)".to_owned(), |value| value.to_string())
 }
@@ -11838,6 +11889,10 @@ mod tests {
         assert_eq!(state.readiness.autoplay_min_users_label, "3");
         assert_eq!(state.privacy.filename_privacy_mode_label, "SendHashed");
         assert_eq!(state.privacy.filesize_privacy_mode_label, "DoNotSend");
+        assert_eq!(
+            state.privacy.trusted_domains_label,
+            "example.org; syncplay.pl"
+        );
         assert_eq!(state.privacy.trusted_domain_count, 2);
         assert_eq!(state.media_search.media_directory_count, 2);
         assert_eq!(
@@ -11881,6 +11936,13 @@ mod tests {
         assert!(readiness.controls.iter().any(|control| {
             control.label == "Unpause Action" && control.kind == GuiDialogControlKind::Select
         }));
+        let privacy = sections
+            .iter()
+            .find(|section| section.title == "Privacy")
+            .expect("privacy section should exist");
+        assert!(privacy.controls.iter().any(|control| {
+            control.label == "Trusted Domains" && control.kind == GuiDialogControlKind::TextInput
+        }));
     }
 
     #[test]
@@ -11895,6 +11957,11 @@ mod tests {
         assert!(draft.apply_bool_value("Readiness", "Autoplay", true));
         assert!(draft.apply_text_value("Readiness", "Unpause Action", "Always"));
         assert!(draft.apply_text_value("Readiness", "Autoplay Min Users", "3"));
+        assert!(draft.apply_text_value(
+            "Privacy",
+            "Trusted Domains",
+            "youtube.com; *.example.com/videos"
+        ));
         assert!(draft.apply_text_value("System", "Language", "pt-br"));
 
         let saved = draft.to_stored_settings();
@@ -11907,7 +11974,18 @@ mod tests {
             saved.autoplay_min_users,
             Some(AutoplayThresholdOverride::Set(3))
         );
+        assert_eq!(
+            saved.trusted_domains,
+            Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned()
+            ])
+        );
         assert_eq!(saved.language.as_deref(), Some("pt_BR"));
+        assert_eq!(
+            draft.control_value("Privacy", "Trusted Domain Count"),
+            Some("2")
+        );
     }
 
     #[test]
@@ -17136,6 +17214,35 @@ mod tests {
     }
 
     #[test]
+    fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Privacy",
+            label: "Trusted Domains",
+            value: "['trusted.example',".to_owned(),
+        }));
+
+        assert!(
+            state
+                .validation
+                .issues
+                .iter()
+                .any(|issue| issue.scope == "Privacy" && issue.label == "Trusted Domains")
+        );
+        assert!(
+            state.render_lines().join("\n").contains(
+                "Privacy / Trusted Domains: must be a comma/semicolon-separated list or legacy bracketed list."
+            )
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().trusted_domains,
+            None
+        );
+    }
+
+    #[test]
     fn gui_shell_app_state_tracks_action_errors_for_rejected_inputs() {
         let mut state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
@@ -18182,6 +18289,20 @@ mod tests {
             Some("syncplay.example")
         );
         assert_eq!(driver.state().saved_configuration.port, Some(8999));
+        assert_eq!(
+            driver
+                .state()
+                .saved_configuration
+                .only_switch_to_trusted_domains,
+            Some(true)
+        );
+        assert_eq!(
+            driver.state().saved_configuration.trusted_domains,
+            Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned()
+            ])
+        );
         assert!(
             driver
                 .widget("public-servers:row:0")
@@ -18638,6 +18759,9 @@ assert-pending\tnone\n"
         let autoplay = configuration_tree
             .find("config:Readiness:Autoplay")
             .unwrap();
+        let trusted_domains = configuration_tree
+            .find("config:Privacy:Trusted Domains")
+            .unwrap();
         let unpause_action = configuration_tree
             .find("config:Readiness:Unpause Action")
             .unwrap();
@@ -18663,6 +18787,20 @@ assert-pending\tnone\n"
                 label: "Autoplay",
                 value: true,
             })
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &state,
+                trusted_domains,
+                "youtube.com; *.example.com/videos",
+                true,
+                false,
+            ),
+            Some(vec![GuiShellAction::EditConfigurationText {
+                section: "Privacy",
+                label: "Trusted Domains",
+                value: "youtube.com; *.example.com/videos".to_owned(),
+            }])
         );
         assert_eq!(
             GuiWidgetEguiRenderer::configuration_select_options_for_node(&state, unpause_action),

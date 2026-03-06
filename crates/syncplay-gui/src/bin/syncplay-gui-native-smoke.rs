@@ -126,6 +126,8 @@ const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
 const CONFIG_ROOM_VALUE: &str = "smoke-room";
 const CONFIG_PLAYER_PATH_VALUE: &str = "C:\\Windows\\System32\\notepad.exe";
+const TRUSTED_DOMAINS_EDIT_INDEX: usize = 6;
+const TRUSTED_DOMAINS_VALUE: &str = "youtube.com; *.example.com/videos";
 const CUSTOM_SERVER_LABEL: &str = "Custom";
 const CUSTOM_SERVER_HOST: &str = "custom.example";
 const CUSTOM_SERVER_PORT: &str = "9001";
@@ -2210,6 +2212,21 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             driver.set_edit_value_by_index(window, edit_index, expected_value)?;
         }
     }
+    driver.set_edit_value_by_index(window, TRUSTED_DOMAINS_EDIT_INDEX, TRUSTED_DOMAINS_VALUE)?;
+    wait_for_edit_value_by_index(
+        driver,
+        window,
+        TRUSTED_DOMAINS_EDIT_INDEX,
+        TRUSTED_DOMAINS_VALUE,
+        step_timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Trusted Domains Only",
+        NativeControlKind::Any,
+        step_timeout,
+    )?;
     let password_value = driver.get_edit_value_by_index(window, 4)?;
     if !password_value.is_empty()
         && let Err(error) = driver.set_edit_value_by_index(window, 4, "")
@@ -2265,11 +2282,16 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             "name = smoke-user",
             "room = smoke-room",
             "playerPath = C:\\Windows\\System32\\notepad.exe",
+            "onlySwitchToTrustedDomains = True",
+            "trustedDomains = ['youtube.com', '*.example.com/videos']",
         ],
         config_persist_timeout,
     );
     match config_persist_result {
-        Ok(()) => steps.push("config-save-persisted".to_owned()),
+        Ok(()) => {
+            steps.push("config-save-persisted".to_owned());
+            steps.push("trusted-domains-configured".to_owned());
+        }
         Err(error) => steps.push(format!(
             "config-save-persisted-skipped:{}",
             error.replace('|', "/").replace('\n', " ")
@@ -2772,19 +2794,25 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             )
         })?
         .unwrap_or_default();
+    let expected_trusted_domains =
+        vec!["youtube.com".to_owned(), "*.example.com/videos".to_owned()];
     if persisted_settings.host.as_deref() != Some(CONFIG_HOST_VALUE)
         || persisted_settings.port != Some(CONFIG_PORT_VALUE.parse().unwrap())
         || persisted_settings.username.as_deref() != Some(CONFIG_USERNAME_VALUE)
         || persisted_settings.room.as_deref() != Some(CONFIG_ROOM_VALUE)
         || persisted_settings.player_path.as_deref() != Some(CONFIG_PLAYER_PATH_VALUE)
+        || persisted_settings.only_switch_to_trusted_domains != Some(true)
+        || persisted_settings.trusted_domains.as_ref() != Some(&expected_trusted_domains)
     {
         return Err(format!(
-            "reloaded configuration file did not retain saved connection values before relaunch: host={:?}, port={:?}, username={:?}, room={:?}, player_path={:?}; file contents:\n{}",
+            "reloaded configuration file did not retain saved connection/trusted-domain values before relaunch: host={:?}, port={:?}, username={:?}, room={:?}, player_path={:?}, only_switch_to_trusted_domains={:?}, trusted_domains={:?}; file contents:\n{}",
             persisted_settings.host,
             persisted_settings.port,
             persisted_settings.username,
             persisted_settings.room,
             persisted_settings.player_path,
+            persisted_settings.only_switch_to_trusted_domains,
+            persisted_settings.trusted_domains,
             persisted_contents,
         ));
     }
@@ -2835,6 +2863,14 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_edit_value_by_index(driver, window, index, expected_value, step_timeout)?;
         }
         steps.push("config-reload-persisted".to_owned());
+        wait_for_edit_value_by_index(
+            driver,
+            window,
+            TRUSTED_DOMAINS_EDIT_INDEX,
+            TRUSTED_DOMAINS_VALUE,
+            step_timeout,
+        )?;
+        steps.push("trusted-domains-persisted".to_owned());
 
         if let Err(error) = invoke_named_control_with_wait(
             driver,

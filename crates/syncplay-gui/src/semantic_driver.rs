@@ -536,6 +536,12 @@ impl GuiSemanticDriver {
             GuiWidgetKind::Panel => GuiWidgetEguiRenderer::action_for_surface_node(&widget)
                 .into_iter()
                 .collect::<Vec<_>>(),
+            GuiWidgetKind::Checkbox => {
+                let next_value = widget.value.as_deref() != Some("yes");
+                GuiWidgetEguiRenderer::action_for_checkbox_node(&self.state, &widget, next_value)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            }
             GuiWidgetKind::Button => {
                 if widget.id == "media-search:command:browse" {
                     return Err(
