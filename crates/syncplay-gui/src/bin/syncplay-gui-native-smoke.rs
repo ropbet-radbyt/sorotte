@@ -118,6 +118,8 @@ const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
 const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str = "+interop-room:447CE7E3548D:AB-123-456";
 const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
+const LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE: &str = "hello again from gui";
+const LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE: &str = "hello again from python";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
@@ -3423,6 +3425,83 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 format!("python reference peer did not confirm its playlist index update: {error}")
             })?;
         steps.push("transport-python-peer-playlist-peer-to-local".to_owned());
+
+        python_harness
+            .disconnect_peer()
+            .map_err(|error| format!("failed to disconnect Python reference peer: {error}"))?;
+        wait_for_named_control_count(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            NativeControlKind::Any,
+            0,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-disconnect".to_owned());
+
+        python_harness
+            .start_peer_connected()
+            .map_err(|error| format!("failed to reconnect live Python reference peer: {error}"))?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-reconnect".to_owned());
+
+        send_chat_message_and_complete(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        wait_for_visible_chat_message(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_observed_chat_message(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not observe local post-reconnect chat message: {error}")
+            })?;
+        steps.push("transport-python-peer-reconnect-local-to-peer".to_owned());
+
+        python_harness
+            .send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE)
+            .map_err(|error| {
+                format!("failed to send Python reference peer reconnect chat: {error}")
+            })?;
+        python_harness
+            .wait_for_peer_observed_chat_message(
+                LIVE_PYTHON_INTEROP_PEER_USERNAME,
+                LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not confirm its reconnect chat echo: {error}")
+            })?;
+        wait_for_visible_chat_message(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
+            LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-reconnect-peer-to-local".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;

@@ -22,6 +22,8 @@ pub(crate) const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str =
     "+interop-room:447CE7E3548D:AB-123-456";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE: &str = "hello again from gui";
+pub(crate) const LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE: &str = "hello again from python";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
@@ -36,6 +38,8 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub peer_user_present: bool,
     pub local_user_ready: bool,
     pub peer_user_ready: bool,
+    pub peer_disconnect_observed: bool,
+    pub peer_reconnect_observed: bool,
     pub gui_playlist: Vec<String>,
     pub gui_playlist_index: Option<usize>,
     pub peer_playlist: Vec<String>,
@@ -284,7 +288,61 @@ fn run_live_python_peer_connect_flow_with_harness(
     wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &peer_playlist, Some(1))?;
 
+    let mut peer_chat_messages = harness.peer_snapshot()?.chat_messages;
+    harness.disconnect_peer()?;
+    wait_for_projected_user_absence(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+    )?;
+    let peer_disconnect_observed = true;
+
+    harness.start_peer_connected()?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
+    let peer_reconnect_observed = true;
+
+    request_local_chat_send(
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+    )?;
+    wait_for_projected_chat_message(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+    )?;
+    wait_for_peer_observed_chat_message(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
+        Duration::from_secs(3),
+    )?;
+
+    harness.send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE)?;
+    wait_for_peer_observed_chat_message(
+        harness,
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE,
+        Duration::from_secs(3),
+    )?;
+    wait_for_projected_chat_message(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE,
+    )?;
+
     let peer_snapshot = harness.peer_snapshot()?;
+    merge_peer_chat_messages(&mut peer_chat_messages, peer_snapshot.chat_messages.clone());
     state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
     Ok(LivePythonPeerInteropResult {
         room_name: state.main_window.room_name.clone(),
@@ -292,6 +350,8 @@ fn run_live_python_peer_connect_flow_with_harness(
         peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
         local_user_ready: local_user_ready(&state).unwrap_or(false),
         peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        peer_disconnect_observed,
+        peer_reconnect_observed,
         gui_playlist: gui_playlist(&state),
         gui_playlist_index: state.selection.selected_main_window_playlist,
         peer_playlist: peer_snapshot.playlist,
@@ -305,7 +365,7 @@ fn run_live_python_peer_connect_flow_with_harness(
                 message: row.message.clone(),
             })
             .collect(),
-        peer_chat_messages: peer_snapshot.chat_messages,
+        peer_chat_messages,
         widget_count: state.shell_widget_tree().node_count(),
     })
 }
@@ -577,6 +637,40 @@ fn wait_for_projected_chat_message(
     }
 }
 
+fn wait_for_projected_user_absence(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    username: &str,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+        if local_user_ready(state).is_some() && peer_user_ready(state, username).is_none() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let projected_users = state
+                .main_window
+                .users
+                .iter()
+                .map(|user| {
+                    format!(
+                        "{}(self={}, ready={}, controller={})",
+                        user.username, user.is_self, user.is_ready, user.is_controller
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer disconnect projection; username={username:?}, room={:?}, users=[{}]",
+                state.main_window.room_name, projected_users
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
 fn wait_for_playlist_controls(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
@@ -764,4 +858,15 @@ fn gui_playlist(state: &SyncplayGuiShellAppState) -> Vec<String> {
         .iter()
         .map(|row| row.label.clone())
         .collect()
+}
+
+fn merge_peer_chat_messages(
+    destination: &mut Vec<LegacyPythonPeerChatMessage>,
+    additional: Vec<LegacyPythonPeerChatMessage>,
+) {
+    for message in additional {
+        if !destination.iter().any(|existing| existing == &message) {
+            destination.push(message);
+        }
+    }
 }

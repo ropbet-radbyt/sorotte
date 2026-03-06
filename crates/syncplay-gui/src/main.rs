@@ -19356,8 +19356,8 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation.\""));
-        assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, and playlist flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
         assert!(described.contains("\"name\":\"live-python-peer-controlled-room-flow\""));
         assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
         assert!(described.contains("\"script\":\"# Live Python reference-peer controlled-room flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\t+interop-room:447CE7E3548D:AB-123-456\\nsetting\\tshared-playlist-enabled\\ttrue"));
@@ -22333,6 +22333,8 @@ assert-pending\tnone\n"
         );
         assert!(result.local_user_present);
         assert!(result.peer_user_present);
+        assert!(result.peer_disconnect_observed);
+        assert!(result.peer_reconnect_observed);
         assert_eq!(
             result.gui_playlist,
             vec![
@@ -22359,6 +22361,16 @@ assert-pending\tnone\n"
                 && message.message
                     == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE
         }));
+        assert!(result.gui_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE
+        }));
+        assert!(result.gui_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE
+        }));
         assert!(result.peer_chat_messages.iter().any(|message| {
             message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
                 && message.message
@@ -22368,6 +22380,16 @@ assert-pending\tnone\n"
             message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_USERNAME
                 && message.message
                     == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE
+        }));
+        assert!(result.peer_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE
+        }));
+        assert!(result.peer_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE
         }));
         assert!(result.widget_count > 0);
     }

@@ -1547,30 +1547,14 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
+    pub fn disconnect_peer(&mut self) -> Result<(), InteropError> {
+        self.stop_peer_process()
+    }
+
     pub fn shutdown(mut self) -> Result<(), InteropError> {
         let mut errors = Vec::new();
-        if let Some(stdin) = self.peer_stdin.take() {
-            drop(stdin);
-        }
-        if let Some(mut peer_child) = self.peer_child.take() {
-            match wait_for_child_exit_with_timeout(&mut peer_child, Duration::from_secs(1)) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if let Err(error) = peer_child.kill() {
-                        errors.push(format!(
-                            "failed to terminate python live peer process: {error}"
-                        ));
-                    }
-                    if let Err(error) = peer_child.wait() {
-                        errors.push(format!(
-                            "failed to wait for python live peer process exit after kill: {error}"
-                        ));
-                    }
-                }
-                Err(error) => errors.push(format!(
-                    "failed to wait for python live peer process exit before kill: {error}"
-                )),
-            }
+        if let Err(error) = self.stop_peer_process() {
+            errors.push(error.to_string());
         }
         terminate_legacy_server_process(&mut self.server_child);
         if errors.is_empty() {
@@ -1715,6 +1699,41 @@ impl LegacyServerPythonPeerHarness {
             self.wait_for_peer_connected(Duration::from_secs(3))?;
         }
         Ok(())
+    }
+
+    fn stop_peer_process(&mut self) -> Result<(), InteropError> {
+        let mut errors = Vec::new();
+        if let Some(stdin) = self.peer_stdin.take() {
+            drop(stdin);
+        }
+        if let Some(mut peer_child) = self.peer_child.take() {
+            match wait_for_child_exit_with_timeout(&mut peer_child, Duration::from_secs(1)) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(error) = peer_child.kill() {
+                        errors.push(format!(
+                            "failed to terminate python live peer process: {error}"
+                        ));
+                    }
+                    if let Err(error) = peer_child.wait() {
+                        errors.push(format!(
+                            "failed to wait for python live peer process exit after kill: {error}"
+                        ));
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "failed to wait for python live peer process exit before kill: {error}"
+                )),
+            }
+        }
+        self.peer_status_rx = None;
+        self.peer_stdout_lines = Arc::new(Mutex::new(Vec::new()));
+        self.peer_stderr_lines = Arc::new(Mutex::new(Vec::new()));
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(InteropError::InvalidPythonBatchResponse(errors.join("; ")))
+        }
     }
 
     fn send_peer_command(&mut self, command: &Value) -> Result<(), InteropError> {
