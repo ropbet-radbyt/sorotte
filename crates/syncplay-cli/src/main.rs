@@ -5609,6 +5609,8 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::spawn_legacy_external_player_from_spec_legacy_compatible;
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
         ConnectedSessionExit, LegacyClientArgOverrides, LegacyExternalPlayerLaunchSpec,
@@ -5663,7 +5665,6 @@ mod tests {
         run_planned_local_runtime_action_legacy_compatible,
         should_run_headless_automatic_update_check_legacy_compatible,
         should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
-        spawn_legacy_external_player_from_spec_legacy_compatible,
         upsert_syncplay_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
         user_change_notification_message,
     };
@@ -5692,9 +5693,11 @@ mod tests {
     };
     use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
     use syncplay_player_mpv::MpvAdapter;
+    #[cfg(windows)]
+    use syncplay_protocol::HelloPayload;
     use syncplay_protocol::{
-        HelloPayload, IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload,
-        ProtocolMessage, StatePayload, decode_message_line, encode_message_line,
+        IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
+        StatePayload, decode_message_line, encode_message_line,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
