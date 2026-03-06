@@ -437,18 +437,13 @@ impl Default for SessionBehaviorConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum UnpauseActionMode {
+    #[default]
     IfAlreadyReady,
     IfOthersReady,
     IfMinUsersReady,
     Always,
-}
-
-impl Default for UnpauseActionMode {
-    fn default() -> Self {
-        Self::IfAlreadyReady
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2683,24 +2678,24 @@ impl ClientSession {
 
         let mut index = current_index;
         while index <= current_files.len() {
-            if let Some(file_name) = current_files.get(index) {
-                if let Some(valid_index) = new_files.iter().position(|entry| entry == file_name) {
-                    return valid_index;
-                }
+            if let Some(file_name) = current_files.get(index)
+                && let Some(valid_index) = new_files.iter().position(|entry| entry == file_name)
+            {
+                return valid_index;
             }
             index = index.saturating_add(1);
         }
 
         let mut index = current_index;
         while index > 0 {
-            if let Some(file_name) = current_files.get(index) {
-                if let Some(valid_index) = new_files.iter().position(|entry| entry == file_name) {
-                    return if valid_index < new_files.len().saturating_sub(1) {
-                        valid_index.saturating_add(1)
-                    } else {
-                        valid_index
-                    };
-                }
+            if let Some(file_name) = current_files.get(index)
+                && let Some(valid_index) = new_files.iter().position(|entry| entry == file_name)
+            {
+                return if valid_index < new_files.len().saturating_sub(1) {
+                    valid_index.saturating_add(1)
+                } else {
+                    valid_index
+                };
             }
             index = index.saturating_sub(1);
         }
@@ -3776,16 +3771,15 @@ impl ClientSession {
             return actions;
         }
 
-        if let Some(last_paused_on_leave_at_seconds) = self.last_paused_on_leave_at_seconds {
-            if now_seconds - last_paused_on_leave_at_seconds
+        if let Some(last_paused_on_leave_at_seconds) = self.last_paused_on_leave_at_seconds
+            && now_seconds - last_paused_on_leave_at_seconds
                 < self
                     .readiness_autoplay_config
                     .last_paused_diff_threshold_seconds
-            {
-                self.last_paused_on_leave_at_seconds = None;
-                self.local_paused = Some(false);
-                return Vec::new();
-            }
+        {
+            self.last_paused_on_leave_at_seconds = None;
+            self.local_paused = Some(false);
+            return Vec::new();
         }
 
         self.local_paused = Some(false);
@@ -4004,10 +3998,9 @@ impl ClientSession {
             .ping
             .as_ref()
             .and_then(|ping| ping.latency_calculation)
+            && latency_calculation != 0.0
         {
-            if latency_calculation != 0.0 {
-                ping = ping.with_latency_calculation(latency_calculation);
-            }
+            ping = ping.with_latency_calculation(latency_calculation);
         }
         response.ping = Some(ping);
 
@@ -4064,10 +4057,10 @@ impl ClientSession {
         self.set_user_room(&username, Some(room_name));
         self.set_user_ready(&username, false);
 
-        if let Some(current_room) = self.room.clone() {
-            if let Some(pending_playlist) = self.pending_playlist.take() {
-                self.room_playlists.insert(current_room, pending_playlist);
-            }
+        if let Some(current_room) = self.room.clone()
+            && let Some(pending_playlist) = self.pending_playlist.take()
+        {
+            self.room_playlists.insert(current_room, pending_playlist);
         }
 
         if let Some(restored_ready) = self.reconnect_ready_restore_snapshot.take() {
@@ -4125,18 +4118,12 @@ impl ClientSession {
                 }
 
                 // Legacy modUser only applies file updates when the payload is truthy.
-                if let Some(file) = user_payload.file.as_ref() {
-                    if Self::legacy_json_value_truthy(file) {
-                        let (file_name, file_size, file_duration) =
-                            Self::file_metadata_from_payload(file);
-                        self.set_user_file_info(
-                            &username,
-                            true,
-                            file_name,
-                            file_size,
-                            file_duration,
-                        );
-                    }
+                if let Some(file) = user_payload.file.as_ref()
+                    && Self::legacy_json_value_truthy(file)
+                {
+                    let (file_name, file_size, file_duration) =
+                        Self::file_metadata_from_payload(file);
+                    self.set_user_file_info(&username, true, file_name, file_size, file_duration);
                 }
 
                 if let Some(controller) = user_payload.controller {
@@ -4159,10 +4146,10 @@ impl ClientSession {
                 .or(ready.set_by)
                 .or_else(|| self.username.clone());
             if let Some(target_username) = target_username {
-                if self.user_room(&target_username).is_none() {
-                    if let Some(room_name) = self.room.clone() {
-                        self.set_user_room(&target_username, Some(room_name));
-                    }
+                if self.user_room(&target_username).is_none()
+                    && let Some(room_name) = self.room.clone()
+                {
+                    self.set_user_room(&target_username, Some(room_name));
                 }
                 self.set_user_ready(&target_username, ready.is_ready);
             }
@@ -4218,23 +4205,20 @@ impl ClientSession {
             }
         }
 
-        if let Some(new_controlled_room) = set_payload.new_controlled_room {
-            if let (Some(room_name), Some(password)) =
+        if let Some(new_controlled_room) = set_payload.new_controlled_room
+            && let (Some(room_name), Some(password)) =
                 (new_controlled_room.room_name, new_controlled_room.password)
-            {
-                let normalized_password =
-                    Self::normalize_control_password_legacy_compatible(&password);
-                self.remember_control_password_for_room(&room_name, &password);
+        {
+            let normalized_password = Self::normalize_control_password_legacy_compatible(&password);
+            self.remember_control_password_for_room(&room_name, &password);
 
-                if let Some(local_username) = self.username.clone() {
-                    self.room = Some(room_name.clone());
-                    self.set_user_room(&local_username, Some(room_name.clone()));
-                    self.set_user_controller(&local_username, false);
-                    if Self::is_controlled_room_name(&room_name) && !normalized_password.is_empty()
-                    {
-                        self.controlled_room_switch_intent = Some(room_name.clone());
-                        self.controller_reidentify_intent = Some((room_name, normalized_password));
-                    }
+            if let Some(local_username) = self.username.clone() {
+                self.room = Some(room_name.clone());
+                self.set_user_room(&local_username, Some(room_name.clone()));
+                self.set_user_controller(&local_username, false);
+                if Self::is_controlled_room_name(&room_name) && !normalized_password.is_empty() {
+                    self.controlled_room_switch_intent = Some(room_name.clone());
+                    self.controller_reidentify_intent = Some((room_name, normalized_password));
                 }
             }
         }
@@ -4448,10 +4432,10 @@ impl ClientSession {
         if let Some(server) = ignore.server {
             self.server_ignoring_on_the_fly = server;
             self.client_ignoring_on_the_fly = 0;
-        } else if let Some(client) = ignore.client {
-            if client == self.client_ignoring_on_the_fly {
-                self.client_ignoring_on_the_fly = 0;
-            }
+        } else if let Some(client) = ignore.client
+            && client == self.client_ignoring_on_the_fly
+        {
+            self.client_ignoring_on_the_fly = 0;
         }
     }
 
@@ -4662,15 +4646,16 @@ impl ClientSession {
         let mut index = 0;
 
         while index < bytes.len() {
-            if bytes[index] == b'%' && index + 2 < bytes.len() {
-                if let (Some(high), Some(low)) = (
+            if bytes[index] == b'%'
+                && index + 2 < bytes.len()
+                && let (Some(high), Some(low)) = (
                     Self::hex_value(bytes[index + 1]),
                     Self::hex_value(bytes[index + 2]),
-                ) {
-                    decoded.push((high << 4) | low);
-                    index += 3;
-                    continue;
-                }
+                )
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
             }
             decoded.push(bytes[index]);
             index += 1;
@@ -5019,10 +5004,10 @@ impl ClientSession {
             (previous_room, ready)
         };
 
-        if previous_room != room_name {
-            if let Some(previous_room_name) = previous_room.as_deref() {
-                let _ = self.domain.leave_room(username, previous_room_name);
-            }
+        if previous_room != room_name
+            && let Some(previous_room_name) = previous_room.as_deref()
+        {
+            let _ = self.domain.leave_room(username, previous_room_name);
         }
 
         if let Some(new_room_name) = room_name.as_deref() {
@@ -5073,10 +5058,10 @@ impl ClientSession {
     }
 
     fn remove_user(&mut self, username: &str) {
-        if let Some(user_view) = self.user_views.remove(username) {
-            if let Some(room_name) = user_view.room {
-                let _ = self.domain.leave_room(username, &room_name);
-            }
+        if let Some(user_view) = self.user_views.remove(username)
+            && let Some(room_name) = user_view.room
+        {
+            let _ = self.domain.leave_room(username, &room_name);
         }
     }
 }
