@@ -834,7 +834,7 @@ impl GuiWidgetEguiRenderer {
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    for (label, action) in Self::modal_actions(modal) {
+                    for (_, label, action) in Self::modal_actions(modal) {
                         if ui.button(label).clicked() {
                             self.actions.push(action);
                         }
@@ -1180,12 +1180,12 @@ impl GuiWidgetEguiRenderer {
     fn modal_body_lines(modal: GuiShellModal) -> [&'static str; 2] {
         match modal {
             GuiShellModal::TlsCertificatePrompt => [
-                "The reducer reports an active TLS certificate prompt.",
-                "Trust or reject wiring is still pending, but this native modal path is active.",
+                "A TLS certificate prompt is active for the current connection.",
+                "Trust the certificate for this session or reject it to keep the warning visible.",
             ],
             GuiShellModal::UpdateNotice => [
-                "The reducer reports that an update notice is available.",
-                "This modal now routes into the existing help and update-notice actions.",
+                "An update notice is available for this client build.",
+                "Dismiss it here or trigger another update check from the same modal.",
             ],
             GuiShellModal::About => [
                 "The reducer reports that the About dialog is open.",
@@ -1194,22 +1194,52 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn modal_actions(modal: GuiShellModal) -> Vec<(&'static str, GuiShellAction)> {
+    fn modal_actions(
+        modal: GuiShellModal,
+    ) -> Vec<(&'static str, &'static str, GuiShellAction)> {
         match modal {
             GuiShellModal::TlsCertificatePrompt => vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
                 (
-                    "Show Prompt Again",
-                    GuiShellAction::AnnounceTlsCertificatePromptRequired,
+                    "shell:modal:tls:trust",
+                    "Trust Certificate",
+                    GuiShellAction::TrustTlsCertificatePrompt,
+                ),
+                (
+                    "shell:modal:tls:reject",
+                    "Reject Certificate",
+                    GuiShellAction::RejectTlsCertificatePrompt,
+                ),
+                (
+                    "shell:modal:tls:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
                 ),
             ],
             GuiShellModal::UpdateNotice => vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
-                ("Check Again", GuiShellAction::AnnounceUpdateNoticeAvailable),
+                (
+                    "shell:modal:update:dismiss",
+                    "Dismiss Notice",
+                    GuiShellAction::DismissUpdateNotice,
+                ),
+                (
+                    "shell:modal:update:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
+                ),
+                (
+                    "shell:modal:update:check-again",
+                    "Check Again",
+                    GuiShellAction::AnnounceUpdateNoticeAvailable,
+                ),
             ],
             GuiShellModal::About => vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
                 (
+                    "shell:modal:about:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
+                ),
+                (
+                    "shell:modal:about:update",
                     "Check for Updates",
                     GuiShellAction::AnnounceUpdateNoticeAvailable,
                 ),
@@ -1308,6 +1338,17 @@ impl GuiWidgetEguiRenderer {
                 vec![GuiShellAction::RemoveSelectedMediaSearchDirectory]
             }
             "media-search:command:search" => vec![GuiShellAction::BeginMissingMediaSearch],
+            "shell:modal:close" => vec![GuiShellAction::CloseModal],
+            "shell:modal:update:dismiss" => vec![GuiShellAction::DismissUpdateNotice],
+            "shell:modal:update:help" => vec![GuiShellAction::AnnounceHelpRequested],
+            "shell:modal:update:check-again" => {
+                vec![GuiShellAction::AnnounceUpdateNoticeAvailable]
+            }
+            "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
+            "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],
+            "shell:modal:tls:help" => vec![GuiShellAction::AnnounceHelpRequested],
+            "shell:modal:about:help" => vec![GuiShellAction::AnnounceHelpRequested],
+            "shell:modal:about:update" => vec![GuiShellAction::AnnounceUpdateNoticeAvailable],
             _ => {
                 if let Some((section_index, action_index)) = Self::menu_action_identity(node) {
                     vec![
@@ -5277,6 +5318,9 @@ enum GuiShellAction {
     SwitchView(GuiShellView),
     OpenModal(GuiShellModal),
     CloseModal,
+    DismissUpdateNotice,
+    TrustTlsCertificatePrompt,
+    RejectTlsCertificatePrompt,
     TriggerSelectedMenuAction,
     AnnounceTlsCertificatePromptRequired,
     AnnounceUpdateNoticeAvailable,
@@ -6808,13 +6852,13 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            GuiShellAction::CloseModal => {
-                let had_modal = self.open_modal.is_some();
-                self.open_modal = None;
-                if had_modal {
-                    self.clear_action_error_and_refresh();
-                }
-                had_modal
+            GuiShellAction::CloseModal => self.close_modal_window(),
+            GuiShellAction::DismissUpdateNotice => self.dismiss_update_notice(),
+            GuiShellAction::TrustTlsCertificatePrompt => {
+                self.complete_tls_certificate_prompt(true)
+            }
+            GuiShellAction::RejectTlsCertificatePrompt => {
+                self.complete_tls_certificate_prompt(false)
             }
             GuiShellAction::TriggerSelectedMenuAction => self.trigger_selected_menu_action(),
             GuiShellAction::AnnounceTlsCertificatePromptRequired => {
@@ -8071,6 +8115,36 @@ impl SyncplayGuiShellAppState {
         )
     }
 
+    fn shell_modal_widget_tree(&self) -> GuiWidgetNode {
+        let Some(modal) = self.open_modal else {
+            return GuiWidgetNode::branch("shell:modal", "Modal", GuiWidgetKind::Panel, Vec::new());
+        };
+        let mut children = vec![GuiWidgetNode::leaf(
+            "shell:modal:kind",
+            "Modal Kind",
+            GuiWidgetKind::Status,
+            Some(modal.label().to_owned()),
+            true,
+            false,
+        )];
+        children.extend(
+            GuiWidgetEguiRenderer::modal_actions(modal)
+                .into_iter()
+                .map(|(id, label, _)| {
+                    GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false)
+                }),
+        );
+        children.push(GuiWidgetNode::leaf(
+            "shell:modal:close",
+            "Close",
+            GuiWidgetKind::Button,
+            None,
+            true,
+            false,
+        ));
+        GuiWidgetNode::branch("shell:modal", "Modal", GuiWidgetKind::Panel, children)
+    }
+
     fn public_server_widget_tree(&self) -> GuiWidgetNode {
         let has_selected_server = self.selected_public_server_index().is_some();
         let can_run_server_commands =
@@ -8518,6 +8592,7 @@ impl SyncplayGuiShellAppState {
                     true,
                     false,
                 ),
+                self.shell_modal_widget_tree(),
                 self.command_status_widget_tree(),
                 self.validation_widget_tree(),
                 notifications,
@@ -9072,6 +9147,23 @@ impl SyncplayGuiShellAppState {
             );
         }
         self.set_menu_action_enabled("Help", "About", self.menus.about_dialog_available);
+    }
+
+    fn open_newly_expected_modal_if_needed(
+        &mut self,
+        previous_tls_prompt_expected: bool,
+        previous_update_notice_expected: bool,
+    ) {
+        if self.open_modal.is_some() {
+            return;
+        }
+        if self.menus.tls_prompt_expected && !previous_tls_prompt_expected {
+            self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
+            return;
+        }
+        if self.menus.update_notice_expected && !previous_update_notice_expected {
+            self.open_modal = Some(GuiShellModal::UpdateNotice);
+        }
     }
 
     fn apply_selection_to_surfaces(&mut self) {
@@ -9702,6 +9794,66 @@ impl SyncplayGuiShellAppState {
         true
     }
 
+    fn dismiss_update_notice(&mut self) -> bool {
+        let had_notice =
+            self.menus.update_notice_expected || self.open_modal == Some(GuiShellModal::UpdateNotice);
+        if !had_notice {
+            return self.record_action_error("No update notice is currently active.");
+        }
+
+        self.menus.update_notice_expected = false;
+        if self.open_modal == Some(GuiShellModal::UpdateNotice) {
+            self.open_modal = None;
+        }
+        self.push_system_chat_message("Update notice dismissed.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Update notice dismissed.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_tls_certificate_prompt(&mut self, trusted: bool) -> bool {
+        let had_prompt = self.menus.tls_prompt_expected
+            || self.open_modal == Some(GuiShellModal::TlsCertificatePrompt);
+        if !had_prompt {
+            return self.record_action_error("No TLS certificate prompt is currently active.");
+        }
+
+        self.menus.tls_prompt_expected = false;
+        if self.open_modal == Some(GuiShellModal::TlsCertificatePrompt) {
+            self.open_modal = None;
+        }
+        let message = if trusted {
+            "TLS certificate trusted for this session."
+        } else {
+            "TLS certificate rejected."
+        };
+        self.push_system_chat_message(message.to_owned());
+        self.push_transient_notification(
+            if trusted {
+                GuiTransientNotificationLevel::Success
+            } else {
+                GuiTransientNotificationLevel::Warning
+            },
+            message.to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn close_modal_window(&mut self) -> bool {
+        let Some(modal) = self.open_modal.take() else {
+            return false;
+        };
+        if modal == GuiShellModal::UpdateNotice {
+            self.menus.update_notice_expected = false;
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     fn announce_about_dialog_requested(&mut self) -> bool {
         if !self.menus.about_dialog_available {
             return self.record_action_error("The About dialog is unavailable.");
@@ -9728,6 +9880,8 @@ impl SyncplayGuiShellAppState {
     }
 
     fn apply_menu_dialog_runtime_snapshot(&mut self, snapshot: MenuDialogRuntimeSnapshot) -> bool {
+        let previous_tls_prompt_expected = self.menus.tls_prompt_expected;
+        let previous_update_notice_expected = self.menus.update_notice_expected;
         let settings = self.configuration.to_stored_settings();
         let baseline_menus = MenuDialogShellState::from_stored_settings(&settings);
         for action_override in snapshot.action_overrides {
@@ -9761,6 +9915,10 @@ impl SyncplayGuiShellAppState {
         self.sync_dialog_menu_actions_from_runtime_state();
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
+        self.open_newly_expected_modal_if_needed(
+            previous_tls_prompt_expected,
+            previous_update_notice_expected,
+        );
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
             "Menu/dialog runtime snapshot applied.".to_owned(),
@@ -13033,6 +13191,67 @@ mod tests {
     }
 
     #[test]
+    fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
+        assert!(state.apply(GuiShellAction::DismissUpdateNotice));
+        assert!(!state.menus.update_notice_expected);
+        assert_eq!(state.open_modal, None);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Update notice dismissed.")
+        );
+
+        assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
+        assert!(state.apply(GuiShellAction::CloseModal));
+        assert!(state.menus.tls_prompt_expected);
+        assert_eq!(state.open_modal, None);
+
+        assert!(state.apply(GuiShellAction::TrustTlsCertificatePrompt));
+        assert!(!state.menus.tls_prompt_expected);
+        assert_eq!(state.open_modal, None);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("TLS certificate trusted for this session.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_auto_opens_new_runtime_prompt_flags() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: Vec::new(),
+                tls_prompt_expected: false,
+                update_notice_expected: true,
+                about_dialog_available: true,
+            },
+        )));
+        assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+
+        assert!(state.apply(GuiShellAction::DismissUpdateNotice));
+        assert_eq!(state.open_modal, None);
+
+        assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+            MenuDialogRuntimeSnapshot {
+                action_overrides: Vec::new(),
+                tls_prompt_expected: true,
+                update_notice_expected: false,
+                about_dialog_available: true,
+            },
+        )));
+        assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+    }
+
+    #[test]
     fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
@@ -15098,6 +15317,15 @@ mod tests {
             .find("shell:open-modal")
             .expect("open modal status should exist");
         assert_eq!(open_modal.value.as_deref(), Some("update-notice"));
+
+        let modal_kind = tree
+            .find("shell:modal:kind")
+            .expect("modal kind status should exist");
+        assert_eq!(modal_kind.value.as_deref(), Some("update-notice"));
+        let dismiss_notice = tree
+            .find("shell:modal:update:dismiss")
+            .expect("update notice dismiss button should exist");
+        assert_eq!(dismiss_notice.kind, GuiWidgetKind::Button);
 
         let notification = tree
             .find("shell:notification:0")
@@ -18648,25 +18876,53 @@ mod tests {
         assert_eq!(
             GuiWidgetEguiRenderer::modal_actions(GuiShellModal::TlsCertificatePrompt),
             vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
                 (
-                    "Show Prompt Again",
-                    GuiShellAction::AnnounceTlsCertificatePromptRequired,
+                    "shell:modal:tls:trust",
+                    "Trust Certificate",
+                    GuiShellAction::TrustTlsCertificatePrompt,
+                ),
+                (
+                    "shell:modal:tls:reject",
+                    "Reject Certificate",
+                    GuiShellAction::RejectTlsCertificatePrompt,
+                ),
+                (
+                    "shell:modal:tls:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
                 ),
             ]
         );
         assert_eq!(
             GuiWidgetEguiRenderer::modal_actions(GuiShellModal::UpdateNotice),
             vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
-                ("Check Again", GuiShellAction::AnnounceUpdateNoticeAvailable),
+                (
+                    "shell:modal:update:dismiss",
+                    "Dismiss Notice",
+                    GuiShellAction::DismissUpdateNotice,
+                ),
+                (
+                    "shell:modal:update:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
+                ),
+                (
+                    "shell:modal:update:check-again",
+                    "Check Again",
+                    GuiShellAction::AnnounceUpdateNoticeAvailable,
+                ),
             ]
         );
         assert_eq!(
             GuiWidgetEguiRenderer::modal_actions(GuiShellModal::About),
             vec![
-                ("Open Help", GuiShellAction::AnnounceHelpRequested),
                 (
+                    "shell:modal:about:help",
+                    "Open Help",
+                    GuiShellAction::AnnounceHelpRequested,
+                ),
+                (
+                    "shell:modal:about:update",
                     "Check for Updates",
                     GuiShellAction::AnnounceUpdateNoticeAvailable
                 ),

@@ -9,10 +9,24 @@ assert-selected	configuration-root	true
 assert-value	config:Connection:Public Servers	2
 activate	menus-root
 assert-selected	menus-root	true
+assert-enabled	menus:action:3:0	false
 activate	menus:action:4:0
 assert-value	shell:open-modal	about
 close-modal
 assert-value	shell:open-modal	(none)
+activate	menus:action:4:2
+assert-value	shell:open-modal	update-notice
+assert-value	shell:modal:kind	update-notice
+activate	shell:modal:update:dismiss
+assert-value	shell:open-modal	(none)
+assert-value	menus:dialog:update	no
+activate	menus:action:2:1
+assert-value	shell:open-modal	tls-certificate-prompt
+assert-value	shell:modal:kind	tls-certificate-prompt
+activate	shell:modal:tls:trust
+assert-value	shell:open-modal	(none)
+assert-value	menus:dialog:tls	no
+clear-notifications
 activate	configuration-root
 enter-text	config:Connection:Host	false	syncplay.example
 enter-text	config:Connection:Port	false	8999

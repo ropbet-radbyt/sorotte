@@ -174,6 +174,13 @@ trait NativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<usize, String>;
+    fn count_named_controls_with_enabled_state(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+        enabled: bool,
+    ) -> Result<usize, String>;
     fn editable_text_input_count(&self, window: Self::WindowHandle) -> Result<usize, String>;
     fn get_edit_value_by_index(
         &self,
@@ -860,6 +867,76 @@ impl PlatformNativeGuiDriver {
         )
     }
 
+    fn count_named_controls_with_enabled_state(
+        window: PlatformWindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+        expected_enabled: bool,
+    ) -> Result<usize, String> {
+        Self::with_ui_automation(
+            window,
+            "UI Automation control counting",
+            |automation, root| {
+                let elements = Self::collect_subtree_elements(automation, root)?;
+                let length = unsafe {
+                    elements.Length().map_err(|error| {
+                        format!("failed to read UI Automation element count: {error}")
+                    })?
+                };
+
+                let mut count = 0usize;
+                for index in 0..length {
+                    let element = unsafe {
+                        match elements.GetElement(index) {
+                            Ok(element) => element,
+                            Err(_) => continue,
+                        }
+                    };
+                    let current_name = unsafe {
+                        match element.CurrentName() {
+                            Ok(name_value) => name_value.to_string().trim().to_owned(),
+                            Err(_) => continue,
+                        }
+                    };
+                    if current_name != name {
+                        continue;
+                    }
+
+                    let current_control_type = unsafe {
+                        match element.CurrentControlType() {
+                            Ok(control_type) => control_type,
+                            Err(_) => continue,
+                        }
+                    };
+                    if !control_kind.matches_control_type(current_control_type) {
+                        continue;
+                    }
+
+                    let is_enabled = unsafe {
+                        match element.CurrentIsEnabled() {
+                            Ok(enabled) => enabled.as_bool(),
+                            Err(_) => false,
+                        }
+                    };
+                    if is_enabled != expected_enabled {
+                        continue;
+                    }
+                    let is_offscreen = unsafe {
+                        match element.CurrentIsOffscreen() {
+                            Ok(offscreen) => offscreen.as_bool(),
+                            Err(_) => false,
+                        }
+                    };
+                    if is_offscreen {
+                        continue;
+                    }
+                    count += 1;
+                }
+                Ok(count)
+            },
+        )
+    }
+
     fn editable_text_input_count(window: PlatformWindowHandle) -> Result<usize, String> {
         use windows::Win32::UI::Accessibility::UIA_EditControlTypeId;
 
@@ -1230,6 +1307,16 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         Self::count_named_controls(window, name, control_kind)
     }
 
+    fn count_named_controls_with_enabled_state(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+        enabled: bool,
+    ) -> Result<usize, String> {
+        Self::count_named_controls_with_enabled_state(window, name, control_kind, enabled)
+    }
+
     fn editable_text_input_count(&self, window: Self::WindowHandle) -> Result<usize, String> {
         Self::editable_text_input_count(window)
     }
@@ -1325,6 +1412,16 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         _window: Self::WindowHandle,
         _name: &str,
         _control_kind: NativeControlKind,
+    ) -> Result<usize, String> {
+        Err("native smoke is currently implemented only on Windows".to_owned())
+    }
+
+    fn count_named_controls_with_enabled_state(
+        &self,
+        _window: Self::WindowHandle,
+        _name: &str,
+        _control_kind: NativeControlKind,
+        _enabled: bool,
     ) -> Result<usize, String> {
         Err("native smoke is currently implemented only on Windows".to_owned())
     }
@@ -2019,6 +2116,46 @@ fn wait_for_named_control_count<D: NativeGuiDriver>(
     }
 }
 
+fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    control_kind: NativeControlKind,
+    expected_enabled: bool,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None;
+    loop {
+        match driver.count_named_controls_with_enabled_state(
+            window,
+            name,
+            control_kind,
+            expected_enabled,
+        ) {
+            Ok(count) if count > 0 => return Ok(()),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+        if Instant::now() >= deadline {
+            return if let Some(error) = last_error {
+                Err(format!(
+                    "timed out waiting for a {} {} named {name:?}; last count error: {error}",
+                    if expected_enabled { "enabled" } else { "disabled" },
+                    control_kind.label(),
+                ))
+            } else {
+                Err(format!(
+                    "timed out waiting for a {} {} named {name:?}",
+                    if expected_enabled { "enabled" } else { "disabled" },
+                    control_kind.label(),
+                ))
+            };
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 impl MockSessionServer {
     fn recv_hello(&self, timeout: Duration, label: &str) -> Result<String, String> {
         self.hello_rx.recv_timeout(timeout).map_err(|error| {
@@ -2216,6 +2353,146 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             "expected at least 6 editable configuration text fields, found {editable_count}"
         ));
     }
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Menus & Dialogs",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Open Media File",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Toggle Pause",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Seek",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Playlist Actions",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Show Chat",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Show Users",
+        NativeControlKind::Button,
+        true,
+        step_timeout,
+    )?;
+    steps.push("menu-enable-state-visible".to_owned());
+
+    if let Err(primary_error) = invoke_menu_command_with_wait(
+        driver,
+        window,
+        "Help",
+        "Check for Updates",
+        NativeControlKind::MenuItem,
+        step_timeout,
+    ) {
+        invoke_menu_command_with_wait(
+            driver,
+            window,
+            "Help",
+            "Check for Updates",
+            NativeControlKind::Any,
+            step_timeout,
+        )
+        .map_err(|fallback_error| {
+            format!(
+                "failed to invoke Check for Updates through menu item ({primary_error}); fallback also failed: {fallback_error}"
+            )
+        })?;
+    }
+    wait_for_accessible_name(driver, window, "Update Notice", step_timeout)?;
+    wait_for_accessible_name(driver, window, "modal: update-notice", step_timeout)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Dismiss Notice",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+    steps.push("update-notice-dismissible".to_owned());
+
+    if let Err(primary_error) = invoke_menu_command_with_wait(
+        driver,
+        window,
+        "Advanced",
+        "TLS Certificates",
+        NativeControlKind::MenuItem,
+        step_timeout,
+    ) {
+        invoke_menu_command_with_wait(
+            driver,
+            window,
+            "Advanced",
+            "TLS Certificates",
+            NativeControlKind::Any,
+            step_timeout,
+        )
+        .map_err(|fallback_error| {
+            format!(
+                "failed to invoke TLS Certificates through menu item ({primary_error}); fallback also failed: {fallback_error}"
+            )
+        })?;
+    }
+    wait_for_accessible_name(driver, window, "TLS Certificate Prompt", step_timeout)?;
+    wait_for_accessible_name(driver, window, "modal: tls-certificate-prompt", step_timeout)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Trust Certificate",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "success: TLS certificate trusted for this session.",
+        step_timeout,
+    )?;
+    steps.push("tls-certificate-prompt-completed".to_owned());
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Configuration",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     for (edit_index, expected_value) in [
         (0usize, CONFIG_HOST_VALUE),
         (1usize, CONFIG_PORT_VALUE),
