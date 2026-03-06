@@ -917,6 +917,8 @@ impl GuiWidgetEguiRenderer {
                         }
                     }
                 }
+                Self::render_sidebar_list_branch(ui, root.find("shell:commands"), "Commands");
+                Self::render_sidebar_list_branch(ui, root.find("shell:validation"), "Validation");
                 if let Some(notifications) = root.find("shell:notifications") {
                     ui.separator();
                     ui.heading("Notifications");
@@ -935,6 +937,25 @@ impl GuiWidgetEguiRenderer {
                     }
                 }
             });
+    }
+
+    fn render_sidebar_list_branch(
+        ui: &mut egui::Ui,
+        branch: Option<&GuiWidgetNode>,
+        heading: &str,
+    ) {
+        let Some(branch) = branch else {
+            return;
+        };
+        ui.separator();
+        ui.heading(heading);
+        if branch.children.is_empty() {
+            ui.label("No items.");
+        } else {
+            for item in &branch.children {
+                ui.label(Self::display_text(item));
+            }
+        }
     }
 
     fn show_active_surface(
@@ -1205,6 +1226,8 @@ impl GuiWidgetEguiRenderer {
 
     fn should_render_combined_status_label(node: &GuiWidgetNode) -> bool {
         node.id.starts_with("media-search:timing:")
+            || node.id.starts_with("shell:command:")
+            || node.id.starts_with("shell:validation:")
     }
 
     fn action_for_surface_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
@@ -8313,6 +8336,112 @@ impl SyncplayGuiShellAppState {
         )
     }
 
+    fn command_status_widget_tree(&self) -> GuiWidgetNode {
+        let items = [
+            ("busy", "Busy", self.pending_operation.is_some()),
+            ("save", "Save", self.commands.can_save_configuration),
+            ("reset", "Reset", self.commands.can_reset_configuration),
+            ("reload", "Reload", self.commands.can_reload_configuration),
+            (
+                "connect-public-server",
+                "Connect Public Server",
+                self.commands.can_connect_public_server,
+            ),
+            (
+                "refresh-public-servers",
+                "Refresh Public Servers",
+                self.commands.can_refresh_public_servers,
+            ),
+            (
+                "search-missing-media",
+                "Search Missing Media",
+                self.commands.can_search_missing_media,
+            ),
+            (
+                "toggle-pause",
+                "Toggle Pause",
+                self.commands.can_toggle_pause,
+            ),
+            (
+                "send-chat-message",
+                "Send Chat Message",
+                self.commands.can_send_chat_message,
+            ),
+        ]
+        .into_iter()
+        .map(|(id, label, enabled)| {
+            GuiWidgetNode::leaf(
+                format!("shell:command:{id}"),
+                label,
+                GuiWidgetKind::Status,
+                Some(if id == "busy" {
+                    bool_label(enabled).to_owned()
+                } else if enabled {
+                    "enabled".to_owned()
+                } else {
+                    "disabled".to_owned()
+                }),
+                true,
+                false,
+            )
+        })
+        .collect();
+
+        GuiWidgetNode::branch("shell:commands", "Commands", GuiWidgetKind::List, items)
+    }
+
+    fn validation_widget_tree(&self) -> GuiWidgetNode {
+        let mut children = vec![
+            GuiWidgetNode::leaf(
+                "shell:validation:status",
+                "Status",
+                GuiWidgetKind::Status,
+                Some(if self.validation.issues.is_empty() {
+                    "clean".to_owned()
+                } else {
+                    format!("{} issue(s)", self.validation.issues.len())
+                }),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "shell:validation:last-action-error",
+                "Last Action Error",
+                GuiWidgetKind::Status,
+                Some(
+                    self.validation
+                        .last_action_error
+                        .clone()
+                        .unwrap_or("(none)".to_owned()),
+                ),
+                true,
+                false,
+            ),
+        ];
+        children.extend(
+            self.validation
+                .issues
+                .iter()
+                .enumerate()
+                .map(|(index, issue)| {
+                    GuiWidgetNode::leaf(
+                        format!("shell:validation:issue:{index}"),
+                        format!("{} / {}", issue.scope, issue.label),
+                        GuiWidgetKind::ListItem,
+                        Some(issue.message.clone()),
+                        true,
+                        false,
+                    )
+                }),
+        );
+        GuiWidgetNode::branch(
+            "shell:validation",
+            "Validation",
+            GuiWidgetKind::List,
+            children,
+        )
+    }
+
     fn shell_widget_tree(&self) -> GuiWidgetNode {
         let mut configuration = self.configuration_widget_tree();
         configuration.selected = self.active_view == GuiShellView::Configuration;
@@ -8389,6 +8518,8 @@ impl SyncplayGuiShellAppState {
                     true,
                     false,
                 ),
+                self.command_status_widget_tree(),
+                self.validation_widget_tree(),
                 notifications,
                 configuration,
                 main_window,
@@ -14974,10 +15105,92 @@ mod tests {
         assert_eq!(notification.kind, GuiWidgetKind::ListItem);
         assert_eq!(notification.value.as_deref(), Some("Widget tree ready"));
 
+        let save_status = tree
+            .find("shell:command:save")
+            .expect("command status row should exist");
+        assert_eq!(save_status.kind, GuiWidgetKind::Status);
+        assert_eq!(save_status.value.as_deref(), Some("enabled"));
+
+        let validation_status = tree
+            .find("shell:validation:status")
+            .expect("validation status row should exist");
+        assert_eq!(validation_status.value.as_deref(), Some("clean"));
+
+        let last_action_error = tree
+            .find("shell:validation:last-action-error")
+            .expect("last action error row should exist");
+        assert_eq!(last_action_error.value.as_deref(), Some("(none)"));
+
         let public_servers = tree
             .find("public-servers-root")
             .expect("public server subtree should exist");
         assert!(public_servers.selected);
+    }
+
+    #[test]
+    fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_tree() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Port",
+            value: "70000".to_owned(),
+        }));
+        let invalid_tree = state.shell_widget_tree();
+        assert_eq!(
+            invalid_tree
+                .find("shell:validation:status")
+                .and_then(|node| node.value.as_deref()),
+            Some("1 issue(s)")
+        );
+        assert_eq!(
+            invalid_tree
+                .find("shell:validation:issue:0")
+                .map(|node| (node.label.as_str(), node.value.as_deref())),
+            Some((
+                "Connection / Port",
+                Some("must be a valid TCP port from 1 to 65535."),
+            ))
+        );
+        assert_eq!(
+            invalid_tree
+                .find("shell:command:save")
+                .and_then(|node| node.value.as_deref()),
+            Some("disabled")
+        );
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Port",
+            value: "8999".to_owned(),
+        }));
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        let busy_tree = state.shell_widget_tree();
+        assert_eq!(
+            busy_tree
+                .find("shell:command:busy")
+                .and_then(|node| node.value.as_deref()),
+            Some("yes")
+        );
+        for widget_id in [
+            "shell:command:save",
+            "shell:command:reset",
+            "shell:command:reload",
+            "shell:command:connect-public-server",
+            "shell:command:refresh-public-servers",
+            "shell:command:search-missing-media",
+            "shell:command:toggle-pause",
+            "shell:command:send-chat-message",
+        ] {
+            assert_eq!(
+                busy_tree
+                    .find(widget_id)
+                    .and_then(|node| node.value.as_deref()),
+                Some("disabled"),
+                "{widget_id} should surface as disabled while a pending operation is active",
+            );
+        }
     }
 
     #[test]
@@ -15030,6 +15243,30 @@ mod tests {
                 .events
                 .iter()
                 .any(|event| event == "begin:2:shell:notification:0")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:1:shell:commands")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:2:shell:command:save")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:1:shell:validation")
+        );
+        assert!(
+            renderer
+                .events
+                .iter()
+                .any(|event| event == "begin:2:shell:validation:status")
         );
         assert!(
             renderer
@@ -19110,7 +19347,7 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         .expect("semantic cli describe-scenarios should produce output");
         assert!(described.starts_with("{\"result\":\"ok\",\"scenarios\":["));
         assert!(described.contains("\"name\":\"configuration-surface-flow\""));
-        assert!(described.contains("\"description\":\"Edits configuration fields, saves, then exercises public-server and media-search pending flows.\""));
+        assert!(described.contains("\"description\":\"Edits configuration fields, surfaces validation and command availability, saves, then exercises public-server and media-search pending flows.\""));
         assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
         assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
         assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));

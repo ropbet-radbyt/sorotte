@@ -8,14 +8,29 @@ enter-text	config:Connection:Username	false	smoke-user
 enter-text	config:Connection:Room	false	smoke-room
 enter-text	config:Privacy:Trusted Domains	false	youtube.com; *.example.com/videos
 activate	config:Privacy:Trusted Domains Only
+enter-text	config:Connection:Port	false	70000
+assert-value	shell:validation:status	1 issue(s)
+assert-label	shell:validation:issue:0	Connection / Port
+assert-value	shell:validation:issue:0	must be a valid TCP port from 1 to 65535.
+assert-enabled	config-command:save	false
+assert-value	shell:command:save	disabled
+enter-text	config:Connection:Port	false	8999
+assert-value	shell:validation:status	clean
+assert-value	shell:command:save	enabled
 assert-value	config:Connection:Host	syncplay.example
 assert-value	config:Privacy:Trusted Domains	youtube.com; *.example.com/videos
 assert-value	config:Privacy:Trusted Domains Only	yes
 assert-value	config:Privacy:Trusted Domain Count	2
 activate	config-command:save
 assert-pending	save-configuration
+assert-value	shell:command:busy	yes
+assert-value	shell:command:reload	disabled
+assert-enabled	config:Connection:Host	false
 complete-pending
 assert-pending	none
+assert-value	shell:command:busy	no
+assert-value	shell:command:save	enabled
+assert-enabled	config:Connection:Host	true
 activate	public-servers-root
 assert-selected	public-servers-root	true
 activate	public-servers:row:0

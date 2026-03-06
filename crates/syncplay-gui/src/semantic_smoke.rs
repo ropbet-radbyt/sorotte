@@ -353,7 +353,7 @@ const GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/configuration-surface-flow.txt");
 static GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
-const GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_DESCRIPTION: &str = "Edits configuration fields, saves, then exercises public-server and media-search pending flows.";
+const GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_DESCRIPTION: &str = "Edits configuration fields, surfaces validation and command availability, saves, then exercises public-server and media-search pending flows.";
 const GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT: &str =
     include_str!("semantic_scenarios/core-shell-smoke-flow.txt");
 static GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =

@@ -1839,6 +1839,11 @@ fn wait_for_accessible_name<D: NativeGuiDriver>(
                         "self=",
                         "ready=",
                         "controller=",
+                        "Status",
+                        "Busy",
+                        "Save",
+                        "Reload",
+                        "Connection / Port",
                         "Timeout",
                         "Warning",
                         "Interval",
@@ -2261,6 +2266,21 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     ] {
         wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
     }
+    driver.set_edit_value_by_index(window, 1, "70000")?;
+    wait_for_edit_value_by_index(driver, window, 1, "70000", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Status: 1 issue(s)", step_timeout)?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "Connection / Port: must be a valid TCP port from 1 to 65535.",
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Save: disabled", step_timeout)?;
+    steps.push("config-validation-visible".to_owned());
+    driver.set_edit_value_by_index(window, 1, CONFIG_PORT_VALUE)?;
+    wait_for_edit_value_by_index(driver, window, 1, CONFIG_PORT_VALUE, step_timeout)?;
+    wait_for_accessible_name(driver, window, "Status: clean", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Save: enabled", step_timeout)?;
 
     invoke_named_control_with_wait(
         driver,
@@ -2270,6 +2290,9 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "pending: save-configuration", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Busy: yes", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Reload: disabled", step_timeout)?;
+    steps.push("config-busy-disabled-visible".to_owned());
     invoke_named_control_with_wait(
         driver,
         window,
@@ -2283,6 +2306,8 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         "success: Configuration saved.",
         step_timeout,
     )?;
+    wait_for_accessible_name(driver, window, "Busy: no", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Save: enabled", step_timeout)?;
     let config_persist_result = wait_for_file_contains(
         config_path,
         &[
