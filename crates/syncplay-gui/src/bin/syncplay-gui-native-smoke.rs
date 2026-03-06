@@ -3509,7 +3509,11 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let initial_view = wait_for_any_accessible_name(
             driver,
             window,
-            &["view: media-search", "view: configuration", "view: main-window"],
+            &[
+                "view: media-search",
+                "view: configuration",
+                "view: main-window",
+            ],
             step_timeout,
         )?;
         if initial_view != "view: media-search" {
@@ -3664,12 +3668,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
-                wait_for_accessible_name(
-                    driver,
-                    first_run_window,
-                    "modal: (none)",
-                    step_timeout,
-                )?;
+                wait_for_accessible_name(driver, first_run_window, "modal: (none)", step_timeout)?;
             }
             if wait_for_accessible_name(
                 driver,
@@ -3686,18 +3685,17 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
-                wait_for_accessible_name(
-                    driver,
-                    first_run_window,
-                    "modal: (none)",
-                    step_timeout,
-                )?;
+                wait_for_accessible_name(driver, first_run_window, "modal: (none)", step_timeout)?;
             }
 
             let first_run_view = wait_for_any_accessible_name(
                 driver,
                 first_run_window,
-                &["view: configuration", "view: public-servers", "view: main-window"],
+                &[
+                    "view: configuration",
+                    "view: public-servers",
+                    "view: main-window",
+                ],
                 step_timeout,
             )?;
             if first_run_view != "view: configuration" {
@@ -3791,12 +3789,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
-                wait_for_accessible_name(
-                    driver,
-                    migration_window,
-                    "modal: (none)",
-                    step_timeout,
-                )?;
+                wait_for_accessible_name(driver, migration_window, "modal: (none)", step_timeout)?;
             }
             if wait_for_accessible_name(
                 driver,
@@ -3813,18 +3806,17 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
-                wait_for_accessible_name(
-                    driver,
-                    migration_window,
-                    "modal: (none)",
-                    step_timeout,
-                )?;
+                wait_for_accessible_name(driver, migration_window, "modal: (none)", step_timeout)?;
             }
 
             let migration_view = wait_for_any_accessible_name(
                 driver,
                 migration_window,
-                &["view: public-servers", "view: configuration", "view: main-window"],
+                &[
+                    "view: public-servers",
+                    "view: configuration",
+                    "view: main-window",
+                ],
                 step_timeout,
             )?;
             if migration_view != "view: public-servers" {
@@ -3868,13 +3860,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 "gui-only.example",
                 step_timeout,
             )?;
-            wait_for_edit_value_by_index(
-                driver,
-                migration_window,
-                1,
-                "9002",
-                step_timeout,
-            )?;
+            wait_for_edit_value_by_index(driver, migration_window, 1, "9002", step_timeout)?;
             Ok(())
         })();
         if migration_outcome.is_err() {

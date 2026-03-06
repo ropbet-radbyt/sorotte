@@ -493,7 +493,9 @@ impl GuiPersistedUiState {
         Self {
             active_view: (state.active_view != GuiShellView::Configuration)
                 .then_some(state.active_view),
-            selected_public_server_address: state.selected_public_server_address().map(str::to_owned),
+            selected_public_server_address: state
+                .selected_public_server_address()
+                .map(str::to_owned),
             selected_media_search_directory: state
                 .selection
                 .selected_media_search_directory
@@ -564,7 +566,10 @@ fn parse_legacy_gui_qsettings_ini(contents: &str) -> BTreeMap<(String, String), 
         if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
             continue;
         }
-        if let Some(section) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        if let Some(section) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
             current_section = section.trim().to_owned();
             continue;
         }
@@ -691,10 +696,7 @@ fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Res
     if let Some(directory) = state.last_media_dialog_directory.as_ref() {
         write_legacy_gui_qsettings_ini(
             &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
-            &[(
-                "MediaBrowseDialog",
-                vec![("mediadir", directory.clone())],
-            )],
+            &[("MediaBrowseDialog", vec![("mediadir", directory.clone())])],
         )?;
     } else {
         remove_file_if_exists(
@@ -1788,17 +1790,14 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn media_search_dialog_start_directory(state: &SyncplayGuiShellAppState) -> Option<&str> {
-        state
-            .last_media_dialog_directory
-            .as_deref()
-            .or_else(|| {
-                state
-                    .selection
-                    .selected_media_search_directory
-                    .and_then(|index| state.media_search.directories.get(index))
-                    .or_else(|| state.media_search.directories.first())
-                    .map(|row| row.path.as_str())
-            })
+        state.last_media_dialog_directory.as_deref().or_else(|| {
+            state
+                .selection
+                .selected_media_search_directory
+                .and_then(|index| state.media_search.directories.get(index))
+                .or_else(|| state.media_search.directories.first())
+                .map(|row| row.path.as_str())
+        })
     }
 
     fn action_for_list_item_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
@@ -3663,8 +3662,12 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn clear_gui_data(&mut self) -> Result<(), String> {
         if let Some(path) = self.config_path.as_ref() {
-            clear_syncplay_ini_stored_client_settings_mvp_at_path(path)
-                .map_err(|error| format!("failed clearing stored settings {}: {error}", path.display()))?;
+            clear_syncplay_ini_stored_client_settings_mvp_at_path(path).map_err(|error| {
+                format!(
+                    "failed clearing stored settings {}: {error}",
+                    path.display()
+                )
+            })?;
         }
         if let Some(root) = self.legacy_gui_qsettings_root() {
             clear_legacy_gui_qsettings_files_at_root(&root)?;
@@ -10890,7 +10893,8 @@ impl SyncplayGuiShellAppState {
 
     fn complete_clear_gui_data(&mut self) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
-            return self.record_action_error("No clear-GUI-data operation is currently in progress.");
+            return self
+                .record_action_error("No clear-GUI-data operation is currently in progress.");
         };
         if pending.kind != GuiPendingOperationKind::ClearGuiData {
             return self
@@ -10902,14 +10906,17 @@ impl SyncplayGuiShellAppState {
             GuiTransientNotificationLevel::Success,
             "GUI data cleared. First-run configuration restored.".to_owned(),
         );
-        self.push_system_chat_message("GUI data cleared. First-run configuration restored.".to_owned());
+        self.push_system_chat_message(
+            "GUI data cleared. First-run configuration restored.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
 
     fn cancel_clear_gui_data(&mut self) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
-            return self.record_action_error("No clear-GUI-data operation is currently in progress.");
+            return self
+                .record_action_error("No clear-GUI-data operation is currently in progress.");
         };
         if pending.kind != GuiPendingOperationKind::ClearGuiData {
             return self
@@ -18362,7 +18369,10 @@ mod tests {
         assert_eq!(state.pending_operation, None);
         assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
         assert_eq!(state.active_view, GuiShellView::Configuration);
-        assert_eq!(state.saved_configuration, StoredClientSettingsMvp::default());
+        assert_eq!(
+            state.saved_configuration,
+            StoredClientSettingsMvp::default()
+        );
         assert!(state.public_servers.servers.is_empty());
         assert!(state.media_search.directories.is_empty());
         assert_eq!(state.last_media_dialog_directory, None);
@@ -19279,7 +19289,10 @@ mod tests {
         );
 
         assert_eq!(state.active_view, GuiShellView::PublicServers);
-        assert_eq!(state.last_media_dialog_directory.as_deref(), Some("D:/Dialogs"));
+        assert_eq!(
+            state.last_media_dialog_directory.as_deref(),
+            Some("D:/Dialogs")
+        );
         assert_eq!(
             state
                 .public_servers
@@ -19293,7 +19306,10 @@ mod tests {
         assert_eq!(state.selection.selected_media_search_directory, Some(0));
         assert_eq!(
             state.saved_configuration.public_servers,
-            Some(vec![("Custom".to_owned(), "custom.example:9001".to_owned())])
+            Some(vec![(
+                "Custom".to_owned(),
+                "custom.example:9001".to_owned()
+            )])
         );
         assert_eq!(
             state.configuration.to_stored_settings().host.as_deref(),
@@ -19303,8 +19319,7 @@ mod tests {
     }
 
     #[test]
-    fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_over_ini_rows()
-    {
+    fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_over_ini_rows() {
         #[derive(Default)]
         struct RecordingHost;
 
@@ -19350,7 +19365,10 @@ mod tests {
         );
         assert_eq!(
             state.saved_configuration.public_servers,
-            Some(vec![("Custom".to_owned(), "custom.example:9001".to_owned())])
+            Some(vec![(
+                "Custom".to_owned(),
+                "custom.example:9001".to_owned()
+            )])
         );
         assert_eq!(
             state.configuration.to_stored_settings().host.as_deref(),
@@ -21031,7 +21049,10 @@ assert-pending\tnone\n"
         }
         assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
         assert_eq!(state.active_view, GuiShellView::Configuration);
-        assert_eq!(state.saved_configuration, StoredClientSettingsMvp::default());
+        assert_eq!(
+            state.saved_configuration,
+            StoredClientSettingsMvp::default()
+        );
         assert_eq!(state.last_media_dialog_directory, None);
         assert!(state.public_servers.servers.is_empty());
         assert!(state.media_search.directories.is_empty());

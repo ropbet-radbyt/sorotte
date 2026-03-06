@@ -1033,8 +1033,10 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             ));
         }
         if restored_state.selected_public_server_index() != Some(0) {
-            return Err("expected persisted semantic startup to restore the custom server selection"
-                .to_owned());
+            return Err(
+                "expected persisted semantic startup to restore the custom server selection"
+                    .to_owned(),
+            );
         }
         if restored_state.selection.selected_media_search_directory != Some(0) {
             return Err(
@@ -1043,8 +1045,10 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             );
         }
         if restored_state.last_media_dialog_directory.as_deref() != Some("D:/Dialogs") {
-            return Err("expected persisted semantic startup to restore the last media dialog directory"
-                .to_owned());
+            return Err(
+                "expected persisted semantic startup to restore the last media dialog directory"
+                    .to_owned(),
+            );
         }
         if restored_state.saved_configuration.public_servers.as_ref()
             != Some(&persisted_ui_state.public_servers)
@@ -1095,7 +1099,9 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             .iter()
             .any(|action| matches!(action, super::GuiShellAction::CompleteClearGuiData))
         {
-            return Err("semantic clear-GUI-data flow did not produce a completion action".to_owned());
+            return Err(
+                "semantic clear-GUI-data flow did not produce a completion action".to_owned(),
+            );
         }
         for action in actions {
             if !clear_state.apply(action) {
@@ -1113,10 +1119,14 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             );
         }
         if clear_state.configuration.launch_mode != super::GuiLaunchMode::FirstRun {
-            return Err("semantic clear-GUI-data flow did not restore first-run launch mode".to_owned());
+            return Err(
+                "semantic clear-GUI-data flow did not restore first-run launch mode".to_owned(),
+            );
         }
         if clear_state.active_view != super::GuiShellView::Configuration {
-            return Err("semantic clear-GUI-data flow did not restore the configuration view".to_owned());
+            return Err(
+                "semantic clear-GUI-data flow did not restore the configuration view".to_owned(),
+            );
         }
         if clear_state.saved_configuration != super::StoredClientSettingsMvp::default() {
             return Err(
