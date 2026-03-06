@@ -55,11 +55,18 @@ pub struct LegacyClientUserFileMetadataProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyPythonPeerChatMessage {
+    pub sender: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyPythonPeerSnapshot {
     pub username: String,
     pub room: String,
     pub local_ready: Option<bool>,
     pub observed_users: BTreeMap<String, Option<bool>>,
+    pub chat_messages: Vec<LegacyPythonPeerChatMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1408,6 +1415,36 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
+    pub fn send_peer_chat_message(
+        &mut self,
+        message: &str,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "send_chat_message",
+            "message": message,
+        }))?;
+        let status = self.wait_for_peer_status(Duration::from_secs(3), "chat-command-sent")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn wait_for_peer_observed_chat_message(
+        &mut self,
+        username: &str,
+        message: &str,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_chat_message",
+            "username": username,
+            "message": message,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "chat-message")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
     pub fn peer_snapshot(&mut self) -> Result<LegacyPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         self.send_peer_command(&json!({
@@ -1659,6 +1696,8 @@ impl LegacyServerPythonPeerHarness {
             | Some("ready-command-sent")
             | Some("local-ready")
             | Some("user-ready")
+            | Some("chat-command-sent")
+            | Some("chat-message")
             | Some("snapshot") => Ok(parsed),
             Some("error") => Err(InteropError::InvalidPythonBatchResponse(
                 parsed
@@ -1713,11 +1752,46 @@ impl LegacyServerPythonPeerHarness {
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
+        let chat_messages = status
+            .get("chatMessages")
+            .and_then(Value::as_array)
+            .map(|messages| {
+                messages
+                    .iter()
+                    .map(|message| {
+                        let sender = message
+                            .get("sender")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                InteropError::InvalidPythonBatchResponse(format!(
+                                    "python live peer status included a malformed chat sender: {message}"
+                                ))
+                            })?;
+                        let message_text = message
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                InteropError::InvalidPythonBatchResponse(format!(
+                                    "python live peer status included a malformed chat message: {message}"
+                                ))
+                            })?;
+                        Ok(LegacyPythonPeerChatMessage {
+                            sender,
+                            message: message_text,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, InteropError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
         Ok(LegacyPythonPeerSnapshot {
             username,
             room,
             local_ready,
             observed_users,
+            chat_messages,
         })
     }
 }

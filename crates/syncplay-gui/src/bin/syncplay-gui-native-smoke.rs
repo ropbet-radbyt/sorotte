@@ -114,6 +114,8 @@ const TRANSPORT_SESSION_ROOM: &str = "smoke-room";
 const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
+const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
 const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
     "interop-gui-user: self=yes, ready=no, controller=no";
 const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str =
@@ -985,7 +987,6 @@ impl PlatformNativeGuiDriver {
             },
         )
     }
-
     fn set_edit_value_by_index(
         window: PlatformWindowHandle,
         edit_index: usize,
@@ -2739,6 +2740,17 @@ fn assert_chat_input_cleared<D: NativeGuiDriver>(
     wait_for_named_edit_value(driver, window, "Chat Input", "", timeout)
 }
 
+fn wait_for_visible_chat_message<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    sender: &str,
+    message: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let expected_label = format!("{sender}: {message}");
+    wait_for_accessible_name(driver, window, &expected_label, timeout)
+}
+
 fn send_chat_message_and_complete<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -3173,6 +3185,51 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         steps.push("transport-python-peer-readiness".to_owned());
+
+        send_chat_message_and_complete(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        wait_for_visible_chat_message(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_observed_chat_message(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not observe local chat message: {error}")
+            })?;
+        steps.push("transport-python-peer-chat-local-to-peer".to_owned());
+
+        python_harness
+            .send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE)
+            .map_err(|error| format!("failed to send Python reference peer chat: {error}"))?;
+        python_harness
+            .wait_for_peer_observed_chat_message(
+                LIVE_PYTHON_INTEROP_PEER_USERNAME,
+                LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not confirm its own chat echo: {error}")
+            })?;
+        wait_for_visible_chat_message(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
+            LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-chat-peer-to-local".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;

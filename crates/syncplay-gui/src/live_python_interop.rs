@@ -3,17 +3,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-use syncplay_compat::{InteropError, LegacyPythonPeerSnapshot, LegacyServerPythonPeerHarness};
+use syncplay_compat::{
+    InteropError, LegacyPythonPeerChatMessage, LegacyPythonPeerSnapshot,
+    LegacyServerPythonPeerHarness,
+};
 
 use super::{
-    GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner,
-    GuiRuntimeRequest, GuiShellAction, GuiShellView, StoredClientSettingsMvp,
-    SyncplayGuiShellAppState,
+    GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle,
+    GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction, GuiShellView,
+    StoredClientSettingsMvp, SyncplayGuiShellAppState,
 };
 
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 pub(crate) const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
+pub(crate) const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
 const LIVE_PYTHON_INTEROP_TIMEOUT: Duration = Duration::from_secs(6);
 const LIVE_PYTHON_INTEROP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -24,6 +29,8 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub peer_user_present: bool,
     pub local_user_ready: bool,
     pub peer_user_ready: bool,
+    pub gui_chat_messages: Vec<LegacyPythonPeerChatMessage>,
+    pub peer_chat_messages: Vec<LegacyPythonPeerChatMessage>,
     pub widget_count: usize,
 }
 
@@ -134,6 +141,37 @@ fn run_live_python_peer_connect_flow_with_harness(
     let _ = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
     wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
 
+    request_local_chat_send(&handle, &mut state, LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE)?;
+    wait_for_projected_chat_message(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
+    )?;
+    wait_for_peer_observed_chat_message(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
+        Duration::from_secs(3),
+    )?;
+
+    harness.send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE)?;
+    wait_for_peer_observed_chat_message(
+        harness,
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE,
+        Duration::from_secs(3),
+    )?;
+    wait_for_projected_chat_message(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE,
+    )?;
+
+    let peer_snapshot = harness.peer_snapshot()?;
     state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
     Ok(LivePythonPeerInteropResult {
         room_name: state.main_window.room_name.clone(),
@@ -141,6 +179,16 @@ fn run_live_python_peer_connect_flow_with_harness(
         peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
         local_user_ready: local_user_ready(&state).unwrap_or(false),
         peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        gui_chat_messages: state
+            .main_window
+            .chat
+            .iter()
+            .map(|row| LegacyPythonPeerChatMessage {
+                sender: row.sender.clone(),
+                message: row.message.clone(),
+            })
+            .collect(),
+        peer_chat_messages: peer_snapshot.chat_messages,
         widget_count: state.shell_widget_tree().node_count(),
     })
 }
@@ -176,6 +224,23 @@ fn request_local_ready(
     Ok(())
 }
 
+fn request_local_chat_send(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    message: &str,
+) -> Result<(), LivePythonPeerInteropError> {
+    if !state.apply(GuiShellAction::BeginLocalChatSend(message.to_owned())) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to stage local chat send {message:?}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SendChatMessage(message.to_owned()),
+    ));
+    Ok(())
+}
+
 fn wait_for_peer_observed_user_ready(
     harness: &mut LegacyServerPythonPeerHarness,
     username: &str,
@@ -184,6 +249,17 @@ fn wait_for_peer_observed_user_ready(
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_user_ready(username, ready, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_chat_message(
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    message: &str,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_observed_chat_message(username, message, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 
@@ -202,6 +278,41 @@ fn wait_for_peer_observed_user_presence(
             return Err(LivePythonPeerInteropError::Gui(format!(
                 "timed out waiting for Python reference peer to observe GUI user {username:?}; users={:?}",
                 snapshot.observed_users
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_projected_chat_message(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    sender: &str,
+    message: &str,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+        if state
+            .main_window
+            .chat
+            .iter()
+            .any(|row| row.sender == sender && row.message == message)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let projected_chat = state
+                .main_window
+                .chat
+                .iter()
+                .map(|row| format!("{}>{}", row.sender, row.message))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer chat projection {sender:?}>{message:?}; room={:?}, chat=[{}]",
+                state.main_window.room_name, projected_chat
             )));
         }
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);

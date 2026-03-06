@@ -32,6 +32,14 @@ def _add_legacy_root_to_sys_path(legacy_root):
 
 
 class _RecordingUI:
+    def __init__(self, chat_messages=None):
+        self._chat_messages = chat_messages if chat_messages is not None else []
+
+    def showChatMessage(self, username, userMessage):
+        self._chat_messages.append(
+            {"sender": str(username), "message": str(userMessage)}
+        )
+
     def __getattr__(self, _name):
         def _noop(*_args, **_kwargs):
             return None
@@ -144,7 +152,8 @@ class _RecordingPlaylist:
 
 class _RecordingClient:
     def __init__(self, username, room):
-        self.ui = _RecordingUI()
+        self.chat_messages = []
+        self.ui = _RecordingUI(self.chat_messages)
         self._username = username
         self._room = room
         self._password = None
@@ -246,6 +255,10 @@ def _user_ready_snapshot(client):
     return users
 
 
+def _chat_message_snapshot(client):
+    return list(client.chat_messages)
+
+
 def _emit_client_snapshot(status, client, extra_payload=None):
     payload = {
         "status": status,
@@ -253,6 +266,7 @@ def _emit_client_snapshot(status, client, extra_payload=None):
         "room": client.getRoom(),
         "localReady": client.userlist.currentUser.isReady(),
         "users": _user_ready_snapshot(client),
+        "chatMessages": _chat_message_snapshot(client),
     }
     if extra_payload:
         payload.update(extra_payload)
@@ -279,6 +293,24 @@ def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error
     if error_holder:
         raise RuntimeError(error_holder[0])
     raise RuntimeError("python live peer timed out waiting for the requested readiness state")
+
+
+def _wait_for_chat_message(
+    client, username, message, timeout_seconds, error_holder
+):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if any(
+            entry.get("sender") == username and entry.get("message") == message
+            for entry in client.chat_messages
+        ):
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested chat message")
 
 
 def _handle_command(client, protocol, command, error_holder):
@@ -331,6 +363,40 @@ def _handle_command(client, protocol, command, error_holder):
         )
         _emit_client_snapshot(
             "user-ready", client, {"usernameObserved": username, "ready": expected_ready}
+        )
+        return
+    if command_name == "send_chat_message":
+        message = command.get("message")
+        if not isinstance(message, str):
+            raise RuntimeError(
+                "python live peer send_chat_message command requires a message string"
+            )
+        protocol.sendChatMessage(message)
+        _emit_client_snapshot("chat-command-sent", client, {"message": message})
+        return
+    if command_name == "wait_for_chat_message":
+        username = command.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise RuntimeError(
+                "python live peer wait_for_chat_message command requires a username string"
+            )
+        message = command.get("message")
+        if not isinstance(message, str):
+            raise RuntimeError(
+                "python live peer wait_for_chat_message command requires a message string"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        _wait_for_chat_message(
+            client,
+            username,
+            message,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot(
+            "chat-message",
+            client,
+            {"usernameObserved": username, "message": message},
         )
         return
     raise RuntimeError(f"python live peer received an unknown command: {command_name!r}")

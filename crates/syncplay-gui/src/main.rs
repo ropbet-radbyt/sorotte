@@ -18706,8 +18706,8 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness propagation.\""));
-        assert!(described.contains("\"script\":\"# Live Python reference-peer connect and readiness flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness and chat propagation.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, and chat flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
     }
 
     #[test]
@@ -21405,7 +21405,7 @@ assert-pending\tnone\n"
     }
 
     #[test]
-    fn gui_persisted_config_runtime_owner_projects_live_python_peer_connection() {
+    fn gui_persisted_config_runtime_owner_projects_live_python_peer_chat_interop() {
         let result = match super::live_python_interop::run_live_python_peer_connect_flow() {
             Ok(result) => result,
             Err(error)
@@ -21414,12 +21414,12 @@ assert-pending\tnone\n"
                 ) =>
             {
                 eprintln!(
-                    "live Python GUI interop connection test skipped due to missing local prerequisites"
+                    "live Python GUI interop chat test skipped due to missing local prerequisites"
                 );
                 return;
             }
             Err(error) => {
-                panic!("live Python GUI interop connection should succeed, got: {error}")
+                panic!("live Python GUI interop chat flow should succeed, got: {error}")
             }
         };
 
@@ -21429,6 +21429,26 @@ assert-pending\tnone\n"
         );
         assert!(result.local_user_present);
         assert!(result.peer_user_present);
+        assert!(result.gui_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE
+        }));
+        assert!(result.gui_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE
+        }));
+        assert!(result.peer_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE
+        }));
+        assert!(result.peer_chat_messages.iter().any(|message| {
+            message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_USERNAME
+                && message.message
+                    == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE
+        }));
         assert!(result.widget_count > 0);
     }
 

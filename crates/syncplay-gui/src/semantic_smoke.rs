@@ -371,8 +371,8 @@ const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT: &str =
 static GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION: &str = "Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.";
-const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT: &str = "# Live Python reference-peer connect and readiness flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\tinterop-room\n";
-const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness propagation.";
+const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT: &str = "# Live Python reference-peer connect, readiness, and chat flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\tinterop-room\n";
+const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness and chat propagation.";
 
 fn normalize_script_line_endings(script: &str) -> String {
     script.replace("\r\n", "\n").replace('\r', "\n")
