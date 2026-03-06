@@ -1,13 +1,53 @@
 # Configuration save and follow-on cross-surface workflow
 setting	public-server	Primary	syncplay.pl:8999
-setting	media-search-directory	C:/Media
 assert-selected	configuration-root	true
 enter-text	config:Connection:Host	false	syncplay.example
 enter-text	config:Connection:Port	false	8999
 enter-text	config:Connection:Username	false	smoke-user
 enter-text	config:Connection:Room	false	smoke-room
+enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
+activate	config:Readiness:Ready At Start
+activate	config:Readiness:Autoplay
+activate	config:Readiness:Require Same Filenames
+activate	config:Readiness:Shared Playlists
+activate	config:Readiness:Pause On Leave
+enter-text	config:Readiness:Unpause Action	false	Always
+enter-text	config:Readiness:Autoplay Min Users	false	3
+enter-text	config:Privacy:Filename Privacy	false	SendHashed
+enter-text	config:Privacy:Filesize Privacy	false	DoNotSend
 enter-text	config:Privacy:Trusted Domains	false	youtube.com; *.example.com/videos
 activate	config:Privacy:Trusted Domains Only
+activate	config:Desync:Rewind On Desync
+activate	config:Desync:Fastforward On Desync
+activate	config:Desync:Slow On Desync
+activate	config:Desync:Dont Slow Down With Me
+enter-text	config:Desync:Rewind Threshold	false	1.25
+enter-text	config:Desync:Fastforward Threshold	false	3.5
+enter-text	config:Desync:Slowdown Threshold	false	2.25
+enter-text	config:Media Search:First File Timeout	false	3.0
+enter-text	config:Media Search:Search Timeout	false	30.0
+enter-text	config:Media Search:Double Check Interval	false	2.5
+enter-text	config:Media Search:Warning Threshold	false	7.5
+activate	config:Chat:Chat Input
+activate	config:Chat:Chat Output
+activate	config:Chat:Direct Input
+activate	config:Chat:Move OSD
+enter-text	config:Chat:Max Lines	false	7
+enter-text	config:Chat:Input Font	false	Consolas
+enter-text	config:Chat:Output Font	false	Cascadia Mono
+activate	config:OSD:Show OSD
+activate	config:OSD:Show Duration
+activate	config:OSD:Show Same Room
+activate	config:OSD:Show Warnings
+activate	config:OSD:Show Noncontroller
+activate	config:OSD:Show Different Room
+activate	config:OSD:Show Contact Info
+enter-text	config:System:Language	false	pt-br
+activate	config:System:Auto Update
+add-media-search-directory	C:/Media
+assert-value	config:Media Search:Directory Count	1
+assert-value	menus:dialog:tls	yes
+assert-value	menus:dialog:update	yes
 enter-text	config:Connection:Port	false	70000
 assert-value	shell:validation:status	1 issue(s)
 assert-label	shell:validation:issue:0	Connection / Port
@@ -18,9 +58,25 @@ enter-text	config:Connection:Port	false	8999
 assert-value	shell:validation:status	clean
 assert-value	shell:command:save	enabled
 assert-value	config:Connection:Host	syncplay.example
+assert-value	config:Connection:Player Path	C:/Windows/System32/notepad.exe
+assert-value	config:Readiness:Unpause Action	Always
+assert-value	config:Readiness:Autoplay Min Users	3
+assert-value	config:Privacy:Filename Privacy	SendHashed
+assert-value	config:Privacy:Filesize Privacy	DoNotSend
 assert-value	config:Privacy:Trusted Domains	youtube.com; *.example.com/videos
 assert-value	config:Privacy:Trusted Domains Only	yes
 assert-value	config:Privacy:Trusted Domain Count	2
+assert-value	config:Desync:Rewind Threshold	1.25
+assert-value	config:Desync:Fastforward Threshold	3.5
+assert-value	config:Desync:Slowdown Threshold	2.25
+assert-value	config:Media Search:First File Timeout	3
+assert-value	config:Media Search:Search Timeout	30
+assert-value	config:Media Search:Double Check Interval	2.5
+assert-value	config:Media Search:Warning Threshold	7.5
+assert-value	config:Chat:Max Lines	7
+assert-value	config:Chat:Input Font	Consolas
+assert-value	config:Chat:Output Font	Cascadia Mono
+assert-value	config:System:Language	pt_BR
 activate	config-command:save
 assert-pending	save-configuration
 assert-value	shell:command:busy	yes
@@ -43,6 +99,10 @@ cancel-pending
 assert-pending	none
 activate	media-search-root
 assert-selected	media-search-root	true
+assert-value	media-search:timing:first-file	3.00s
+assert-value	media-search:timing:search	30.00s
+assert-value	media-search:timing:double-check	2.50s
+assert-value	media-search:timing:warning-threshold	7.50s
 activate	media-search:directory:0
 activate	media-search:command:search
 assert-pending	search-missing-media

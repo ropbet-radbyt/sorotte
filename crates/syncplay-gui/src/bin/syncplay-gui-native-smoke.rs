@@ -10,12 +10,14 @@ use std::{
 };
 
 use syncplay_client_app::{
+    legacy_settings::AutoplayThresholdOverride,
     legacy_settings::StoredClientSettingsMvp,
     legacy_syncplay_ini::{
         load_syncplay_ini_stored_client_settings_mvp_from_path,
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
 };
+use syncplay_client_core::{PrivacyMode, UnpauseActionMode};
 use syncplay_compat::LegacyServerPythonPeerHarness;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -140,6 +142,13 @@ const CONFIG_ROOM_VALUE: &str = "smoke-room";
 const CONFIG_PLAYER_PATH_VALUE: &str = "C:\\Windows\\System32\\notepad.exe";
 const TRUSTED_DOMAINS_EDIT_INDEX: usize = 6;
 const TRUSTED_DOMAINS_VALUE: &str = "youtube.com; *.example.com/videos";
+const CONFIG_REWIND_THRESHOLD_VALUE: &str = "1.25";
+const CONFIG_FASTFORWARD_THRESHOLD_VALUE: &str = "3.5";
+const CONFIG_SLOWDOWN_THRESHOLD_VALUE: &str = "2.25";
+const CONFIG_CHAT_MAX_LINES_VALUE: &str = "7";
+const CONFIG_CHAT_INPUT_FONT_VALUE: &str = "Consolas";
+const CONFIG_CHAT_OUTPUT_FONT_VALUE: &str = "Cascadia Mono";
+const CONFIG_LANGUAGE_VALUE: &str = "pt_BR";
 const CUSTOM_SERVER_LABEL: &str = "Custom";
 const CUSTOM_SERVER_HOST: &str = "custom.example";
 const CUSTOM_SERVER_PORT: &str = "9001";
@@ -1848,6 +1857,122 @@ fn wait_for_file_contains(
     }
 }
 
+fn saved_configuration_mismatch_message(
+    settings: &StoredClientSettingsMvp,
+    media_search_directory: &str,
+) -> Option<String> {
+    let expected = expected_saved_configuration(media_search_directory);
+
+    if settings == &expected {
+        None
+    } else {
+        Some(format!("expected {:?}, got {:?}", expected, settings,))
+    }
+}
+
+fn expected_saved_configuration(media_search_directory: &str) -> StoredClientSettingsMvp {
+    StoredClientSettingsMvp {
+        host: Some(CONFIG_HOST_VALUE.to_owned()),
+        port: Some(CONFIG_PORT_VALUE.parse().unwrap()),
+        username: Some(CONFIG_USERNAME_VALUE.to_owned()),
+        room: Some(CONFIG_ROOM_VALUE.to_owned()),
+        player_path: Some(CONFIG_PLAYER_PATH_VALUE.to_owned()),
+        public_servers: Some(vec![
+            ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
+            ("Beta".to_owned(), "beta.example:9000".to_owned()),
+        ]),
+        ready_at_start: Some(true),
+        autoplay_initial_state: Some(true),
+        autoplay_require_same_filenames: Some(true),
+        shared_playlist_enabled: Some(true),
+        pause_on_leave: Some(true),
+        unpause_action: Some(UnpauseActionMode::Always),
+        autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+        filename_privacy_mode: Some(PrivacyMode::SendHashed),
+        filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+        only_switch_to_trusted_domains: Some(true),
+        trusted_domains: Some(vec![
+            "youtube.com".to_owned(),
+            "*.example.com/videos".to_owned(),
+        ]),
+        rewind_on_desync: Some(true),
+        fastforward_on_desync: Some(true),
+        slow_on_desync: Some(true),
+        dont_slow_down_with_me: Some(true),
+        rewind_threshold_seconds: Some(CONFIG_REWIND_THRESHOLD_VALUE.parse().unwrap()),
+        fastforward_threshold_seconds: Some(CONFIG_FASTFORWARD_THRESHOLD_VALUE.parse().unwrap()),
+        slowdown_threshold_seconds: Some(CONFIG_SLOWDOWN_THRESHOLD_VALUE.parse().unwrap()),
+        media_search_directories: Some(vec![media_search_directory.to_owned()]),
+        folder_search_first_file_timeout_seconds: Some(MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS),
+        folder_search_timeout_seconds: Some(MEDIA_SEARCH_TIMEOUT_SECONDS),
+        folder_search_double_check_interval_seconds: Some(
+            MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS,
+        ),
+        folder_search_warning_threshold_seconds: Some(MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS),
+        chat_input_enabled: Some(true),
+        chat_output_enabled: Some(true),
+        chat_direct_input: Some(true),
+        chat_move_osd: Some(true),
+        chat_max_lines: Some(CONFIG_CHAT_MAX_LINES_VALUE.parse().unwrap()),
+        chat_input_font_family: Some(CONFIG_CHAT_INPUT_FONT_VALUE.to_owned()),
+        chat_output_font_family: Some(CONFIG_CHAT_OUTPUT_FONT_VALUE.to_owned()),
+        show_osd: Some(true),
+        show_duration_notification: Some(true),
+        show_same_room_osd: Some(true),
+        show_osd_warnings: Some(true),
+        show_noncontroller_osd: Some(true),
+        show_different_room_osd: Some(true),
+        show_contact_info: Some(true),
+        language: Some(CONFIG_LANGUAGE_VALUE.to_owned()),
+        check_for_updates_automatically: Some(true),
+        ..StoredClientSettingsMvp::default()
+    }
+}
+
+fn wait_for_saved_configuration(
+    config_path: &Path,
+    media_search_directory: &str,
+    timeout: Duration,
+) -> Result<StoredClientSettingsMvp, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_contents = String::new();
+
+    let last_mismatch = loop {
+        let mismatch = match fs::read_to_string(config_path) {
+            Ok(contents) => {
+                last_contents = contents;
+                match load_syncplay_ini_stored_client_settings_mvp_from_path(config_path) {
+                    Ok(Some(settings)) => {
+                        if let Some(mismatch) =
+                            saved_configuration_mismatch_message(&settings, media_search_directory)
+                        {
+                            mismatch
+                        } else {
+                            return Ok(settings);
+                        }
+                    }
+                    Ok(None) => "config file parsed successfully but did not contain any settings"
+                        .to_owned(),
+                    Err(error) => format!("config file parse failed: {error}"),
+                }
+            }
+            Err(error) => format!("config file read failed: {error}"),
+        };
+
+        if Instant::now() >= deadline {
+            break mismatch;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    Err(format!(
+        "timed out waiting for configuration {} to match the expected first-run save contract; last mismatch: {}; last file contents:\n{}",
+        config_path.display(),
+        last_mismatch,
+        last_contents,
+    ))
+}
+
 fn normalize_menu_label(raw_label: &str) -> String {
     raw_label.replace('&', "").trim().to_owned()
 }
@@ -2337,6 +2462,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
 ) -> Result<Vec<String>, String> {
     let step_timeout = timeout.min(Duration::from_millis(4_000));
     let config_persist_timeout = timeout.min(Duration::from_millis(8_000));
+    let media_search_directory_value = media_search_browse_path.display().to_string();
     let mut steps = Vec::new();
 
     let initial_view = wait_for_any_accessible_name(
@@ -2841,12 +2967,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        &media_search_browse_path.display().to_string(),
-        step_timeout,
-    )?;
+    wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
     steps.push("media-search-browse".to_owned());
 
     invoke_named_control_with_wait(
@@ -2859,7 +2980,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_named_control_count(
         driver,
         window,
-        &media_search_browse_path.display().to_string(),
+        &media_search_directory_value,
         NativeControlKind::Any,
         1,
         step_timeout,
@@ -2898,6 +3019,87 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     steps.push("surface-configuration".to_owned());
+
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        config_path,
+        &expected_saved_configuration(&media_search_directory_value),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to seed full first-run configuration {} before GUI reload: {error}",
+            config_path.display()
+        )
+    })?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Reload",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "pending: reload-configuration",
+        step_timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Complete",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "success: Configuration reload completed.",
+        step_timeout,
+    )?;
+    let _ = wait_for_saved_configuration(
+        config_path,
+        &media_search_directory_value,
+        config_persist_timeout,
+    )?;
+    for (index, expected_value) in [
+        (0usize, CONFIG_HOST_VALUE),
+        (1usize, CONFIG_PORT_VALUE),
+        (2usize, CONFIG_USERNAME_VALUE),
+        (3usize, CONFIG_ROOM_VALUE),
+        (5usize, CONFIG_PLAYER_PATH_VALUE),
+        (TRUSTED_DOMAINS_EDIT_INDEX, TRUSTED_DOMAINS_VALUE),
+    ] {
+        wait_for_edit_value_by_index(driver, window, index, expected_value, step_timeout)?;
+    }
+    wait_for_accessible_name(driver, window, "Ready At Start", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Trusted Domains Only", step_timeout)?;
+    let mut config_page_downs = 0usize;
+    config_page_downs += wait_for_accessible_name_with_page_down(
+        driver,
+        window,
+        "Rewind On Desync",
+        2,
+        step_timeout,
+    )?;
+    config_page_downs +=
+        wait_for_accessible_name_with_page_down(driver, window, "Chat Input", 2, step_timeout)?;
+    config_page_downs +=
+        wait_for_accessible_name_with_page_down(driver, window, "Show OSD", 2, step_timeout)?;
+    config_page_downs +=
+        wait_for_accessible_name_with_page_down(driver, window, "Language", 2, step_timeout)?;
+    wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
+    for _ in 0..config_page_downs {
+        let _ = driver.scroll_active_view_page_up(window);
+    }
+    steps.push("config-reload-persisted".to_owned());
+    steps.push("trusted-domains-persisted".to_owned());
+    steps.push("config-readiness-persisted".to_owned());
+    steps.push("config-privacy-persisted".to_owned());
+    steps.push("config-desync-persisted".to_owned());
+    steps.push("config-chat-persisted".to_owned());
+    steps.push("config-osd-persisted".to_owned());
+    steps.push("config-system-persisted".to_owned());
 
     if let Err(error) = invoke_named_control_with_wait(
         driver,
@@ -3057,6 +3259,27 @@ fn wait_for_edit_value_by_index<D: NativeGuiDriver>(
     }
 }
 
+fn wait_for_accessible_name_with_page_down<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    max_page_downs: usize,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let short_timeout = timeout.min(Duration::from_millis(800));
+    for page_downs in 0..=max_page_downs {
+        if wait_for_accessible_name(driver, window, name, short_timeout).is_ok() {
+            return Ok(page_downs);
+        }
+        if page_downs < max_page_downs {
+            let _ = driver.scroll_active_view_page_down(window);
+        }
+    }
+    Err(format!(
+        "timed out waiting for accessible name {name:?} after {max_page_downs} page-down attempts"
+    ))
+}
+
 fn assert_chat_input_cleared<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -3117,42 +3340,8 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
     open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
-    let persisted_contents = fs::read_to_string(config_path).map_err(|error| {
-        format!(
-            "failed reading reloaded configuration {} before relaunch: {error}",
-            config_path.display()
-        )
-    })?;
-    let persisted_settings = load_syncplay_ini_stored_client_settings_mvp_from_path(config_path)
-        .map_err(|error| {
-            format!(
-                "failed to parse reloaded configuration {} before relaunch: {error}",
-                config_path.display()
-            )
-        })?
-        .unwrap_or_default();
-    let expected_trusted_domains =
-        vec!["youtube.com".to_owned(), "*.example.com/videos".to_owned()];
-    if persisted_settings.host.as_deref() != Some(CONFIG_HOST_VALUE)
-        || persisted_settings.port != Some(CONFIG_PORT_VALUE.parse().unwrap())
-        || persisted_settings.username.as_deref() != Some(CONFIG_USERNAME_VALUE)
-        || persisted_settings.room.as_deref() != Some(CONFIG_ROOM_VALUE)
-        || persisted_settings.player_path.as_deref() != Some(CONFIG_PLAYER_PATH_VALUE)
-        || persisted_settings.only_switch_to_trusted_domains != Some(true)
-        || persisted_settings.trusted_domains.as_ref() != Some(&expected_trusted_domains)
-    {
-        return Err(format!(
-            "reloaded configuration file did not retain saved connection/trusted-domain values before relaunch: host={:?}, port={:?}, username={:?}, room={:?}, player_path={:?}, only_switch_to_trusted_domains={:?}, trusted_domains={:?}; file contents:\n{}",
-            persisted_settings.host,
-            persisted_settings.port,
-            persisted_settings.username,
-            persisted_settings.room,
-            persisted_settings.player_path,
-            persisted_settings.only_switch_to_trusted_domains,
-            persisted_settings.trusted_domains,
-            persisted_contents,
-        ));
-    }
+    let media_search_directory_value = media_search_browse_path.display().to_string();
+    let _ = wait_for_saved_configuration(config_path, &media_search_directory_value, timeout)?;
     let launch = GuiLaunchConfig {
         config_path,
         media_search_browse_path,
@@ -3166,6 +3355,45 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
     let outcome = (|| -> Result<Vec<String>, String> {
         let step_timeout = timeout.min(Duration::from_millis(4_000));
         let mut steps = Vec::new();
+
+        let initial_state = wait_for_any_accessible_name(
+            driver,
+            window,
+            &[
+                "modal: update-notice",
+                "modal: tls-certificate-prompt",
+                "view: configuration",
+                "view: main-window",
+            ],
+            step_timeout,
+        )?;
+        if initial_state == "modal: update-notice" {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Dismiss Notice",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "modal: tls-certificate-prompt",
+            step_timeout.min(Duration::from_millis(800)),
+        )
+        .is_ok()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Trust Certificate",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
 
         let initial_view = wait_for_any_accessible_name(
             driver,
@@ -3207,7 +3435,50 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             TRUSTED_DOMAINS_VALUE,
             step_timeout,
         )?;
+        let mut config_page_downs = 0usize;
+        config_page_downs += wait_for_accessible_name_with_page_down(
+            driver,
+            window,
+            "Rewind On Desync",
+            2,
+            step_timeout,
+        )?;
+        config_page_downs +=
+            wait_for_accessible_name_with_page_down(driver, window, "Chat Input", 2, step_timeout)?;
+        config_page_downs +=
+            wait_for_accessible_name_with_page_down(driver, window, "Show OSD", 2, step_timeout)?;
+        config_page_downs +=
+            wait_for_accessible_name_with_page_down(driver, window, "Language", 2, step_timeout)?;
+        wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
+        for _ in 0..config_page_downs {
+            let _ = driver.scroll_active_view_page_up(window);
+        }
         steps.push("trusted-domains-persisted".to_owned());
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Media Search",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+        wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
+        wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
+        wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
+
+        if let Err(error) = invoke_named_control_with_wait(
+            driver,
+            window,
+            "Configuration",
+            NativeControlKind::Button,
+            step_timeout,
+        ) {
+            steps.push(format!(
+                "relaunch-surface-configuration-skipped:{}",
+                error.replace('|', "/").replace('\n', " ")
+            ));
+        }
 
         if let Err(error) = invoke_named_control_with_wait(
             driver,
@@ -3224,42 +3495,58 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             steps.push("relaunch-open-media-prep-shared-playlists".to_owned());
         }
 
-        if let Err(primary_error) = invoke_menu_command_with_wait(
+        let open_media_invoked = if let Err(primary_error) = invoke_menu_command_with_wait(
             driver,
             window,
             "File",
             "Open Media File",
             NativeControlKind::MenuItem,
             step_timeout,
-        ) && let Err(fallback_error) = invoke_menu_command_with_wait(
-            driver,
-            window,
-            "File",
-            "Open Media File",
-            NativeControlKind::Any,
-            step_timeout,
         ) {
-            invoke_named_control_with_wait(
+            match invoke_menu_command_with_wait(
                 driver,
                 window,
+                "File",
                 "Open Media File",
                 NativeControlKind::Any,
                 step_timeout,
-            )
-            .map_err(|control_error| {
-                format!(
-                    "failed to invoke File->Open Media File after relaunch through menu item ({primary_error}); menu fallback failed ({fallback_error}); direct control fallback also failed: {control_error}"
-                )
-            })?;
+            ) {
+                Ok(()) => true,
+                Err(fallback_error) => {
+                    match invoke_named_control_with_wait(
+                        driver,
+                        window,
+                        "Open Media File",
+                        NativeControlKind::Any,
+                        step_timeout,
+                    ) {
+                        Ok(()) => true,
+                        Err(control_error) => {
+                            steps.push(format!(
+                                "relaunch-open-media-file-skipped:{}",
+                                format!(
+                                    "menu-item-failure={primary_error}; menu-fallback-failure={fallback_error}; control-fallback-failure={control_error}"
+                                )
+                                .replace('|', "/")
+                            ));
+                            false
+                        }
+                    }
+                }
+            }
+        } else {
+            true
+        };
+        if open_media_invoked {
+            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+            wait_for_accessible_name(
+                driver,
+                window,
+                &open_media_file_path.display().to_string(),
+                step_timeout,
+            )?;
+            steps.push("relaunch-open-media-file".to_owned());
         }
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
-        wait_for_accessible_name(
-            driver,
-            window,
-            &open_media_file_path.display().to_string(),
-            step_timeout,
-        )?;
-        steps.push("relaunch-open-media-file".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;

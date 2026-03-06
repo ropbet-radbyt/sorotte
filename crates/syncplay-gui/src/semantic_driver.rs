@@ -11,6 +11,7 @@ pub(super) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
     ApplyMainWindowPlaylistSelection(Option<usize>),
     OpenMediaFiles(Vec<String>),
+    AddMediaSearchDirectory(String),
     PushChatMessage {
         sender: String,
         message: String,
@@ -330,6 +331,17 @@ impl GuiSemanticStep {
                     return Err("open-media-files requires at least one path".to_owned());
                 }
                 Self::OpenMediaFiles(entries)
+            }
+            "add-media-search-directory" => {
+                let path = fields
+                    .next()
+                    .ok_or_else(|| "add-media-search-directory requires a path".to_owned())?;
+                if fields.next().is_some() {
+                    return Err(
+                        "add-media-search-directory accepts exactly one argument".to_owned()
+                    );
+                }
+                Self::AddMediaSearchDirectory(path.to_owned())
             }
             "activate" => {
                 let widget_id = fields
@@ -712,6 +724,21 @@ impl GuiSemanticDriver {
                     )]);
                 }
                 GuiSemanticStep::OpenMediaFiles(paths) => self.open_media_files(paths.clone())?,
+                GuiSemanticStep::AddMediaSearchDirectory(path) => {
+                    if !self
+                        .state
+                        .apply(GuiShellAction::AddMediaSearchDirectory(path.clone()))
+                    {
+                        return Err(self
+                            .state
+                            .validation
+                            .last_action_error
+                            .clone()
+                            .unwrap_or_else(|| {
+                                "semantic media-search directory add failed".to_owned()
+                            }));
+                    }
+                }
                 GuiSemanticStep::PushChatMessage { sender, message } => {
                     self.apply_actions([GuiShellAction::PushChatMessage {
                         sender: sender.clone(),

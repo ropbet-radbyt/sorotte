@@ -19168,29 +19168,79 @@ mod tests {
         });
 
         let stored = driver.state().configuration.to_stored_settings();
+        let saved = &driver.state().saved_configuration;
         assert_eq!(stored.host.as_deref(), Some("syncplay.pl"));
         assert_eq!(stored.port, Some(8999));
         assert_eq!(stored.username.as_deref(), Some("smoke-user"));
         assert_eq!(stored.room.as_deref(), Some("smoke-room"));
         assert_eq!(
-            driver.state().saved_configuration.host.as_deref(),
-            Some("syncplay.example")
+            stored.media_search_directories,
+            Some(vec!["C:/Media".to_owned()])
         );
-        assert_eq!(driver.state().saved_configuration.port, Some(8999));
+        assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
+        assert_eq!(saved.port, Some(8999));
+        assert_eq!(saved.username.as_deref(), Some("smoke-user"));
+        assert_eq!(saved.room.as_deref(), Some("smoke-room"));
         assert_eq!(
-            driver
-                .state()
-                .saved_configuration
-                .only_switch_to_trusted_domains,
-            Some(true)
+            saved.player_path.as_deref(),
+            Some("C:/Windows/System32/notepad.exe")
         );
+        assert_eq!(saved.ready_at_start, Some(true));
+        assert_eq!(saved.autoplay_initial_state, Some(true));
+        assert_eq!(saved.autoplay_require_same_filenames, Some(true));
+        assert_eq!(saved.shared_playlist_enabled, Some(true));
+        assert_eq!(saved.pause_on_leave, Some(true));
+        assert_eq!(saved.unpause_action, Some(UnpauseActionMode::Always));
         assert_eq!(
-            driver.state().saved_configuration.trusted_domains,
+            saved.autoplay_min_users,
+            Some(AutoplayThresholdOverride::Set(3))
+        );
+        assert_eq!(saved.filename_privacy_mode, Some(PrivacyMode::SendHashed));
+        assert_eq!(saved.filesize_privacy_mode, Some(PrivacyMode::DoNotSend));
+        assert_eq!(saved.only_switch_to_trusted_domains, Some(true));
+        assert_eq!(
+            saved.trusted_domains,
             Some(vec![
                 "youtube.com".to_owned(),
                 "*.example.com/videos".to_owned()
             ])
         );
+        assert_eq!(saved.rewind_on_desync, Some(true));
+        assert_eq!(saved.fastforward_on_desync, Some(true));
+        assert_eq!(saved.slow_on_desync, Some(true));
+        assert_eq!(saved.dont_slow_down_with_me, Some(true));
+        assert_eq!(saved.rewind_threshold_seconds, Some(1.25));
+        assert_eq!(saved.fastforward_threshold_seconds, Some(3.5));
+        assert_eq!(saved.slowdown_threshold_seconds, Some(2.25));
+        assert_eq!(
+            saved.media_search_directories,
+            Some(vec!["C:/Media".to_owned()])
+        );
+        assert_eq!(saved.folder_search_first_file_timeout_seconds, Some(3.0));
+        assert_eq!(saved.folder_search_timeout_seconds, Some(30.0));
+        assert_eq!(saved.folder_search_double_check_interval_seconds, Some(2.5));
+        assert_eq!(saved.folder_search_warning_threshold_seconds, Some(7.5));
+        assert_eq!(saved.chat_input_enabled, Some(true));
+        assert_eq!(saved.chat_output_enabled, Some(true));
+        assert_eq!(saved.chat_direct_input, Some(true));
+        assert_eq!(saved.chat_move_osd, Some(true));
+        assert_eq!(saved.chat_max_lines, Some(7));
+        assert_eq!(saved.chat_input_font_family.as_deref(), Some("Consolas"));
+        assert_eq!(
+            saved.chat_output_font_family.as_deref(),
+            Some("Cascadia Mono")
+        );
+        assert_eq!(saved.show_osd, Some(true));
+        assert_eq!(saved.show_duration_notification, Some(true));
+        assert_eq!(saved.show_same_room_osd, Some(true));
+        assert_eq!(saved.show_osd_warnings, Some(true));
+        assert_eq!(saved.show_noncontroller_osd, Some(true));
+        assert_eq!(saved.show_different_room_osd, Some(true));
+        assert_eq!(saved.show_contact_info, Some(true));
+        assert_eq!(saved.language.as_deref(), Some("pt_BR"));
+        assert_eq!(saved.check_for_updates_automatically, Some(true));
+        assert!(driver.state().menus.tls_prompt_expected);
+        assert!(driver.state().menus.update_notice_expected);
         assert!(
             driver
                 .widget("public-servers:row:0")
@@ -22986,7 +23036,48 @@ assert-pending\tnone\n"
             username: Some("smoke-user".to_owned()),
             room: Some("smoke-room".to_owned()),
             player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
+            ready_at_start: Some(true),
+            autoplay_initial_state: Some(true),
+            autoplay_require_same_filenames: Some(true),
             shared_playlist_enabled: Some(true),
+            pause_on_leave: Some(true),
+            unpause_action: Some(UnpauseActionMode::Always),
+            autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+            filename_privacy_mode: Some(PrivacyMode::SendHashed),
+            filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
+            only_switch_to_trusted_domains: Some(true),
+            trusted_domains: Some(vec![
+                "youtube.com".to_owned(),
+                "*.example.com/videos".to_owned(),
+            ]),
+            rewind_on_desync: Some(true),
+            fastforward_on_desync: Some(true),
+            slow_on_desync: Some(true),
+            dont_slow_down_with_me: Some(true),
+            rewind_threshold_seconds: Some(1.25),
+            fastforward_threshold_seconds: Some(3.5),
+            slowdown_threshold_seconds: Some(2.25),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            folder_search_first_file_timeout_seconds: Some(3.0),
+            folder_search_timeout_seconds: Some(30.0),
+            folder_search_double_check_interval_seconds: Some(2.5),
+            folder_search_warning_threshold_seconds: Some(7.5),
+            chat_input_enabled: Some(true),
+            chat_output_enabled: Some(true),
+            chat_direct_input: Some(true),
+            chat_move_osd: Some(true),
+            chat_max_lines: Some(7),
+            chat_input_font_family: Some("Consolas".to_owned()),
+            chat_output_font_family: Some("Cascadia Mono".to_owned()),
+            show_osd: Some(true),
+            show_duration_notification: Some(true),
+            show_same_room_osd: Some(true),
+            show_osd_warnings: Some(true),
+            show_noncontroller_osd: Some(true),
+            show_different_room_osd: Some(true),
+            show_contact_info: Some(true),
+            language: Some("pt_BR".to_owned()),
+            check_for_updates_automatically: Some(true),
             ..StoredClientSettingsMvp::default()
         };
         assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
@@ -23036,7 +23127,48 @@ assert-pending\tnone\n"
             username: Some("smoke-reloaded".to_owned()),
             room: Some("smoke-room-b".to_owned()),
             player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            ready_at_start: Some(false),
+            autoplay_initial_state: Some(true),
+            autoplay_require_same_filenames: Some(false),
             shared_playlist_enabled: Some(true),
+            pause_on_leave: Some(false),
+            unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+            autoplay_min_users: Some(AutoplayThresholdOverride::Set(4)),
+            filename_privacy_mode: Some(PrivacyMode::DoNotSend),
+            filesize_privacy_mode: Some(PrivacyMode::SendHashed),
+            only_switch_to_trusted_domains: Some(true),
+            trusted_domains: Some(vec!["reload.example".to_owned()]),
+            rewind_on_desync: Some(true),
+            fastforward_on_desync: Some(false),
+            slow_on_desync: Some(true),
+            dont_slow_down_with_me: Some(false),
+            rewind_threshold_seconds: Some(2.5),
+            fastforward_threshold_seconds: Some(4.5),
+            slowdown_threshold_seconds: Some(1.5),
+            media_search_directories: Some(vec![
+                "C:/ReloadMedia".to_owned(),
+                "D:/ReloadArchive".to_owned(),
+            ]),
+            folder_search_first_file_timeout_seconds: Some(4.0),
+            folder_search_timeout_seconds: Some(40.0),
+            folder_search_double_check_interval_seconds: Some(3.0),
+            folder_search_warning_threshold_seconds: Some(8.0),
+            chat_input_enabled: Some(true),
+            chat_output_enabled: Some(true),
+            chat_direct_input: Some(false),
+            chat_move_osd: Some(true),
+            chat_max_lines: Some(9),
+            chat_input_font_family: Some("Consolas".to_owned()),
+            chat_output_font_family: Some("Segoe UI".to_owned()),
+            show_osd: Some(true),
+            show_duration_notification: Some(false),
+            show_same_room_osd: Some(true),
+            show_osd_warnings: Some(true),
+            show_noncontroller_osd: Some(false),
+            show_different_room_osd: Some(true),
+            show_contact_info: Some(true),
+            language: Some("es".to_owned()),
+            check_for_updates_automatically: Some(true),
             ..StoredClientSettingsMvp::default()
         };
         super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
@@ -23065,6 +23197,58 @@ assert-pending\tnone\n"
         assert_eq!(
             persisted_state.saved_configuration, reloaded_settings,
             "portable nontransport smoke reload should project saved settings into shell state"
+        );
+        assert_eq!(
+            persisted_state
+                .configuration
+                .control_value("Readiness", "Unpause Action"),
+            Some("IfMinUsersReady")
+        );
+        assert_eq!(
+            persisted_state
+                .configuration
+                .control_value("Readiness", "Autoplay Min Users"),
+            Some("4")
+        );
+        assert_eq!(
+            persisted_state
+                .configuration
+                .control_value("Privacy", "Trusted Domain Count"),
+            Some("1")
+        );
+        assert_eq!(
+            persisted_state
+                .configuration
+                .control_value("System", "Language"),
+            Some("es")
+        );
+        assert_eq!(persisted_state.media_search.directories.len(), 2);
+        assert_eq!(
+            persisted_state.media_search.directories[0].path,
+            "C:/ReloadMedia"
+        );
+        assert!(persisted_state.main_window.shared_playlist_enabled);
+        assert!(persisted_state.menus.tls_prompt_expected);
+        assert!(persisted_state.menus.update_notice_expected);
+        let window = persisted_state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Window")
+            .expect("window menu should exist after reload");
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+                .is_some_and(|action| action.enabled)
+        );
+        assert!(
+            window
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Playlist")
+                .is_some_and(|action| action.enabled)
         );
 
         let mut no_runtime_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
