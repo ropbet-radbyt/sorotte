@@ -767,7 +767,7 @@ mod tests {
                 correction_action_failures: 2,
                 ..ReconnectStateRestoreCorrectionMetrics::default()
             },
-            snapshot.clone(),
+            snapshot,
             &ReconnectCorrectionDiagnosticsAlertThresholds {
                 action_failures_delta: Some(2),
                 consecutive_mismatch_cycles: Some(2),

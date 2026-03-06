@@ -633,8 +633,7 @@ impl GuiSemanticDriver {
             .map(|operation| operation.kind);
         if actual != pending {
             return Err(format!(
-                "pending-operation mismatch: expected {:?}, got {:?}",
-                pending, actual
+                "pending-operation mismatch: expected {pending:?}, got {actual:?}",
             ));
         }
         Ok(())

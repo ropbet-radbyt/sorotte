@@ -31,8 +31,10 @@ fn syncplay_cli_package_consumes_app_boundary_state_and_persistence_surface() {
     ]);
     assert!(serialized.contains("alpha"));
 
-    let mut settings = state::StoredClientSettingsMvp::default();
-    settings.host = Some("example.com".to_string());
+    let settings = state::StoredClientSettingsMvp {
+        host: Some("example.com".to_string()),
+        ..state::StoredClientSettingsMvp::default()
+    };
     let config_plan = state::stored_client_settings_config_plan_legacy_compatible(
         &settings,
         &state::StoredClientSettingsEnvPresence::default(),

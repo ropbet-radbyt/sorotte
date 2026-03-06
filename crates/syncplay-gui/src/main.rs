@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     collections::{BTreeSet, VecDeque},
     env,
@@ -2193,8 +2195,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             } => (
                 GuiTransientNotificationLevel::Info,
                 format!(
-                    "Session state correction recovery cooldown active for {} more reconnect cycles.",
-                    remaining_reconnect_cycles_after_this_cycle
+                    "Session state correction recovery cooldown active for {remaining_reconnect_cycles_after_this_cycle} more reconnect cycles."
                 ),
                 true,
             ),
@@ -3261,8 +3262,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn seek_unavailable_message(&self, offset_seconds: f64) -> String {
         let base = format!(
-            "Playback seek requires a playback runtime connection; the {} second request was not applied.",
-            offset_seconds
+            "Playback seek requires a playback runtime connection; the {offset_seconds} second request was not applied."
         );
         if let Some(reason) = self.player_unavailability_reason.as_deref() {
             format!("{base} {reason}")
@@ -3605,14 +3605,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                                 self.refresh_player_state();
                                 let message = if paths.len() == 1 {
                                     format!(
-                                        "Opened media file through the attached {} player: {}.",
-                                        player_name, selected_path
+                                        "Opened media file through the attached {player_name} player: {selected_path}."
                                     )
                                 } else {
                                     format!(
-                                        "Opened the first selected media file through the attached {} player: {}. Ignored {} additional selections.",
-                                        player_name,
-                                        selected_path,
+                                        "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
                                         paths.len() - 1
                                     )
                                 };
@@ -3627,8 +3624,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             }
                             Err(error) => {
                                 let message = format!(
-                                    "Opening media through the attached {} player failed: {error}",
-                                    player_name
+                                    "Opening media through the attached {player_name} player failed: {error}"
                                 );
                                 handle.push_actions([
                                     GuiShellAction::PushTransientNotification {
@@ -3662,8 +3658,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                                 Self::push_player_success(
                                     handle,
                                     format!(
-                                        "Applied a {} second seek via the attached {} player (target {:.3} seconds).",
-                                        offset_seconds, player_name, target_position_seconds
+                                        "Applied a {offset_seconds} second seek via the attached {player_name} player (target {target_position_seconds:.3} seconds)."
                                     ),
                                 );
                             }
@@ -3671,8 +3666,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                                 Self::push_player_error(
                                     handle,
                                     format!(
-                                        "Playback seek through the attached {} player failed: {error}",
-                                        player_name
+                                        "Playback seek through the attached {player_name} player failed: {error}"
                                     ),
                                 );
                             }
@@ -3715,8 +3709,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                                 GuiShellAction::PushTransientNotification {
                                     level: GuiTransientNotificationLevel::Error,
                                     message: format!(
-                                        "Playback pause toggle through the attached {} player failed: {error}",
-                                        player_name
+                                        "Playback pause toggle through the attached {player_name} player failed: {error}"
                                     ),
                                 },
                             ],
@@ -4022,7 +4015,7 @@ impl GuiPreviewRuntimeBridge {
     }
 
     fn preview_seek_actions(offset_seconds: f64) -> Vec<GuiShellAction> {
-        let message = format!("Seek requested: {} seconds.", offset_seconds);
+        let message = format!("Seek requested: {offset_seconds} seconds.");
         vec![
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
@@ -4146,6 +4139,7 @@ impl GuiPendingCompletionRequest {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 enum GuiRuntimeRequest {
@@ -4189,7 +4183,7 @@ impl GuiRuntimeRequest {
                 actions
             }
             Self::SeekOffset(offset_seconds) => {
-                let message = format!("Seek requested: {} seconds.", offset_seconds);
+                let message = format!("Seek requested: {offset_seconds} seconds.");
                 vec![
                     GuiShellAction::PushTransientNotification {
                         level: GuiTransientNotificationLevel::Info,
@@ -4852,6 +4846,7 @@ impl GuiShellModal {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 enum GuiShellAction {
     SwitchView(GuiShellView),
@@ -6711,7 +6706,7 @@ impl SyncplayGuiShellAppState {
                 self.main_window_user_edit_session = None;
                 self.push_transient_notification(
                     GuiTransientNotificationLevel::Success,
-                    format!("User renamed: {} -> {}.", previous_username, username),
+                    format!("User renamed: {previous_username} -> {username}."),
                 );
                 self.clear_action_error_and_refresh();
                 true
@@ -8613,7 +8608,7 @@ impl SyncplayGuiShellAppState {
         self.apply_selection_to_surfaces();
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
-            format!("User joined: {}.", username),
+            format!("User joined: {username}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -8675,7 +8670,7 @@ impl SyncplayGuiShellAppState {
         if !self.add_main_window_user(username) {
             return false;
         }
-        let Some(user) = self.main_window.users.get(self.main_window.users.len() - 1) else {
+        let Some(user) = self.main_window.users.last() else {
             return self.record_action_error(
                 "The announced main-window user could not be resolved after joining.",
             );
@@ -8700,15 +8695,11 @@ impl SyncplayGuiShellAppState {
 
         self.main_window_user_edit_session = None;
         self.push_system_chat_message(format!(
-            "{} is now known as {}.",
-            previous_username, renamed_username
+            "{previous_username} is now known as {renamed_username}.",
         ));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
-            format!(
-                "User renamed: {} -> {}.",
-                previous_username, renamed_username
-            ),
+            format!("User renamed: {previous_username} -> {renamed_username}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -8725,7 +8716,7 @@ impl SyncplayGuiShellAppState {
         if !self.remove_selected_main_window_user() {
             return false;
         }
-        self.push_system_chat_message(format!("{} left the room.", username));
+        self.push_system_chat_message(format!("{username} left the room."));
         self.clear_action_error_and_refresh();
         true
     }
@@ -8969,10 +8960,10 @@ impl SyncplayGuiShellAppState {
         });
         self.selection.selected_main_window_playlist = Some(self.main_window.playlist.len() - 1);
         self.apply_selection_to_surfaces();
-        self.push_system_chat_message(format!("Shared playlist entry added: {}.", entry));
+        self.push_system_chat_message(format!("Shared playlist entry added: {entry}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
-            format!("Shared playlist entry added: {}.", entry),
+            format!("Shared playlist entry added: {entry}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -8989,10 +8980,10 @@ impl SyncplayGuiShellAppState {
         self.selection.selected_main_window_playlist = Some(index);
         self.apply_selection_to_surfaces();
         let label = self.main_window.playlist[index].label.clone();
-        self.push_system_chat_message(format!("Shared playlist selection changed: {}.", label));
+        self.push_system_chat_message(format!("Shared playlist selection changed: {label}.",));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
-            format!("Shared playlist selected: {}.", label),
+            format!("Shared playlist selected: {label}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -9019,10 +9010,10 @@ impl SyncplayGuiShellAppState {
             Some(index)
         };
         self.apply_selection_to_surfaces();
-        self.push_system_chat_message(format!("Shared playlist entry removed: {}.", label));
+        self.push_system_chat_message(format!("Shared playlist entry removed: {label}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
-            format!("Shared playlist entry removed: {}.", label),
+            format!("Shared playlist entry removed: {label}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -9945,7 +9936,7 @@ impl SyncplayGuiShellAppState {
         self.apply_selection_to_surfaces();
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
-            format!("User removed: {}.", username),
+            format!("User removed: {username}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10189,10 +10180,10 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("Room name cannot be empty.");
         };
         self.set_main_window_room_state(Some(room.clone()));
-        self.push_system_chat_message(format!("Joined room: {}.", room));
+        self.push_system_chat_message(format!("Joined room: {room}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
-            format!("Room joined: {}.", room),
+            format!("Room joined: {room}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10205,10 +10196,10 @@ impl SyncplayGuiShellAppState {
         }
         let previous_room = current_room.to_owned();
         self.set_main_window_room_state(None);
-        self.push_system_chat_message(format!("Left room: {}.", previous_room));
+        self.push_system_chat_message(format!("Left room: {previous_room}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
-            format!("Room left: {}.", previous_room),
+            format!("Room left: {previous_room}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10541,10 +10532,10 @@ impl SyncplayGuiShellAppState {
         self.resync_from_settings(settings);
         self.set_selected_public_server_index(Some(selected_index));
         let _ = self.apply_public_server_selection(selected_index);
-        self.push_system_chat_message(format!("Custom public server added: {}.", label));
+        self.push_system_chat_message(format!("Custom public server added: {label}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
-            format!("Custom public server added: {}.", label),
+            format!("Custom public server added: {label}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10576,10 +10567,10 @@ impl SyncplayGuiShellAppState {
         self.selection.selected_media_search_directory = Some(index);
         self.apply_selection_to_surfaces();
         let path = self.media_search.directories[index].path.clone();
-        self.push_system_chat_message(format!("Media search directory selected: {}.", path));
+        self.push_system_chat_message(format!("Media search directory selected: {path}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
-            format!("Media search directory selected: {}.", path),
+            format!("Media search directory selected: {path}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10594,10 +10585,10 @@ impl SyncplayGuiShellAppState {
                 .record_action_error("The browsed media-search directory could not be selected.");
         };
         let path = self.media_search.directories[index].path.clone();
-        self.push_system_chat_message(format!("Media search directory added: {}.", path));
+        self.push_system_chat_message(format!("Media search directory added: {path}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
-            format!("Media search directory added: {}.", path),
+            format!("Media search directory added: {path}."),
         );
         self.clear_action_error_and_refresh();
         true
@@ -10635,10 +10626,10 @@ impl SyncplayGuiShellAppState {
         let found_path = found_path.and_then(|path| normalized_editable_text(&path));
         match found_path {
             Some(path) => {
-                self.push_system_chat_message(format!("Missing media found: {}.", path));
+                self.push_system_chat_message(format!("Missing media found: {path}."));
                 self.push_transient_notification(
                     GuiTransientNotificationLevel::Success,
-                    format!("Missing media found: {}.", path),
+                    format!("Missing media found: {path}."),
                 );
             }
             None => {

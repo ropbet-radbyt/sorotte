@@ -998,8 +998,7 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
         let directory_path = Path::new(directory);
         if !directory_path.is_dir() {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories ignored missing media directory '{}'",
-                directory
+                "warning: legacy mediaSearchDirectories ignored missing media directory '{directory}'",
             ));
             continue;
         }
@@ -1018,8 +1017,7 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
 
         if first_file_timeout_seconds <= 0.0 {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{}' because folderSearchFirstFileTimeout is 0",
-                directory
+                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout is 0",
             ));
             continue;
         }
@@ -1027,23 +1025,20 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
         let first_probe_started = Instant::now();
         if std::fs::read_dir(directory_path).is_err() {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories could not access media directory '{}'",
-                directory
+                "warning: legacy mediaSearchDirectories could not access media directory '{directory}'",
             ));
             continue;
         }
         if first_probe_started.elapsed().as_secs_f64() > first_file_timeout_seconds {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{}' because folderSearchFirstFileTimeout was exceeded",
-                directory
+                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout was exceeded",
             ));
             continue;
         }
 
         if folder_timeout_seconds <= 0.0 {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' because folderSearchTimeout is 0",
-                directory
+                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{directory}' because folderSearchTimeout is 0",
             ));
             continue;
         }
@@ -4550,23 +4545,26 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
 
 async fn run_connected_session_branch_plan_legacy_compatible<F, G>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    config: &ClientLoopConfig,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     outbound_state_sync_enabled: bool,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    startup_playlist_file_on_connect: &mut Option<String>,
-    diagnostics_config: &ClientLoopDiagnosticsConfig,
-    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
-    file_difference_state: &mut FileDifferenceNotificationState,
     plan: ConnectedSessionBranchPlan,
-    notification_sink: &mut F,
-    file_difference_sink: &mut G,
+    context: ConnectedSessionBranchExecutionContext<'_, F, G>,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
+    let ConnectedSessionBranchExecutionContext {
+        config,
+        writer,
+        startup_playlist_file_on_connect,
+        diagnostics_config,
+        reconnect_correction_diagnostics_state,
+        file_difference_state,
+        notification_sink,
+        file_difference_sink,
+    } = context;
     if plan.run_protocol_before_runtime_steps {
         apply_connected_session_protocol_plan_legacy_compatible(
             runtime,
@@ -4606,29 +4604,51 @@ where
     Ok(())
 }
 
+struct ConnectedSessionBranchExecutionContext<'a, F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    config: &'a ClientLoopConfig,
+    writer: &'a mut tokio::net::tcp::OwnedWriteHalf,
+    startup_playlist_file_on_connect: &'a mut Option<String>,
+    diagnostics_config: &'a ClientLoopDiagnosticsConfig,
+    reconnect_correction_diagnostics_state: &'a mut ReconnectCorrectionDiagnosticsState,
+    file_difference_state: &'a mut FileDifferenceNotificationState,
+    notification_sink: &'a mut F,
+    file_difference_sink: &'a mut G,
+}
+
+struct ConnectedSessionEventExecutionContext<'a, F, G>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+    G: FnMut(&str) -> anyhow::Result<()>,
+{
+    pending_ready_at_start_on_server_hello: &'a mut bool,
+    pending_chat_message_on_connect: &'a mut Option<String>,
+    outbound_state_sync_enabled: &'a mut bool,
+    branch: ConnectedSessionBranchExecutionContext<'a, F, G>,
+}
+
 async fn run_connected_session_event_plan_legacy_compatible<F, G>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    pending_ready_at_start_on_server_hello: &mut bool,
-    pending_chat_message_on_connect: &mut Option<String>,
     inbound_message_line: Option<&str>,
     decoded_inbound_message: Option<&ProtocolMessage>,
-    config: &ClientLoopConfig,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
-    outbound_state_sync_enabled: &mut bool,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    startup_playlist_file_on_connect: &mut Option<String>,
-    diagnostics_config: &ClientLoopDiagnosticsConfig,
-    reconnect_correction_diagnostics_state: &mut ReconnectCorrectionDiagnosticsState,
-    file_difference_state: &mut FileDifferenceNotificationState,
     event_execution_plan: ConnectedSessionEventExecutionPlan,
-    notification_sink: &mut F,
-    file_difference_sink: &mut G,
+    context: ConnectedSessionEventExecutionContext<'_, F, G>,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
+    let ConnectedSessionEventExecutionContext {
+        pending_ready_at_start_on_server_hello,
+        pending_chat_message_on_connect,
+        outbound_state_sync_enabled,
+        branch,
+    } = context;
     if let Some(inbound_apply) = event_execution_plan.inbound_apply {
         let inbound_message_line =
             inbound_message_line.expect("inbound apply plan requires an inbound message line");
@@ -4650,18 +4670,11 @@ where
     }
     run_connected_session_branch_plan_legacy_compatible(
         runtime,
-        config,
         now_seconds,
         dont_slow_down_with_me,
         *outbound_state_sync_enabled,
-        writer,
-        startup_playlist_file_on_connect,
-        diagnostics_config,
-        reconnect_correction_diagnostics_state,
-        file_difference_state,
         event_execution_plan.event.branch,
-        notification_sink,
-        file_difference_sink,
+        branch,
     )
     .await?;
 
@@ -4881,22 +4894,26 @@ where
                             );
                         run_connected_session_event_plan_legacy_compatible(
                             runtime,
-                            &mut pending_ready_at_start_on_server_hello,
-                            &mut pending_chat_message_on_connect,
                             Some(&line),
                             decoded_inbound_message.as_ref(),
-                            config,
                             now_seconds,
                             dont_slow_down_with_me,
-                            &mut outbound_state_sync_enabled,
-                            &mut writer,
-                            startup_playlist_file_on_connect,
-                            &diagnostics_config,
-                            &mut reconnect_correction_diagnostics_state,
-                            &mut file_difference_state,
                             event_execution_plan,
-                            notification_sink,
-                            file_difference_sink,
+                            ConnectedSessionEventExecutionContext {
+                                pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
+                                pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
+                                outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
+                                branch: ConnectedSessionBranchExecutionContext {
+                                    config,
+                                    writer: &mut writer,
+                                    startup_playlist_file_on_connect,
+                                    diagnostics_config: &diagnostics_config,
+                                    reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                                    file_difference_state: &mut file_difference_state,
+                                    notification_sink,
+                                    file_difference_sink,
+                                },
+                            },
                         )
                         .await?;
                     }
@@ -4915,22 +4932,26 @@ where
                     );
                 run_connected_session_event_plan_legacy_compatible(
                     runtime,
-                    &mut pending_ready_at_start_on_server_hello,
-                    &mut pending_chat_message_on_connect,
                     None,
                     None,
-                    config,
                     now_seconds,
                     dont_slow_down_with_me,
-                    &mut outbound_state_sync_enabled,
-                    &mut writer,
-                    startup_playlist_file_on_connect,
-                    &diagnostics_config,
-                    &mut reconnect_correction_diagnostics_state,
-                    &mut file_difference_state,
                     event_execution_plan,
-                    notification_sink,
-                    file_difference_sink,
+                    ConnectedSessionEventExecutionContext {
+                        pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
+                        pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
+                        outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
+                        branch: ConnectedSessionBranchExecutionContext {
+                            config,
+                            writer: &mut writer,
+                            startup_playlist_file_on_connect,
+                            diagnostics_config: &diagnostics_config,
+                            reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                            file_difference_state: &mut file_difference_state,
+                            notification_sink,
+                            file_difference_sink,
+                        },
+                    },
                 )
                 .await?;
             }
@@ -4988,22 +5009,26 @@ where
                         );
                     run_connected_session_event_plan_legacy_compatible(
                         runtime,
-                        &mut pending_ready_at_start_on_server_hello,
-                        &mut pending_chat_message_on_connect,
                         None,
                         None,
-                        config,
                         connected_start.elapsed().as_secs_f64(),
                         dont_slow_down_with_me,
-                        &mut outbound_state_sync_enabled,
-                        &mut writer,
-                        startup_playlist_file_on_connect,
-                        &diagnostics_config,
-                        &mut reconnect_correction_diagnostics_state,
-                        &mut file_difference_state,
                         event_execution_plan,
-                        notification_sink,
-                        file_difference_sink,
+                        ConnectedSessionEventExecutionContext {
+                            pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
+                            pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
+                            outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
+                            branch: ConnectedSessionBranchExecutionContext {
+                                config,
+                                writer: &mut writer,
+                                startup_playlist_file_on_connect,
+                                diagnostics_config: &diagnostics_config,
+                                reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                                file_difference_state: &mut file_difference_state,
+                                notification_sink,
+                                file_difference_sink,
+                            },
+                        },
                     )
                     .await?;
                 }

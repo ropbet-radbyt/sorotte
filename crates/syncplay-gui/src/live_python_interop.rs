@@ -48,6 +48,7 @@ impl From<InteropError> for LivePythonPeerInteropError {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn live_python_interop_prerequisites_missing(
     error: &LivePythonPeerInteropError,
 ) -> bool {

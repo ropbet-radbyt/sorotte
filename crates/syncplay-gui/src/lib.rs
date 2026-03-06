@@ -1,4 +1,4 @@
-#[allow(dead_code, unused_imports)]
+#[allow(unused_imports)]
 #[path = "main.rs"]
 mod app;
 

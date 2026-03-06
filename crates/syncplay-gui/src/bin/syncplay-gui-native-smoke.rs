@@ -417,12 +417,12 @@ impl PlatformNativeGuiDriver {
         };
 
         let mut controls = [
-            Self::keyboard_input_for_vk(VK_CONTROL as u16, 0),
+            Self::keyboard_input_for_vk(VK_CONTROL, 0),
             Self::keyboard_input_for_vk('A' as u16, 0),
             Self::keyboard_input_for_vk('A' as u16, KEYEVENTF_KEYUP),
-            Self::keyboard_input_for_vk(VK_CONTROL as u16, KEYEVENTF_KEYUP),
-            Self::keyboard_input_for_vk(VK_BACK as u16, 0),
-            Self::keyboard_input_for_vk(VK_BACK as u16, KEYEVENTF_KEYUP),
+            Self::keyboard_input_for_vk(VK_CONTROL, KEYEVENTF_KEYUP),
+            Self::keyboard_input_for_vk(VK_BACK, 0),
+            Self::keyboard_input_for_vk(VK_BACK, KEYEVENTF_KEYUP),
         ];
         Self::send_keyboard_inputs(&mut controls)?;
 
@@ -442,8 +442,8 @@ impl PlatformNativeGuiDriver {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_RETURN};
 
         let mut enter_inputs = [
-            Self::keyboard_input_for_vk(VK_RETURN as u16, 0),
-            Self::keyboard_input_for_vk(VK_RETURN as u16, KEYEVENTF_KEYUP),
+            Self::keyboard_input_for_vk(VK_RETURN, 0),
+            Self::keyboard_input_for_vk(VK_RETURN, KEYEVENTF_KEYUP),
         ];
         Self::send_keyboard_inputs(&mut enter_inputs)
     }
@@ -452,8 +452,8 @@ impl PlatformNativeGuiDriver {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_NEXT};
 
         let mut page_down_inputs = [
-            Self::keyboard_input_for_vk(VK_NEXT as u16, 0),
-            Self::keyboard_input_for_vk(VK_NEXT as u16, KEYEVENTF_KEYUP),
+            Self::keyboard_input_for_vk(VK_NEXT, 0),
+            Self::keyboard_input_for_vk(VK_NEXT, KEYEVENTF_KEYUP),
         ];
         Self::send_keyboard_inputs(&mut page_down_inputs)
     }
@@ -462,8 +462,8 @@ impl PlatformNativeGuiDriver {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_PRIOR};
 
         let mut page_up_inputs = [
-            Self::keyboard_input_for_vk(VK_PRIOR as u16, 0),
-            Self::keyboard_input_for_vk(VK_PRIOR as u16, KEYEVENTF_KEYUP),
+            Self::keyboard_input_for_vk(VK_PRIOR, 0),
+            Self::keyboard_input_for_vk(VK_PRIOR, KEYEVENTF_KEYUP),
         ];
         Self::send_keyboard_inputs(&mut page_up_inputs)
     }
@@ -1540,12 +1540,8 @@ fn default_binary_path() -> PathBuf {
 }
 
 fn resolve_binary_path(path: &Path) -> Result<PathBuf, String> {
-    fs::canonicalize(path).map_err(|error| {
-        format!(
-            "failed to resolve syncplay-gui binary at {:?}: {error}",
-            path
-        )
-    })
+    fs::canonicalize(path)
+        .map_err(|error| format!("failed to resolve syncplay-gui binary at {path:?}: {error}"))
 }
 
 fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Result<Child, String> {
@@ -1587,12 +1583,9 @@ fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Resul
         command.env("SYNCPLAY_CLIENT_USERNAME", username);
         command.env("SYNCPLAY_CLIENT_ROOM", room);
     }
-    command.spawn().map_err(|error| {
-        format!(
-            "failed to launch syncplay-gui at {:?}: {error}",
-            binary_path
-        )
-    })
+    command
+        .spawn()
+        .map_err(|error| format!("failed to launch syncplay-gui at {binary_path:?}: {error}"))
 }
 
 fn wait_for_main_window<D: NativeGuiDriver>(
@@ -1722,8 +1715,7 @@ fn wait_for_file_contains(
             Err(error) => {
                 if Instant::now() >= deadline {
                     return Err(format!(
-                        "timed out waiting for config file {:?} to contain required lines; last read error: {error}",
-                        path
+                        "timed out waiting for config file {path:?} to contain required lines; last read error: {error}"
                     ));
                 }
             }
@@ -2670,8 +2662,7 @@ fn wait_for_named_edit_value<D: NativeGuiDriver>(
                 ))
             } else {
                 Err(format!(
-                    "timed out waiting for edit field {name:?} to equal {expected_value:?}; last value: {:?}",
-                    last_value
+                    "timed out waiting for edit field {name:?} to equal {expected_value:?}; last value: {last_value:?}"
                 ))
             };
         }
@@ -2708,8 +2699,7 @@ fn wait_for_edit_value_by_index<D: NativeGuiDriver>(
                 ))
             } else {
                 Err(format!(
-                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last value: {:?}",
-                    last_value
+                    "timed out waiting for edit field [{edit_index}] to equal {expected_value:?}; last value: {last_value:?}"
                 ))
             };
         }
@@ -3443,8 +3433,7 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
     let binary_path = resolve_binary_path(&configured_binary_path)?;
     if !binary_path.exists() {
         return Err(format!(
-            "syncplay-gui binary does not exist: {:?}",
-            binary_path
+            "syncplay-gui binary does not exist: {binary_path:?}"
         ));
     }
 
@@ -3466,7 +3455,7 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
     seed_native_smoke_config(&config_path)?;
 
     let started_at = Instant::now();
-    let driver = PlatformNativeGuiDriver::default();
+    let driver = PlatformNativeGuiDriver;
     let launch = GuiLaunchConfig {
         config_path: &config_path,
         media_search_browse_path: &media_search_browse_path,
