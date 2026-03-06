@@ -114,6 +114,8 @@ const TRANSPORT_SESSION_ROOM: &str = "smoke-room";
 const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
+const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str = "+interop-room:447CE7E3548D:AB-123-456";
 const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
@@ -122,6 +124,8 @@ const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
     "interop-gui-user: self=yes, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME: &str =
+    "interop-gui-user: self=yes, ready=no, controller=yes";
 const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str =
     "interop-gui-user: self=yes, ready=yes, controller=no";
 const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "interop-py-peer: self=no, ready=no, controller=no";
@@ -3414,6 +3418,150 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
     }
 }
 
+fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
+    driver: &D,
+    binary_path: &Path,
+    temp_root: &Path,
+    media_search_browse_path: &Path,
+    open_media_file_path: &Path,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let mut python_harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_CONTROLLED_ROOM,
+    )
+    .map_err(|error| format!("failed to start live Python controlled-room harness: {error}"))?;
+    let interop_config_path = temp_root.join("syncplay-native-smoke-python-controlled-room.ini");
+    let _ = fs::remove_file(&interop_config_path);
+    seed_native_smoke_config(&interop_config_path)?;
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &interop_config_path,
+        &StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to enable shared playlists in native Python controlled-room config {}: {error}",
+            interop_config_path.display()
+        )
+    })?;
+    let launch = GuiLaunchConfig {
+        config_path: &interop_config_path,
+        media_search_browse_path,
+        open_media_file_path,
+        public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+        tcp_session: Some(TcpSessionBootstrap {
+            host: python_harness.host(),
+            port: python_harness.port(),
+            username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            room: LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
+        }),
+        loopback_session: None,
+    };
+
+    let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
+    let (mut child, window) = match launch_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let release = python_harness.shutdown();
+            let mut combined_error = format!(
+                "failed to launch live Python controlled-room segment for native smoke: {error}"
+            );
+            if let Err(release_error) = release {
+                combined_error.push_str("; ");
+                combined_error.push_str(&release_error.to_string());
+            }
+            return Err(combined_error);
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let step_timeout = timeout.min(Duration::from_millis(8_000));
+        let mut steps = Vec::new();
+
+        wait_for_any_accessible_name(
+            driver,
+            window,
+            &["view: configuration", "view: main-window"],
+            step_timeout,
+        )?;
+        let _ = invoke_named_control_with_wait(
+            driver,
+            window,
+            "Main Window",
+            NativeControlKind::Button,
+            step_timeout,
+        );
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME,
+            step_timeout,
+        )?;
+
+        python_harness.start_peer_connected().map_err(|error| {
+            format!("failed to connect live Python reference peer in controlled room: {error}")
+        })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-controlled-room-connect".to_owned());
+
+        python_harness
+            .wait_for_peer_observed_user_controller(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                true,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!(
+                    "python reference peer did not observe GUI controller status in controlled room: {error}"
+                )
+            })?;
+        python_harness
+            .wait_for_peer_local_controller(false, step_timeout)
+            .map_err(|error| {
+                format!(
+                    "python reference peer did not remain non-controller in controlled room: {error}"
+                )
+            })?;
+        steps.push("transport-python-peer-controlled-room-auth".to_owned());
+
+        wait_for_named_control_count(
+            driver,
+            window,
+            "New Entry",
+            NativeControlKind::Any,
+            1,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-controlled-room-playlist-enabled".to_owned());
+
+        driver.close_window(window)?;
+        wait_for_process_exit(&mut child, timeout)?;
+        Ok(steps)
+    })();
+
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    let release = python_harness.shutdown();
+    match (outcome, release) {
+        (Ok(steps), Ok(())) => Ok(steps),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error.to_string()),
+        (Err(error), Err(release_error)) => Err(format!("{error}; {release_error}")),
+    }
+}
+
 fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -3844,6 +3992,16 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
             options.timeout,
         )?;
         interaction_steps.extend(live_python_interop_steps);
+
+        let live_python_controlled_room_steps = verify_live_python_peer_controlled_room_contract(
+            &driver,
+            &binary_path,
+            &temp_root,
+            &media_search_browse_path,
+            &open_media_file_path,
+            options.timeout,
+        )?;
+        interaction_steps.extend(live_python_controlled_room_steps);
 
         let transport_steps = verify_transport_reconnect_contract(
             &driver,

@@ -65,7 +65,9 @@ pub struct LegacyPythonPeerSnapshot {
     pub username: String,
     pub room: String,
     pub local_ready: Option<bool>,
+    pub local_controller: Option<bool>,
     pub observed_users: BTreeMap<String, Option<bool>>,
+    pub observed_user_controllers: BTreeMap<String, Option<bool>>,
     pub playlist: Vec<String>,
     pub playlist_index: Option<usize>,
     pub chat_messages: Vec<LegacyPythonPeerChatMessage>,
@@ -1417,6 +1419,38 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
+    pub fn wait_for_peer_local_controller(
+        &mut self,
+        controller: bool,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_local_controller",
+            "controller": controller,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "local-controller")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn wait_for_peer_observed_user_controller(
+        &mut self,
+        username: &str,
+        controller: bool,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_user_controller",
+            "username": username,
+            "controller": controller,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "user-controller")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
     pub fn send_peer_chat_message(
         &mut self,
         message: &str,
@@ -1761,6 +1795,8 @@ impl LegacyServerPythonPeerHarness {
             | Some("playlist-index-command-sent")
             | Some("playlist")
             | Some("playlist-index")
+            | Some("local-controller")
+            | Some("user-controller")
             | Some("snapshot") => Ok(parsed),
             Some("error") => Err(InteropError::InvalidPythonBatchResponse(
                 parsed
@@ -1805,6 +1841,7 @@ impl LegacyServerPythonPeerHarness {
                 ))
             })?;
         let local_ready = status.get("localReady").and_then(Value::as_bool);
+        let local_controller = status.get("localController").and_then(Value::as_bool);
         let observed_users = status
             .get("users")
             .and_then(Value::as_object)
@@ -1812,6 +1849,16 @@ impl LegacyServerPythonPeerHarness {
                 users
                     .iter()
                     .map(|(username, ready)| (username.clone(), ready.as_bool()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let observed_user_controllers = status
+            .get("controllers")
+            .and_then(Value::as_object)
+            .map(|users| {
+                users
+                    .iter()
+                    .map(|(username, controller)| (username.clone(), controller.as_bool()))
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
@@ -1885,7 +1932,9 @@ impl LegacyServerPythonPeerHarness {
             username,
             room,
             local_ready,
+            local_controller,
             observed_users,
+            observed_user_controllers,
             playlist,
             playlist_index,
             chat_messages,

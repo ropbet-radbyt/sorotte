@@ -373,6 +373,8 @@ static GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED: Onc
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION: &str = "Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT: &str = "# Live Python reference-peer connect, readiness, chat, and playlist flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\tinterop-room\nsetting\tshared-playlist-enabled\ttrue\n";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation.";
+const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_SCRIPT: &str = "# Live Python reference-peer controlled-room flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\t+interop-room:447CE7E3548D:AB-123-456\nsetting\tshared-playlist-enabled\ttrue\n";
+const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.";
 
 fn normalize_script_line_endings(script: &str) -> String {
     script.replace("\r\n", "\n").replace('\r', "\n")
@@ -423,6 +425,9 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT)
         }
+        "live-python-peer-controlled-room-flow" => {
+            Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_SCRIPT)
+        }
         _ => None,
     }
 }
@@ -439,6 +444,9 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
         }
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION)
+        }
+        "live-python-peer-controlled-room-flow" => {
+            Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_DESCRIPTION)
         }
         _ => None,
     }
@@ -517,6 +525,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "runtime-chat-flow",
         "runtime-transport-churn-flow",
         "live-python-peer-connect-flow",
+        "live-python-peer-controlled-room-flow",
     ]
 }
 
@@ -572,6 +581,9 @@ pub(super) fn run_gui_semantic_scenario_named(
 ) -> Result<GuiSemanticScenarioReport, String> {
     if name == "live-python-peer-connect-flow" {
         return run_gui_semantic_live_python_peer_connect_flow();
+    }
+    if name == "live-python-peer-controlled-room-flow" {
+        return run_gui_semantic_live_python_peer_controlled_room_flow();
     }
     let scenario = gui_semantic_scenario_named(name).ok_or_else(|| {
         format!(
@@ -632,11 +644,13 @@ pub fn run_syncplay_gui_semantic_report_from_named_with_append_script_path(
     name: &str,
     append_script_path: &str,
 ) -> Result<GuiSemanticScenarioReport, String> {
-    if name == "live-python-peer-connect-flow" {
-        return Err(
-            "--append-script does not support custom semantic scenario \"live-python-peer-connect-flow\""
-                .to_owned(),
-        );
+    if matches!(
+        name,
+        "live-python-peer-connect-flow" | "live-python-peer-controlled-room-flow"
+    ) {
+        return Err(format!(
+            "--append-script does not support custom semantic scenario {name:?}"
+        ));
     }
     let base_script = gui_semantic_scenario_script(name).ok_or_else(|| {
         format!(
@@ -942,6 +956,19 @@ fn run_gui_semantic_live_python_peer_connect_flow() -> Result<GuiSemanticScenari
         .map_err(|error| error.to_string())?;
     Ok(GuiSemanticScenarioReport {
         scenario: "live-python-peer-connect-flow".to_owned(),
+        view: "main-window".to_owned(),
+        modal: "none".to_owned(),
+        pending: "none".to_owned(),
+        widgets: result.widget_count,
+    })
+}
+
+fn run_gui_semantic_live_python_peer_controlled_room_flow()
+-> Result<GuiSemanticScenarioReport, String> {
+    let result = super::live_python_interop::run_live_python_peer_controlled_room_flow()
+        .map_err(|error| error.to_string())?;
+    Ok(GuiSemanticScenarioReport {
+        scenario: "live-python-peer-controlled-room-flow".to_owned(),
         view: "main-window".to_owned(),
         modal: "none".to_owned(),
         pending: "none".to_owned(),

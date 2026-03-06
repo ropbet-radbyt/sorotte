@@ -284,6 +284,13 @@ def _user_ready_snapshot(client):
     return users
 
 
+def _user_controller_snapshot(client):
+    users = {client.getUsername(): client.userlist.currentUser.controller}
+    for username, user in client.userlist._users.items():
+        users[username] = user.controller
+    return users
+
+
 def _chat_message_snapshot(client):
     return list(client.chat_messages)
 
@@ -304,7 +311,9 @@ def _emit_client_snapshot(status, client, extra_payload=None):
         "username": client.getUsername(),
         "room": client.getRoom(),
         "localReady": client.userlist.currentUser.isReady(),
+        "localController": client.userlist.currentUser.controller,
         "users": _user_ready_snapshot(client),
+        "controllers": _user_controller_snapshot(client),
         "playlist": _playlist_snapshot(client),
         "playlistIndex": _playlist_index_snapshot(client),
         "chatMessages": _chat_message_snapshot(client),
@@ -323,6 +332,15 @@ def _ready_for_username(client, username):
     return user.isReady()
 
 
+def _controller_for_username(client, username):
+    if username == client.getUsername():
+        return client.userlist.currentUser.controller
+    user = client.userlist._users.get(username)
+    if user is None:
+        return None
+    return user.controller
+
+
 def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error_holder):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -334,6 +352,21 @@ def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error
     if error_holder:
         raise RuntimeError(error_holder[0])
     raise RuntimeError("python live peer timed out waiting for the requested readiness state")
+
+
+def _wait_for_controller_value(
+    client, getter, expected_controller, timeout_seconds, error_holder
+):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if getter() == expected_controller:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested controller state")
 
 
 def _wait_for_chat_message(
@@ -431,6 +464,49 @@ def _handle_command(client, protocol, command, error_holder):
         )
         _emit_client_snapshot(
             "user-ready", client, {"usernameObserved": username, "ready": expected_ready}
+        )
+        return
+    if command_name == "wait_for_local_controller":
+        if "controller" not in command:
+            raise RuntimeError(
+                "python live peer wait_for_local_controller command requires a controller field"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        expected_controller = bool(command["controller"])
+        _wait_for_controller_value(
+            client,
+            lambda: client.userlist.currentUser.controller,
+            expected_controller,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot(
+            "local-controller", client, {"controller": expected_controller}
+        )
+        return
+    if command_name == "wait_for_user_controller":
+        username = command.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise RuntimeError(
+                "python live peer wait_for_user_controller command requires a username string"
+            )
+        if "controller" not in command:
+            raise RuntimeError(
+                "python live peer wait_for_user_controller command requires a controller field"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        expected_controller = bool(command["controller"])
+        _wait_for_controller_value(
+            client,
+            lambda: _controller_for_username(client, username),
+            expected_controller,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot(
+            "user-controller",
+            client,
+            {"usernameObserved": username, "controller": expected_controller},
         )
         return
     if command_name == "send_chat_message":

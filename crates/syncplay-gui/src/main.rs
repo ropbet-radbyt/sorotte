@@ -32,6 +32,7 @@ use syncplay_client_app::app_boundary::{
         parse_autoplay_min_users_override_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
         parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
+        stored_client_settings_runtime_snapshot_legacy_compatible,
         unpause_action_mode_legacy_name_compatible,
     },
 };
@@ -1886,15 +1887,27 @@ struct GuiClientCoreChatSessionRuntimeAdapter {
 #[allow(dead_code)]
 impl GuiClientCoreChatSessionRuntimeAdapter {
     fn new(username: impl Into<String>, room: impl Into<String>) -> Result<Self, String> {
+        Self::new_with_control_password(username, room, None)
+    }
+
+    fn new_with_control_password(
+        username: impl Into<String>,
+        room: impl Into<String>,
+        controlled_room_password_override: Option<String>,
+    ) -> Result<Self, String> {
         let username = username.into();
         let room = room.into();
         let hello_json = Self::hello_json(&username, &room);
+        let mut session = ClientSession::default();
+        if let Some(control_password) = controlled_room_password_override.as_deref() {
+            session.remember_control_password_for_room(&room, control_password);
+        }
 
         Ok(Self {
             username,
             baseline_room: room,
             runtime: ClientRuntime::new(
-                ClientSession::default(),
+                session,
                 GuiNoopClientRuntimePlayer,
                 QueuedRuntimeControl::default(),
             ),
@@ -2638,6 +2651,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         } else {
             self.runtime.drain_reconnect_notifications();
         }
+        if let Err(error) = self.runtime.run_controller_reidentify_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core controller reidentify dispatch failed: {error}"),
+            });
+        }
         if let Err(error) = self.runtime.run_controller_auth_notifications_if_needed() {
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
@@ -3278,7 +3297,19 @@ impl GuiPersistedConfigRuntimeOwner {
         username: impl Into<String>,
         room: impl Into<String>,
     ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
-        let session = Box::new(GuiClientCoreChatSessionRuntimeAdapter::new(username, room)?);
+        let runtime_settings =
+            stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+                username: Some(username.into()),
+                room: Some(room.into()),
+                ..StoredClientSettingsMvp::default()
+            });
+        let session = Box::new(
+            GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+                runtime_settings.settings.username.unwrap_or_default(),
+                runtime_settings.settings.room.unwrap_or_default(),
+                runtime_settings.controlled_room_password_override,
+            )?,
+        );
         let session_transport = GuiQueuedSessionTransportHandle::default();
         Ok((
             self.with_session_runtime(session)
@@ -18744,7 +18775,8 @@ mod tests {
                 "core-shell-smoke-flow",
                 "runtime-chat-flow",
                 "runtime-transport-churn-flow",
-                "live-python-peer-connect-flow"
+                "live-python-peer-connect-flow",
+                "live-python-peer-controlled-room-flow",
             ]
         );
         assert!(
@@ -18773,11 +18805,18 @@ mod tests {
                 .contains("interop-py-peer")
         );
         assert!(
+            super::semantic_smoke::gui_semantic_scenario_script(
+                "live-python-peer-controlled-room-flow"
+            )
+            .expect("live Python controlled-room scenario should expose a script description")
+            .contains("+interop-room:447CE7E3548D:AB-123-456")
+        );
+        assert!(
             super::semantic_smoke::gui_semantic_scenario_script("missing-scenario").is_none(),
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 5);
+        assert_eq!(descriptors.len(), 6);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -18798,6 +18837,9 @@ mod tests {
         assert_eq!(descriptors[4].name, "live-python-peer-connect-flow");
         assert!(descriptors[4].description.contains("Python reference peer"));
         assert!(descriptors[4].script.contains("interop-room"));
+        assert_eq!(descriptors[5].name, "live-python-peer-controlled-room-flow");
+        assert!(descriptors[5].description.contains("controlled room"));
+        assert!(descriptors[5].script.contains("+interop-room:447CE7E3548D"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -18974,7 +19016,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, live-python-peer-connect-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
                 )
         );
     }
@@ -19014,6 +19056,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         assert!(listed.contains("runtime-chat-flow"));
         assert!(listed.contains("runtime-transport-churn-flow"));
         assert!(listed.contains("live-python-peer-connect-flow"));
+        assert!(listed.contains("live-python-peer-controlled-room-flow"));
 
         let printed = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
             "--print-script",
@@ -19078,6 +19121,9 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
         assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation.\""));
         assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, and playlist flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
+        assert!(described.contains("\"name\":\"live-python-peer-controlled-room-flow\""));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer controlled-room flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\t+interop-room:447CE7E3548D:AB-123-456\\nsetting\\tshared-playlist-enabled\\ttrue"));
     }
 
     #[test]
@@ -20473,22 +20519,8 @@ assert-pending\tnone\n"
             .expect("inbound server hello should apply");
         let hello_actions =
             super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
-        for action in hello_actions {
-            assert!(state.apply(action));
-        }
-
-        adapter
-            .runtime
-            .run_controller_reidentify_if_needed()
-            .expect("controller reidentify should dispatch");
-        adapter
-            .apply_message_json(
-                r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
-            )
-            .expect("controller auth success should apply");
-        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
         assert!(
-            actions.iter().any(|action| matches!(
+            hello_actions.iter().any(|action| matches!(
                 action,
                 GuiShellAction::PushTransientNotification { level, message }
                     if *level == GuiTransientNotificationLevel::Info
@@ -20497,13 +20529,23 @@ assert-pending\tnone\n"
             "controller reidentify should surface an attempt notification"
         );
         assert!(
-            actions.iter().any(|action| matches!(
+            hello_actions.iter().any(|action| matches!(
                 action,
                 GuiShellAction::AnnounceSystemChatEvent(message)
                     if message == "Requesting controller access for +room:ABCDEF123456."
             )),
             "controller reidentify should persist the attempt message in system chat"
         );
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
+            )
+            .expect("controller auth success should apply");
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
         assert!(
             actions.iter().any(|action| matches!(
                 action,
@@ -20532,6 +20574,53 @@ assert-pending\tnone\n"
             )),
             "controller auth success should refresh the main-window runtime snapshot"
         );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_room_when_password_is_stored()
+     {
+        let room = "+room:ABCDEF123456";
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some(room.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+            "alice",
+            room,
+            Some("ab-123-456".to_owned()),
+        )
+        .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        let hello_actions =
+            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert!(
+            hello_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Info
+                        && message == "Requesting controller access for +room:ABCDEF123456."
+            )),
+            "draining GUI actions should auto-dispatch the controller reidentify attempt"
+        );
+
+        let outbound_protocol_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("controller auth lines should encode");
+        assert_eq!(outbound_protocol_lines.len(), 1);
+        assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
+        assert!(outbound_protocol_lines[0].contains("\"+room:ABCDEF123456\""));
+        assert!(outbound_protocol_lines[0].contains("\"AB-123-456\""));
     }
 
     #[test]
@@ -20748,6 +20837,47 @@ assert-pending\tnone\n"
             .expect("playlist should exist after the echoed operations");
         assert_eq!(playlist.files, vec!["episode3.mkv", "episode2.mkv"]);
         assert_eq!(playlist.index, Some(1));
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remembers_password()
+    {
+        let room_input = "+room1:CB39A19549E8:ab-123-456";
+        let canonical_room = "+room1:CB39A19549E8";
+        let (mut owner, session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", room_input)
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some(room_input.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        handle.drain_actions();
+
+        let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+        assert_eq!(startup_protocol_lines.len(), 1);
+        assert!(startup_protocol_lines[0].contains("\"Hello\""));
+        assert!(startup_protocol_lines[0].contains(canonical_room));
+        assert!(
+            !startup_protocol_lines[0].contains("AB-123-456"),
+            "startup hello should not leak the controlled-room password"
+        );
+
+        session_transport.push_inbound_protocol_line(format!(
+            r#"{{"Hello":{{"username":"alice","room":{{"name":"{canonical_room}"}},"version":"1.7.5","features":{{"chat":true}}}}}}"#
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        handle.drain_actions();
+
+        let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+        assert_eq!(outbound_protocol_lines.len(), 1);
+        assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
+        assert!(outbound_protocol_lines[0].contains(canonical_room));
+        assert!(outbound_protocol_lines[0].contains("\"AB-123-456\""));
     }
 
     #[test]
@@ -22002,6 +22132,38 @@ assert-pending\tnone\n"
                 && message.message
                     == super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE
         }));
+        assert!(result.widget_count > 0);
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_projects_live_python_peer_controlled_room_interop() {
+        let result = match super::live_python_interop::run_live_python_peer_controlled_room_flow() {
+            Ok(result) => result,
+            Err(error)
+                if super::live_python_interop::live_python_interop_prerequisites_missing(
+                    &error,
+                ) =>
+            {
+                eprintln!(
+                    "live Python GUI controlled-room test skipped due to missing local prerequisites"
+                );
+                return;
+            }
+            Err(error) => {
+                panic!("live Python GUI controlled-room flow should succeed, got: {error}")
+            }
+        };
+
+        assert_eq!(
+            result.room_name,
+            super::live_python_interop::LIVE_PYTHON_INTEROP_CONTROLLED_ROOM
+        );
+        assert!(result.local_user_present);
+        assert!(result.peer_user_present);
+        assert!(result.local_user_controller);
+        assert!(!result.peer_user_controller);
+        assert!(!result.peer_local_controller);
+        assert!(result.can_manage_playlist);
         assert!(result.widget_count > 0);
     }
 

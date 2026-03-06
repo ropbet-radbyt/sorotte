@@ -17,6 +17,9 @@ use super::{
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 pub(crate) const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+pub(crate) const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
+pub(crate) const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str =
+    "+interop-room:447CE7E3548D:AB-123-456";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
@@ -39,6 +42,18 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub peer_playlist_index: Option<usize>,
     pub gui_chat_messages: Vec<LegacyPythonPeerChatMessage>,
     pub peer_chat_messages: Vec<LegacyPythonPeerChatMessage>,
+    pub widget_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LivePythonPeerControlledRoomInteropResult {
+    pub room_name: String,
+    pub local_user_present: bool,
+    pub peer_user_present: bool,
+    pub local_user_controller: bool,
+    pub peer_user_controller: bool,
+    pub peer_local_controller: bool,
+    pub can_manage_playlist: bool,
     pub widget_count: usize,
 }
 
@@ -82,6 +97,22 @@ pub(crate) fn run_live_python_peer_connect_flow()
         LIVE_PYTHON_INTEROP_ROOM,
     )?;
     let outcome = run_live_python_peer_connect_flow_with_harness(&mut harness);
+    let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
+    match (outcome, shutdown_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(_shutdown_error)) => Err(error),
+    }
+}
+
+pub(crate) fn run_live_python_peer_controlled_room_flow()
+-> Result<LivePythonPeerControlledRoomInteropResult, LivePythonPeerInteropError> {
+    let mut harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_CONTROLLED_ROOM,
+    )?;
+    let outcome = run_live_python_peer_controlled_room_flow_with_harness(&mut harness);
     let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
     match (outcome, shutdown_result) {
         (Ok(result), Ok(())) => Ok(result),
@@ -279,6 +310,60 @@ fn run_live_python_peer_connect_flow_with_harness(
     })
 }
 
+fn run_live_python_peer_controlled_room_flow_with_harness(
+    harness: &mut LegacyServerPythonPeerHarness,
+) -> Result<LivePythonPeerControlledRoomInteropResult, LivePythonPeerInteropError> {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime(
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
+            harness.address(),
+        )
+        .map_err(LivePythonPeerInteropError::Gui)?;
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
+        room: Some(LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT.to_owned()),
+        shared_playlist_enabled: Some(true),
+        chat_input_enabled: Some(true),
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let startup_deadline = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < startup_deadline {
+        pump_and_apply(&mut owner, &handle, &mut state);
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+    harness.start_peer_connected()?;
+    wait_for_controlled_room_projection(&mut owner, &handle, &mut state)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
+    wait_for_peer_observed_user_controller(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        true,
+        Duration::from_secs(3),
+    )?;
+    let peer_snapshot = harness.wait_for_peer_local_controller(false, Duration::from_secs(3))?;
+
+    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    Ok(LivePythonPeerControlledRoomInteropResult {
+        room_name: state.main_window.room_name.clone(),
+        local_user_present: local_user_ready(&state).is_some(),
+        peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
+        local_user_controller: local_user_controller(&state).unwrap_or(false),
+        peer_user_controller: peer_user_controller(&state, harness.peer_username())
+            .unwrap_or(false),
+        peer_local_controller: peer_snapshot.local_controller.unwrap_or(false),
+        can_manage_playlist: state.main_window.playback.can_manage_playlist,
+        widget_count: state.shell_widget_tree().node_count(),
+    })
+}
+
 fn pump_and_apply(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
@@ -391,6 +476,17 @@ fn wait_for_peer_observed_user_ready(
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_user_ready(username, ready, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_user_controller(
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    controller: bool,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_observed_user_controller(username, controller, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 
@@ -578,6 +674,53 @@ fn wait_for_projection(
     }
 }
 
+fn wait_for_controlled_room_projection(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+
+        let local_user_present = local_user_controller(state).is_some();
+        let peer_user_present =
+            peer_user_controller(state, LIVE_PYTHON_INTEROP_PEER_USERNAME).is_some();
+        if state.main_window.room_name == LIVE_PYTHON_INTEROP_CONTROLLED_ROOM
+            && local_user_present
+            && peer_user_present
+            && local_user_controller(state) == Some(true)
+            && peer_user_controller(state, LIVE_PYTHON_INTEROP_PEER_USERNAME) == Some(false)
+            && state.main_window.playback.can_manage_playlist
+        {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let projected_users = state
+                .main_window
+                .users
+                .iter()
+                .map(|user| {
+                    format!(
+                        "{}(self={}, ready={}, controller={})",
+                        user.username, user.is_self, user.is_ready, user.is_controller
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python controlled-room projection; room={:?}, can_manage_playlist={}, users=[{}]",
+                state.main_window.room_name,
+                state.main_window.playback.can_manage_playlist,
+                projected_users
+            )));
+        }
+
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
 fn local_user_ready(state: &SyncplayGuiShellAppState) -> Option<bool> {
     state
         .main_window
@@ -587,6 +730,15 @@ fn local_user_ready(state: &SyncplayGuiShellAppState) -> Option<bool> {
         .map(|user| user.is_ready)
 }
 
+fn local_user_controller(state: &SyncplayGuiShellAppState) -> Option<bool> {
+    state
+        .main_window
+        .users
+        .iter()
+        .find(|user| user.username == LIVE_PYTHON_INTEROP_LOCAL_USERNAME && user.is_self)
+        .map(|user| user.is_controller)
+}
+
 fn peer_user_ready(state: &SyncplayGuiShellAppState, username: &str) -> Option<bool> {
     state
         .main_window
@@ -594,6 +746,15 @@ fn peer_user_ready(state: &SyncplayGuiShellAppState, username: &str) -> Option<b
         .iter()
         .find(|user| user.username == username && !user.is_self)
         .map(|user| user.is_ready)
+}
+
+fn peer_user_controller(state: &SyncplayGuiShellAppState, username: &str) -> Option<bool> {
+    state
+        .main_window
+        .users
+        .iter()
+        .find(|user| user.username == username && !user.is_self)
+        .map(|user| user.is_controller)
 }
 
 fn gui_playlist(state: &SyncplayGuiShellAppState) -> Vec<String> {
