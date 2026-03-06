@@ -11697,12 +11697,64 @@ mod tests {
 
     const TEST_USERNAME: &str = "test-user";
 
+    fn test_default_syncplay_config_env_root() -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from("test-appdata-root")
+        } else {
+            std::path::PathBuf::from("test-home-root")
+        }
+    }
+
     fn test_default_syncplay_config_root() -> std::path::PathBuf {
-        std::path::PathBuf::from("test-appdata-root")
+        if cfg!(windows) {
+            test_default_syncplay_config_env_root()
+        } else {
+            test_default_syncplay_config_env_root().join(".config")
+        }
     }
 
     fn test_default_syncplay_config_target() -> std::path::PathBuf {
         test_default_syncplay_config_root().join("syncplay.ini")
+    }
+
+    fn pump_and_apply_runtime_owner_actions(
+        owner: &mut super::GuiPersistedConfigRuntimeOwner,
+        handle: &super::GuiQueuedRuntimeBridgeHandle,
+        state: &mut SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        super::GuiQueuedRuntimeOwner::pump(owner, handle, state);
+        let actions = handle.drain_actions();
+        for action in actions.iter().cloned() {
+            assert!(state.apply(action));
+        }
+        actions
+    }
+
+    fn pump_and_apply_runtime_owner_actions_until<P>(
+        owner: &mut super::GuiPersistedConfigRuntimeOwner,
+        handle: &super::GuiQueuedRuntimeBridgeHandle,
+        state: &mut SyncplayGuiShellAppState,
+        timeout: std::time::Duration,
+        predicate: P,
+        context: &str,
+    ) -> Vec<GuiShellAction>
+    where
+        P: Fn(&SyncplayGuiShellAppState) -> bool,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut all_actions = Vec::new();
+        loop {
+            let actions = pump_and_apply_runtime_owner_actions(owner, handle, state);
+            all_actions.extend(actions);
+            if predicate(state) {
+                return all_actions;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {context}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -17470,11 +17522,12 @@ mod tests {
 
     #[test]
     fn resolve_syncplay_gui_config_path_source_legacy_compatible_with_reports_default_target() {
-        let appdata_root = test_default_syncplay_config_root();
-        let appdata_root_string = appdata_root.display().to_string();
+        let env_root = test_default_syncplay_config_env_root();
+        let env_root_string = env_root.display().to_string();
         let source = super::resolve_syncplay_gui_config_path_source_legacy_compatible_with(
             &|name| match name {
-                "APPDATA" => Some(appdata_root_string.clone()),
+                "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
+                "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
                 _ => None,
             },
             || None,
@@ -20970,22 +21023,15 @@ assert-pending\tnone\n"
             ..StoredClientSettingsMvp::default()
         });
 
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        for action in handle.drain_actions() {
-            assert!(state.apply(action));
-        }
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         hello_ready_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("test session transport server should send its hello promptly");
 
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        for action in handle.drain_actions() {
-            assert!(state.apply(action));
-        }
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
         handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        assert!(handle.drain_actions().is_empty());
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
         let ready_line = server_thread
             .join()
@@ -20994,17 +21040,19 @@ assert-pending\tnone\n"
         assert!(ready_line.contains("\"ready\""));
         assert!(ready_line.contains("\"isReady\":true"));
 
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        for action in handle.drain_actions() {
-            assert!(state.apply(action));
-        }
-
-        assert!(
-            state
-                .main_window
-                .users
-                .iter()
-                .any(|user| user.username == "alice" && user.is_self && user.is_ready)
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .users
+                    .iter()
+                    .any(|user| user.username == "alice" && user.is_self && user.is_ready)
+            },
+            "local readiness update over TCP transport",
         );
     }
 
@@ -21982,16 +22030,7 @@ assert-pending\tnone\n"
             ..StoredClientSettingsMvp::default()
         });
 
-        let mut pump_and_apply = |state: &mut SyncplayGuiShellAppState| {
-            super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, state);
-            let actions = handle.drain_actions();
-            for action in actions.iter().cloned() {
-                assert!(state.apply(action));
-            }
-            actions
-        };
-
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         let first_hello = first_hello_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("portable tcp churn smoke first server should receive startup hello");
@@ -22003,7 +22042,28 @@ assert-pending\tnone\n"
                 .expect("portable tcp churn smoke first server should publish initial state"),
             "initial"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .eq(["episode1.mkv", "episode2.mkv"])
+                    && state.main_window.playback_paused
+                    && state.selection.selected_main_window_playlist == Some(1)
+                    && state
+                        .main_window
+                        .users
+                        .iter()
+                        .any(|user| user.username == "bob" && user.is_ready && user.is_controller)
+            },
+            "portable primary initial state",
+        );
         assert_eq!(
             state
                 .main_window
@@ -22027,7 +22087,8 @@ assert-pending\tnone\n"
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SendChatMessage("hellotcp".to_owned()),
         ));
-        let first_chat_actions = pump_and_apply(&mut state);
+        let first_chat_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(
             first_chat_actions
                 .iter()
@@ -22046,7 +22107,27 @@ assert-pending\tnone\n"
                 .expect("portable tcp churn smoke first server should publish post-chat state"),
             "postchat"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .eq(["postchat1.mkv", "postchat2.mkv"])
+                    && !state.main_window.playback_paused
+                    && state
+                        .main_window
+                        .users
+                        .iter()
+                        .any(|user| user.username == "bob" && !user.is_ready && !user.is_controller)
+            },
+            "portable primary post-chat state",
+        );
         assert_eq!(
             state
                 .main_window
@@ -22071,7 +22152,8 @@ assert-pending\tnone\n"
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SendChatMessage("goodbyeprimary".to_owned()),
         ));
-        let second_primary_chat_actions = pump_and_apply(&mut state);
+        let second_primary_chat_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(
             second_primary_chat_actions
                 .iter()
@@ -22088,7 +22170,20 @@ assert-pending\tnone\n"
                 .expect("portable tcp churn smoke first server should publish user-left state"),
             "user-left"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .users
+                    .iter()
+                    .all(|user| user.username != "bob")
+            },
+            "portable primary user-left state",
+        );
         assert!(
             state
                 .main_window
@@ -22101,7 +22196,8 @@ assert-pending\tnone\n"
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ConnectPublicServer,
         ));
-        let reconnect_actions = pump_and_apply(&mut state);
+        let reconnect_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(
             reconnect_actions.iter().any(|action| matches!(
                 action,
@@ -22121,7 +22217,25 @@ assert-pending\tnone\n"
             ),
             "initial"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .eq(["reconnect1.mkv", "reconnect2.mkv"])
+                    && !state.main_window.playback_paused
+                    && state.main_window.users.iter().any(|user| {
+                        user.username == "carol" && !user.is_ready && !user.is_controller
+                    })
+            },
+            "portable reconnect initial state",
+        );
         assert_eq!(
             state
                 .main_window
@@ -22146,7 +22260,8 @@ assert-pending\tnone\n"
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SendChatMessage("helloreconnect".to_owned()),
         ));
-        let first_reconnect_chat_actions = pump_and_apply(&mut state);
+        let first_reconnect_chat_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(
             first_reconnect_chat_actions
                 .iter()
@@ -22163,7 +22278,27 @@ assert-pending\tnone\n"
             ),
             "postchat"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .eq(["reconnect-post1.mkv", "reconnect-post2.mkv"])
+                    && state.main_window.playback_paused
+                    && state
+                        .main_window
+                        .users
+                        .iter()
+                        .any(|user| user.username == "carol" && user.is_ready && user.is_controller)
+            },
+            "portable reconnect post-chat state",
+        );
         assert_eq!(
             state
                 .main_window
@@ -22188,7 +22323,8 @@ assert-pending\tnone\n"
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SendChatMessage("goodbyereconnect".to_owned()),
         ));
-        let second_reconnect_chat_actions = pump_and_apply(&mut state);
+        let second_reconnect_chat_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(
             second_reconnect_chat_actions
                 .iter()
@@ -22205,7 +22341,20 @@ assert-pending\tnone\n"
             ),
             "user-left"
         );
-        pump_and_apply(&mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| {
+                state
+                    .main_window
+                    .users
+                    .iter()
+                    .all(|user| user.username != "carol")
+            },
+            "portable reconnect user-left state",
+        );
         assert!(
             state
                 .main_window
