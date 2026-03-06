@@ -2502,9 +2502,10 @@ fn apply_legacy_client_arg_managed_mpv_overrides(
 }
 
 fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) -> bool {
-    let file_name = Path::new(player_path)
-        .file_name()
-        .and_then(|name| name.to_str())
+    let file_name = player_path
+        .trim()
+        .rsplit(['/', '\\'])
+        .next()
         .unwrap_or(player_path);
     let normalized = file_name.trim().to_ascii_lowercase();
     matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com")
