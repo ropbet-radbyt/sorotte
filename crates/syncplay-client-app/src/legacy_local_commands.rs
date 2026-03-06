@@ -318,13 +318,12 @@ fn parse_time_seconds_with_component_limits_legacy(
             return None;
         }
 
-        if let Some(fractional) = fractional {
-            if fractional.is_empty()
+        if let Some(fractional) = fractional
+            && (fractional.is_empty()
                 || fractional.len() > 3
-                || !fractional.chars().all(|ch| ch.is_ascii_digit())
-            {
-                return None;
-            }
+                || !fractional.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            return None;
         }
     }
 
@@ -1566,10 +1565,10 @@ pub fn playlist_listing_message_legacy_compatible(session: &ClientSession) -> St
         .enumerate()
         .map(|(index, file_name)| format!("\t{}: {}", index + 1, file_name))
         .collect();
-    if let Some(selected_index) = playlist.index.and_then(|index| usize::try_from(index).ok()) {
-        if selected_index < playlist_elements.len() {
-            playlist_elements[selected_index] = format!(" *{}", playlist_elements[selected_index]);
-        }
+    if let Some(selected_index) = playlist.index.and_then(|index| usize::try_from(index).ok())
+        && selected_index < playlist_elements.len()
+    {
+        playlist_elements[selected_index] = format!(" *{}", playlist_elements[selected_index]);
     }
     playlist_elements.join("\n")
 }
