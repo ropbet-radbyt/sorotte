@@ -199,9 +199,14 @@ class _RecordingClient:
     def connected(self):
         if self._protocol is not None:
             self._protocol.setReady(False, manuallyInitiated=False)
+            self.getUserList()
 
     def sendFile(self):
         return None
+
+    def getUserList(self):
+        if self._protocol is not None and getattr(self._protocol, "logged", False):
+            self._protocol.sendList()
 
     def setServerVersion(self, _version, features):
         self.serverFeatures = dict(features or {})
@@ -232,6 +237,103 @@ class _RecordingClient:
 
     def getLocalState(self):
         return None, None, None, False
+
+
+def _user_ready_snapshot(client):
+    users = {client.getUsername(): client.userlist.currentUser.isReady()}
+    for username, user in client.userlist._users.items():
+        users[username] = user.isReady()
+    return users
+
+
+def _emit_client_snapshot(status, client, extra_payload=None):
+    payload = {
+        "status": status,
+        "username": client.getUsername(),
+        "room": client.getRoom(),
+        "localReady": client.userlist.currentUser.isReady(),
+        "users": _user_ready_snapshot(client),
+    }
+    if extra_payload:
+        payload.update(extra_payload)
+    _emit_json(payload)
+
+
+def _ready_for_username(client, username):
+    if username == client.getUsername():
+        return client.userlist.currentUser.isReady()
+    user = client.userlist._users.get(username)
+    if user is None:
+        return None
+    return user.isReady()
+
+
+def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error_holder):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if getter() == expected_ready:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested readiness state")
+
+
+def _handle_command(client, protocol, command, error_holder):
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    command_name = command.get("command")
+    if command_name == "snapshot":
+        _emit_client_snapshot("snapshot", client)
+        return
+    if command_name == "set_ready":
+        if "ready" not in command:
+            raise RuntimeError("python live peer set_ready command requires a ready field")
+        protocol.setReady(bool(command["ready"]), manuallyInitiated=True)
+        _emit_client_snapshot("ready-command-sent", client, {"ready": bool(command["ready"])})
+        return
+    if command_name == "wait_for_local_ready":
+        if "ready" not in command:
+            raise RuntimeError(
+                "python live peer wait_for_local_ready command requires a ready field"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        expected_ready = bool(command["ready"])
+        _wait_for_ready_value(
+            client,
+            lambda: client.userlist.currentUser.isReady(),
+            expected_ready,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot("local-ready", client, {"ready": expected_ready})
+        return
+    if command_name == "wait_for_user_ready":
+        username = command.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise RuntimeError(
+                "python live peer wait_for_user_ready command requires a username string"
+            )
+        if "ready" not in command:
+            raise RuntimeError(
+                "python live peer wait_for_user_ready command requires a ready field"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        expected_ready = bool(command["ready"])
+        _wait_for_ready_value(
+            client,
+            lambda: _ready_for_username(client, username),
+            expected_ready,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot(
+            "user-ready", client, {"usernameObserved": username, "ready": expected_ready}
+        )
+        return
+    raise RuntimeError(f"python live peer received an unknown command: {command_name!r}")
 
 
 def _pump_server_lines(reader, protocol, ready_event, error_holder, stop_event):
@@ -323,8 +425,9 @@ def main():
         sock = socket.create_connection(
             (args.host, args.port), timeout=args.timeout_seconds
         )
-        sock.settimeout(args.timeout_seconds)
-        sock.settimeout(0.25)
+        # Use connect-time timeout only; once attached, keep the read loop blocking
+        # so idle periods do not surface as fatal probe errors between commands.
+        sock.settimeout(None)
         reader = sock.makefile("rb")
         transport = _SocketTransport(sock)
         client = _RecordingClient(args.name, args.room)
@@ -340,14 +443,13 @@ def main():
         )
         pump_thread.start()
         _wait_for_protocol_ready(ready_event, error_holder, args.timeout_seconds)
-        _emit_json(
-            {
-                "status": "connected",
-                "username": client.getUsername(),
-                "room": client.getRoom(),
-            }
-        )
-        sys.stdin.read()
+        _emit_client_snapshot("connected", client)
+        for raw_command in sys.stdin:
+            raw_command = raw_command.strip()
+            if not raw_command:
+                continue
+            command = json.loads(raw_command)
+            _handle_command(client, protocol, command, error_holder)
         stop_event.set()
         transport.loseConnection()
         pump_thread.join(timeout=1.0)

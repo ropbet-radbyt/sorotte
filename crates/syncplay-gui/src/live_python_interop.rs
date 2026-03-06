@@ -3,11 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use syncplay_compat::{InteropError, LegacyServerPythonPeerHarness};
+use syncplay_compat::{InteropError, LegacyPythonPeerSnapshot, LegacyServerPythonPeerHarness};
 
 use super::{
     GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner,
-    GuiShellAction, GuiShellView, StoredClientSettingsMvp, SyncplayGuiShellAppState,
+    GuiRuntimeRequest, GuiShellAction, GuiShellView, StoredClientSettingsMvp,
+    SyncplayGuiShellAppState,
 };
 
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
@@ -21,6 +22,8 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub room_name: String,
     pub local_user_present: bool,
     pub peer_user_present: bool,
+    pub local_user_ready: bool,
+    pub peer_user_ready: bool,
     pub widget_count: usize,
 }
 
@@ -93,40 +96,140 @@ fn run_live_python_peer_connect_flow_with_harness(
 
     let startup_deadline = Instant::now() + Duration::from_millis(600);
     while Instant::now() < startup_deadline {
-        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        for action in handle.drain_actions() {
-            state.apply(action);
-        }
+        pump_and_apply(&mut owner, &handle, &mut state);
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
     }
     harness.start_peer_connected()?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
 
+    request_local_ready(&handle, &mut state, true)?;
+    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        true,
+        Duration::from_secs(3),
+    )?;
+
+    request_local_ready(&handle, &mut state, false)?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        false,
+        Duration::from_secs(3),
+    )?;
+
+    harness.set_peer_ready(true)?;
+    let _ = harness.wait_for_peer_local_ready(true, Duration::from_secs(3))?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, true)?;
+
+    harness.set_peer_ready(false)?;
+    let _ = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+
+    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    Ok(LivePythonPeerInteropResult {
+        room_name: state.main_window.room_name.clone(),
+        local_user_present: local_user_ready(&state).is_some(),
+        peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
+        local_user_ready: local_user_ready(&state).unwrap_or(false),
+        peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        widget_count: state.shell_widget_tree().node_count(),
+    })
+}
+
+fn pump_and_apply(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+) {
+    GuiQueuedRuntimeOwner::pump(owner, handle, state);
+    for action in handle.drain_actions() {
+        state.apply(action);
+    }
+}
+
+fn request_local_ready(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    ready: bool,
+) -> Result<(), LivePythonPeerInteropError> {
+    let action = if ready {
+        GuiShellAction::AnnounceLocalUserReady
+    } else {
+        GuiShellAction::AnnounceLocalUserNotReady
+    };
+    if !state.apply(action) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to apply local readiness action; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::SetLocalReady(ready));
+    Ok(())
+}
+
+fn wait_for_peer_observed_user_ready(
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    ready: bool,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_observed_user_ready(username, ready, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_user_presence(
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snapshot = harness.peer_snapshot()?;
+        if snapshot.observed_users.contains_key(username) {
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for Python reference peer to observe GUI user {username:?}; users={:?}",
+                snapshot.observed_users
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_projection(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    expected_local_ready: bool,
+    expected_peer_ready: bool,
+) -> Result<(), LivePythonPeerInteropError> {
     let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
     loop {
-        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-        for action in handle.drain_actions() {
-            state.apply(action);
-        }
+        pump_and_apply(owner, handle, state);
 
-        let local_user_present = state
-            .main_window
-            .users
-            .iter()
-            .any(|user| user.username == LIVE_PYTHON_INTEROP_LOCAL_USERNAME && user.is_self);
-        let peer_user_present = state
-            .main_window
-            .users
-            .iter()
-            .any(|user| user.username == harness.peer_username() && !user.is_self);
-        if state.main_window.room_name == harness.room() && local_user_present && peer_user_present
+        let local_ready_matches = local_user_ready(state) == Some(expected_local_ready);
+        let peer_ready_matches =
+            peer_user_ready(state, LIVE_PYTHON_INTEROP_PEER_USERNAME) == Some(expected_peer_ready);
+        let local_user_present = local_user_ready(state).is_some();
+        let peer_user_present = peer_user_ready(state, LIVE_PYTHON_INTEROP_PEER_USERNAME).is_some();
+        if state.main_window.room_name == LIVE_PYTHON_INTEROP_ROOM
+            && local_user_present
+            && peer_user_present
+            && local_ready_matches
+            && peer_ready_matches
         {
-            state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
-            return Ok(LivePythonPeerInteropResult {
-                room_name: state.main_window.room_name.clone(),
-                local_user_present,
-                peer_user_present,
-                widget_count: state.shell_widget_tree().node_count(),
-            });
+            return Ok(());
         }
 
         if Instant::now() >= deadline {
@@ -143,11 +246,29 @@ fn run_live_python_peer_connect_flow_with_harness(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(LivePythonPeerInteropError::Gui(format!(
-                "timed out waiting for live Python peer interop projection; room={:?}, users=[{}]",
+                "timed out waiting for live Python peer readiness projection; expected_local_ready={expected_local_ready}, expected_peer_ready={expected_peer_ready}, room={:?}, users=[{}]",
                 state.main_window.room_name, projected_users
             )));
         }
 
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
     }
+}
+
+fn local_user_ready(state: &SyncplayGuiShellAppState) -> Option<bool> {
+    state
+        .main_window
+        .users
+        .iter()
+        .find(|user| user.username == LIVE_PYTHON_INTEROP_LOCAL_USERNAME && user.is_self)
+        .map(|user| user.is_ready)
+}
+
+fn peer_user_ready(state: &SyncplayGuiShellAppState, username: &str) -> Option<bool> {
+    state
+        .main_window
+        .users
+        .iter()
+        .find(|user| user.username == username && !user.is_self)
+        .map(|user| user.is_ready)
 }

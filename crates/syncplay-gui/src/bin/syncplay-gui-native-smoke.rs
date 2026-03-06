@@ -116,7 +116,11 @@ const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
 const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
     "interop-gui-user: self=yes, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str =
+    "interop-gui-user: self=yes, ready=yes, controller=no";
 const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "interop-py-peer: self=no, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str =
+    "interop-py-peer: self=no, ready=yes, controller=no";
 const CONFIG_HOST_VALUE: &str = "syncplay.example";
 const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
@@ -3069,6 +3073,80 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         steps.push("transport-python-peer-connect".to_owned());
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_observed_user_ready(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                true,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not observe local ready=true: {error}")
+            })?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_observed_user_ready(
+                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+                false,
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not observe local ready=false: {error}")
+            })?;
+        python_harness
+            .set_peer_ready(true)
+            .map_err(|error| format!("failed to set Python reference peer ready=true: {error}"))?;
+        python_harness
+            .wait_for_peer_local_ready(true, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm ready=true: {error}")
+            })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME,
+            step_timeout,
+        )?;
+        python_harness
+            .set_peer_ready(false)
+            .map_err(|error| format!("failed to set Python reference peer ready=false: {error}"))?;
+        python_harness
+            .wait_for_peer_local_ready(false, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm ready=false: {error}")
+            })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-readiness".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;

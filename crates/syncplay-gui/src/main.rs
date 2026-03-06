@@ -5,6 +5,7 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use eframe::egui;
@@ -1678,6 +1679,14 @@ trait GuiNativeRuntimeBridge {
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
 
+    fn actions_for_local_readiness_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _ready: bool,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_pending_completion(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -1769,6 +1778,10 @@ trait GuiSessionRuntimeAdapter {
             "Attached session runtime does not accept inbound protocol transport messages."
                 .to_owned(),
         )
+    }
+
+    fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
+        Err("Attached session runtime does not support local readiness changes.".to_owned())
     }
 
     fn send_chat_message(&mut self, message: String) -> Result<(), String>;
@@ -2659,6 +2672,29 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             },
             Err(error) => Err(format!(
                 "Client-core session runtime chat dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
+        match self.runtime.run_set_ready_for_user("", ready, true) {
+            Ok(true) => Ok(()),
+            Ok(false) => match self.runtime.session().server_readiness_supported() {
+                None => Err(
+                    "Client-core session runtime cannot change readiness until the server Hello enables readiness."
+                        .to_owned(),
+                ),
+                Some(false) => Err(
+                    "Client-core session runtime cannot change readiness because the server disabled readiness."
+                        .to_owned(),
+                ),
+                Some(true) => Err(
+                    "Client-core session runtime did not queue an outbound readiness change."
+                        .to_owned(),
+                ),
+            },
+            Err(error) => Err(format!(
+                "Client-core session runtime readiness dispatch failed: {error}"
             )),
         }
     }
@@ -3648,6 +3684,16 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         );
                     }
                 }
+                GuiRuntimeRequest::SetLocalReady(ready) => {
+                    if let Some(session) = self.session.as_mut() {
+                        if let Err(error) = session.set_local_ready(ready) {
+                            handle.push_action(GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: error,
+                            });
+                        }
+                    }
+                }
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::TogglePlaybackPause,
                 ) => {
@@ -4107,6 +4153,7 @@ enum GuiRuntimeRequest {
         paths: Vec<String>,
         load_into_shared_playlist: bool,
     },
+    SetLocalReady(bool),
     SeekOffset(f64),
     CompletePendingOperation(GuiPendingCompletionRequest),
     CancelPendingOperation(GuiPendingOperationKind),
@@ -4151,6 +4198,7 @@ impl GuiRuntimeRequest {
                     GuiShellAction::AnnounceSystemChatEvent(message),
                 ]
             }
+            Self::SetLocalReady(_) => Vec::new(),
             Self::CompletePendingOperation(request) => vec![request.clone().into_action()],
             Self::CancelPendingOperation(_) => vec![GuiShellAction::CancelPendingOperation],
         }
@@ -4276,6 +4324,16 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         Vec::new()
     }
 
+    fn actions_for_local_readiness_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        ready: bool,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SetLocalReady(ready));
+        Vec::new()
+    }
+
     fn actions_for_pending_completion(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -4327,6 +4385,8 @@ struct GuiNativeApp {
     seek_prompt_buffer: String,
     seek_prompt_error: Option<String>,
 }
+
+const GUI_NATIVE_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 impl GuiNativeApp {
     fn new(
@@ -4436,6 +4496,11 @@ impl eframe::App for GuiNativeApp {
         let selected_media_files = renderer.take_selected_media_files();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
+        let requested_local_ready = actions.iter().fold(None, |current, action| match action {
+            GuiShellAction::AnnounceLocalUserReady => Some(true),
+            GuiShellAction::AnnounceLocalUserNotReady => Some(false),
+            _ => current,
+        });
         if seek_prompt_requested {
             self.seek_prompt_open = true;
             self.seek_prompt_error = None;
@@ -4443,6 +4508,14 @@ impl eframe::App for GuiNativeApp {
         let mut state_changed = false;
         for action in actions {
             state_changed |= self.state.apply(action);
+        }
+        if let Some(ready) = requested_local_ready {
+            for action in self
+                .runtime
+                .actions_for_local_readiness_change(&self.state, ready)
+            {
+                state_changed |= self.state.apply(action);
+            }
         }
         if let Some(paths) = selected_media_files {
             for action in self
@@ -4473,6 +4546,7 @@ impl eframe::App for GuiNativeApp {
         if close_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        ctx.request_repaint_after(GUI_NATIVE_RUNTIME_POLL_INTERVAL);
         if state_changed
             || seek_prompt_requested
             || seek_prompt_state_changed
@@ -18468,8 +18542,8 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies the shared room projection.\""));
-        assert!(described.contains("\"script\":\"# Live Python reference-peer connect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness propagation.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer connect and readiness flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
     }
 
     #[test]
@@ -20846,6 +20920,105 @@ assert-pending\tnone\n"
     }
 
     #[test]
+    fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test session transport listener should expose a local address");
+        let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test session transport server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("test session transport server should clone the accepted stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("test session transport server should read one startup hello line");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+                )
+                .expect("test session transport server should write one inbound hello line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound hello line");
+            hello_ready_tx
+                .send(())
+                .expect("test session transport server should signal hello readiness");
+            let mut ready_line = String::new();
+            reader
+                .read_line(&mut ready_line)
+                .expect("test session transport server should read one outbound ready line");
+            stream
+                .write_all(br#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+                .expect("test session transport server should write one inbound ready line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound ready line");
+            ready_line
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+        hello_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should send its hello promptly");
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+
+        handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(handle.drain_actions().is_empty());
+
+        let ready_line = server_thread
+            .join()
+            .expect("test session transport server thread should complete");
+        assert!(ready_line.contains("\"Set\""));
+        assert!(ready_line.contains("\"ready\""));
+        assert!(ready_line.contains("\"isReady\":true"));
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        for action in handle.drain_actions() {
+            assert!(state.apply(action));
+        }
+
+        assert!(
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "alice" && user.is_self && user.is_ready)
+        );
+    }
+
+    #[test]
     fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_public_server_connect()
      {
         use std::{
@@ -22067,6 +22240,7 @@ assert-pending\tnone\n"
         #[derive(Debug, Default)]
         struct RecordingSessionState {
             queued_gui_actions: Vec<GuiShellAction>,
+            local_ready_requests: Vec<bool>,
             sent_chat_messages: Vec<String>,
             connect_requests: Vec<Option<(String, String)>>,
             refresh_requests: Vec<Vec<(String, String)>>,
@@ -22089,6 +22263,15 @@ assert-pending\tnone\n"
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .queued_gui_actions,
                 )
+            }
+
+            fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .local_ready_requests
+                    .push(ready);
+                Ok(())
             }
 
             fn send_chat_message(&mut self, message: String) -> Result<(), String> {
@@ -22290,9 +22473,14 @@ assert-pending\tnone\n"
             Some("Missing media found: C:/Media/found.mkv.")
         );
 
+        handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(handle.drain_actions().is_empty());
+
         let session_state = session_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(session_state.local_ready_requests, vec![true]);
         assert_eq!(session_state.sent_chat_messages, vec!["hello".to_owned()]);
         assert_eq!(
             session_state.connect_requests,

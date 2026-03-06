@@ -54,6 +54,14 @@ pub struct LegacyClientUserFileMetadataProbe {
     pub after_list_clears: BTreeMap<String, Option<Value>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyPythonPeerSnapshot {
+    pub username: String,
+    pub room: String,
+    pub local_ready: Option<bool>,
+    pub observed_users: BTreeMap<String, Option<bool>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyClientChatSendContractCase {
     pub message: String,
@@ -1359,6 +1367,57 @@ impl LegacyServerPythonPeerHarness {
         self.wait_for_peer_connected(Duration::from_secs(3))
     }
 
+    pub fn set_peer_ready(&mut self, ready: bool) -> Result<(), InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "set_ready",
+            "ready": ready,
+        }))?;
+        self.wait_for_peer_status(Duration::from_secs(3), "ready-command-sent")?;
+        Ok(())
+    }
+
+    pub fn wait_for_peer_local_ready(
+        &mut self,
+        ready: bool,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_local_ready",
+            "ready": ready,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "local-ready")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn wait_for_peer_observed_user_ready(
+        &mut self,
+        username: &str,
+        ready: bool,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_user_ready",
+            "username": username,
+            "ready": ready,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "user-ready")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn peer_snapshot(&mut self) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "snapshot",
+        }))?;
+        let status = self.wait_for_peer_status(Duration::from_secs(3), "snapshot")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
     pub fn shutdown(mut self) -> Result<(), InteropError> {
         let mut errors = Vec::new();
         if let Some(stdin) = self.peer_stdin.take() {
@@ -1518,6 +1577,36 @@ impl LegacyServerPythonPeerHarness {
     }
 
     fn wait_for_peer_connected(&mut self, timeout: Duration) -> Result<(), InteropError> {
+        self.wait_for_peer_status(timeout, "connected").map(|_| ())
+    }
+
+    fn ensure_peer_connected(&mut self) -> Result<(), InteropError> {
+        if self.peer_child.is_none() {
+            self.spawn_peer_process()?;
+            self.wait_for_peer_connected(Duration::from_secs(3))?;
+        }
+        Ok(())
+    }
+
+    fn send_peer_command(&mut self, command: &Value) -> Result<(), InteropError> {
+        let stdin = self
+            .peer_stdin
+            .as_mut()
+            .ok_or(InteropError::PythonStdinMissing)?;
+        let mut payload = serde_json::to_vec(command)?;
+        payload.push(b'\n');
+        stdin
+            .write_all(&payload)
+            .map_err(InteropError::PythonStdinWrite)?;
+        stdin.flush().map_err(InteropError::PythonStdinWrite)?;
+        Ok(())
+    }
+
+    fn wait_for_peer_status(
+        &mut self,
+        timeout: Duration,
+        expected_status: &str,
+    ) -> Result<Value, InteropError> {
         let Some(peer_status_rx) = self.peer_status_rx.as_ref() else {
             return Err(InteropError::InvalidPythonBatchResponse(
                 "python live peer process has not been started".to_owned(),
@@ -1528,31 +1617,50 @@ impl LegacyServerPythonPeerHarness {
                 "python live peer child handle is missing".to_owned(),
             ));
         };
-        match peer_status_rx.recv_timeout(timeout) {
-            Ok(status_line) => self.parse_peer_status_line(&status_line),
+
+        let status_line = match peer_status_rx.recv_timeout(timeout) {
+            Ok(status_line) => status_line,
             Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let stdout = captured_process_output(&self.peer_stdout_lines);
                 let stderr = captured_process_output(&self.peer_stderr_lines);
-                match peer_child.try_wait()? {
-                    Some(status) => Err(InteropError::PythonLivePeerExited {
-                        exit_code: status.code(),
-                        stdout,
-                        stderr,
-                    }),
-                    None => Err(InteropError::PythonLivePeerStartTimeout { stdout, stderr }),
-                }
+                return match peer_child.try_wait()? {
+                    Some(status) => Err(InteropError::InvalidPythonBatchResponse(format!(
+                        "python live peer exited before reporting status {expected_status:?} (exit code: {:?}, stdout: '{stdout}', stderr: '{stderr}')",
+                        status.code()
+                    ))),
+                    None => Err(InteropError::InvalidPythonBatchResponse(format!(
+                        "python live peer timed out waiting for status {expected_status:?} (stdout: '{stdout}', stderr: '{stderr}')"
+                    ))),
+                };
             }
+        };
+
+        let parsed = self.parse_peer_status_line(&status_line)?;
+        let Some(actual_status) = parsed.get("status").and_then(Value::as_str) else {
+            return Err(InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer status line did not include a status field: {status_line:?}"
+            )));
+        };
+        if actual_status != expected_status {
+            return Err(InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer reported unexpected status {actual_status:?}; expected {expected_status:?}: {status_line:?}"
+            )));
         }
+        Ok(parsed)
     }
 
-    fn parse_peer_status_line(&self, status_line: &str) -> Result<(), InteropError> {
+    fn parse_peer_status_line(&self, status_line: &str) -> Result<Value, InteropError> {
         let parsed: Value = serde_json::from_str(status_line).map_err(|error| {
             InteropError::InvalidPythonBatchResponse(format!(
                 "python live peer status line was not valid JSON ({status_line:?}): {error}"
             ))
         })?;
         match parsed.get("status").and_then(Value::as_str) {
-            Some("connected") => Ok(()),
+            Some("connected")
+            | Some("ready-command-sent")
+            | Some("local-ready")
+            | Some("user-ready")
+            | Some("snapshot") => Ok(parsed),
             Some("error") => Err(InteropError::InvalidPythonBatchResponse(
                 parsed
                     .get("error")
@@ -1572,6 +1680,46 @@ impl LegacyServerPythonPeerHarness {
                 "python live peer status line did not include a status field: {status_line:?}"
             ))),
         }
+    }
+
+    fn parse_peer_snapshot(status: &Value) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        let username = status
+            .get("username")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                InteropError::InvalidPythonBatchResponse(format!(
+                    "python live peer status did not include a username string: {status}"
+                ))
+            })?;
+        let room = status
+            .get("room")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                InteropError::InvalidPythonBatchResponse(format!(
+                    "python live peer status did not include a room string: {status}"
+                ))
+            })?;
+        let local_ready = status.get("localReady").and_then(Value::as_bool);
+        let observed_users = status
+            .get("users")
+            .and_then(Value::as_object)
+            .map(|users| {
+                users
+                    .iter()
+                    .map(|(username, ready)| (username.clone(), ready.as_bool()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        Ok(LegacyPythonPeerSnapshot {
+            username,
+            room,
+            local_ready,
+            observed_users,
+        })
     }
 }
 
