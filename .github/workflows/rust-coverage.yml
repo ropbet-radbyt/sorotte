@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: syncplay-rs
+        working-directory: .
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,5 +30,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: syncplay-rs-lcov
-          path: syncplay-rs/target/lcov.info
+          path: target/lcov.info
           if-no-files-found: error
