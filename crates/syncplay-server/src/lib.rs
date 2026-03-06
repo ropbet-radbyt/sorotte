@@ -1285,79 +1285,78 @@ impl ServerRuntime {
 
         let mut outbound_messages = Vec::new();
 
-        if let Some(room_ref) = set.room {
-            if session.room != room_ref.name {
-                let previous_room = session.room.clone();
-                self.domain.leave_room(&session.username, &previous_room)?;
-                self.remove_room_controller(&session.username, &previous_room);
-                self.domain.join_room(&session.username, &room_ref.name);
-                self.ensure_room_state(&room_ref.name);
-                session.room = room_ref.name.clone();
-                self.sessions.insert(client_id.to_owned(), session.clone());
-                self.client_next_periodic_state_at.insert(
-                    client_id.to_owned(),
-                    self.current_time_seconds() + SERVER_STATE_INTERVAL_SECONDS,
+        if let Some(room_ref) = set.room
+            && session.room != room_ref.name
+        {
+            let previous_room = session.room.clone();
+            self.domain.leave_room(&session.username, &previous_room)?;
+            self.remove_room_controller(&session.username, &previous_room);
+            self.domain.join_room(&session.username, &room_ref.name);
+            self.ensure_room_state(&room_ref.name);
+            session.room = room_ref.name.clone();
+            self.sessions.insert(client_id.to_owned(), session.clone());
+            self.client_next_periodic_state_at.insert(
+                client_id.to_owned(),
+                self.current_time_seconds() + SERVER_STATE_INTERVAL_SECONDS,
+            );
+            self.cleanup_room_if_empty(&previous_room)?;
+
+            outbound_messages.push(DirectedProtocolMessage::new(
+                client_id,
+                room_idle_state_message(self.current_time_seconds()),
+            ));
+            outbound_messages.push(DirectedProtocolMessage::new(
+                client_id,
+                self.forced_state_sync_message_for_client(client_id, 0.0, true, true, None),
+            ));
+
+            let room_update_message = user_room_update_message(&session.username, &session.room);
+            for peer_client in
+                self.room_switch_visibility_recipients(client_id, &previous_room, &session.room)
+            {
+                outbound_messages.push(DirectedProtocolMessage::new(
+                    peer_client,
+                    room_update_message.clone(),
+                ));
+            }
+            if self.isolate_rooms {
+                let left_message = user_event_message(
+                    &session.username,
+                    &previous_room,
+                    json!({
+                        "left": true,
+                    }),
                 );
-                self.cleanup_room_if_empty(&previous_room)?;
-
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    room_idle_state_message(self.current_time_seconds()),
-                ));
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    self.forced_state_sync_message_for_client(client_id, 0.0, true, true, None),
-                ));
-
-                let room_update_message =
-                    user_room_update_message(&session.username, &session.room);
-                for peer_client in
-                    self.room_switch_visibility_recipients(client_id, &previous_room, &session.room)
-                {
+                for peer_client in self.clients_in_room(&previous_room) {
                     outbound_messages.push(DirectedProtocolMessage::new(
                         peer_client,
-                        room_update_message.clone(),
+                        left_message.clone(),
                     ));
                 }
-                if self.isolate_rooms {
-                    let left_message = user_event_message(
-                        &session.username,
-                        &previous_room,
-                        json!({
-                            "left": true,
-                        }),
-                    );
-                    for peer_client in self.clients_in_room(&previous_room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            left_message.clone(),
-                        ));
-                    }
-                }
+            }
 
-                let room_playlist = self.room_playlist_state(&session.room);
-                let room_playback = self.room_playback_state(&session.room);
-                let playlist_snapshot_message = playlist_snapshot_change_message(
-                    room_playlist.files.clone(),
-                    room_playback.set_by.as_deref(),
-                );
+            let room_playlist = self.room_playlist_state(&session.room);
+            let room_playback = self.room_playback_state(&session.room);
+            let playlist_snapshot_message = playlist_snapshot_change_message(
+                room_playlist.files.clone(),
+                room_playback.set_by.as_deref(),
+            );
+            outbound_messages.push(DirectedProtocolMessage::new(
+                client_id,
+                playlist_snapshot_message,
+            ));
+            if let Some(index) = room_playlist.index {
                 outbound_messages.push(DirectedProtocolMessage::new(
                     client_id,
-                    playlist_snapshot_message,
+                    playlist_snapshot_index_message(index, room_playback.set_by.as_deref()),
                 ));
-                if let Some(index) = room_playlist.index {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        client_id,
-                        playlist_snapshot_index_message(index, room_playback.set_by.as_deref()),
-                    ));
-                }
+            }
 
-                if self.persistent_rooms_enabled {
-                    self.enqueue_list_snapshots_for_clients(
-                        &mut outbound_messages,
-                        self.clients_receiving_to_gui_only_list_updates(),
-                    );
-                }
+            if self.persistent_rooms_enabled {
+                self.enqueue_list_snapshots_for_clients(
+                    &mut outbound_messages,
+                    self.clients_receiving_to_gui_only_list_updates(),
+                );
             }
         }
 
@@ -1732,10 +1731,10 @@ impl ServerRuntime {
             return Ok(Vec::new());
         };
         self.ensure_room_state(&session.room);
-        if self.room_playback_state(&session.room).set_by.is_none() {
-            if let Some(set_by_username) = self.fallback_room_set_by_username(&session.room) {
-                self.room_playback_state_mut(&session.room).set_by = Some(set_by_username);
-            }
+        if self.room_playback_state(&session.room).set_by.is_none()
+            && let Some(set_by_username) = self.fallback_room_set_by_username(&session.room)
+        {
+            self.room_playback_state_mut(&session.room).set_by = Some(set_by_username);
         }
         let room_state = self.room_playback_state(&session.room);
 
@@ -2748,10 +2747,10 @@ async fn run_server_network_client_session(
         let mut senders = client_line_senders.lock().await;
         senders.remove(&client_id);
     }
-    if let Err(source) = transport.shutdown().await {
-        if session_error.is_none() {
-            session_error = Some(ServerNetworkError::Io(source));
-        }
+    if let Err(source) = transport.shutdown().await
+        && session_error.is_none()
+    {
+        session_error = Some(ServerNetworkError::Io(source));
     }
 
     let disconnect_fanout = {
