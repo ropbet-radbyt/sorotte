@@ -11631,6 +11631,16 @@ mod tests {
     };
     use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
+    const TEST_USERNAME: &str = "test-user";
+
+    fn test_default_syncplay_config_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("test-appdata-root")
+    }
+
+    fn test_default_syncplay_config_target() -> std::path::PathBuf {
+        test_default_syncplay_config_root().join("syncplay.ini")
+    }
+
     #[test]
     fn configuration_surface_defaults_to_first_run_mode() {
         let state = FirstRunConfigurationDialogState::from_stored_settings(
@@ -11653,7 +11663,7 @@ mod tests {
                 host: Some("syncplay.example".to_owned()),
                 port: Some(8995),
                 server_password: Some("secret".to_owned()),
-                username: Some("shaun".to_owned()),
+                username: Some(TEST_USERNAME.to_owned()),
                 room: Some("room-a".to_owned()),
                 room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),
                 player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
@@ -11798,7 +11808,7 @@ mod tests {
     fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
         let state = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp {
             room: Some("+room:ABCDEF123456".to_owned()),
-            username: Some("shaun".to_owned()),
+            username: Some(TEST_USERNAME.to_owned()),
             player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
             shared_playlist_enabled: Some(true),
             ready_at_start: Some(true),
@@ -11810,7 +11820,7 @@ mod tests {
         assert!(state.shared_playlist_enabled);
         assert!(state.controlled_room_active);
         assert_eq!(state.users.len(), 1);
-        assert_eq!(state.users[0].username, "shaun");
+        assert_eq!(state.users[0].username, TEST_USERNAME);
         assert!(state.users[0].is_ready);
         assert!(state.users[0].is_controller);
         assert!(state.playback.can_toggle_pause);
@@ -15014,14 +15024,14 @@ mod tests {
         assert!(state.apply(GuiShellAction::EditConfigurationText {
             section: "Connection",
             label: "Username",
-            value: "shaun".to_owned(),
+            value: TEST_USERNAME.to_owned(),
         }));
         assert!(state.apply(GuiShellAction::SetMainWindowRoom(
             "+room:ABCDEF123456".to_owned(),
         )));
 
         let saved = state.configuration.to_stored_settings();
-        assert_eq!(saved.username.as_deref(), Some("shaun"));
+        assert_eq!(saved.username.as_deref(), Some(TEST_USERNAME));
         assert_eq!(saved.room.as_deref(), Some("+room:ABCDEF123456"));
         assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
         assert!(state.main_window.controlled_room_active);
@@ -15886,12 +15896,14 @@ mod tests {
 
         assert!(state.apply(GuiShellAction::SelectMainWindowUser(0)));
         assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
-        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit("shaun".to_owned(),)));
+        assert!(state.apply(GuiShellAction::UpdateMainWindowUserEdit(
+            TEST_USERNAME.to_owned(),
+        )));
         assert!(state.apply(GuiShellAction::CommitMainWindowUserEdit));
-        assert_eq!(state.main_window.users[0].username, "shaun");
+        assert_eq!(state.main_window.users[0].username, TEST_USERNAME);
         assert_eq!(
             state.configuration.to_stored_settings().username.as_deref(),
-            Some("shaun")
+            Some(TEST_USERNAME)
         );
     }
 
@@ -16026,7 +16038,7 @@ mod tests {
         assert!(state.apply(GuiShellAction::EditConfigurationText {
             section: "Connection",
             label: "Username",
-            value: "shaun".to_owned(),
+            value: TEST_USERNAME.to_owned(),
         }));
 
         assert_eq!(state.selection.selected_main_window_user, Some(0));
@@ -17144,26 +17156,24 @@ mod tests {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
                 "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
                 "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 _ => None,
             },
             &StoredClientSettingsMvp::default(),
             None,
         );
+        let expected_message = format!(
+            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as {TEST_USERNAME} in room room-a."
+        );
 
         assert_eq!(
             actions,
             vec![
-                GuiShellAction::AnnounceSystemChatEvent(
-                    "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
-                        .to_owned(),
-                ),
+                GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message:
-                        "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
-                            .to_owned(),
+                    message: expected_message,
                 },
             ]
         );
@@ -17174,26 +17184,24 @@ mod tests {
         let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
             |name| match name {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK" => Some("true".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 _ => None,
             },
             &StoredClientSettingsMvp::default(),
             None,
         );
+        let expected_message = format!(
+            "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as {TEST_USERNAME} in room room-a."
+        );
 
         assert_eq!(
             actions,
             vec![
-                GuiShellAction::AnnounceSystemChatEvent(
-                    "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as shaun in room room-a."
-                        .to_owned(),
-                ),
+                GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message:
-                        "Startup enabled client-core chat loopback via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK as shaun in room room-a."
-                            .to_owned(),
+                    message: expected_message,
                 },
             ]
         );
@@ -17263,7 +17271,7 @@ mod tests {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
                 "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
                 "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
                 _ => None,
@@ -17272,13 +17280,14 @@ mod tests {
             None,
         );
         let mut host = GuiTextPreviewHost;
+        let expected_message = format!(
+            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as {TEST_USERNAME} in room room-a."
+        );
 
         let preview =
             super::run_gui_host_with_startup_actions(&settings, startup_actions, &mut host);
 
-        assert!(preview.contains(
-            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for syncplay.example:8995 as shaun in room room-a."
-        ));
+        assert!(preview.contains(expected_message.as_str()));
         assert!(preview.contains(
             "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
         ));
@@ -17292,26 +17301,25 @@ mod tests {
 
     #[test]
     fn gui_startup_actions_from_lookup_reports_config_path_source() {
+        let default_target = test_default_syncplay_config_target();
+        let expected_message =
+            super::GuiStartupConfigPathSource::DefaultConfigTarget(default_target.clone())
+                .startup_message();
         let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
             |_name| None,
             &StoredClientSettingsMvp::default(),
             Some(super::GuiStartupConfigPathSource::DefaultConfigTarget(
-                std::path::PathBuf::from("C:/Users/shaun/AppData/Roaming/syncplay.ini"),
+                default_target,
             )),
         );
 
         assert_eq!(
             actions,
             vec![
-                GuiShellAction::AnnounceSystemChatEvent(
-                    "Startup configuration path will use default config target (C:/Users/shaun/AppData/Roaming/syncplay.ini)."
-                        .to_owned(),
-                ),
+                GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
-                    message:
-                        "Startup configuration path will use default config target (C:/Users/shaun/AppData/Roaming/syncplay.ini)."
-                            .to_owned(),
+                    message: expected_message,
                 },
             ]
         );
@@ -17353,7 +17361,7 @@ mod tests {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
                 "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
                 "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
                 _ => None,
@@ -17398,9 +17406,11 @@ mod tests {
 
     #[test]
     fn resolve_syncplay_gui_config_path_source_legacy_compatible_with_reports_default_target() {
+        let appdata_root = test_default_syncplay_config_root();
+        let appdata_root_string = appdata_root.display().to_string();
         let source = super::resolve_syncplay_gui_config_path_source_legacy_compatible_with(
             &|name| match name {
-                "APPDATA" => Some("C:/Users/shaun/AppData/Roaming".to_owned()),
+                "APPDATA" => Some(appdata_root_string.clone()),
                 _ => None,
             },
             || None,
@@ -17410,19 +17420,20 @@ mod tests {
         assert_eq!(
             source,
             Some(super::GuiStartupConfigPathSource::DefaultConfigTarget(
-                std::path::PathBuf::from("C:/Users/shaun/AppData/Roaming/syncplay.ini"),
+                test_default_syncplay_config_target(),
             ))
         );
     }
 
     #[test]
     fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
+        let override_path = std::path::PathBuf::from("custom-config-root").join("syncplay.ini");
+        let expected_message =
+            super::GuiStartupConfigPathSource::Override(override_path.clone()).startup_message();
         let startup_actions = super::gui_startup_actions_from_lookup_and_config_path_source(
             |_name| None,
             &StoredClientSettingsMvp::default(),
-            Some(super::GuiStartupConfigPathSource::Override(
-                std::path::PathBuf::from("C:/custom/syncplay.ini"),
-            )),
+            Some(super::GuiStartupConfigPathSource::Override(override_path)),
         );
         let mut host = GuiTextPreviewHost;
 
@@ -17432,9 +17443,7 @@ mod tests {
             &mut host,
         );
 
-        assert!(preview.contains(
-            "Startup configuration path uses SYNCPLAY_CLIENT_CONFIG_PATH (C:/custom/syncplay.ini)."
-        ));
+        assert!(preview.contains(expected_message.as_str()));
         assert!(preview.contains("[Notifications] count=1"));
     }
 
@@ -17491,7 +17500,7 @@ mod tests {
             "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
             "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
             "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
-            "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+            "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
             "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
             _ => None,
         })
@@ -17503,7 +17512,7 @@ mod tests {
             super::GuiClientCoreChatTcpBootstrap {
                 host: "syncplay.example".to_owned(),
                 port: 8995,
-                username: "shaun".to_owned(),
+                username: TEST_USERNAME.to_owned(),
                 room: "room-a".to_owned(),
             }
         );
@@ -17515,7 +17524,7 @@ mod tests {
         let bootstrap =
             super::gui_client_core_chat_loopback_bootstrap_from_lookup(|name| match name {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK" => Some("true".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 _ => None,
             })
@@ -17525,7 +17534,7 @@ mod tests {
         assert_eq!(
             bootstrap,
             super::GuiClientCoreChatLoopbackBootstrap {
-                username: "shaun".to_owned(),
+                username: TEST_USERNAME.to_owned(),
                 room: "room-a".to_owned(),
             }
         );
@@ -17610,7 +17619,7 @@ mod tests {
                 "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
                 "SYNCPLAY_CLIENT_HOST" => Some("syncplay.example".to_owned()),
                 "SYNCPLAY_CLIENT_PORT" => Some("8995".to_owned()),
-                "SYNCPLAY_CLIENT_USERNAME" => Some("shaun".to_owned()),
+                "SYNCPLAY_CLIENT_USERNAME" => Some(TEST_USERNAME.to_owned()),
                 "SYNCPLAY_CLIENT_ROOM" => Some("room-a".to_owned()),
                 "SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
                 _ => None,
@@ -17627,7 +17636,7 @@ mod tests {
 
         assert_eq!(settings.host.as_deref(), Some("syncplay.example"));
         assert_eq!(settings.port, Some(8995));
-        assert_eq!(settings.username.as_deref(), Some("shaun"));
+        assert_eq!(settings.username.as_deref(), Some(TEST_USERNAME));
         assert_eq!(settings.room.as_deref(), Some("room-a"));
         assert_eq!(settings.chat_input_enabled, Some(true));
         assert_eq!(settings.chat_output_enabled, Some(true));
