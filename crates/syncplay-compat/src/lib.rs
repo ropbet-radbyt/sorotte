@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -92,6 +92,10 @@ const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
 const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
 const LEGACY_COMPAT_MISSING_FEATURES_MARKER: &str = "__syncplay_rs_missing_features__";
+const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
+const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
+
+static LEGACY_SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug)]
 struct LegacyServerClientConnection {
@@ -580,10 +584,7 @@ fn run_legacy_server_fanout_roundtrip_with_full_overrides(
         return Ok(Vec::new());
     }
 
-    let legacy_checkout = legacy_syncplay_checkout_dir();
-    if !legacy_checkout.is_dir() {
-        return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-    }
+    let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
 
     let legacy_server_entry = legacy_syncplay_server_entry_script_path();
     if !legacy_server_entry.is_file() {
@@ -1179,13 +1180,100 @@ fn wait_for_child_exit_with_timeout(
     }
 }
 
-pub fn legacy_syncplay_checkout_dir() -> PathBuf {
+fn syncplay_repo_root_dir() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("..");
     path.push("..");
-    path.push("..");
-    path.push("syncplay");
     path
+}
+
+fn repo_local_legacy_syncplay_checkout_dir() -> PathBuf {
+    let mut path = syncplay_repo_root_dir();
+    path.push(".interop-cache");
+    path.push("syncplay-legacy");
+    path
+}
+
+fn configured_legacy_syncplay_checkout_dir() -> Option<PathBuf> {
+    env::var_os("SYNCPLAY_LEGACY_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn legacy_syncplay_checkout_bootstrap_lock() -> &'static Mutex<()> {
+    LEGACY_SYNCPLAY_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn legacy_syncplay_checkout_is_ready(path: &Path) -> bool {
+    path.join("syncplayServer.py").is_file()
+}
+
+fn remove_legacy_syncplay_checkout_path_if_present(path: &Path) -> Result<(), InteropError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn bootstrap_repo_local_legacy_syncplay_checkout(path: &Path) -> Result<(), InteropError> {
+    remove_legacy_syncplay_checkout_path_if_present(path)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let clone_result = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg(LEGACY_SYNCPLAY_UPSTREAM_REF)
+        .arg("--single-branch")
+        .arg(LEGACY_SYNCPLAY_UPSTREAM_REPO)
+        .arg(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    match clone_result {
+        Ok(status) if status.success() && legacy_syncplay_checkout_is_ready(path) => Ok(()),
+        Ok(_) | Err(_) => {
+            let _ = remove_legacy_syncplay_checkout_path_if_present(path);
+            Err(InteropError::LegacySyncplayCheckoutMissing(
+                path.to_path_buf(),
+            ))
+        }
+    }
+}
+
+fn ensure_legacy_syncplay_checkout_available() -> Result<PathBuf, InteropError> {
+    if let Some(legacy_checkout) = configured_legacy_syncplay_checkout_dir() {
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+        return Ok(legacy_checkout);
+    }
+
+    let _guard = legacy_syncplay_checkout_bootstrap_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let legacy_checkout = repo_local_legacy_syncplay_checkout_dir();
+    if legacy_syncplay_checkout_is_ready(&legacy_checkout) {
+        return Ok(legacy_checkout);
+    }
+    bootstrap_repo_local_legacy_syncplay_checkout(&legacy_checkout)?;
+    Ok(legacy_checkout)
+}
+
+pub fn legacy_syncplay_checkout_dir() -> PathBuf {
+    configured_legacy_syncplay_checkout_dir()
+        .unwrap_or_else(repo_local_legacy_syncplay_checkout_dir)
 }
 
 pub fn legacy_syncplay_server_entry_script_path() -> PathBuf {
@@ -1305,10 +1393,7 @@ impl LegacyServerPythonPeerHarness {
     }
 
     fn spawn_server(peer_username: &str, room: &str) -> Result<Self, InteropError> {
-        let legacy_checkout = legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
 
         let legacy_server_entry = legacy_syncplay_server_entry_script_path();
         if !legacy_server_entry.is_file() {
@@ -1371,10 +1456,7 @@ impl LegacyServerPythonPeerHarness {
     }
 
     fn spawn_peer_process(&mut self) -> Result<(), InteropError> {
-        let legacy_checkout = legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
 
         let live_peer_probe = python_live_peer_probe_script_path();
         if !live_peer_probe.is_file() {
@@ -1996,10 +2078,7 @@ fn run_python_probe_raw_with_overrides(
     permanent_rooms: &[&str],
     tls_available: bool,
 ) -> Result<String, InteropError> {
-    let legacy_checkout = legacy_syncplay_checkout_dir();
-    if !legacy_checkout.is_dir() {
-        return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-    }
+    let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
 
     let probe_script = python_handshake_probe_script_path();
     if !probe_script.is_file() {
@@ -3838,10 +3917,7 @@ mod tests {
     fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         tls_cert_path: &Path,
     ) -> Result<(String, String), InteropError> {
-        let legacy_checkout = super::legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
 
         let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
         if !legacy_server_entry.is_file() {
@@ -3956,10 +4032,7 @@ mod tests {
     fn run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
         tls_cert_path: &Path,
     ) -> Result<String, InteropError> {
-        let legacy_checkout = super::legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
 
         let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
         if !legacy_server_entry.is_file() {
@@ -4126,10 +4199,7 @@ mod tests {
     fn run_legacy_server_tls_rotation_invalidates_subsequent_send_with_cert_path(
         tls_cert_path: &Path,
     ) -> Result<(String, String), InteropError> {
-        let legacy_checkout = super::legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
 
         let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
         if !legacy_server_entry.is_file() {
@@ -4240,10 +4310,7 @@ mod tests {
     fn run_legacy_server_tls_rotation_recovers_after_bundle_restored_with_cert_path(
         tls_cert_path: &Path,
     ) -> Result<(String, String, String), InteropError> {
-        let legacy_checkout = super::legacy_syncplay_checkout_dir();
-        if !legacy_checkout.is_dir() {
-            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
-        }
+        let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
 
         let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
         if !legacy_server_entry.is_file() {
@@ -4495,6 +4562,18 @@ mod tests {
     #[test]
     fn protocol_hello_fixture_decodes() {
         assert!(fixture_decodes("hello_minimal.json"));
+    }
+
+    #[test]
+    fn legacy_syncplay_checkout_dir_defaults_to_repo_local_cache() {
+        if std::env::var_os("SYNCPLAY_LEGACY_ROOT").is_some() {
+            return;
+        }
+
+        assert!(
+            super::legacy_syncplay_checkout_dir()
+                .ends_with(Path::new(".interop-cache").join("syncplay-legacy"))
+        );
     }
 
     #[test]

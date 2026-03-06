@@ -19,7 +19,11 @@ def _legacy_root():
     if env_root:
         return env_root
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    return os.path.realpath(os.path.join(script_dir, "..", "..", "..", "syncplay"))
+    return os.path.realpath(
+        os.path.join(
+            script_dir, "..", "..", "..", ".interop-cache", "syncplay-legacy"
+        )
+    )
 
 
 def _add_legacy_root_to_sys_path(legacy_root):
