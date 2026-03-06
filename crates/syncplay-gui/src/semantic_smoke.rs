@@ -371,6 +371,8 @@ const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT: &str =
 static GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION: &str = "Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.";
+const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT: &str = "# Persistence, clear-GUI-data, and config-migration flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\thost\tpersisted.example\nsetting\troom\tPersistenceRoom\nsetting\tplayer-path\tC:/Windows/System32/notepad.exe\n";
+const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION: &str = "Seeds legacy GUI-side state next to syncplay.ini, verifies non-INI restore on startup, runs the clear-GUI-data flow through the runtime owner, and proves GUI-owned public-server state wins predictably over conflicting syncplay.ini rows during migration.";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT: &str = "# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\tinterop-room\nsetting\tshared-playlist-enabled\ttrue\n";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_SCRIPT: &str = "# Live Python reference-peer controlled-room flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\t+interop-room:447CE7E3548D:AB-123-456\nsetting\tshared-playlist-enabled\ttrue\n";
@@ -422,6 +424,7 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
             GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT,
             &GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED,
         )),
+        "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT),
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT)
         }
@@ -442,6 +445,7 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
         "runtime-transport-churn-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION)
         }
+        "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION),
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION)
         }
@@ -524,6 +528,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "core-shell-smoke-flow",
         "runtime-chat-flow",
         "runtime-transport-churn-flow",
+        "persistence-reset-flow",
         "live-python-peer-connect-flow",
         "live-python-peer-controlled-room-flow",
     ]
@@ -584,6 +589,9 @@ pub(super) fn run_gui_semantic_scenario_named(
     }
     if name == "live-python-peer-controlled-room-flow" {
         return run_gui_semantic_live_python_peer_controlled_room_flow();
+    }
+    if name == "persistence-reset-flow" {
+        return run_gui_semantic_persistence_reset_flow();
     }
     let scenario = gui_semantic_scenario_named(name).ok_or_else(|| {
         format!(
@@ -949,6 +957,191 @@ pub(super) fn gui_semantic_scenario_runtime_transport_churn_flow() -> GuiSemanti
         gui_semantic_scenario_script("runtime-transport-churn-flow")
             .expect("runtime transport churn semantic scenario script should exist"),
     )
+}
+
+fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport, String> {
+    #[derive(Default)]
+    struct RecordingHost;
+
+    impl super::GuiAppHost for RecordingHost {
+        type Output = super::SyncplayGuiShellAppState;
+
+        fn render(&mut self, state: super::SyncplayGuiShellAppState) -> Self::Output {
+            state
+        }
+    }
+
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "syncplay-gui-semantic-persistence-reset-{}-{unique_suffix}",
+        std::process::id()
+    ));
+    let result = (|| -> Result<GuiSemanticScenarioReport, String> {
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).map_err(|error| {
+            format!(
+                "failed to create semantic persistence-reset temp root {}: {error}",
+                root.display()
+            )
+        })?;
+        let config_path = root.join("syncplay.ini");
+        let settings = super::StoredClientSettingsMvp {
+            host: Some("persisted.example".to_owned()),
+            room: Some("PersistenceRoom".to_owned()),
+            player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..super::StoredClientSettingsMvp::default()
+        };
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&config_path, &settings)
+            .map_err(|error| {
+                format!(
+                    "failed to seed semantic persistence-reset config {}: {error}",
+                    config_path.display()
+                )
+            })?;
+
+        let persisted_ui_state = super::GuiPersistedUiState {
+            active_view: Some(super::GuiShellView::PublicServers),
+            selected_public_server_address: Some("custom.example:9001".to_owned()),
+            selected_media_search_directory: Some("C:/Media".to_owned()),
+            last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+            public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+        };
+        super::persist_gui_ui_state_at_root(&root, &persisted_ui_state).map_err(|error| {
+            format!(
+                "failed to seed semantic persistence-reset GUI state at {}: {error}",
+                root.display()
+            )
+        })?;
+        let loaded_ui_state = super::load_gui_ui_state_from_root(&root)?
+            .ok_or_else(|| "seeded semantic GUI state was not reloadable".to_owned())?;
+
+        let mut host = RecordingHost;
+        let restored_state = super::run_gui_host_with_startup_actions_and_gui_state(
+            &settings,
+            Some(&loaded_ui_state),
+            Vec::new(),
+            &mut host,
+        );
+        if restored_state.active_view != super::GuiShellView::PublicServers {
+            return Err(format!(
+                "expected persisted semantic startup view public-servers, got {}",
+                restored_state.active_view.label()
+            ));
+        }
+        if restored_state.selected_public_server_index() != Some(0) {
+            return Err("expected persisted semantic startup to restore the custom server selection"
+                .to_owned());
+        }
+        if restored_state.selection.selected_media_search_directory != Some(0) {
+            return Err(
+                "expected persisted semantic startup to restore the media-search selection"
+                    .to_owned(),
+            );
+        }
+        if restored_state.last_media_dialog_directory.as_deref() != Some("D:/Dialogs") {
+            return Err("expected persisted semantic startup to restore the last media dialog directory"
+                .to_owned());
+        }
+        if restored_state.saved_configuration.public_servers.as_ref()
+            != Some(&persisted_ui_state.public_servers)
+        {
+            return Err(
+                "expected persisted semantic startup to promote GUI public servers when syncplay.ini had none"
+                    .to_owned(),
+            );
+        }
+
+        let mut host = RecordingHost;
+        let migrated_state = super::run_gui_host_with_startup_actions_and_gui_state(
+            &super::StoredClientSettingsMvp {
+                host: Some("saved.example".to_owned()),
+                port: Some(8999),
+                public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
+                ..settings.clone()
+            },
+            Some(&loaded_ui_state),
+            Vec::new(),
+            &mut host,
+        );
+        let migrated_servers = migrated_state
+            .public_servers
+            .servers
+            .iter()
+            .map(|row| (row.label.clone(), row.address.clone()))
+            .collect::<Vec<_>>();
+        if migrated_servers != vec![("Custom".to_owned(), "custom.example:9001".to_owned())] {
+            return Err(format!(
+                "expected GUI-owned public servers to win over syncplay.ini migration rows, got {:?}",
+                migrated_servers
+            ));
+        }
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut clear_state = restored_state;
+        if !clear_state.apply(super::GuiShellAction::BeginClearGuiData) {
+            return Err("failed to begin semantic clear-GUI-data flow".to_owned());
+        }
+        handle.push_request(super::GuiRuntimeRequest::CompletePendingOperation(
+            super::GuiPendingCompletionRequest::ClearGuiData,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &clear_state);
+        let actions = handle.drain_actions();
+        if !actions
+            .iter()
+            .any(|action| matches!(action, super::GuiShellAction::CompleteClearGuiData))
+        {
+            return Err("semantic clear-GUI-data flow did not produce a completion action".to_owned());
+        }
+        for action in actions {
+            if !clear_state.apply(action) {
+                return Err("semantic clear-GUI-data completion action was rejected".to_owned());
+            }
+        }
+
+        if root.join("syncplay.ini").exists() {
+            return Err("semantic clear-GUI-data flow did not remove syncplay.ini".to_owned());
+        }
+        if super::load_gui_ui_state_from_root(&root)?.is_some() {
+            return Err(
+                "semantic clear-GUI-data flow did not remove the persisted GUI state stores"
+                    .to_owned(),
+            );
+        }
+        if clear_state.configuration.launch_mode != super::GuiLaunchMode::FirstRun {
+            return Err("semantic clear-GUI-data flow did not restore first-run launch mode".to_owned());
+        }
+        if clear_state.active_view != super::GuiShellView::Configuration {
+            return Err("semantic clear-GUI-data flow did not restore the configuration view".to_owned());
+        }
+        if clear_state.saved_configuration != super::StoredClientSettingsMvp::default() {
+            return Err(
+                "semantic clear-GUI-data flow did not restore the default saved configuration"
+                    .to_owned(),
+            );
+        }
+
+        Ok(GuiSemanticScenarioReport {
+            scenario: "persistence-reset-flow".to_owned(),
+            view: clear_state.active_view.label().to_owned(),
+            modal: clear_state
+                .open_modal
+                .map(|modal| modal.label().to_owned())
+                .unwrap_or_else(|| "none".to_owned()),
+            pending: clear_state
+                .pending_operation
+                .as_ref()
+                .map(|pending| pending.kind.label().to_owned())
+                .unwrap_or_else(|| "none".to_owned()),
+            widgets: clear_state.shell_widget_tree().node_count(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
 }
 
 fn run_gui_semantic_live_python_peer_connect_flow() -> Result<GuiSemanticScenarioReport, String> {

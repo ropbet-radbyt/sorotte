@@ -10,6 +10,7 @@ use std::{
 };
 
 use syncplay_client_app::{
+    legacy_ini_serde::format_serialized_public_servers_list_legacy_compatible,
     legacy_settings::AutoplayThresholdOverride,
     legacy_settings::StoredClientSettingsMvp,
     legacy_syncplay_ini::{
@@ -154,6 +155,14 @@ const CUSTOM_SERVER_HOST: &str = "custom.example";
 const CUSTOM_SERVER_PORT: &str = "9001";
 const CUSTOM_SERVER_ADDRESS: &str = "custom.example:9001";
 const CUSTOM_SERVER_ROW_NAME: &str = "Custom: custom.example:9001";
+const MIGRATION_INI_SERVER_LABEL: &str = "Saved";
+const MIGRATION_INI_SERVER_HOST: &str = "saved.example";
+const MIGRATION_INI_SERVER_PORT: &str = "8999";
+const MIGRATION_INI_SERVER_ADDRESS: &str = "saved.example:8999";
+const MIGRATION_INI_SERVER_ROW_NAME: &str = "Saved: saved.example:8999";
+const MIGRATION_GUI_SERVER_LABEL: &str = "GuiOnly";
+const MIGRATION_GUI_SERVER_ADDRESS: &str = "gui-only.example:9002";
+const MIGRATION_GUI_SERVER_ROW_NAME: &str = "GuiOnly: gui-only.example:9002";
 const MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS: f64 = 3.0;
 const MEDIA_SEARCH_TIMEOUT_SECONDS: f64 = 30.0;
 const MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS: f64 = 2.5;
@@ -1780,6 +1789,91 @@ fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
     )
 }
 
+fn legacy_gui_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
+    root.join("Syncplay").join(format!("{store_name}.ini"))
+}
+
+fn write_legacy_gui_qsettings_ini(
+    path: &Path,
+    sections: &[(&str, Vec<(&str, String)>)],
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create native smoke legacy GUI store directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut contents = String::new();
+    for (section, entries) in sections {
+        if entries.is_empty() {
+            continue;
+        }
+        contents.push('[');
+        contents.push_str(section);
+        contents.push_str("]\n");
+        for (key, value) in entries {
+            contents.push_str(key);
+            contents.push_str(" = ");
+            contents.push_str(&value.replace('%', "%%"));
+            contents.push('\n');
+        }
+        contents.push('\n');
+    }
+    fs::write(path, contents).map_err(|error| {
+        format!(
+            "failed to write native smoke legacy GUI store {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn seed_native_smoke_gui_state(
+    root: &Path,
+    active_view: Option<&str>,
+    selected_public_server_address: Option<&str>,
+    public_servers: &[(String, String)],
+    last_media_dialog_directory: Option<&Path>,
+) -> Result<(), String> {
+    let main_window_entries = [
+        active_view.map(|value| ("activeView", value.to_owned())),
+        selected_public_server_address
+            .map(|value| ("selectedPublicServerAddress", value.to_owned())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !main_window_entries.is_empty() {
+        write_legacy_gui_qsettings_ini(
+            &legacy_gui_qsettings_store_path(root, "MainWindow"),
+            &[("MainWindow", main_window_entries)],
+        )?;
+    }
+    if !public_servers.is_empty() {
+        write_legacy_gui_qsettings_ini(
+            &legacy_gui_qsettings_store_path(root, "Interface"),
+            &[(
+                "PublicServerList",
+                vec![(
+                    "publicServers",
+                    format_serialized_public_servers_list_legacy_compatible(public_servers),
+                )],
+            )],
+        )?;
+    }
+    if let Some(directory) = last_media_dialog_directory {
+        write_legacy_gui_qsettings_ini(
+            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+            &[(
+                "MediaBrowseDialog",
+                vec![("mediadir", directory.display().to_string())],
+            )],
+        )?;
+    }
+    Ok(())
+}
+
 fn launch_syncplay_gui_with_retry<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -3155,6 +3249,16 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         )?;
         steps.push("open-media-file".to_owned());
     }
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Media Search",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+    wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
+    steps.push("persistence-state-prepared".to_owned());
 
     if let Err(primary_error) = invoke_menu_command_with_wait(
         driver,
@@ -3342,6 +3446,12 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
 ) -> Result<Vec<String>, String> {
     let media_search_directory_value = media_search_browse_path.display().to_string();
     let _ = wait_for_saved_configuration(config_path, &media_search_directory_value, timeout)?;
+    let gui_state_root = config_path.parent().ok_or_else(|| {
+        format!(
+            "native smoke config path {} had no parent directory for GUI-state checks",
+            config_path.display()
+        )
+    })?;
     let launch = GuiLaunchConfig {
         config_path,
         media_search_browse_path,
@@ -3362,6 +3472,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             &[
                 "modal: update-notice",
                 "modal: tls-certificate-prompt",
+                "view: media-search",
                 "view: configuration",
                 "view: main-window",
             ],
@@ -3398,20 +3509,26 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let initial_view = wait_for_any_accessible_name(
             driver,
             window,
-            &["view: configuration", "view: main-window"],
+            &["view: media-search", "view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        if initial_view == "view: main-window" {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                "Configuration",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
+        if initial_view != "view: media-search" {
+            return Err(format!(
+                "expected relaunch to restore the media-search view, got {initial_view:?}"
+            ));
         }
+        wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
+        wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
+        wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
+        steps.push("gui-state-restored".to_owned());
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Configuration",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
         wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
-
         let editable_count = driver.editable_text_input_count(window)?;
         if editable_count < 6 {
             return Err(format!(
@@ -3419,8 +3536,6 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             ));
         }
         for (index, expected_value) in [
-            (0usize, CONFIG_HOST_VALUE),
-            (1usize, CONFIG_PORT_VALUE),
             (2usize, CONFIG_USERNAME_VALUE),
             (3usize, CONFIG_ROOM_VALUE),
             (5usize, CONFIG_PLAYER_PATH_VALUE),
@@ -3458,98 +3573,319 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         invoke_named_control_with_wait(
             driver,
             window,
-            "Media Search",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
-        wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
-        wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
-        wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
-
-        if let Err(error) = invoke_named_control_with_wait(
-            driver,
-            window,
             "Configuration",
             NativeControlKind::Button,
             step_timeout,
-        ) {
-            steps.push(format!(
-                "relaunch-surface-configuration-skipped:{}",
-                error.replace('|', "/").replace('\n', " ")
-            ));
-        }
-
-        if let Err(error) = invoke_named_control_with_wait(
+        )?;
+        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+        invoke_named_control_with_wait(
             driver,
             window,
-            "Shared Playlists",
-            NativeControlKind::Any,
+            "Clear GUI Data",
+            NativeControlKind::Button,
             step_timeout,
-        ) {
-            steps.push(format!(
-                "relaunch-open-media-prep-shared-playlists-skipped:{}",
-                error.replace('|', "/").replace('\n', " ")
-            ));
-        } else {
-            steps.push("relaunch-open-media-prep-shared-playlists".to_owned());
-        }
-
-        let open_media_invoked = if let Err(primary_error) = invoke_menu_command_with_wait(
+        )?;
+        wait_for_accessible_name(driver, window, "pending: clear-gui-data", step_timeout)?;
+        invoke_named_control_with_wait(
             driver,
             window,
-            "File",
-            "Open Media File",
-            NativeControlKind::MenuItem,
+            "Complete",
+            NativeControlKind::Button,
             step_timeout,
-        ) {
-            match invoke_menu_command_with_wait(
-                driver,
-                window,
-                "File",
-                "Open Media File",
-                NativeControlKind::Any,
-                step_timeout,
-            ) {
-                Ok(()) => true,
-                Err(fallback_error) => {
-                    match invoke_named_control_with_wait(
-                        driver,
-                        window,
-                        "Open Media File",
-                        NativeControlKind::Any,
-                        step_timeout,
-                    ) {
-                        Ok(()) => true,
-                        Err(control_error) => {
-                            steps.push(format!(
-                                "relaunch-open-media-file-skipped:{}",
-                                format!(
-                                    "menu-item-failure={primary_error}; menu-fallback-failure={fallback_error}; control-fallback-failure={control_error}"
-                                )
-                                .replace('|', "/")
-                            ));
-                            false
-                        }
-                    }
-                }
+        )?;
+        let clear_deadline = Instant::now() + step_timeout;
+        while config_path.exists() && Instant::now() < clear_deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        steps.push("clear-gui-data-completed".to_owned());
+        if config_path.exists() {
+            return Err(format!(
+                "clear-GUI-data did not remove config file {}",
+                config_path.display()
+            ));
+        }
+        for store_name in ["MainWindow", "Interface", "MediaBrowseDialog"] {
+            let store_path = legacy_gui_qsettings_store_path(gui_state_root, store_name);
+            if store_path.exists() {
+                return Err(format!(
+                    "clear-GUI-data did not remove legacy GUI state file {}",
+                    store_path.display()
+                ));
             }
-        } else {
-            true
-        };
-        if open_media_invoked {
-            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
-            wait_for_accessible_name(
-                driver,
-                window,
-                &open_media_file_path.display().to_string(),
-                step_timeout,
-            )?;
-            steps.push("relaunch-open-media-file".to_owned());
         }
+        let editable_count_after_clear = driver.editable_text_input_count(window)?;
+        if editable_count_after_clear < 6 {
+            return Err(format!(
+                "expected at least 6 editable configuration text fields after clear-GUI-data, found {editable_count_after_clear}"
+            ));
+        }
+        for index in [0usize, 1, 2, 3, 5, TRUSTED_DOMAINS_EDIT_INDEX] {
+            let value = driver.get_edit_value_by_index(window, index)?;
+            if !value.is_empty() && value != "(unset)" {
+                return Err(format!(
+                    "expected first-run configuration edit [{index}] to be blank after clear-GUI-data, got {value:?}"
+                ));
+            }
+        }
+        steps.push("clear-gui-data-first-run".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;
+        steps.push("clear-gui-data-session-close".to_owned());
+
+        let first_run_launch = GuiLaunchConfig {
+            config_path,
+            media_search_browse_path,
+            open_media_file_path,
+            public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+            tcp_session: None,
+            loopback_session: None,
+        };
+        let (mut first_run_child, first_run_window) =
+            launch_syncplay_gui_with_retry(driver, binary_path, first_run_launch, timeout)?;
+        let first_run_outcome = (|| -> Result<(), String> {
+            let initial_state = wait_for_any_accessible_name(
+                driver,
+                first_run_window,
+                &[
+                    "modal: update-notice",
+                    "modal: tls-certificate-prompt",
+                    "view: configuration",
+                    "view: public-servers",
+                    "view: main-window",
+                ],
+                step_timeout,
+            )?;
+            if initial_state == "modal: update-notice" {
+                invoke_named_control_with_wait(
+                    driver,
+                    first_run_window,
+                    "Dismiss Notice",
+                    NativeControlKind::Button,
+                    step_timeout,
+                )?;
+                wait_for_accessible_name(
+                    driver,
+                    first_run_window,
+                    "modal: (none)",
+                    step_timeout,
+                )?;
+            }
+            if wait_for_accessible_name(
+                driver,
+                first_run_window,
+                "modal: tls-certificate-prompt",
+                step_timeout.min(Duration::from_millis(800)),
+            )
+            .is_ok()
+            {
+                invoke_named_control_with_wait(
+                    driver,
+                    first_run_window,
+                    "Trust Certificate",
+                    NativeControlKind::Button,
+                    step_timeout,
+                )?;
+                wait_for_accessible_name(
+                    driver,
+                    first_run_window,
+                    "modal: (none)",
+                    step_timeout,
+                )?;
+            }
+
+            let first_run_view = wait_for_any_accessible_name(
+                driver,
+                first_run_window,
+                &["view: configuration", "view: public-servers", "view: main-window"],
+                step_timeout,
+            )?;
+            if first_run_view != "view: configuration" {
+                return Err(format!(
+                    "expected first launch after clear-GUI-data to return to configuration, got {first_run_view:?}"
+                ));
+            }
+            let editable_count = driver.editable_text_input_count(first_run_window)?;
+            if editable_count < 6 {
+                return Err(format!(
+                    "expected at least 6 editable configuration text fields on first launch after clear-GUI-data, found {editable_count}"
+                ));
+            }
+            for index in [0usize, 1, 2, 3, 5, TRUSTED_DOMAINS_EDIT_INDEX] {
+                let value = driver.get_edit_value_by_index(first_run_window, index)?;
+                if !value.is_empty() && value != "(unset)" {
+                    return Err(format!(
+                        "expected first-run relaunch configuration edit [{index}] to be blank, got {value:?}"
+                    ));
+                }
+            }
+            Ok(())
+        })();
+        if first_run_outcome.is_err() {
+            let _ = first_run_child.kill();
+            let _ = first_run_child.wait();
+        }
+        first_run_outcome?;
+        driver.close_window(first_run_window)?;
+        wait_for_process_exit(&mut first_run_child, timeout)?;
+        steps.push("clear-gui-data-relaunch-first-run".to_owned());
+
+        let migration_settings = StoredClientSettingsMvp {
+            host: Some(MIGRATION_INI_SERVER_HOST.to_owned()),
+            port: Some(MIGRATION_INI_SERVER_PORT.parse().unwrap()),
+            username: Some(CONFIG_USERNAME_VALUE.to_owned()),
+            room: Some(CONFIG_ROOM_VALUE.to_owned()),
+            player_path: Some(CONFIG_PLAYER_PATH_VALUE.to_owned()),
+            public_servers: Some(vec![(
+                MIGRATION_INI_SERVER_LABEL.to_owned(),
+                MIGRATION_INI_SERVER_ADDRESS.to_owned(),
+            )]),
+            ..StoredClientSettingsMvp::default()
+        };
+        upsert_syncplay_ini_stored_client_settings_mvp_at_path(config_path, &migration_settings)
+            .map_err(|error| {
+                format!(
+                    "failed to seed config-migration config {}: {error}",
+                    config_path.display()
+                )
+            })?;
+        seed_native_smoke_gui_state(
+            gui_state_root,
+            Some("public-servers"),
+            Some(MIGRATION_GUI_SERVER_ADDRESS),
+            &[(
+                MIGRATION_GUI_SERVER_LABEL.to_owned(),
+                MIGRATION_GUI_SERVER_ADDRESS.to_owned(),
+            )],
+            None,
+        )?;
+
+        let migration_launch = GuiLaunchConfig {
+            config_path,
+            media_search_browse_path,
+            open_media_file_path,
+            public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+            tcp_session: None,
+            loopback_session: None,
+        };
+        let (mut migration_child, migration_window) =
+            launch_syncplay_gui_with_retry(driver, binary_path, migration_launch, timeout)?;
+        let migration_outcome = (|| -> Result<(), String> {
+            let migration_initial_state = wait_for_any_accessible_name(
+                driver,
+                migration_window,
+                &[
+                    "modal: update-notice",
+                    "modal: tls-certificate-prompt",
+                    "view: public-servers",
+                    "view: configuration",
+                    "view: main-window",
+                ],
+                step_timeout,
+            )?;
+            if migration_initial_state == "modal: update-notice" {
+                invoke_named_control_with_wait(
+                    driver,
+                    migration_window,
+                    "Dismiss Notice",
+                    NativeControlKind::Button,
+                    step_timeout,
+                )?;
+                wait_for_accessible_name(
+                    driver,
+                    migration_window,
+                    "modal: (none)",
+                    step_timeout,
+                )?;
+            }
+            if wait_for_accessible_name(
+                driver,
+                migration_window,
+                "modal: tls-certificate-prompt",
+                step_timeout.min(Duration::from_millis(800)),
+            )
+            .is_ok()
+            {
+                invoke_named_control_with_wait(
+                    driver,
+                    migration_window,
+                    "Trust Certificate",
+                    NativeControlKind::Button,
+                    step_timeout,
+                )?;
+                wait_for_accessible_name(
+                    driver,
+                    migration_window,
+                    "modal: (none)",
+                    step_timeout,
+                )?;
+            }
+
+            let migration_view = wait_for_any_accessible_name(
+                driver,
+                migration_window,
+                &["view: public-servers", "view: configuration", "view: main-window"],
+                step_timeout,
+            )?;
+            if migration_view != "view: public-servers" {
+                return Err(format!(
+                    "expected config-migration launch to restore the public-server browser view, got {migration_view:?}"
+                ));
+            }
+            wait_for_named_control_count(
+                driver,
+                migration_window,
+                MIGRATION_GUI_SERVER_ROW_NAME,
+                NativeControlKind::Any,
+                1,
+                step_timeout,
+            )?;
+            wait_for_named_control_count(
+                driver,
+                migration_window,
+                MIGRATION_INI_SERVER_ROW_NAME,
+                NativeControlKind::Any,
+                0,
+                step_timeout,
+            )?;
+            invoke_named_control_with_wait(
+                driver,
+                migration_window,
+                "Configuration",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(
+                driver,
+                migration_window,
+                "view: configuration",
+                step_timeout,
+            )?;
+            wait_for_edit_value_by_index(
+                driver,
+                migration_window,
+                0,
+                "gui-only.example",
+                step_timeout,
+            )?;
+            wait_for_edit_value_by_index(
+                driver,
+                migration_window,
+                1,
+                "9002",
+                step_timeout,
+            )?;
+            Ok(())
+        })();
+        if migration_outcome.is_err() {
+            let _ = migration_child.kill();
+            let _ = migration_child.wait();
+        }
+        migration_outcome?;
+        driver.close_window(migration_window)?;
+        wait_for_process_exit(&mut migration_child, timeout)?;
+        steps.push("config-migration-predictable".to_owned());
+
         Ok(steps)
     })();
 

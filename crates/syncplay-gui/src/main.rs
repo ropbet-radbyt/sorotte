@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env,
     io::{self, Read, Write},
     net::TcpStream,
@@ -22,6 +22,8 @@ use syncplay_client_app::app_boundary::{
         normalized_legacy_runtime_language_tag_legacy_compatible,
     },
     persistence::{
+        clear_syncplay_ini_stored_client_settings_mvp_at_path,
+        format_serialized_public_servers_list_legacy_compatible,
         load_syncplay_ini_stored_client_settings_mvp_from_path,
         parse_serialized_public_servers_list_legacy_compatible,
         parse_serialized_string_list_legacy_compatible,
@@ -58,6 +60,14 @@ impl GuiLaunchMode {
         }
     }
 }
+
+const LEGACY_GUI_QSETTINGS_STORE_NAMES: [&str; 5] = [
+    "PlayerList",
+    "MediaBrowseDialog",
+    "MainWindow",
+    "Interface",
+    "MoreSettings",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiConnectionSettingsSection {
@@ -441,6 +451,7 @@ struct SyncplayGuiShellAppState {
     runtime_validation_issues: Vec<GuiValidationIssue>,
     notifications: Vec<GuiTransientNotification>,
     validation: GuiValidationState,
+    last_media_dialog_directory: Option<String>,
     saved_configuration: StoredClientSettingsMvp,
     configuration: FirstRunConfigurationDialogDraft,
     main_window: MainWindowShellState,
@@ -455,6 +466,315 @@ struct GuiSelectionState {
     selected_main_window_playlist: Option<usize>,
     selected_menu_action: Option<(usize, usize)>,
     selected_media_search_directory: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiPersistedUiState {
+    active_view: Option<GuiShellView>,
+    selected_public_server_address: Option<String>,
+    selected_media_search_directory: Option<String>,
+    last_media_dialog_directory: Option<String>,
+    public_servers: Vec<(String, String)>,
+}
+
+impl GuiPersistedUiState {
+    fn from_shell_state(state: &SyncplayGuiShellAppState) -> Self {
+        let saved_public_servers = state
+            .saved_configuration
+            .public_servers
+            .clone()
+            .unwrap_or_default();
+        let current_public_servers = state
+            .public_servers
+            .servers
+            .iter()
+            .map(|row| (row.label.clone(), row.address.clone()))
+            .collect::<Vec<_>>();
+        Self {
+            active_view: (state.active_view != GuiShellView::Configuration)
+                .then_some(state.active_view),
+            selected_public_server_address: state.selected_public_server_address().map(str::to_owned),
+            selected_media_search_directory: state
+                .selection
+                .selected_media_search_directory
+                .and_then(|index| state.media_search.directories.get(index))
+                .map(|row| row.path.clone()),
+            last_media_dialog_directory: state.last_media_dialog_directory.clone(),
+            public_servers: (current_public_servers != saved_public_servers)
+                .then_some(current_public_servers)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.active_view.is_none()
+            && self.selected_public_server_address.is_none()
+            && self.selected_media_search_directory.is_none()
+            && self.last_media_dialog_directory.is_none()
+            && self.public_servers.is_empty()
+    }
+
+    fn merge_into_startup_settings(&self, settings: &mut StoredClientSettingsMvp) {
+        if !self.public_servers.is_empty() {
+            settings.public_servers = Some(self.public_servers.clone());
+        }
+    }
+
+    fn apply_to_shell_state(&self, state: &mut SyncplayGuiShellAppState) {
+        if let Some(active_view) = self.active_view {
+            state.active_view = active_view;
+        }
+        state.last_media_dialog_directory = self.last_media_dialog_directory.clone();
+        if let Some(selected_address) = self.selected_public_server_address.as_deref()
+            && let Some(index) = state
+                .public_servers
+                .servers
+                .iter()
+                .position(|row| row.address == selected_address)
+        {
+            let _ = state.apply_public_server_selection(index);
+        }
+        if let Some(selected_directory) = self.selected_media_search_directory.as_deref()
+            && let Some(index) = state
+                .media_search
+                .directories
+                .iter()
+                .position(|row| row.path == selected_directory)
+        {
+            state.selection.selected_media_search_directory = Some(index);
+        }
+        state.normalize_selection();
+        state.apply_selection_to_surfaces();
+    }
+}
+
+fn legacy_gui_qsettings_store_dir(root: &Path) -> PathBuf {
+    root.join("Syncplay")
+}
+
+fn legacy_gui_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
+    legacy_gui_qsettings_store_dir(root).join(format!("{store_name}.ini"))
+}
+
+fn parse_legacy_gui_qsettings_ini(contents: &str) -> BTreeMap<(String, String), String> {
+    let mut current_section = String::new();
+    let mut values = BTreeMap::new();
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if let Some(section) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+            current_section = section.trim().to_owned();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        values.insert(
+            (current_section.clone(), key.trim().to_owned()),
+            value.trim().replace("%%", "%"),
+        );
+    }
+    values
+}
+
+fn write_legacy_gui_qsettings_ini(
+    path: &Path,
+    sections: &[(&str, Vec<(&str, String)>)],
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create legacy GUI store directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut contents = String::new();
+    for (section, entries) in sections {
+        if entries.is_empty() {
+            continue;
+        }
+        contents.push('[');
+        contents.push_str(section);
+        contents.push_str("]\n");
+        for (key, value) in entries {
+            contents.push_str(key);
+            contents.push_str(" = ");
+            contents.push_str(&value.replace('%', "%%"));
+            contents.push('\n');
+        }
+        contents.push('\n');
+    }
+    std::fs::write(path, contents).map_err(|error| {
+        format!(
+            "failed to persist legacy GUI store {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn remove_file_if_exists(path: &Path, context: &str) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "{context} path is not a file and cannot be cleared: {}",
+            path.display()
+        ));
+    }
+    std::fs::remove_file(path)
+        .map_err(|error| format!("failed clearing {context} {}: {error}", path.display()))?;
+    Ok(true)
+}
+
+fn clear_legacy_gui_qsettings_files_at_root(root: &Path) -> Result<bool, String> {
+    let mut changed = false;
+    for store_name in LEGACY_GUI_QSETTINGS_STORE_NAMES {
+        changed |= remove_file_if_exists(
+            &legacy_gui_qsettings_store_path(root, store_name),
+            "legacy GUI QSettings",
+        )?;
+    }
+    Ok(changed)
+}
+
+fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Result<(), String> {
+    if state.is_empty() {
+        clear_legacy_gui_qsettings_files_at_root(root)?;
+        return Ok(());
+    }
+
+    write_legacy_gui_qsettings_ini(
+        &legacy_gui_qsettings_store_path(root, "MainWindow"),
+        &[(
+            "MainWindow",
+            [
+                state
+                    .active_view
+                    .map(|view| ("activeView", view.label().to_owned())),
+                state
+                    .selected_public_server_address
+                    .as_ref()
+                    .map(|value| ("selectedPublicServerAddress", value.clone())),
+                state
+                    .selected_media_search_directory
+                    .as_ref()
+                    .map(|value| ("selectedMediaSearchDirectory", value.clone())),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )],
+    )?;
+
+    if state.public_servers.is_empty() {
+        remove_file_if_exists(
+            &legacy_gui_qsettings_store_path(root, "Interface"),
+            "legacy GUI QSettings",
+        )?;
+    } else {
+        write_legacy_gui_qsettings_ini(
+            &legacy_gui_qsettings_store_path(root, "Interface"),
+            &[(
+                "PublicServerList",
+                vec![(
+                    "publicServers",
+                    format_serialized_public_servers_list_legacy_compatible(&state.public_servers),
+                )],
+            )],
+        )?;
+    }
+
+    if let Some(directory) = state.last_media_dialog_directory.as_ref() {
+        write_legacy_gui_qsettings_ini(
+            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+            &[(
+                "MediaBrowseDialog",
+                vec![("mediadir", directory.clone())],
+            )],
+        )?;
+    } else {
+        remove_file_if_exists(
+            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+            "legacy GUI QSettings",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn load_gui_ui_state_from_root(root: &Path) -> Result<Option<GuiPersistedUiState>, String> {
+    let mut state = GuiPersistedUiState::default();
+
+    let main_window_path = legacy_gui_qsettings_store_path(root, "MainWindow");
+    if main_window_path.exists() {
+        let contents = std::fs::read_to_string(&main_window_path).map_err(|error| {
+            format!(
+                "failed to read legacy GUI store {}: {error}",
+                main_window_path.display()
+            )
+        })?;
+        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        state.active_view = parsed
+            .get(&(String::from("MainWindow"), String::from("activeView")))
+            .and_then(|value| GuiShellView::from_label(value));
+        state.selected_public_server_address = parsed
+            .get(&(
+                String::from("MainWindow"),
+                String::from("selectedPublicServerAddress"),
+            ))
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
+        state.selected_media_search_directory = parsed
+            .get(&(
+                String::from("MainWindow"),
+                String::from("selectedMediaSearchDirectory"),
+            ))
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
+    }
+
+    let interface_path = legacy_gui_qsettings_store_path(root, "Interface");
+    if interface_path.exists() {
+        let contents = std::fs::read_to_string(&interface_path).map_err(|error| {
+            format!(
+                "failed to read legacy GUI store {}: {error}",
+                interface_path.display()
+            )
+        })?;
+        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        state.public_servers = parsed
+            .get(&(
+                String::from("PublicServerList"),
+                String::from("publicServers"),
+            ))
+            .and_then(|value| parse_serialized_public_servers_list_legacy_compatible(value))
+            .unwrap_or_default();
+    }
+
+    let media_browse_path = legacy_gui_qsettings_store_path(root, "MediaBrowseDialog");
+    if media_browse_path.exists() {
+        let contents = std::fs::read_to_string(&media_browse_path).map_err(|error| {
+            format!(
+                "failed to read legacy GUI store {}: {error}",
+                media_browse_path.display()
+            )
+        })?;
+        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        state.last_media_dialog_directory = parsed
+            .get(&(String::from("MediaBrowseDialog"), String::from("mediadir")))
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
+    }
+
+    if state.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(state))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1278,6 +1598,7 @@ impl GuiWidgetEguiRenderer {
             "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
+            "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
             "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
             "main-window:room:set" => {
                 vec![GuiShellAction::SetMainWindowRoom(
@@ -1468,11 +1789,16 @@ impl GuiWidgetEguiRenderer {
 
     fn media_search_dialog_start_directory(state: &SyncplayGuiShellAppState) -> Option<&str> {
         state
-            .selection
-            .selected_media_search_directory
-            .and_then(|index| state.media_search.directories.get(index))
-            .or_else(|| state.media_search.directories.first())
-            .map(|row| row.path.as_str())
+            .last_media_dialog_directory
+            .as_deref()
+            .or_else(|| {
+                state
+                    .selection
+                    .selected_media_search_directory
+                    .and_then(|index| state.media_search.directories.get(index))
+                    .or_else(|| state.media_search.directories.first())
+                    .map(|row| row.path.as_str())
+            })
     }
 
     fn action_for_list_item_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
@@ -3329,6 +3655,26 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
+        self.config_path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+    }
+
+    fn clear_gui_data(&mut self) -> Result<(), String> {
+        if let Some(path) = self.config_path.as_ref() {
+            clear_syncplay_ini_stored_client_settings_mvp_at_path(path)
+                .map_err(|error| format!("failed clearing stored settings {}: {error}", path.display()))?;
+        }
+        if let Some(root) = self.legacy_gui_qsettings_root() {
+            clear_legacy_gui_qsettings_files_at_root(&root)?;
+        }
+        self.session = None;
+        self.session_transport = None;
+        self.session_transport_driver = None;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn with_session_runtime(mut self, session: Box<dyn GuiSessionRuntimeAdapter>) -> Self {
         self.session = Some(session);
@@ -4298,6 +4644,26 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         ),
                     }
                 }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::ClearGuiData,
+                ) => match self.clear_gui_data() {
+                    Ok(()) => Self::push_actions_and_project(
+                        handle,
+                        &mut projected_state,
+                        vec![GuiShellAction::CompleteClearGuiData],
+                    ),
+                    Err(error) => Self::push_actions_and_project(
+                        handle,
+                        &mut projected_state,
+                        vec![
+                            GuiShellAction::CancelClearGuiData,
+                            GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: format!("Clear GUI data failed: {error}"),
+                            },
+                        ],
+                    ),
+                },
                 GuiRuntimeRequest::CancelPendingOperation(_kind) => {
                     Self::push_actions_and_project(
                         handle,
@@ -4412,6 +4778,7 @@ enum GuiPendingCompletionRequest {
     SaveConfiguration(StoredClientSettingsMvp),
     ResetConfiguration(StoredClientSettingsMvp),
     ReloadConfiguration(StoredClientSettingsMvp),
+    ClearGuiData,
     ConnectPublicServer,
     RefreshPublicServers(Vec<(String, String)>),
     SearchMissingMedia,
@@ -4432,6 +4799,7 @@ impl GuiPendingCompletionRequest {
             GuiPendingOperationKind::ReloadConfiguration => {
                 Self::ReloadConfiguration(state.saved_configuration.clone())
             }
+            GuiPendingOperationKind::ClearGuiData => Self::ClearGuiData,
             GuiPendingOperationKind::ConnectPublicServer => Self::ConnectPublicServer,
             GuiPendingOperationKind::RefreshPublicServers => Self::RefreshPublicServers(
                 state
@@ -4460,6 +4828,7 @@ impl GuiPendingCompletionRequest {
             Self::ReloadConfiguration(settings) => {
                 GuiShellAction::CompleteConfigurationReload(settings)
             }
+            Self::ClearGuiData => GuiShellAction::CompleteClearGuiData,
             Self::ConnectPublicServer => GuiShellAction::CompleteSelectedPublicServerConnect,
             Self::RefreshPublicServers(servers) => {
                 GuiShellAction::CompletePublicServerRefresh(servers)
@@ -4769,6 +5138,7 @@ struct GuiNativeApp {
     state: SyncplayGuiShellAppState,
     runtime: Box<dyn GuiNativeRuntimeBridge>,
     runtime_pump: Box<dyn GuiNativeRuntimePump>,
+    gui_state_root: Option<PathBuf>,
     seek_prompt_open: bool,
     seek_prompt_buffer: String,
     seek_prompt_error: Option<String>,
@@ -4787,6 +5157,7 @@ impl GuiNativeApp {
             state,
             runtime,
             runtime_pump,
+            gui_state_root: syncplay_gui_qsettings_root_from_env(),
             seek_prompt_open: false,
             seek_prompt_buffer: String::new(),
             seek_prompt_error: None,
@@ -4976,6 +5347,9 @@ impl eframe::App for GuiNativeApp {
             }
         }
         if let Some(paths) = selected_media_files {
+            if let Some(path) = paths.first() {
+                self.state.remember_media_dialog_directory(path);
+            }
             for action in self
                 .runtime
                 .actions_for_selected_media_files(&self.state, paths)
@@ -5012,6 +5386,18 @@ impl eframe::App for GuiNativeApp {
             || pending_cancel_requested
         {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl Drop for GuiNativeApp {
+    fn drop(&mut self) {
+        let Some(root) = self.gui_state_root.as_deref() else {
+            return;
+        };
+        let persisted_state = GuiPersistedUiState::from_shell_state(&self.state);
+        if let Err(error) = persist_gui_ui_state_at_root(root, &persisted_state) {
+            eprintln!("syncplay-gui failed to persist legacy GUI state: {error}");
         }
     }
 }
@@ -5173,6 +5559,7 @@ enum GuiPendingOperationKind {
     SaveConfiguration,
     ResetConfiguration,
     ReloadConfiguration,
+    ClearGuiData,
     ConnectPublicServer,
     RefreshPublicServers,
     SearchMissingMedia,
@@ -5186,6 +5573,7 @@ impl GuiPendingOperationKind {
             Self::SaveConfiguration => "save-configuration",
             Self::ResetConfiguration => "reset-configuration",
             Self::ReloadConfiguration => "reload-configuration",
+            Self::ClearGuiData => "clear-gui-data",
             Self::ConnectPublicServer => "connect-public-server",
             Self::RefreshPublicServers => "refresh-public-servers",
             Self::SearchMissingMedia => "search-missing-media",
@@ -5291,6 +5679,17 @@ impl GuiShellView {
             Self::MediaSearch => "media-search",
         }
     }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "configuration" => Some(Self::Configuration),
+            "main-window" => Some(Self::MainWindow),
+            "menus-and-dialogs" => Some(Self::MenusAndDialogs),
+            "public-servers" => Some(Self::PublicServers),
+            "media-search" => Some(Self::MediaSearch),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5342,6 +5741,9 @@ enum GuiShellAction {
     BeginConfigurationReload,
     CompleteConfigurationReload(StoredClientSettingsMvp),
     CancelConfigurationReload,
+    BeginClearGuiData,
+    CompleteClearGuiData,
+    CancelClearGuiData,
     BeginPendingOperation(GuiPendingOperationKind),
     CompletePendingOperation,
     CancelPendingOperation,
@@ -6825,6 +7227,7 @@ impl SyncplayGuiShellAppState {
             runtime_validation_issues: Vec::new(),
             notifications: Vec::new(),
             validation: GuiValidationState::default(),
+            last_media_dialog_directory: None,
             saved_configuration: settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(settings),
             main_window: MainWindowShellState::from_stored_settings(settings),
@@ -6907,6 +7310,9 @@ impl SyncplayGuiShellAppState {
                 self.complete_configuration_reload(settings)
             }
             GuiShellAction::CancelConfigurationReload => self.cancel_configuration_reload(),
+            GuiShellAction::BeginClearGuiData => self.begin_clear_gui_data(),
+            GuiShellAction::CompleteClearGuiData => self.complete_clear_gui_data(),
+            GuiShellAction::CancelClearGuiData => self.cancel_clear_gui_data(),
             GuiShellAction::BeginPendingOperation(kind) => {
                 if self.pending_operation.is_some() {
                     return self
@@ -7682,6 +8088,14 @@ impl SyncplayGuiShellAppState {
                     GuiWidgetKind::Button,
                     None,
                     self.commands.can_reload_configuration,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-command:clear-gui-data",
+                    "Clear GUI Data",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.pending_operation.is_none(),
                     false,
                 ),
             ],
@@ -8793,6 +9207,7 @@ impl SyncplayGuiShellAppState {
         let text_edit_session = self.text_edit_session.clone();
         let runtime_validation_issues = self.runtime_validation_issues.clone();
         let notifications = self.notifications.clone();
+        let last_media_dialog_directory = self.last_media_dialog_directory.clone();
         let last_action_error = self.validation.last_action_error.clone();
         let saved_configuration = self.saved_configuration.clone();
         let tls_prompt_expected = self.menus.tls_prompt_expected;
@@ -8834,6 +9249,7 @@ impl SyncplayGuiShellAppState {
         self.text_edit_session = text_edit_session;
         self.runtime_validation_issues = runtime_validation_issues;
         self.notifications = notifications;
+        self.last_media_dialog_directory = last_media_dialog_directory;
         self.saved_configuration = saved_configuration;
         if preserve_tls_prompt_expected {
             self.menus.tls_prompt_expected = tls_prompt_expected;
@@ -8877,6 +9293,25 @@ impl SyncplayGuiShellAppState {
 
     fn has_unsaved_configuration_changes(&self) -> bool {
         self.configuration.to_stored_settings() != self.saved_configuration
+    }
+
+    fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {
+        persisted_ui_state.apply_to_shell_state(self);
+        self.refresh_validation();
+        self.refresh_command_availability();
+    }
+
+    fn remember_media_dialog_directory(&mut self, path: &str) {
+        let directory = Path::new(path)
+            .parent()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.to_string_lossy().into_owned())
+            .or_else(|| normalized_editable_text(path));
+        self.last_media_dialog_directory = directory;
+    }
+
+    fn reset_to_first_run_state(&mut self, settings: StoredClientSettingsMvp) {
+        *self = Self::from_stored_settings(&settings);
     }
 
     fn default_selection_from_surfaces(&mut self) {
@@ -10437,6 +10872,59 @@ impl SyncplayGuiShellAppState {
         true
     }
 
+    fn begin_clear_gui_data(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ClearGuiData,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Clear GUI data started.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_clear_gui_data(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No clear-GUI-data operation is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ClearGuiData {
+            return self
+                .record_action_error("The active GUI operation is not a clear-GUI-data request.");
+        }
+
+        self.reset_to_first_run_state(StoredClientSettingsMvp::default());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "GUI data cleared. First-run configuration restored.".to_owned(),
+        );
+        self.push_system_chat_message("GUI data cleared. First-run configuration restored.".to_owned());
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_clear_gui_data(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No clear-GUI-data operation is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ClearGuiData {
+            return self
+                .record_action_error("The active GUI operation is not a clear-GUI-data request.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Clear GUI data canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     fn cancel_configuration_reload(&mut self) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
             return self.record_action_error("No configuration reload is currently in progress.");
@@ -11294,6 +11782,7 @@ impl SyncplayGuiShellAppState {
                 .record_action_error("The browsed media-search directory could not be selected.");
         };
         let path = self.media_search.directories[index].path.clone();
+        self.last_media_dialog_directory = Some(path.clone());
         self.push_system_chat_message(format!("Media search directory added: {path}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
@@ -11542,6 +12031,7 @@ impl SyncplayGuiShellAppState {
             GuiPendingOperationKind::SaveConfiguration => self.cancel_configuration_save(),
             GuiPendingOperationKind::ResetConfiguration => self.cancel_configuration_reset(),
             GuiPendingOperationKind::ReloadConfiguration => self.cancel_configuration_reload(),
+            GuiPendingOperationKind::ClearGuiData => self.cancel_clear_gui_data(),
             GuiPendingOperationKind::ConnectPublicServer => {
                 self.cancel_selected_public_server_connect()
             }
@@ -12183,6 +12673,39 @@ fn resolve_syncplay_gui_config_path_legacy_compatible() -> Option<PathBuf> {
     .map(|source| source.resolved_path().to_path_buf())
 }
 
+fn syncplay_gui_qsettings_root_from_config_path_source(
+    source: Option<GuiStartupConfigPathSource>,
+) -> Option<PathBuf> {
+    source.and_then(|source| source.resolved_path().parent().map(Path::to_path_buf))
+}
+
+fn syncplay_gui_qsettings_root_from_lookup<F>(lookup: &F) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    syncplay_gui_qsettings_root_from_config_path_source(
+        resolve_syncplay_gui_config_path_source_legacy_compatible_with(
+            lookup,
+            || env::current_dir().ok(),
+            Path::is_file,
+        ),
+    )
+}
+
+fn syncplay_gui_qsettings_root_from_env() -> Option<PathBuf> {
+    syncplay_gui_qsettings_root_from_lookup(&env_trimmed)
+}
+
+fn load_gui_ui_state_from_lookup<F>(lookup: &F) -> Result<Option<GuiPersistedUiState>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(root) = syncplay_gui_qsettings_root_from_lookup(lookup) else {
+        return Ok(None);
+    };
+    load_gui_ui_state_from_root(&root)
+}
+
 fn gui_startup_actions_from_lookup<F>(
     lookup: F,
     settings: &StoredClientSettingsMvp,
@@ -12306,16 +12829,32 @@ fn run_gui_host<Host: GuiAppHost>(
     run_gui_host_with_startup_actions(settings, Vec::new(), host)
 }
 
+fn run_gui_host_with_startup_actions_and_gui_state<Host: GuiAppHost>(
+    settings: &StoredClientSettingsMvp,
+    persisted_ui_state: Option<&GuiPersistedUiState>,
+    startup_actions: Vec<GuiShellAction>,
+    host: &mut Host,
+) -> Host::Output {
+    let mut startup_settings = settings.clone();
+    if let Some(persisted_ui_state) = persisted_ui_state {
+        persisted_ui_state.merge_into_startup_settings(&mut startup_settings);
+    }
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&startup_settings);
+    if let Some(persisted_ui_state) = persisted_ui_state {
+        state.apply_persisted_ui_state(persisted_ui_state);
+    }
+    for action in startup_actions {
+        state.apply(action);
+    }
+    host.render(state)
+}
+
 fn run_gui_host_with_startup_actions<Host: GuiAppHost>(
     settings: &StoredClientSettingsMvp,
     startup_actions: Vec<GuiShellAction>,
     host: &mut Host,
 ) -> Host::Output {
-    let mut state = SyncplayGuiShellAppState::from_stored_settings(settings);
-    for action in startup_actions {
-        state.apply(action);
-    }
-    host.render(state)
+    run_gui_host_with_startup_actions_and_gui_state(settings, None, startup_actions, host)
 }
 
 fn optional_text(value: Option<&str>) -> &str {
@@ -12395,8 +12934,24 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let startup_actions = gui_startup_actions_from_lookup(env_trimmed, &settings);
-    if let Err(error) = run_gui_host_with_startup_actions(&settings, startup_actions, &mut host) {
+    let persisted_ui_state = match load_gui_ui_state_from_lookup(&env_trimmed) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("syncplay-gui failed to load legacy GUI state: {error}");
+            std::process::exit(1);
+        }
+    };
+    let mut merged_settings = settings.clone();
+    if let Some(persisted_ui_state) = persisted_ui_state.as_ref() {
+        persisted_ui_state.merge_into_startup_settings(&mut merged_settings);
+    }
+    let startup_actions = gui_startup_actions_from_lookup(env_trimmed, &merged_settings);
+    if let Err(error) = run_gui_host_with_startup_actions_and_gui_state(
+        &settings,
+        persisted_ui_state.as_ref(),
+        startup_actions,
+        &mut host,
+    ) {
         eprintln!("syncplay-gui failed to start: {error}");
         std::process::exit(1);
     }
@@ -12450,6 +13005,20 @@ mod tests {
 
     fn test_default_syncplay_config_target() -> std::path::PathBuf {
         test_default_syncplay_config_root().join("syncplay.ini")
+    }
+
+    fn test_temp_root(label: &str) -> std::path::PathBuf {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "syncplay-gui-{label}-{}-{unique_suffix}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test temp root should be created");
+        root
     }
 
     fn pump_and_apply_runtime_owner_actions(
@@ -17759,6 +18328,79 @@ mod tests {
     }
 
     #[test]
+    fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            room: Some("SavedRoom".to_owned()),
+            public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.active_view = GuiShellView::PublicServers;
+        state.last_media_dialog_directory = Some("D:/Dialogs".to_owned());
+
+        assert!(state.apply(GuiShellAction::BeginClearGuiData));
+        assert_eq!(
+            state.pending_operation.as_ref().map(|pending| pending.kind),
+            Some(GuiPendingOperationKind::ClearGuiData)
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Clear GUI data started.")
+        );
+
+        assert!(state.apply(GuiShellAction::CancelClearGuiData));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Clear GUI data canceled.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginClearGuiData));
+        assert!(state.apply(GuiShellAction::CompleteClearGuiData));
+        assert_eq!(state.pending_operation, None);
+        assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
+        assert_eq!(state.active_view, GuiShellView::Configuration);
+        assert_eq!(state.saved_configuration, StoredClientSettingsMvp::default());
+        assert!(state.public_servers.servers.is_empty());
+        assert!(state.media_search.directories.is_empty());
+        assert_eq!(state.last_media_dialog_directory, None);
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some("GUI data cleared. First-run configuration restored.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_rejects_invalid_clear_gui_data_command_actions() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(!state.apply(GuiShellAction::CompleteClearGuiData));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("No clear-GUI-data operation is currently in progress.")
+        );
+
+        assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+        assert!(!state.apply(GuiShellAction::BeginClearGuiData));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("Another GUI operation is already in progress.")
+        );
+        assert!(!state.apply(GuiShellAction::CancelClearGuiData));
+        assert_eq!(
+            state.validation.last_action_error.as_deref(),
+            Some("The active GUI operation is not a clear-GUI-data request.")
+        );
+    }
+
+    #[test]
     fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
         let mut state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
@@ -18579,6 +19221,145 @@ mod tests {
     }
 
     #[test]
+    fn gui_persisted_ui_state_roundtrips_at_root() {
+        let root = test_temp_root("persisted-ui-roundtrip");
+        let expected = super::GuiPersistedUiState {
+            active_view: Some(GuiShellView::PublicServers),
+            selected_public_server_address: Some("custom.example:9001".to_owned()),
+            selected_media_search_directory: Some("D:/Media".to_owned()),
+            last_media_dialog_directory: Some("E:/Dialogs".to_owned()),
+            public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+        };
+
+        super::persist_gui_ui_state_at_root(&root, &expected)
+            .expect("persisted GUI state should be written");
+
+        let loaded = super::load_gui_ui_state_from_root(&root)
+            .expect("persisted GUI state should be readable")
+            .expect("persisted GUI state should not be empty");
+        assert_eq!(loaded, expected);
+        assert!(super::legacy_gui_qsettings_store_path(&root, "MainWindow").exists());
+        assert!(super::legacy_gui_qsettings_store_path(&root, "Interface").exists());
+        assert!(super::legacy_gui_qsettings_store_path(&root, "MediaBrowseDialog").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_and_gui_state_restores_non_ini_state() {
+        #[derive(Default)]
+        struct RecordingHost;
+
+        impl GuiAppHost for RecordingHost {
+            type Output = SyncplayGuiShellAppState;
+
+            fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
+                state
+            }
+        }
+
+        let settings = StoredClientSettingsMvp {
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        };
+        let persisted_ui_state = super::GuiPersistedUiState {
+            active_view: Some(GuiShellView::PublicServers),
+            selected_public_server_address: Some("custom.example:9001".to_owned()),
+            selected_media_search_directory: Some("C:/Media".to_owned()),
+            last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+            public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+        };
+
+        let mut host = RecordingHost;
+        let state = super::run_gui_host_with_startup_actions_and_gui_state(
+            &settings,
+            Some(&persisted_ui_state),
+            Vec::new(),
+            &mut host,
+        );
+
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(state.last_media_dialog_directory.as_deref(), Some("D:/Dialogs"));
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .iter()
+                .map(|row| (row.label.clone(), row.address.clone()))
+                .collect::<Vec<_>>(),
+            persisted_ui_state.public_servers
+        );
+        assert_eq!(state.selected_public_server_index(), Some(0));
+        assert_eq!(state.selection.selected_media_search_directory, Some(0));
+        assert_eq!(
+            state.saved_configuration.public_servers,
+            Some(vec![("Custom".to_owned(), "custom.example:9001".to_owned())])
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("custom.example")
+        );
+        assert_eq!(state.configuration.to_stored_settings().port, Some(9001));
+    }
+
+    #[test]
+    fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_over_ini_rows()
+    {
+        #[derive(Default)]
+        struct RecordingHost;
+
+        impl GuiAppHost for RecordingHost {
+            type Output = SyncplayGuiShellAppState;
+
+            fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
+                state
+            }
+        }
+
+        let settings = StoredClientSettingsMvp {
+            host: Some("saved.example".to_owned()),
+            port: Some(8999),
+            public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
+            ..StoredClientSettingsMvp::default()
+        };
+        let persisted_ui_state = super::GuiPersistedUiState {
+            active_view: Some(GuiShellView::PublicServers),
+            selected_public_server_address: Some("custom.example:9001".to_owned()),
+            selected_media_search_directory: None,
+            last_media_dialog_directory: None,
+            public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+        };
+
+        let mut host = RecordingHost;
+        let state = super::run_gui_host_with_startup_actions_and_gui_state(
+            &settings,
+            Some(&persisted_ui_state),
+            Vec::new(),
+            &mut host,
+        );
+
+        assert_eq!(state.active_view, GuiShellView::PublicServers);
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .iter()
+                .map(|row| (row.label.clone(), row.address.clone()))
+                .collect::<Vec<_>>(),
+            vec![("Custom".to_owned(), "custom.example:9001".to_owned())]
+        );
+        assert_eq!(
+            state.saved_configuration.public_servers,
+            Some(vec![("Custom".to_owned(), "custom.example:9001".to_owned())])
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().host.as_deref(),
+            Some("custom.example")
+        );
+        assert_eq!(state.configuration.to_stored_settings().port, Some(9001));
+    }
+
+    #[test]
     fn gui_client_core_chat_tcp_bootstrap_from_lookup_uses_existing_client_env_keys() {
         let bootstrap = super::gui_client_core_chat_tcp_bootstrap_from_lookup(|name| match name {
             "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
@@ -18935,6 +19716,21 @@ mod tests {
         assert_eq!(
             GuiWidgetEguiRenderer::media_search_dialog_start_directory(&state),
             Some("D:/AltMedia")
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_prefers_last_media_dialog_directory_for_native_browse_dialog() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/AltMedia".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.last_media_dialog_directory = Some("E:/Dialogs".to_owned());
+        assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::media_search_dialog_start_directory(&state),
+            Some("E:/Dialogs")
         );
     }
 
@@ -19312,6 +20108,7 @@ mod tests {
                 "core-shell-smoke-flow",
                 "runtime-chat-flow",
                 "runtime-transport-churn-flow",
+                "persistence-reset-flow",
                 "live-python-peer-connect-flow",
                 "live-python-peer-controlled-room-flow",
             ]
@@ -19337,6 +20134,11 @@ mod tests {
                 .contains("apply-main-window-runtime\tsmoke-room\ttrue\ttrue\tfalse")
         );
         assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("persistence-reset-flow")
+                .expect("persistence/reset scenario should expose a script description")
+                .contains("PersistenceRoom")
+        );
+        assert!(
             super::semantic_smoke::gui_semantic_scenario_script("live-python-peer-connect-flow")
                 .expect("live Python interop scenario should expose a script description")
                 .contains("interop-py-peer")
@@ -19353,7 +20155,7 @@ mod tests {
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 6);
+        assert_eq!(descriptors.len(), 7);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -19371,12 +20173,15 @@ mod tests {
                 .contains("startup/post-chat/reconnect")
         );
         assert!(descriptors[3].script.contains("reconnect-post2.mkv"));
-        assert_eq!(descriptors[4].name, "live-python-peer-connect-flow");
-        assert!(descriptors[4].description.contains("Python reference peer"));
-        assert!(descriptors[4].script.contains("interop-room"));
-        assert_eq!(descriptors[5].name, "live-python-peer-controlled-room-flow");
-        assert!(descriptors[5].description.contains("controlled room"));
-        assert!(descriptors[5].script.contains("+interop-room:447CE7E3548D"));
+        assert_eq!(descriptors[4].name, "persistence-reset-flow");
+        assert!(descriptors[4].description.contains("clear-GUI-data"));
+        assert!(descriptors[4].script.contains("PersistenceRoom"));
+        assert_eq!(descriptors[5].name, "live-python-peer-connect-flow");
+        assert!(descriptors[5].description.contains("Python reference peer"));
+        assert!(descriptors[5].script.contains("interop-room"));
+        assert_eq!(descriptors[6].name, "live-python-peer-controlled-room-flow");
+        assert!(descriptors[6].description.contains("controlled room"));
+        assert!(descriptors[6].script.contains("+interop-room:447CE7E3548D"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -19553,7 +20358,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, persistence-reset-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
                 )
         );
     }
@@ -19678,6 +20483,17 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
             .expect("semantic report wrapper should return a report");
         assert_eq!(report.scenario, "configuration-surface-flow");
         assert_eq!(report.view, "media-search");
+        assert_eq!(report.modal, "none");
+        assert_eq!(report.pending, "none");
+        assert!(report.widgets > 0);
+    }
+
+    #[test]
+    fn syncplay_gui_semantic_report_wrapper_runs_persistence_reset_flow() {
+        let report = super::run_gui_semantic_scenario_named("persistence-reset-flow")
+            .expect("persistence/reset semantic scenario should run");
+        assert_eq!(report.scenario, "persistence-reset-flow");
+        assert_eq!(report.view, "configuration");
         assert_eq!(report.modal, "none");
         assert_eq!(report.pending, "none");
         assert!(report.widgets > 0);
@@ -20163,6 +20979,64 @@ assert-pending\tnone\n"
         );
 
         std::fs::remove_file(&path).expect("temporary config file should be removable");
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
+        let root = test_temp_root("clear-gui-data-owner");
+        let path = root.join("syncplay.ini");
+        let saved_settings = StoredClientSettingsMvp {
+            host: Some("persisted.example".to_owned()),
+            room: Some("Cinema".to_owned()),
+            public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
+            media_search_directories: Some(vec!["C:/Media".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        };
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &saved_settings)
+            .expect("saved configuration should be written");
+        super::persist_gui_ui_state_at_root(
+            &root,
+            &super::GuiPersistedUiState {
+                active_view: Some(GuiShellView::PublicServers),
+                selected_public_server_address: Some("custom.example:9001".to_owned()),
+                selected_media_search_directory: None,
+                last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+                public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            },
+        )
+        .expect("GUI state should be written");
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&saved_settings);
+
+        assert!(state.apply(GuiShellAction::BeginClearGuiData));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ClearGuiData,
+        ));
+        let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteClearGuiData)),
+            "clear-GUI-data runtime completion should round-trip through the queued owner"
+        );
+        assert!(!path.exists(), "clear-GUI-data should remove syncplay.ini");
+        for store_name in ["MainWindow", "Interface", "MediaBrowseDialog"] {
+            assert!(
+                !super::legacy_gui_qsettings_store_path(&root, store_name).exists(),
+                "clear-GUI-data should remove legacy GUI state store {store_name}"
+            );
+        }
+        assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
+        assert_eq!(state.active_view, GuiShellView::Configuration);
+        assert_eq!(state.saved_configuration, StoredClientSettingsMvp::default());
+        assert_eq!(state.last_media_dialog_directory, None);
+        assert!(state.public_servers.servers.is_empty());
+        assert!(state.media_search.directories.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

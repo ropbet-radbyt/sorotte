@@ -129,6 +129,7 @@ impl GuiSemanticStep {
             "save-configuration" => GuiPendingOperationKind::SaveConfiguration,
             "reset-configuration" => GuiPendingOperationKind::ResetConfiguration,
             "reload-configuration" => GuiPendingOperationKind::ReloadConfiguration,
+            "clear-gui-data" => GuiPendingOperationKind::ClearGuiData,
             "connect-public-server" => GuiPendingOperationKind::ConnectPublicServer,
             "refresh-public-servers" => GuiPendingOperationKind::RefreshPublicServers,
             "search-missing-media" => GuiPendingOperationKind::SearchMissingMedia,
