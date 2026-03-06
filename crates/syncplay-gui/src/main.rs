@@ -1194,9 +1194,7 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn modal_actions(
-        modal: GuiShellModal,
-    ) -> Vec<(&'static str, &'static str, GuiShellAction)> {
+    fn modal_actions(modal: GuiShellModal) -> Vec<(&'static str, &'static str, GuiShellAction)> {
         match modal {
             GuiShellModal::TlsCertificatePrompt => vec![
                 (
@@ -6854,9 +6852,7 @@ impl SyncplayGuiShellAppState {
             }
             GuiShellAction::CloseModal => self.close_modal_window(),
             GuiShellAction::DismissUpdateNotice => self.dismiss_update_notice(),
-            GuiShellAction::TrustTlsCertificatePrompt => {
-                self.complete_tls_certificate_prompt(true)
-            }
+            GuiShellAction::TrustTlsCertificatePrompt => self.complete_tls_certificate_prompt(true),
             GuiShellAction::RejectTlsCertificatePrompt => {
                 self.complete_tls_certificate_prompt(false)
             }
@@ -8127,13 +8123,11 @@ impl SyncplayGuiShellAppState {
             true,
             false,
         )];
-        children.extend(
-            GuiWidgetEguiRenderer::modal_actions(modal)
-                .into_iter()
-                .map(|(id, label, _)| {
-                    GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false)
-                }),
-        );
+        children.extend(GuiWidgetEguiRenderer::modal_actions(modal).into_iter().map(
+            |(id, label, _)| {
+                GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false)
+            },
+        ));
         children.push(GuiWidgetNode::leaf(
             "shell:modal:close",
             "Close",
@@ -9795,8 +9789,8 @@ impl SyncplayGuiShellAppState {
     }
 
     fn dismiss_update_notice(&mut self) -> bool {
-        let had_notice =
-            self.menus.update_notice_expected || self.open_modal == Some(GuiShellModal::UpdateNotice);
+        let had_notice = self.menus.update_notice_expected
+            || self.open_modal == Some(GuiShellModal::UpdateNotice);
         if !had_notice {
             return self.record_action_error("No update notice is currently active.");
         }

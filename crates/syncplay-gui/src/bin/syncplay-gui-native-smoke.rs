@@ -2141,13 +2141,21 @@ fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
             return if let Some(error) = last_error {
                 Err(format!(
                     "timed out waiting for a {} {} named {name:?}; last count error: {error}",
-                    if expected_enabled { "enabled" } else { "disabled" },
+                    if expected_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
                     control_kind.label(),
                 ))
             } else {
                 Err(format!(
                     "timed out waiting for a {} {} named {name:?}",
-                    if expected_enabled { "enabled" } else { "disabled" },
+                    if expected_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
                     control_kind.label(),
                 ))
             };
@@ -2468,7 +2476,12 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         })?;
     }
     wait_for_accessible_name(driver, window, "TLS Certificate Prompt", step_timeout)?;
-    wait_for_accessible_name(driver, window, "modal: tls-certificate-prompt", step_timeout)?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "modal: tls-certificate-prompt",
+        step_timeout,
+    )?;
     invoke_named_control_with_wait(
         driver,
         window,
