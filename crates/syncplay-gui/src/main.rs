@@ -502,9 +502,11 @@ impl GuiPersistedUiState {
                 .and_then(|index| state.media_search.directories.get(index))
                 .map(|row| row.path.clone()),
             last_media_dialog_directory: state.last_media_dialog_directory.clone(),
-            public_servers: (current_public_servers != saved_public_servers)
-                .then_some(current_public_servers)
-                .unwrap_or_default(),
+            public_servers: if current_public_servers != saved_public_servers {
+                current_public_servers
+            } else {
+                Vec::new()
+            },
         }
     }
 
