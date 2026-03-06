@@ -1230,6 +1230,19 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_replace_playlist(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_playlist_replace(files, selected_index);
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_undo_playlist_change(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_undo();
         let sent = !actions.is_empty();
@@ -3362,6 +3375,73 @@ impl ClientSession {
                 index: target_index as i64,
             },
         ]
+    }
+
+    pub fn runtime_actions_for_local_playlist_replace(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Vec<ClientRuntimeAction> {
+        if self.username.is_none() {
+            return Vec::new();
+        }
+        let Some(room_name) = self.room.clone() else {
+            return Vec::new();
+        };
+        if files.iter().any(|file| file.is_empty()) {
+            return Vec::new();
+        }
+
+        let (current_files, current_index) = self
+            .current_room_playlist()
+            .map(|playlist| {
+                (
+                    playlist.files.clone(),
+                    playlist.index.and_then(|index| usize::try_from(index).ok()),
+                )
+            })
+            .unwrap_or_default();
+        let playlist_changed = files != current_files;
+        if playlist_changed {
+            self.capture_playlist_undo_snapshot_legacy_compatible(
+                &room_name,
+                &current_files,
+                &files,
+            );
+        }
+        if files.is_empty() {
+            return playlist_changed
+                .then_some(ClientRuntimeAction::SetPlaylist { files })
+                .into_iter()
+                .collect();
+        }
+
+        let target_index = selected_index
+            .filter(|index| *index < files.len())
+            .or_else(|| {
+                Some(
+                    Self::local_playlist_target_index_from_changed_playlist_legacy_compatible(
+                        &current_files,
+                        current_index,
+                        &files,
+                    )
+                    .min(files.len().saturating_sub(1)),
+                )
+            })
+            .unwrap_or(0);
+
+        if !playlist_changed && current_index == Some(target_index) {
+            return Vec::new();
+        }
+
+        let mut actions = Vec::new();
+        if playlist_changed {
+            actions.push(ClientRuntimeAction::SetPlaylist { files });
+        }
+        actions.push(ClientRuntimeAction::SetPlaylistIndex {
+            index: target_index as i64,
+        });
+        actions
     }
 
     pub fn runtime_actions_for_local_playlist_undo(&mut self) -> Vec<ClientRuntimeAction> {

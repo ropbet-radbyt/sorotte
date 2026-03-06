@@ -66,6 +66,8 @@ pub struct LegacyPythonPeerSnapshot {
     pub room: String,
     pub local_ready: Option<bool>,
     pub observed_users: BTreeMap<String, Option<bool>>,
+    pub playlist: Vec<String>,
+    pub playlist_index: Option<usize>,
     pub chat_messages: Vec<LegacyPythonPeerChatMessage>,
 }
 
@@ -1445,6 +1447,63 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
+    pub fn set_peer_playlist(
+        &mut self,
+        files: &[String],
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "set_playlist",
+            "files": files,
+        }))?;
+        let status = self.wait_for_peer_status(Duration::from_secs(3), "playlist-command-sent")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn set_peer_playlist_index(
+        &mut self,
+        index: usize,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "set_playlist_index",
+            "index": index,
+        }))?;
+        let status =
+            self.wait_for_peer_status(Duration::from_secs(3), "playlist-index-command-sent")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn wait_for_peer_playlist(
+        &mut self,
+        files: &[String],
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_playlist",
+            "files": files,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "playlist")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
+    pub fn wait_for_peer_playlist_index(
+        &mut self,
+        index: usize,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_playlist_index",
+            "index": index,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "playlist-index")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
     pub fn peer_snapshot(&mut self) -> Result<LegacyPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         self.send_peer_command(&json!({
@@ -1698,6 +1757,10 @@ impl LegacyServerPythonPeerHarness {
             | Some("user-ready")
             | Some("chat-command-sent")
             | Some("chat-message")
+            | Some("playlist-command-sent")
+            | Some("playlist-index-command-sent")
+            | Some("playlist")
+            | Some("playlist-index")
             | Some("snapshot") => Ok(parsed),
             Some("error") => Err(InteropError::InvalidPythonBatchResponse(
                 parsed
@@ -1752,6 +1815,38 @@ impl LegacyServerPythonPeerHarness {
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
+        let playlist = status
+            .get("playlist")
+            .and_then(Value::as_array)
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|file| {
+                        file.as_str().map(str::to_owned).ok_or_else(|| {
+                            InteropError::InvalidPythonBatchResponse(format!(
+                                "python live peer status included a malformed playlist entry: {file}"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, InteropError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let playlist_index = match status.get("playlistIndex") {
+            Some(Value::Null) | None => None,
+            Some(value) => {
+                let index = value.as_u64().ok_or_else(|| {
+                    InteropError::InvalidPythonBatchResponse(format!(
+                        "python live peer status included a malformed playlist index: {value}"
+                    ))
+                })?;
+                Some(usize::try_from(index).map_err(|_| {
+                    InteropError::InvalidPythonBatchResponse(format!(
+                        "python live peer playlist index exceeded usize range: {index}"
+                    ))
+                })?)
+            }
+        };
         let chat_messages = status
             .get("chatMessages")
             .and_then(Value::as_array)
@@ -1791,6 +1886,8 @@ impl LegacyServerPythonPeerHarness {
             room,
             local_ready,
             observed_users,
+            playlist,
+            playlist_index,
             chat_messages,
         })
     }

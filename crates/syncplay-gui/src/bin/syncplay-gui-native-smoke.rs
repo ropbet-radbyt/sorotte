@@ -116,6 +116,10 @@ const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
 const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
+const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
+const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
+const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
+const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
     "interop-gui-user: self=yes, ready=no, controller=no";
 const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str =
@@ -3016,6 +3020,19 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
     let interop_config_path = temp_root.join("syncplay-native-smoke-python-interop.ini");
     let _ = fs::remove_file(&interop_config_path);
     seed_native_smoke_config(&interop_config_path)?;
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &interop_config_path,
+        &StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to enable shared playlists in native Python interop config {}: {error}",
+            interop_config_path.display()
+        )
+    })?;
     let launch = GuiLaunchConfig {
         config_path: &interop_config_path,
         media_search_browse_path,
@@ -3230,6 +3247,153 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         steps.push("transport-python-peer-chat-peer-to-local".to_owned());
+
+        if wait_for_named_control_count(
+            driver,
+            window,
+            "New Entry",
+            NativeControlKind::Any,
+            1,
+            Duration::from_millis(500),
+        )
+        .is_err()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Configuration",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Shared Playlists",
+                NativeControlKind::Any,
+                step_timeout,
+            )?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Main Window",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+            wait_for_named_control_count(
+                driver,
+                window,
+                "New Entry",
+                NativeControlKind::Any,
+                1,
+                step_timeout,
+            )?;
+            steps.push("transport-python-peer-playlist-enable-setting".to_owned());
+        }
+
+        let initial_playlist = vec![
+            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned(),
+            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned(),
+        ];
+        python_harness
+            .set_peer_playlist(&initial_playlist)
+            .map_err(|error| format!("failed to seed Python reference peer playlist: {error}"))?;
+        python_harness
+            .wait_for_peer_playlist(&initial_playlist, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm the seeded playlist: {error}")
+            })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
+            step_timeout,
+        )?;
+        python_harness
+            .set_peer_playlist_index(1)
+            .map_err(|error| format!("failed to set seeded Python playlist index: {error}"))?;
+        python_harness
+            .wait_for_peer_playlist_index(1, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm the seeded playlist index: {error}")
+            })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO,
+            step_timeout,
+        )?;
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
+            NativeControlKind::Any,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_playlist_index(0, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not observe the local playlist selection change: {error}")
+            })?;
+        steps.push("transport-python-peer-playlist-local-select".to_owned());
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Remove Selected",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        python_harness
+            .wait_for_peer_playlist(
+                &[LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned()],
+                step_timeout,
+            )
+            .map_err(|error| {
+                format!("python reference peer did not observe the local playlist removal: {error}")
+            })?;
+        python_harness
+            .wait_for_peer_playlist_index(0, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not observe the local playlist removal index correction: {error}")
+            })?;
+        steps.push("transport-python-peer-playlist-local-remove".to_owned());
+
+        let peer_playlist = vec![
+            LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
+            LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
+        ];
+        python_harness
+            .set_peer_playlist(&peer_playlist)
+            .map_err(|error| format!("failed to set Python reference peer playlist: {error}"))?;
+        python_harness
+            .wait_for_peer_playlist(&peer_playlist, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm its playlist update: {error}")
+            })?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO,
+            step_timeout,
+        )?;
+        python_harness.set_peer_playlist_index(1).map_err(|error| {
+            format!("failed to set Python reference peer playlist index: {error}")
+        })?;
+        python_harness
+            .wait_for_peer_playlist_index(1, step_timeout)
+            .map_err(|error| {
+                format!("python reference peer did not confirm its playlist index update: {error}")
+            })?;
+        steps.push("transport-python-peer-playlist-peer-to-local".to_owned());
 
         driver.close_window(window)?;
         wait_for_process_exit(&mut child, timeout)?;

@@ -19,6 +19,10 @@ pub(crate) const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 pub(crate) const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_TIMEOUT: Duration = Duration::from_secs(6);
 const LIVE_PYTHON_INTEROP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -29,6 +33,10 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub peer_user_present: bool,
     pub local_user_ready: bool,
     pub peer_user_ready: bool,
+    pub gui_playlist: Vec<String>,
+    pub gui_playlist_index: Option<usize>,
+    pub peer_playlist: Vec<String>,
+    pub peer_playlist_index: Option<usize>,
     pub gui_chat_messages: Vec<LegacyPythonPeerChatMessage>,
     pub peer_chat_messages: Vec<LegacyPythonPeerChatMessage>,
     pub widget_count: usize,
@@ -97,6 +105,7 @@ fn run_live_python_peer_connect_flow_with_harness(
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
+        shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
@@ -171,6 +180,79 @@ fn run_live_python_peer_connect_flow_with_harness(
         LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE,
     )?;
 
+    wait_for_playlist_controls(&mut owner, &handle, &mut state)?;
+
+    let first_local_playlist = vec![LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned()];
+    request_local_playlist_queue(
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
+        true,
+    )?;
+    wait_for_projected_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_local_playlist,
+        Some(0),
+    )?;
+    wait_for_peer_observed_playlist(harness, &first_local_playlist, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+
+    let second_local_playlist = vec![
+        LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned(),
+        LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned(),
+    ];
+    request_local_playlist_queue(
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO,
+        true,
+    )?;
+    wait_for_projected_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_local_playlist,
+        Some(1),
+    )?;
+    wait_for_peer_observed_playlist(harness, &second_local_playlist, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
+
+    request_local_playlist_selection(&handle, &mut state, 0)?;
+    wait_for_projected_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_local_playlist,
+        Some(0),
+    )?;
+    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+
+    let reduced_local_playlist = vec![LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned()];
+    request_local_playlist_remove_selected(&handle, &mut state)?;
+    wait_for_projected_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        &reduced_local_playlist,
+        Some(0),
+    )?;
+    wait_for_peer_observed_playlist(harness, &reduced_local_playlist, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+
+    let peer_playlist = vec![
+        LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
+        LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
+    ];
+    harness.set_peer_playlist(&peer_playlist)?;
+    wait_for_peer_observed_playlist(harness, &peer_playlist, Duration::from_secs(3))?;
+    wait_for_projected_playlist(&mut owner, &handle, &mut state, &peer_playlist, Some(0))?;
+
+    harness.set_peer_playlist_index(1)?;
+    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
+    wait_for_projected_playlist(&mut owner, &handle, &mut state, &peer_playlist, Some(1))?;
+
     let peer_snapshot = harness.peer_snapshot()?;
     state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
     Ok(LivePythonPeerInteropResult {
@@ -179,6 +261,10 @@ fn run_live_python_peer_connect_flow_with_harness(
         peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
         local_user_ready: local_user_ready(&state).unwrap_or(false),
         peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        gui_playlist: gui_playlist(&state),
+        gui_playlist_index: state.selection.selected_main_window_playlist,
+        peer_playlist: peer_snapshot.playlist,
+        peer_playlist_index: peer_snapshot.playlist_index,
         gui_chat_messages: state
             .main_window
             .chat
@@ -224,6 +310,62 @@ fn request_local_ready(
     Ok(())
 }
 
+fn request_local_playlist_queue(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    entry: &str,
+    select_after_queue: bool,
+) -> Result<(), LivePythonPeerInteropError> {
+    if !state.apply(GuiShellAction::UpdateNewPlaylistEntryDraft(
+        entry.to_owned(),
+    )) || !state.apply(GuiShellAction::CommitNewPlaylistEntry)
+    {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to queue a local shared playlist entry {entry:?}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+        entry: entry.to_owned(),
+        select_after_queue,
+    });
+    Ok(())
+}
+
+fn request_local_playlist_selection(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    index: usize,
+) -> Result<(), LivePythonPeerInteropError> {
+    if !state.apply(GuiShellAction::SelectMainWindowPlaylist(index)) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to select local shared playlist index {index}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(index));
+    Ok(())
+}
+
+fn request_local_playlist_remove_selected(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+) -> Result<(), LivePythonPeerInteropError> {
+    let Some(index) = state.selection.selected_main_window_playlist else {
+        return Err(LivePythonPeerInteropError::Gui(
+            "failed to remove a local shared playlist entry because no row is selected.".to_owned(),
+        ));
+    };
+    if !state.apply(GuiShellAction::RemoveSelectedMainWindowPlaylist) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to remove local shared playlist index {index}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::DeletePlaylistIndex(index));
+    Ok(())
+}
+
 fn request_local_chat_send(
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SyncplayGuiShellAppState,
@@ -260,6 +402,26 @@ fn wait_for_peer_observed_chat_message(
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_chat_message(username, message, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_playlist(
+    harness: &mut LegacyServerPythonPeerHarness,
+    playlist: &[String],
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_playlist(playlist, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_playlist_index(
+    harness: &mut LegacyServerPythonPeerHarness,
+    index: usize,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_playlist_index(index, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 
@@ -313,6 +475,55 @@ fn wait_for_projected_chat_message(
             return Err(LivePythonPeerInteropError::Gui(format!(
                 "timed out waiting for live Python peer chat projection {sender:?}>{message:?}; room={:?}, chat=[{}]",
                 state.main_window.room_name, projected_chat
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_playlist_controls(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+        if state.main_window.playback.can_manage_playlist {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer playlist controls; room={:?}, can_manage_playlist={}, playlist=[{}]",
+                state.main_window.room_name,
+                state.main_window.playback.can_manage_playlist,
+                gui_playlist(state).join(" | ")
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_projected_playlist(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    expected_playlist: &[String],
+    expected_index: Option<usize>,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+        if gui_playlist(state) == expected_playlist
+            && state.selection.selected_main_window_playlist == expected_index
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer playlist projection; expected_playlist={expected_playlist:?}, expected_index={expected_index:?}, actual_playlist={:?}, actual_index={:?}",
+                gui_playlist(state),
+                state.selection.selected_main_window_playlist
             )));
         }
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
@@ -383,4 +594,13 @@ fn peer_user_ready(state: &SyncplayGuiShellAppState, username: &str) -> Option<b
         .iter()
         .find(|user| user.username == username && !user.is_self)
         .map(|user| user.is_ready)
+}
+
+fn gui_playlist(state: &SyncplayGuiShellAppState) -> Vec<String> {
+    state
+        .main_window
+        .playlist
+        .iter()
+        .map(|row| row.label.clone())
+        .collect()
 }

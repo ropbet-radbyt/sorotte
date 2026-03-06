@@ -140,13 +140,42 @@ class _RecordingUserList:
 
 
 class _RecordingPlaylist:
+    def __init__(self, client):
+        self._client = client
+        self._playlist = []
+        self._playlist_index = None
+
+    def snapshot(self):
+        return list(self._playlist), self._playlist_index
+
     def loadPlaylistFromFile(self, _path):
         return None
 
-    def changeToPlaylistIndex(self, _index, _user=None, resetPosition=False):
+    def changeToPlaylistIndex(self, index, user=None, resetPosition=False):
+        if index is None:
+            return None
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0 or index >= len(self._playlist):
+            return None
+        self._playlist_index = index
+        if user is None and self._client._protocol is not None:
+            self._client._protocol.setPlaylistIndex(index)
         return None
 
-    def changePlaylist(self, _files, _user=None):
+    def changePlaylist(self, files, user=None, resetIndex=False):
+        self._playlist = [str(file_) for file_ in (files or [])]
+        if not self._playlist:
+            self._playlist_index = None
+        elif self._playlist_index is None or self._playlist_index >= len(self._playlist):
+            self._playlist_index = 0
+        if user is None and self._client._protocol is not None:
+            self._client._protocol.setPlaylist(self._playlist)
+            if self._playlist:
+                target_index = 0 if resetIndex or self._playlist_index is None else self._playlist_index
+                self.changeToPlaylistIndex(target_index)
         return None
 
 
@@ -173,7 +202,7 @@ class _RecordingClient:
             "sharedPlaylistEnabled": False,
         }
         self.userlist = _RecordingUserList(username, room)
-        self.playlist = _RecordingPlaylist()
+        self.playlist = _RecordingPlaylist(self)
         self._protocol = None
         self.serverFeatures = {}
         self._clientSupportsTLS = False
@@ -259,6 +288,16 @@ def _chat_message_snapshot(client):
     return list(client.chat_messages)
 
 
+def _playlist_snapshot(client):
+    playlist, _ = client.playlist.snapshot()
+    return playlist
+
+
+def _playlist_index_snapshot(client):
+    _, playlist_index = client.playlist.snapshot()
+    return playlist_index
+
+
 def _emit_client_snapshot(status, client, extra_payload=None):
     payload = {
         "status": status,
@@ -266,6 +305,8 @@ def _emit_client_snapshot(status, client, extra_payload=None):
         "room": client.getRoom(),
         "localReady": client.userlist.currentUser.isReady(),
         "users": _user_ready_snapshot(client),
+        "playlist": _playlist_snapshot(client),
+        "playlistIndex": _playlist_index_snapshot(client),
         "chatMessages": _chat_message_snapshot(client),
     }
     if extra_payload:
@@ -311,6 +352,33 @@ def _wait_for_chat_message(
     if error_holder:
         raise RuntimeError(error_holder[0])
     raise RuntimeError("python live peer timed out waiting for the requested chat message")
+
+
+def _wait_for_playlist(client, playlist, timeout_seconds, error_holder):
+    deadline = time.monotonic() + timeout_seconds
+    expected_playlist = [str(file_) for file_ in playlist]
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if _playlist_snapshot(client) == expected_playlist:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested playlist state")
+
+
+def _wait_for_playlist_index(client, index, timeout_seconds, error_holder):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if _playlist_index_snapshot(client) == index:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested playlist index")
 
 
 def _handle_command(client, protocol, command, error_holder):
@@ -398,6 +466,44 @@ def _handle_command(client, protocol, command, error_holder):
             client,
             {"usernameObserved": username, "message": message},
         )
+        return
+    if command_name == "set_playlist":
+        files = command.get("files")
+        if not isinstance(files, list) or any(not isinstance(file_, str) for file_ in files):
+            raise RuntimeError(
+                "python live peer set_playlist command requires a files string list"
+            )
+        client.playlist.changePlaylist(files, user=None, resetIndex=True)
+        _emit_client_snapshot("playlist-command-sent", client, {"files": files})
+        return
+    if command_name == "set_playlist_index":
+        index = command.get("index")
+        if not isinstance(index, int):
+            raise RuntimeError(
+                "python live peer set_playlist_index command requires an integer index"
+            )
+        client.playlist.changeToPlaylistIndex(index, user=None, resetPosition=False)
+        _emit_client_snapshot("playlist-index-command-sent", client, {"index": index})
+        return
+    if command_name == "wait_for_playlist":
+        files = command.get("files")
+        if not isinstance(files, list) or any(not isinstance(file_, str) for file_ in files):
+            raise RuntimeError(
+                "python live peer wait_for_playlist command requires a files string list"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        _wait_for_playlist(client, files, timeout_seconds, error_holder)
+        _emit_client_snapshot("playlist", client, {"filesObserved": files})
+        return
+    if command_name == "wait_for_playlist_index":
+        index = command.get("index")
+        if not isinstance(index, int):
+            raise RuntimeError(
+                "python live peer wait_for_playlist_index command requires an integer index"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        _wait_for_playlist_index(client, index, timeout_seconds, error_holder)
+        _emit_client_snapshot("playlist-index", client, {"indexObserved": index})
         return
     raise RuntimeError(f"python live peer received an unknown command: {command_name!r}")
 

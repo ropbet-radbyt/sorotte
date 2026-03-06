@@ -1691,6 +1691,40 @@ trait GuiNativeRuntimeBridge {
         Vec::new()
     }
 
+    fn actions_for_playlist_entry_commit(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _entry: String,
+        _select_after_queue: bool,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_selection_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _index: usize,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_entry_removal(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _index: usize,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_reorder(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _playlist: Vec<String>,
+        _selected_index: Option<usize>,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_pending_completion(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -1765,6 +1799,10 @@ trait GuiSessionRuntimeAdapter {
         Vec::new()
     }
 
+    fn playlist_control_available(&self) -> bool {
+        false
+    }
+
     fn adjust_command_availability(
         &self,
         _state: &SyncplayGuiShellAppState,
@@ -1786,6 +1824,39 @@ trait GuiSessionRuntimeAdapter {
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
         Err("Attached session runtime does not support local readiness changes.".to_owned())
+    }
+
+    fn queue_playlist_entry(
+        &mut self,
+        _entry: String,
+        _select_after_queue: bool,
+    ) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not support shared playlist queue operations."
+                .to_owned(),
+        )
+    }
+
+    fn set_playlist_index(&mut self, _index: usize) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not support shared playlist selection changes."
+                .to_owned(),
+        )
+    }
+
+    fn delete_playlist_index(&mut self, _index: usize) -> Result<(), String> {
+        Err("Attached session runtime does not support shared playlist removal.".to_owned())
+    }
+
+    fn replace_playlist(
+        &mut self,
+        _files: Vec<String>,
+        _selected_index: Option<usize>,
+    ) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not support shared playlist reorder operations."
+                .to_owned(),
+        )
     }
 
     fn send_chat_message(&mut self, message: String) -> Result<(), String>;
@@ -2282,6 +2353,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         ]
     }
 
+    fn shared_playlist_control_available(&self) -> bool {
+        self.runtime.session().local_can_control().unwrap_or(false)
+    }
+
     fn session_runtime_users(
         &self,
         room_name: &str,
@@ -2367,10 +2442,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
         }
-        let playback_runtime_available =
-            state.main_window.playback.can_toggle_pause || state.main_window.playback.can_seek;
         snapshot.can_manage_playlist =
-            snapshot.shared_playlist_enabled && playback_runtime_available;
+            snapshot.shared_playlist_enabled && self.shared_playlist_control_available();
         if let Some(playstate) = session.current_room_playstate()
             && let Some(paused) = playstate.paused
         {
@@ -2477,10 +2550,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     .find(|action| action.label == "Playlist Actions")
             })
             .map(|action| action.enabled);
-        let playback_runtime_available =
-            state.main_window.playback.can_toggle_pause || state.main_window.playback.can_seek;
         let desired_playlist_actions_enabled =
-            shared_playlist_enabled && playback_runtime_available;
+            shared_playlist_enabled && self.shared_playlist_control_available();
         if current_playlist_actions_enabled
             .is_some_and(|current_enabled| current_enabled != desired_playlist_actions_enabled)
         {
@@ -2648,6 +2719,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         command_availability
     }
 
+    fn playlist_control_available(&self) -> bool {
+        self.shared_playlist_control_available()
+    }
+
     fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
         GuiClientCoreChatSessionRuntimeAdapter::flush_outbound_protocol_lines(self)
     }
@@ -2698,6 +2773,111 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             },
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn queue_playlist_entry(
+        &mut self,
+        entry: String,
+        select_after_queue: bool,
+    ) -> Result<(), String> {
+        match self
+            .runtime
+            .run_queue_playlist_item(entry, select_after_queue)
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot change the shared playlist before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist entry."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime playlist queue dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn set_playlist_index(&mut self, index: usize) -> Result<(), String> {
+        let Ok(index) = i64::try_from(index) else {
+            return Err("Requested shared playlist index exceeds the supported range.".to_owned());
+        };
+        match self.runtime.run_set_playlist_index(index) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot change the shared playlist selection before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist selection change."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime playlist selection dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn delete_playlist_index(&mut self, index: usize) -> Result<(), String> {
+        let Ok(index) = i64::try_from(index) else {
+            return Err("Requested shared playlist index exceeds the supported range.".to_owned());
+        };
+        match self.runtime.run_delete_playlist_index(index) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot remove shared playlist entries before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist removal."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime playlist removal dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn replace_playlist(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Result<(), String> {
+        match self.runtime.run_replace_playlist(files, selected_index) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot reorder the shared playlist before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist reorder."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime playlist reorder dispatch failed: {error}"
             )),
         }
     }
@@ -3459,7 +3639,13 @@ impl GuiPersistedConfigRuntimeOwner {
             desired_main_window.can_seek = player_attached;
             main_window_changed = true;
         }
-        let can_manage_playlist = player_attached && desired_main_window.shared_playlist_enabled;
+        let can_manage_playlist = self
+            .session
+            .as_ref()
+            .map(|session| {
+                desired_main_window.shared_playlist_enabled && session.playlist_control_available()
+            })
+            .unwrap_or(player_attached && desired_main_window.shared_playlist_enabled);
         if desired_main_window.can_manage_playlist != can_manage_playlist {
             desired_main_window.can_manage_playlist = can_manage_playlist;
             main_window_changed = true;
@@ -3490,7 +3676,13 @@ impl GuiPersistedConfigRuntimeOwner {
             ("Seek", player_attached),
             (
                 "Playlist Actions",
-                player_attached && state.main_window.shared_playlist_enabled,
+                self.session
+                    .as_ref()
+                    .map(|session| {
+                        state.main_window.shared_playlist_enabled
+                            && session.playlist_control_available()
+                    })
+                    .unwrap_or(player_attached && state.main_window.shared_playlist_enabled),
             ),
         ] {
             let current_enabled = state
@@ -3682,6 +3874,52 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                 GuiRuntimeRequest::SetLocalReady(ready) => {
                     if let Some(session) = self.session.as_mut()
                         && let Err(error) = session.set_local_ready(ready)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::QueuePlaylistEntry {
+                    entry,
+                    select_after_queue,
+                } => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.queue_playlist_entry(entry, select_after_queue)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::SetPlaylistIndex(index) => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_playlist_index(index)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::DeletePlaylistIndex(index) => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.delete_playlist_index(index)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::ReplacePlaylist {
+                    files,
+                    selected_index,
+                } => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.replace_playlist(files, selected_index)
                     {
                         handle.push_action(GuiShellAction::PushTransientNotification {
                             level: GuiTransientNotificationLevel::Error,
@@ -4149,6 +4387,16 @@ enum GuiRuntimeRequest {
         load_into_shared_playlist: bool,
     },
     SetLocalReady(bool),
+    QueuePlaylistEntry {
+        entry: String,
+        select_after_queue: bool,
+    },
+    SetPlaylistIndex(usize),
+    DeletePlaylistIndex(usize),
+    ReplacePlaylist {
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    },
     SeekOffset(f64),
     CompletePendingOperation(GuiPendingCompletionRequest),
     CancelPendingOperation(GuiPendingOperationKind),
@@ -4183,6 +4431,10 @@ impl GuiRuntimeRequest {
                 actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
                 actions
             }
+            Self::QueuePlaylistEntry { .. }
+            | Self::SetPlaylistIndex(_)
+            | Self::DeletePlaylistIndex(_)
+            | Self::ReplacePlaylist { .. } => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");
                 vec![
@@ -4326,6 +4578,54 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     ) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::SetLocalReady(ready));
+        Vec::new()
+    }
+
+    fn actions_for_playlist_entry_commit(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        entry: String,
+        select_after_queue: bool,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::QueuePlaylistEntry {
+                entry,
+                select_after_queue,
+            });
+        Vec::new()
+    }
+
+    fn actions_for_playlist_selection_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        index: usize,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SetPlaylistIndex(index));
+        Vec::new()
+    }
+
+    fn actions_for_playlist_entry_removal(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        index: usize,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::DeletePlaylistIndex(index));
+        Vec::new()
+    }
+
+    fn actions_for_playlist_reorder(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        playlist: Vec<String>,
+        selected_index: Option<usize>,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::ReplacePlaylist {
+                files: playlist,
+                selected_index,
+            });
         Vec::new()
     }
 
@@ -4491,11 +4791,41 @@ impl eframe::App for GuiNativeApp {
         let selected_media_files = renderer.take_selected_media_files();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
-        let requested_local_ready = actions.iter().fold(None, |current, action| match action {
-            GuiShellAction::AnnounceLocalUserReady => Some(true),
-            GuiShellAction::AnnounceLocalUserNotReady => Some(false),
-            _ => current,
-        });
+        let mut requested_local_ready = None;
+        let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
+        let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
+        let mut playlist_entry_commits = Vec::new();
+        let mut playlist_selection_changes = Vec::new();
+        let mut playlist_deletions = Vec::new();
+        let mut playlist_reorder_requested = false;
+        for action in &actions {
+            match action {
+                GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
+                GuiShellAction::AnnounceLocalUserNotReady => requested_local_ready = Some(false),
+                GuiShellAction::UpdateNewPlaylistEntryDraft(buffer) => {
+                    playlist_entry_draft = buffer.clone();
+                }
+                GuiShellAction::CommitNewPlaylistEntry => {
+                    if let Some(entry) = normalized_editable_text(&playlist_entry_draft) {
+                        playlist_entry_commits.push(entry.to_owned());
+                    }
+                }
+                GuiShellAction::SelectMainWindowPlaylist(index) => {
+                    selected_playlist_index = Some(*index);
+                    playlist_selection_changes.push(*index);
+                }
+                GuiShellAction::RemoveSelectedMainWindowPlaylist => {
+                    if let Some(index) = selected_playlist_index {
+                        playlist_deletions.push(index);
+                    }
+                }
+                GuiShellAction::MoveSelectedMainWindowPlaylistUp
+                | GuiShellAction::MoveSelectedMainWindowPlaylistDown => {
+                    playlist_reorder_requested = true;
+                }
+                _ => {}
+            }
+        }
         if seek_prompt_requested {
             self.seek_prompt_open = true;
             self.seek_prompt_error = None;
@@ -4509,6 +4839,46 @@ impl eframe::App for GuiNativeApp {
                 .runtime
                 .actions_for_local_readiness_change(&self.state, ready)
             {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for entry in playlist_entry_commits {
+            for action in self
+                .runtime
+                .actions_for_playlist_entry_commit(&self.state, entry, true)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for index in playlist_selection_changes {
+            for action in self
+                .runtime
+                .actions_for_playlist_selection_change(&self.state, index)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for index in playlist_deletions {
+            for action in self
+                .runtime
+                .actions_for_playlist_entry_removal(&self.state, index)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if playlist_reorder_requested {
+            let playlist = self
+                .state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect();
+            for action in self.runtime.actions_for_playlist_reorder(
+                &self.state,
+                playlist,
+                self.state.selection.selected_main_window_playlist,
+            ) {
                 state_changed |= self.state.apply(action);
             }
         }
@@ -18706,8 +19076,8 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness and chat propagation.\""));
-        assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, and chat flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, and playlist flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
     }
 
     #[test]
@@ -19061,6 +19431,52 @@ assert-pending\tnone\n"
         assert_eq!(
             handle.drain_requests(),
             vec![GuiRuntimeRequest::SeekOffset(12.5)]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_entry_commit(&state, "Episode 1.mkv".to_owned(), true)
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::QueuePlaylistEntry {
+                entry: "Episode 1.mkv".to_owned(),
+                select_after_queue: true,
+            }]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_selection_change(&state, 1)
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::SetPlaylistIndex(1)]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_entry_removal(&state, 0)
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::DeletePlaylistIndex(0)]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_reorder(
+                    &state,
+                    vec!["One".to_owned(), "Two".to_owned()],
+                    Some(1),
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::ReplacePlaylist {
+                files: vec!["One".to_owned(), "Two".to_owned()],
+                selected_index: Some(1),
+            }]
         );
         handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
             paths: vec![
@@ -20211,6 +20627,127 @@ assert-pending\tnone\n"
             )),
             "second autoplay tick should persist a countdown entry in system chat"
         );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_operations() {
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+        assert!(
+            !super::GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+            "playlist controls should remain unavailable before server hello"
+        );
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        assert!(
+            super::GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+            "playlist controls should become available after a successful room hello"
+        );
+
+        super::GuiSessionRuntimeAdapter::queue_playlist_entry(
+            &mut adapter,
+            "episode1.mkv".to_owned(),
+            true,
+        )
+        .expect("queueing the first playlist entry should dispatch");
+        let first_queue_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("first queue lines should encode");
+        assert_eq!(first_queue_lines.len(), 2);
+        assert!(first_queue_lines[0].contains("\"playlistChange\""));
+        assert!(first_queue_lines[0].contains("episode1.mkv"));
+        assert!(first_queue_lines[1].contains("\"playlistIndex\""));
+        assert!(first_queue_lines[1].contains("\"index\":0"));
+        for line in &first_queue_lines {
+            adapter
+                .apply_message_json(line)
+                .expect("first queue echo should apply");
+        }
+
+        super::GuiSessionRuntimeAdapter::queue_playlist_entry(
+            &mut adapter,
+            "episode2.mkv".to_owned(),
+            true,
+        )
+        .expect("queueing the second playlist entry should dispatch");
+        let second_queue_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("second queue lines should encode");
+        assert_eq!(second_queue_lines.len(), 2);
+        assert!(second_queue_lines[0].contains("episode1.mkv"));
+        assert!(second_queue_lines[0].contains("episode2.mkv"));
+        assert!(second_queue_lines[1].contains("\"index\":1"));
+        for line in &second_queue_lines {
+            adapter
+                .apply_message_json(line)
+                .expect("second queue echo should apply");
+        }
+
+        super::GuiSessionRuntimeAdapter::set_playlist_index(&mut adapter, 0)
+            .expect("playlist selection should dispatch");
+        let selection_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("selection lines should encode");
+        assert_eq!(selection_lines.len(), 1);
+        assert!(selection_lines[0].contains("\"playlistIndex\""));
+        assert!(selection_lines[0].contains("\"index\":0"));
+        adapter
+            .apply_message_json(&selection_lines[0])
+            .expect("selection echo should apply");
+
+        super::GuiSessionRuntimeAdapter::delete_playlist_index(&mut adapter, 0)
+            .expect("playlist removal should dispatch");
+        let delete_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("delete lines should encode");
+        assert_eq!(delete_lines.len(), 2);
+        assert!(delete_lines[0].contains("\"playlistChange\""));
+        assert!(delete_lines[0].contains("episode2.mkv"));
+        assert!(delete_lines[1].contains("\"playlistIndex\""));
+        assert!(delete_lines[1].contains("\"index\":0"));
+        for line in &delete_lines {
+            adapter
+                .apply_message_json(line)
+                .expect("delete echo should apply");
+        }
+
+        super::GuiSessionRuntimeAdapter::replace_playlist(
+            &mut adapter,
+            vec!["episode3.mkv".to_owned(), "episode2.mkv".to_owned()],
+            Some(1),
+        )
+        .expect("playlist reorder should dispatch");
+        let replace_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("replace lines should encode");
+        assert_eq!(replace_lines.len(), 2);
+        assert!(replace_lines[0].contains("\"playlistChange\""));
+        assert!(replace_lines[0].contains("episode3.mkv"));
+        assert!(replace_lines[0].contains("episode2.mkv"));
+        assert!(replace_lines[1].contains("\"playlistIndex\""));
+        assert!(replace_lines[1].contains("\"index\":1"));
+        for line in &replace_lines {
+            adapter
+                .apply_message_json(line)
+                .expect("replace echo should apply");
+        }
+
+        let playlist = adapter
+            .runtime
+            .session()
+            .current_room_playlist()
+            .expect("playlist should exist after the echoed operations");
+        assert_eq!(playlist.files, vec!["episode3.mkv", "episode2.mkv"]);
+        assert_eq!(playlist.index, Some(1));
     }
 
     #[test]
@@ -21429,6 +21966,22 @@ assert-pending\tnone\n"
         );
         assert!(result.local_user_present);
         assert!(result.peer_user_present);
+        assert_eq!(
+            result.gui_playlist,
+            vec![
+                super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
+                super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
+            ]
+        );
+        assert_eq!(result.gui_playlist_index, Some(1));
+        assert_eq!(
+            result.peer_playlist,
+            vec![
+                super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
+                super::live_python_interop::LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
+            ]
+        );
+        assert_eq!(result.peer_playlist_index, Some(1));
         assert!(result.gui_chat_messages.iter().any(|message| {
             message.sender == super::live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_USERNAME
                 && message.message
