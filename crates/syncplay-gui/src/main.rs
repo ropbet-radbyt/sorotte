@@ -1693,6 +1693,7 @@ trait GuiNativeRuntimePump {
     fn pump(&mut self, state: &SyncplayGuiShellAppState);
 }
 
+pub(crate) mod live_python_interop;
 pub(crate) mod semantic_driver;
 pub(crate) mod semantic_smoke;
 #[cfg(test)]
@@ -2895,7 +2896,7 @@ impl GuiTcpSessionTransportDriver {
     fn queue_outbound_lines(&mut self, transport: &GuiQueuedSessionTransportHandle) {
         for line in transport.drain_outbound_protocol_lines() {
             let mut encoded_line = line.into_bytes();
-            encoded_line.push(b'\n');
+            encoded_line.extend_from_slice(b"\r\n");
             self.pending_outbound_lines.push_back(encoded_line);
         }
     }
@@ -18125,7 +18126,8 @@ mod tests {
                 "configuration-surface-flow",
                 "core-shell-smoke-flow",
                 "runtime-chat-flow",
-                "runtime-transport-churn-flow"
+                "runtime-transport-churn-flow",
+                "live-python-peer-connect-flow"
             ]
         );
         assert!(
@@ -18149,11 +18151,16 @@ mod tests {
                 .contains("apply-main-window-runtime\tsmoke-room\ttrue\ttrue\tfalse")
         );
         assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("live-python-peer-connect-flow")
+                .expect("live Python interop scenario should expose a script description")
+                .contains("interop-py-peer")
+        );
+        assert!(
             super::semantic_smoke::gui_semantic_scenario_script("missing-scenario").is_none(),
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 4);
+        assert_eq!(descriptors.len(), 5);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -18171,6 +18178,9 @@ mod tests {
                 .contains("startup/post-chat/reconnect")
         );
         assert!(descriptors[3].script.contains("reconnect-post2.mkv"));
+        assert_eq!(descriptors[4].name, "live-python-peer-connect-flow");
+        assert!(descriptors[4].description.contains("Python reference peer"));
+        assert!(descriptors[4].script.contains("interop-room"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -18347,7 +18357,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, live-python-peer-connect-flow"
                 )
         );
     }
@@ -18386,6 +18396,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         assert!(listed.contains("core-shell-smoke-flow"));
         assert!(listed.contains("runtime-chat-flow"));
         assert!(listed.contains("runtime-transport-churn-flow"));
+        assert!(listed.contains("live-python-peer-connect-flow"));
 
         let printed = super::semantic_smoke::run_syncplay_gui_semantic_cli_from_args([
             "--print-script",
@@ -18447,6 +18458,9 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"name\":\"runtime-transport-churn-flow\""));
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
+        assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, then verifies the shared room projection.\""));
+        assert!(described.contains("\"script\":\"# Live Python reference-peer connect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user"));
     }
 
     #[test]
@@ -21030,6 +21044,34 @@ assert-pending\tnone\n"
         second_server_thread
             .join()
             .expect("second test session transport server thread should complete");
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_projects_live_python_peer_connection() {
+        let result = match super::live_python_interop::run_live_python_peer_connect_flow() {
+            Ok(result) => result,
+            Err(error)
+                if super::live_python_interop::live_python_interop_prerequisites_missing(
+                    &error,
+                ) =>
+            {
+                eprintln!(
+                    "live Python GUI interop connection test skipped due to missing local prerequisites"
+                );
+                return;
+            }
+            Err(error) => {
+                panic!("live Python GUI interop connection should succeed, got: {error}")
+            }
+        };
+
+        assert_eq!(
+            result.room_name,
+            super::live_python_interop::LIVE_PYTHON_INTEROP_ROOM
+        );
+        assert!(result.local_user_present);
+        assert!(result.peer_user_present);
+        assert!(result.widget_count > 0);
     }
 
     #[test]

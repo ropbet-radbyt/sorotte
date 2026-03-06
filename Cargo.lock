@@ -3167,6 +3167,7 @@ dependencies = [
  "rfd",
  "syncplay-client-app",
  "syncplay-client-core",
+ "syncplay-compat",
  "syncplay-player-api",
  "syncplay-player-mpv",
  "windows 0.61.3",

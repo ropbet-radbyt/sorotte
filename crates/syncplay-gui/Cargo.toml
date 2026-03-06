@@ -13,6 +13,7 @@ test = false
 eframe = "0.33.3"
 egui = "0.33.3"
 rfd = "0.15.4"
+syncplay-compat = { path = "../syncplay-compat" }
 syncplay-client-app = { path = "../syncplay-client-app" }
 syncplay-client-core = { path = "../syncplay-client-core" }
 syncplay-player-api = { path = "../syncplay-player-api" }

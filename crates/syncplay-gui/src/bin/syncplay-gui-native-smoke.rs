@@ -16,6 +16,7 @@ use syncplay_client_app::{
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
 };
+use syncplay_compat::LegacyServerPythonPeerHarness;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
@@ -110,6 +111,12 @@ const DLL_INIT_FAILED_STATUS: u32 = 0xC000_0142;
 const LAUNCH_ATTEMPTS: usize = 2;
 const TRANSPORT_SESSION_USERNAME: &str = "smoke-user";
 const TRANSPORT_SESSION_ROOM: &str = "smoke-room";
+const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
+const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
+const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
+    "interop-gui-user: self=yes, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "interop-py-peer: self=no, ready=no, controller=no";
 const CONFIG_HOST_VALUE: &str = "syncplay.example";
 const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
@@ -535,15 +542,38 @@ impl PlatformNativeGuiDriver {
         use windows::{Win32::UI::Accessibility::IUIAutomationValuePattern, core::BSTR};
         use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
 
-        let _ = unsafe {
+        let value_pattern = unsafe {
             element.GetCurrentPatternAs::<IUIAutomationValuePattern>(
                 windows::Win32::UI::Accessibility::UIA_ValuePatternId,
             )
         }
-        .and_then(|pattern| {
+        .ok();
+        if let Some(pattern) = value_pattern.as_ref() {
             let value_bstr = BSTR::from(value);
-            unsafe { pattern.SetValue(&value_bstr) }
-        });
+            if unsafe { pattern.SetValue(&value_bstr) }.is_ok() {
+                thread::sleep(Duration::from_millis(120));
+                let actual = unsafe { pattern.CurrentValue() }
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                if actual == value {
+                    if !submit {
+                        return Ok(());
+                    }
+                    unsafe {
+                        SetForegroundWindow(window);
+                        element.SetFocus().map_err(|error| {
+                            format!("failed to focus edit field for submit key entry: {error}")
+                        })?;
+                    }
+                    thread::sleep(Duration::from_millis(120));
+                    Self::send_enter_key().map_err(|error| {
+                        format!("failed to submit edit entry with Enter key: {error}")
+                    })?;
+                    thread::sleep(Duration::from_millis(120));
+                    return Ok(());
+                }
+            }
+        }
 
         unsafe {
             SetForegroundWindow(window);
@@ -562,12 +592,7 @@ impl PlatformNativeGuiDriver {
             return Ok(());
         }
 
-        let verification_pattern = unsafe {
-            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(
-                windows::Win32::UI::Accessibility::UIA_ValuePatternId,
-            )
-        };
-        let Ok(verification_pattern) = verification_pattern else {
+        let Some(verification_pattern) = value_pattern else {
             return Ok(());
         };
         let actual = unsafe { verification_pattern.CurrentValue() }
@@ -1614,6 +1639,11 @@ fn wait_for_process_exit(child: &mut Child, timeout: Duration) -> Result<(), Str
 
 fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
     let settings = StoredClientSettingsMvp {
+        host: Some(CONFIG_HOST_VALUE.to_owned()),
+        port: Some(CONFIG_PORT_VALUE.parse().unwrap()),
+        username: Some(CONFIG_USERNAME_VALUE.to_owned()),
+        room: Some(CONFIG_ROOM_VALUE.to_owned()),
+        player_path: Some(CONFIG_PLAYER_PATH_VALUE.to_owned()),
         folder_search_first_file_timeout_seconds: Some(MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS),
         folder_search_timeout_seconds: Some(MEDIA_SEARCH_TIMEOUT_SECONDS),
         folder_search_double_check_interval_seconds: Some(
@@ -1796,6 +1826,10 @@ fn wait_for_accessible_name<D: NativeGuiDriver>(
                 last_snapshot = Some(render_accessible_name_snapshot_for_patterns(
                     &names,
                     &[
+                        "view:",
+                        "self=",
+                        "ready=",
+                        "controller=",
                         "Timeout",
                         "Warning",
                         "Interval",
@@ -2166,17 +2200,43 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             "expected at least 6 editable configuration text fields, found {editable_count}"
         ));
     }
-    driver.set_edit_value_by_index(window, 0, CONFIG_HOST_VALUE)?;
-    driver.set_edit_value_by_index(window, 1, CONFIG_PORT_VALUE)?;
-    driver.set_edit_value_by_index(window, 2, CONFIG_USERNAME_VALUE)?;
-    driver.set_edit_value_by_index(window, 3, CONFIG_ROOM_VALUE)?;
-    if let Err(error) = driver.set_edit_value_by_index(window, 4, "") {
+    for (edit_index, expected_value) in [
+        (0usize, CONFIG_HOST_VALUE),
+        (1usize, CONFIG_PORT_VALUE),
+        (2usize, CONFIG_USERNAME_VALUE),
+        (3usize, CONFIG_ROOM_VALUE),
+        (5usize, CONFIG_PLAYER_PATH_VALUE),
+    ] {
+        let current_value = driver.get_edit_value_by_index(window, edit_index)?;
+        if current_value != expected_value {
+            driver.set_edit_value_by_index(window, edit_index, expected_value)?;
+        }
+    }
+    let password_value = driver.get_edit_value_by_index(window, 4)?;
+    if !password_value.is_empty() {
+        if let Err(error) = driver.set_edit_value_by_index(window, 4, "") {
+            steps.push(format!(
+                "config-password-set-skipped:{}",
+                error.replace('|', "/").replace('\n', " ")
+            ));
+        }
+    }
+    if let Err(error) =
+        wait_for_edit_value_by_index(driver, window, 0, CONFIG_HOST_VALUE, step_timeout)
+    {
         steps.push(format!(
-            "config-password-set-skipped:{}",
+            "config-host-verify-skipped:{}",
             error.replace('|', "/").replace('\n', " ")
         ));
     }
-    driver.set_edit_value_by_index(window, 5, CONFIG_PLAYER_PATH_VALUE)?;
+    for (edit_index, expected_value) in [
+        (1usize, CONFIG_PORT_VALUE),
+        (2usize, CONFIG_USERNAME_VALUE),
+        (3usize, CONFIG_ROOM_VALUE),
+        (5usize, CONFIG_PLAYER_PATH_VALUE),
+    ] {
+        wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
+    }
 
     invoke_named_control_with_wait(
         driver,
@@ -2898,6 +2958,137 @@ fn verify_loopback_chat_contract<D: NativeGuiDriver>(
     outcome
 }
 
+fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
+    driver: &D,
+    binary_path: &Path,
+    temp_root: &Path,
+    media_search_browse_path: &Path,
+    open_media_file_path: &Path,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let mut python_harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_ROOM,
+    )
+    .map_err(|error| format!("failed to start live Python interop harness: {error}"))?;
+    let interop_config_path = temp_root.join("syncplay-native-smoke-python-interop.ini");
+    let _ = fs::remove_file(&interop_config_path);
+    seed_native_smoke_config(&interop_config_path)?;
+    let launch = GuiLaunchConfig {
+        config_path: &interop_config_path,
+        media_search_browse_path,
+        open_media_file_path,
+        public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+        tcp_session: Some(TcpSessionBootstrap {
+            host: python_harness.host(),
+            port: python_harness.port(),
+            username: LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            room: LIVE_PYTHON_INTEROP_ROOM,
+        }),
+        loopback_session: None,
+    };
+
+    let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
+    let (mut child, window) = match launch_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let release = python_harness.shutdown();
+            let mut combined_error =
+                format!("failed to launch live Python interop segment for native smoke: {error}");
+            if let Err(release_error) = release {
+                combined_error.push_str("; ");
+                combined_error.push_str(&release_error.to_string());
+            }
+            return Err(combined_error);
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let step_timeout = timeout.min(Duration::from_millis(8_000));
+        let mut steps = Vec::new();
+
+        wait_for_any_accessible_name(
+            driver,
+            window,
+            &["view: configuration", "view: main-window"],
+            step_timeout,
+        )?;
+        let _ = invoke_named_control_with_wait(
+            driver,
+            window,
+            "Main Window",
+            NativeControlKind::Button,
+            step_timeout,
+        );
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Configuration",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Main Window",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            step_timeout,
+        )?;
+        python_harness
+            .start_peer_connected()
+            .map_err(|error| format!("failed to connect live Python reference peer: {error}"))?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Configuration",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Main Window",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("transport-python-peer-connect".to_owned());
+
+        driver.close_window(window)?;
+        wait_for_process_exit(&mut child, timeout)?;
+        Ok(steps)
+    })();
+
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    let release = python_harness.shutdown();
+    match (outcome, release) {
+        (Ok(steps), Ok(())) => Ok(steps),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error.to_string()),
+        (Err(error), Err(release_error)) => Err(format!("{error}; {release_error}")),
+    }
+}
+
 fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -3319,6 +3510,16 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
             options.timeout,
         )?;
         interaction_steps.extend(loopback_steps);
+
+        let live_python_interop_steps = verify_live_python_peer_connect_contract(
+            &driver,
+            &binary_path,
+            &temp_root,
+            &media_search_browse_path,
+            &open_media_file_path,
+            options.timeout,
+        )?;
+        interaction_steps.extend(live_python_interop_steps);
 
         let transport_steps = verify_transport_reconnect_contract(
             &driver,

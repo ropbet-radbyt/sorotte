@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -104,6 +105,8 @@ pub enum InteropError {
     LegacySyncplayCheckoutMissing(PathBuf),
     #[error("python handshake probe script not found at {0}")]
     PythonHandshakeProbeMissing(PathBuf),
+    #[error("python live peer probe script not found at {0}")]
+    PythonLivePeerProbeMissing(PathBuf),
     #[error("legacy syncplay server entry script not found at {0}")]
     LegacyServerEntryScriptMissing(PathBuf),
     #[error("failed to spawn python process '{python}': {source}")]
@@ -148,6 +151,18 @@ pub enum InteropError {
         stdout: String,
         stderr: String,
     },
+    #[error(
+        "python live peer process exited before reporting a successful connection (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
+    )]
+    PythonLivePeerExited {
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+    #[error(
+        "python live peer process did not report a successful connection before timeout (stdout: '{stdout}', stderr: '{stderr}')"
+    )]
+    PythonLivePeerStartTimeout { stdout: String, stderr: String },
     #[error("failed to initialize legacy client stream for '{client_id}': {source}")]
     LegacyClientConnectionInit {
         client_id: String,
@@ -166,6 +181,20 @@ pub enum InteropError {
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
     ServerRuntime(#[from] ServerRuntimeError),
+}
+
+pub struct LegacyServerPythonPeerHarness {
+    host: String,
+    address: String,
+    port: u16,
+    room: String,
+    peer_username: String,
+    server_child: Child,
+    peer_child: Option<Child>,
+    peer_stdin: Option<ChildStdin>,
+    peer_status_rx: Option<mpsc::Receiver<String>>,
+    peer_stdout_lines: Arc<Mutex<Vec<String>>>,
+    peer_stderr_lines: Arc<Mutex<Vec<String>>>,
 }
 
 pub fn protocol_fixture(name: &str) -> std::io::Result<String> {
@@ -1102,6 +1131,54 @@ fn read_process_pipe_to_string<R: Read>(mut reader: R) -> String {
     String::from_utf8_lossy(&buffer).trim().to_owned()
 }
 
+fn capture_process_output_lines<R: Read + Send + 'static>(
+    reader: R,
+    sink: Arc<Mutex<Vec<String>>>,
+    line_tx: Option<mpsc::Sender<String>>,
+) {
+    thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(mut locked) = sink.lock() {
+                locked.push(trimmed.to_owned());
+            }
+            if let Some(tx) = line_tx.as_ref() {
+                let _ = tx.send(trimmed.to_owned());
+            }
+        }
+    });
+}
+
+fn captured_process_output(lines: &Arc<Mutex<Vec<String>>>) -> String {
+    lines
+        .lock()
+        .map(|locked| locked.join("\n"))
+        .unwrap_or_default()
+}
+
+fn wait_for_child_exit_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<bool, std::io::Error> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub fn legacy_syncplay_checkout_dir() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("..");
@@ -1120,6 +1197,300 @@ pub fn python_handshake_probe_script_path() -> PathBuf {
     path.push("scripts");
     path.push("python_handshake_probe.py");
     path
+}
+
+pub fn python_live_peer_probe_script_path() -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("scripts");
+    path.push("python_live_peer_probe.py");
+    path
+}
+
+fn stderr_indicates_missing_legacy_prerequisites(stderr: &str) -> bool {
+    let lowered = stderr.to_ascii_lowercase();
+    lowered.contains("no module named 'twisted'")
+        || lowered.contains("unable import twisted")
+        || lowered.contains("unable to import twisted")
+}
+
+pub fn interop_prerequisites_missing(error: &InteropError) -> bool {
+    match error {
+        InteropError::LegacySyncplayCheckoutMissing(_)
+        | InteropError::PythonHandshakeProbeMissing(_)
+        | InteropError::PythonLivePeerProbeMissing(_)
+        | InteropError::LegacyServerEntryScriptMissing(_)
+        | InteropError::PythonSpawn { .. } => true,
+        InteropError::LegacyServerExited { stderr, .. }
+        | InteropError::LegacyServerStartTimeout { stderr, .. }
+        | InteropError::PythonLivePeerExited { stderr, .. }
+        | InteropError::PythonLivePeerStartTimeout { stderr, .. } => {
+            stderr_indicates_missing_legacy_prerequisites(stderr)
+        }
+        _ => false,
+    }
+}
+
+impl LegacyServerPythonPeerHarness {
+    pub fn spawn_connected(peer_username: &str, room: &str) -> Result<Self, InteropError> {
+        let mut harness = Self::spawn(peer_username, room)?;
+        if let Err(error) = harness.start_peer_connected() {
+            let _ = harness.shutdown();
+            return Err(error);
+        }
+        Ok(harness)
+    }
+
+    pub fn spawn(peer_username: &str, room: &str) -> Result<Self, InteropError> {
+        Self::spawn_server(peer_username, room)
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+
+    pub fn peer_username(&self) -> &str {
+        &self.peer_username
+    }
+
+    pub fn start_peer_connected(&mut self) -> Result<(), InteropError> {
+        if self.peer_child.is_none() {
+            self.spawn_peer_process()?;
+        }
+        self.wait_for_peer_connected(Duration::from_secs(3))
+    }
+
+    pub fn shutdown(mut self) -> Result<(), InteropError> {
+        let mut errors = Vec::new();
+        if let Some(stdin) = self.peer_stdin.take() {
+            drop(stdin);
+        }
+        if let Some(mut peer_child) = self.peer_child.take() {
+            match wait_for_child_exit_with_timeout(&mut peer_child, Duration::from_secs(1)) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(error) = peer_child.kill() {
+                        errors.push(format!(
+                            "failed to terminate python live peer process: {error}"
+                        ));
+                    }
+                    if let Err(error) = peer_child.wait() {
+                        errors.push(format!(
+                            "failed to wait for python live peer process exit after kill: {error}"
+                        ));
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "failed to wait for python live peer process exit before kill: {error}"
+                )),
+            }
+        }
+        terminate_legacy_server_process(&mut self.server_child);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(InteropError::InvalidPythonBatchResponse(errors.join("; ")))
+        }
+    }
+
+    fn spawn_server(peer_username: &str, room: &str) -> Result<Self, InteropError> {
+        let legacy_checkout = legacy_syncplay_checkout_dir();
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+
+        let legacy_server_entry = legacy_syncplay_server_entry_script_path();
+        if !legacy_server_entry.is_file() {
+            return Err(InteropError::LegacyServerEntryScriptMissing(
+                legacy_server_entry,
+            ));
+        }
+
+        let port = reserve_ephemeral_tcp_port()?;
+        let python_bin = python_bin_from_env();
+        let python_bin_display = python_bin.to_string_lossy().to_string();
+
+        let mut server_command = Command::new(&python_bin);
+        server_command
+            .arg(&legacy_server_entry)
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--ipv4-only")
+            .arg("--interface-ipv4")
+            .arg("127.0.0.1")
+            .arg("--salt")
+            .arg(DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+            .current_dir(&legacy_checkout)
+            .env("PYTHONUNBUFFERED", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut server_child =
+            server_command
+                .spawn()
+                .map_err(|source| InteropError::PythonSpawn {
+                    python: python_bin_display.clone(),
+                    source,
+                })?;
+
+        if let Err(error) = wait_for_legacy_server_startup(port, &mut server_child) {
+            terminate_legacy_server_process(&mut server_child);
+            return Err(error);
+        }
+        if let Err(error) = ensure_legacy_server_is_running(&mut server_child) {
+            terminate_legacy_server_process(&mut server_child);
+            return Err(error);
+        }
+
+        let host = "127.0.0.1".to_owned();
+        let address = format!("{host}:{port}");
+        Ok(Self {
+            host,
+            address,
+            port,
+            room: room.to_owned(),
+            peer_username: peer_username.to_owned(),
+            server_child,
+            peer_child: None,
+            peer_stdin: None,
+            peer_status_rx: None,
+            peer_stdout_lines: Arc::new(Mutex::new(Vec::new())),
+            peer_stderr_lines: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
+    fn spawn_peer_process(&mut self) -> Result<(), InteropError> {
+        let legacy_checkout = legacy_syncplay_checkout_dir();
+        if !legacy_checkout.is_dir() {
+            return Err(InteropError::LegacySyncplayCheckoutMissing(legacy_checkout));
+        }
+
+        let live_peer_probe = python_live_peer_probe_script_path();
+        if !live_peer_probe.is_file() {
+            return Err(InteropError::PythonLivePeerProbeMissing(live_peer_probe));
+        }
+
+        let python_bin = python_bin_from_env();
+        let python_bin_display = python_bin.to_string_lossy().to_string();
+        let mut peer_command = Command::new(&python_bin);
+        peer_command
+            .arg(&live_peer_probe)
+            .arg("--host")
+            .arg(&self.host)
+            .arg("--port")
+            .arg(self.port.to_string())
+            .arg("--name")
+            .arg(&self.peer_username)
+            .arg("--room")
+            .arg(&self.room)
+            .arg("--timeout-seconds")
+            .arg("3")
+            .current_dir(&legacy_checkout)
+            .env("PYTHONUNBUFFERED", "1")
+            .env("SYNCPLAY_LEGACY_ROOT", &legacy_checkout)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut peer_child = peer_command
+            .spawn()
+            .map_err(|source| InteropError::PythonSpawn {
+                python: python_bin_display,
+                source,
+            })?;
+
+        let peer_stdin = peer_child
+            .stdin
+            .take()
+            .ok_or(InteropError::PythonStdinMissing)?;
+        let peer_stdout = peer_child
+            .stdout
+            .take()
+            .ok_or(InteropError::EmptyPythonResponse)?;
+        let peer_stderr = peer_child
+            .stderr
+            .take()
+            .ok_or(InteropError::EmptyPythonResponse)?;
+        let (peer_status_tx, peer_status_rx) = mpsc::channel();
+        let peer_stdout_lines = Arc::new(Mutex::new(Vec::new()));
+        let peer_stderr_lines = Arc::new(Mutex::new(Vec::new()));
+        capture_process_output_lines(peer_stdout, peer_stdout_lines.clone(), Some(peer_status_tx));
+        capture_process_output_lines(peer_stderr, peer_stderr_lines.clone(), None);
+
+        self.peer_child = Some(peer_child);
+        self.peer_stdin = Some(peer_stdin);
+        self.peer_status_rx = Some(peer_status_rx);
+        self.peer_stdout_lines = peer_stdout_lines;
+        self.peer_stderr_lines = peer_stderr_lines;
+        Ok(())
+    }
+
+    fn wait_for_peer_connected(&mut self, timeout: Duration) -> Result<(), InteropError> {
+        let Some(peer_status_rx) = self.peer_status_rx.as_ref() else {
+            return Err(InteropError::InvalidPythonBatchResponse(
+                "python live peer process has not been started".to_owned(),
+            ));
+        };
+        let Some(peer_child) = self.peer_child.as_mut() else {
+            return Err(InteropError::InvalidPythonBatchResponse(
+                "python live peer child handle is missing".to_owned(),
+            ));
+        };
+        match peer_status_rx.recv_timeout(timeout) {
+            Ok(status_line) => self.parse_peer_status_line(&status_line),
+            Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let stdout = captured_process_output(&self.peer_stdout_lines);
+                let stderr = captured_process_output(&self.peer_stderr_lines);
+                match peer_child.try_wait()? {
+                    Some(status) => Err(InteropError::PythonLivePeerExited {
+                        exit_code: status.code(),
+                        stdout,
+                        stderr,
+                    }),
+                    None => Err(InteropError::PythonLivePeerStartTimeout { stdout, stderr }),
+                }
+            }
+        }
+    }
+
+    fn parse_peer_status_line(&self, status_line: &str) -> Result<(), InteropError> {
+        let parsed: Value = serde_json::from_str(status_line).map_err(|error| {
+            InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer status line was not valid JSON ({status_line:?}): {error}"
+            ))
+        })?;
+        match parsed.get("status").and_then(Value::as_str) {
+            Some("connected") => Ok(()),
+            Some("error") => Err(InteropError::InvalidPythonBatchResponse(
+                parsed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "python live peer reported an unspecified error line: {status_line:?}"
+                        )
+                    }),
+            )),
+            Some(other) => Err(InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer reported unexpected status {other:?}: {status_line:?}"
+            ))),
+            None => Err(InteropError::InvalidPythonBatchResponse(format!(
+                "python live peer status line did not include a status field: {status_line:?}"
+            ))),
+        }
+    }
 }
 
 pub fn default_rust_client_hello_for_interop() -> HelloPayload {
