@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod remote_services;
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     env,
@@ -7,7 +9,7 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use eframe::egui;
@@ -449,6 +451,8 @@ struct SyncplayGuiShellAppState {
     public_server_edit_session: Option<GuiPublicServerEditSessionState>,
     main_window_user_edit_session: Option<GuiMainWindowUserEditSessionState>,
     text_edit_session: Option<GuiTextEditSessionState>,
+    room_history_edit_session: Option<GuiRoomHistoryEditSessionState>,
+    update_check: GuiUpdateCheckState,
     runtime_validation_issues: Vec<GuiValidationIssue>,
     notifications: Vec<GuiTransientNotification>,
     validation: GuiValidationState,
@@ -475,7 +479,54 @@ struct GuiPersistedUiState {
     selected_public_server_address: Option<String>,
     selected_media_search_directory: Option<String>,
     last_media_dialog_directory: Option<String>,
+    last_checked_for_updates: Option<String>,
     public_servers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct GuiUpdateCheckState {
+    status: Option<remote_services::LegacyUpdateCheckStatus>,
+    message: Option<String>,
+    url: Option<String>,
+    last_checked_for_updates: Option<String>,
+    user_initiated: bool,
+}
+
+impl GuiUpdateCheckState {
+    fn body_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(message) = self.message.as_deref() {
+            lines.push(message.to_owned());
+        } else {
+            lines.push("An update notice is available for this client build.".to_owned());
+        }
+        if let Some(timestamp) = self.last_checked_for_updates.as_deref() {
+            lines.push(format!("Checked at: {timestamp} UTC"));
+        } else {
+            lines.push(
+                "Dismiss it here or trigger another update check from the same modal.".to_owned(),
+            );
+        }
+        lines
+    }
+
+    fn status_level(&self) -> GuiTransientNotificationLevel {
+        match self.status.as_ref() {
+            Some(remote_services::LegacyUpdateCheckStatus::UpToDate) => {
+                GuiTransientNotificationLevel::Success
+            }
+            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable) => {
+                GuiTransientNotificationLevel::Info
+            }
+            Some(remote_services::LegacyUpdateCheckStatus::Failed)
+            | Some(remote_services::LegacyUpdateCheckStatus::Unknown(_))
+            | None => GuiTransientNotificationLevel::Warning,
+        }
+    }
+
+    fn should_open_modal(&self) -> bool {
+        self.user_initiated || self.url.is_some()
+    }
 }
 
 impl GuiPersistedUiState {
@@ -491,6 +542,7 @@ impl GuiPersistedUiState {
             .iter()
             .map(|row| (row.label.clone(), row.address.clone()))
             .collect::<Vec<_>>();
+        let current_settings = state.configuration.to_stored_settings();
         Self {
             active_view: (state.active_view != GuiShellView::Configuration)
                 .then_some(state.active_view),
@@ -503,6 +555,10 @@ impl GuiPersistedUiState {
                 .and_then(|index| state.media_search.directories.get(index))
                 .map(|row| row.path.clone()),
             last_media_dialog_directory: state.last_media_dialog_directory.clone(),
+            last_checked_for_updates: (current_settings.last_checked_for_updates
+                != state.saved_configuration.last_checked_for_updates)
+                .then(|| current_settings.last_checked_for_updates.clone())
+                .flatten(),
             public_servers: if current_public_servers != saved_public_servers {
                 current_public_servers
             } else {
@@ -516,10 +572,14 @@ impl GuiPersistedUiState {
             && self.selected_public_server_address.is_none()
             && self.selected_media_search_directory.is_none()
             && self.last_media_dialog_directory.is_none()
+            && self.last_checked_for_updates.is_none()
             && self.public_servers.is_empty()
     }
 
     fn merge_into_startup_settings(&self, settings: &mut StoredClientSettingsMvp) {
+        if let Some(last_checked_for_updates) = self.last_checked_for_updates.as_ref() {
+            settings.last_checked_for_updates = Some(last_checked_for_updates.clone());
+        }
         if !self.public_servers.is_empty() {
             settings.public_servers = Some(self.public_servers.clone());
         }
@@ -678,7 +738,23 @@ fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Res
         )],
     )?;
 
-    if state.public_servers.is_empty() {
+    let mut interface_sections = Vec::new();
+    if let Some(last_checked_for_updates) = state.last_checked_for_updates.as_ref() {
+        interface_sections.push((
+            "Update",
+            vec![("lastCheckedQt", last_checked_for_updates.clone())],
+        ));
+    }
+    if !state.public_servers.is_empty() {
+        interface_sections.push((
+            "PublicServerList",
+            vec![(
+                "publicServers",
+                format_serialized_public_servers_list_legacy_compatible(&state.public_servers),
+            )],
+        ));
+    }
+    if interface_sections.is_empty() {
         remove_file_if_exists(
             &legacy_gui_qsettings_store_path(root, "Interface"),
             "legacy GUI QSettings",
@@ -686,13 +762,7 @@ fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Res
     } else {
         write_legacy_gui_qsettings_ini(
             &legacy_gui_qsettings_store_path(root, "Interface"),
-            &[(
-                "PublicServerList",
-                vec![(
-                    "publicServers",
-                    format_serialized_public_servers_list_legacy_compatible(&state.public_servers),
-                )],
-            )],
+            &interface_sections,
         )?;
     }
 
@@ -751,6 +821,10 @@ fn load_gui_ui_state_from_root(root: &Path) -> Result<Option<GuiPersistedUiState
             )
         })?;
         let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        state.last_checked_for_updates = parsed
+            .get(&(String::from("Update"), String::from("lastCheckedQt")))
+            .cloned()
+            .filter(|value| !value.trim().is_empty());
         state.public_servers = parsed
             .get(&(
                 String::from("PublicServerList"),
@@ -916,6 +990,7 @@ struct GuiConfigurationRuntimeSnapshot {
 enum GuiWidgetKind {
     Panel,
     TextInput,
+    TextArea,
     PasswordInput,
     Checkbox,
     Select,
@@ -1021,6 +1096,7 @@ impl GuiWidgetKind {
         match self {
             Self::Panel => "panel",
             Self::TextInput => "text-input",
+            Self::TextArea => "text-area",
             Self::PasswordInput => "password-input",
             Self::Checkbox => "checkbox",
             Self::Select => "select",
@@ -1112,7 +1188,7 @@ impl GuiWidgetEguiRenderer {
             self.show_menu_bar(ctx, &root, state);
             self.show_modal_window(ctx, state);
             self.show_status_bar(ctx, &root, show_manual_pending_controls);
-            self.show_navigation_panel(ctx, &root);
+            self.show_navigation_panel(ctx, &root, state);
             self.show_active_surface(ctx, &root, state);
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -1154,8 +1230,13 @@ impl GuiWidgetEguiRenderer {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                for line in Self::modal_body_lines(modal) {
+                for line in Self::modal_body_lines(modal, state) {
                     ui.label(line);
+                }
+                if modal == GuiShellModal::UpdateNotice
+                    && let Some(url) = state.update_check.url.as_deref()
+                {
+                    ui.hyperlink_to("Open update page", url);
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
@@ -1225,7 +1306,12 @@ impl GuiWidgetEguiRenderer {
         show_manual_pending_controls && pending_operation != "(none)"
     }
 
-    fn show_navigation_panel(&mut self, ctx: &egui::Context, root: &GuiWidgetNode) {
+    fn show_navigation_panel(
+        &mut self,
+        ctx: &egui::Context,
+        root: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
         egui::SidePanel::left("syncplay-native-navigation")
             .default_width(240.0)
             .resizable(true)
@@ -1240,6 +1326,13 @@ impl GuiWidgetEguiRenderer {
                         {
                             self.actions.push(action);
                         }
+                    }
+                }
+                if let Some(quick_actions) = root.find("shell:quick-actions") {
+                    ui.separator();
+                    ui.heading("Quick Actions");
+                    for action in &quick_actions.children {
+                        self.render_leaf(ui, action, state);
                     }
                 }
                 Self::render_sidebar_list_branch(ui, root.find("shell:commands"), "Commands");
@@ -1377,9 +1470,14 @@ impl GuiWidgetEguiRenderer {
     ) {
         match node.kind {
             GuiWidgetKind::TextInput
+            | GuiWidgetKind::TextArea
             | GuiWidgetKind::PasswordInput
             | GuiWidgetKind::NumericInput => {
-                self.render_text_input(ui, node, state);
+                if node.kind == GuiWidgetKind::TextArea {
+                    self.render_text_area(ui, node, state);
+                } else {
+                    self.render_text_input(ui, node, state);
+                }
             }
             GuiWidgetKind::Select => self.render_select(ui, node, state),
             GuiWidgetKind::Checkbox => {
@@ -1397,7 +1495,9 @@ impl GuiWidgetEguiRenderer {
                     .add_enabled(node.enabled, egui::Button::new(Self::display_text(node)))
                     .clicked()
                 {
-                    if Self::is_open_media_file_menu_action(state, node) {
+                    if node.id == "shell:quick:open-media-file"
+                        || Self::is_open_media_file_menu_action(state, node)
+                    {
                         self.selected_media_files = Self::pick_media_files(state);
                     } else if Self::is_exit_menu_action(state, node) {
                         self.close_requested = true;
@@ -1463,6 +1563,29 @@ impl GuiWidgetEguiRenderer {
         });
     }
 
+    fn render_text_area(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let mut value = node.value.clone().unwrap_or_default();
+        ui.vertical(|ui| {
+            ui.label(&node.label);
+            let response = ui.add_enabled(
+                node.enabled,
+                egui::TextEdit::multiline(&mut value)
+                    .desired_width(360.0)
+                    .desired_rows(6),
+            );
+            if let Some(actions) =
+                Self::actions_for_text_input_node(state, node, &value, response.changed(), false)
+            {
+                self.actions.extend(actions);
+            }
+        });
+    }
+
     fn render_select(
         &mut self,
         ui: &mut egui::Ui,
@@ -1502,19 +1625,17 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn modal_body_lines(modal: GuiShellModal) -> [&'static str; 2] {
+    fn modal_body_lines(modal: GuiShellModal, state: &SyncplayGuiShellAppState) -> Vec<String> {
         match modal {
-            GuiShellModal::TlsCertificatePrompt => [
-                "A TLS certificate prompt is active for the current connection.",
-                "Trust the certificate for this session or reject it to keep the warning visible.",
+            GuiShellModal::TlsCertificatePrompt => vec![
+                "A TLS certificate prompt is active for the current connection.".to_owned(),
+                "Trust the certificate for this session or reject it to keep the warning visible."
+                    .to_owned(),
             ],
-            GuiShellModal::UpdateNotice => [
-                "An update notice is available for this client build.",
-                "Dismiss it here or trigger another update check from the same modal.",
-            ],
-            GuiShellModal::About => [
-                "The reducer reports that the About dialog is open.",
-                "This modal now routes into the existing help and update actions.",
+            GuiShellModal::UpdateNotice => state.update_check.body_lines(),
+            GuiShellModal::About => vec![
+                "The reducer reports that the About dialog is open.".to_owned(),
+                "This modal now routes into the existing help and update actions.".to_owned(),
             ],
         }
     }
@@ -1600,6 +1721,7 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
     ) -> Vec<GuiShellAction> {
         match node.id.as_str() {
+            "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
             "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
@@ -1662,17 +1784,21 @@ impl GuiWidgetEguiRenderer {
                 vec![GuiShellAction::RemoveSelectedMediaSearchDirectory]
             }
             "media-search:command:search" => vec![GuiShellAction::BeginMissingMediaSearch],
+            "room-history:edit:commit" => vec![GuiShellAction::CommitRoomHistoryEdit],
+            "room-history:edit:cancel" => vec![GuiShellAction::CancelRoomHistoryEdit],
             "shell:modal:close" => vec![GuiShellAction::CloseModal],
             "shell:modal:update:dismiss" => vec![GuiShellAction::DismissUpdateNotice],
             "shell:modal:update:help" => vec![GuiShellAction::AnnounceHelpRequested],
-            "shell:modal:update:check-again" => {
-                vec![GuiShellAction::AnnounceUpdateNoticeAvailable]
-            }
+            "shell:modal:update:check-again" => vec![GuiShellAction::BeginUpdateCheck {
+                user_initiated: true,
+            }],
             "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
             "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],
             "shell:modal:tls:help" => vec![GuiShellAction::AnnounceHelpRequested],
             "shell:modal:about:help" => vec![GuiShellAction::AnnounceHelpRequested],
-            "shell:modal:about:update" => vec![GuiShellAction::AnnounceUpdateNoticeAvailable],
+            "shell:modal:about:update" => vec![GuiShellAction::BeginUpdateCheck {
+                user_initiated: true,
+            }],
             _ => {
                 if let Some((section_index, action_index)) = Self::menu_action_identity(node) {
                     vec![
@@ -1901,6 +2027,10 @@ impl GuiWidgetEguiRenderer {
                 actions.push(GuiShellAction::CommitNewPlaylistEntry);
             }
             return (!actions.is_empty()).then_some(actions);
+        }
+
+        if node.id == "room-history:edit:entries" {
+            return changed.then(|| vec![GuiShellAction::UpdateRoomHistoryEdit(value.to_owned())]);
         }
 
         if let Some((section, label, kind)) = Self::configuration_control_identity(state, node) {
@@ -3414,12 +3544,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn refresh_public_servers(
         &mut self,
-        current_servers: Vec<(String, String)>,
+        _current_servers: Vec<(String, String)>,
     ) -> Result<Vec<(String, String)>, String> {
         if let Some(refreshed_servers) = Self::refreshed_public_server_rows_from_env()? {
             return Ok(refreshed_servers);
         }
-        Ok(Self::normalize_public_server_rows(current_servers))
+        #[cfg(test)]
+        {
+            Ok(Self::normalize_public_server_rows(_current_servers))
+        }
+        #[cfg(not(test))]
+        {
+            let refreshed_servers = remote_services::fetch_public_servers(Some("en"))?;
+            Ok(Self::normalize_public_server_rows(refreshed_servers))
+        }
     }
 
     fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String> {
@@ -4042,14 +4180,30 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn refresh_public_servers_without_session(
-        current_servers: Vec<(String, String)>,
+        _current_servers: Vec<(String, String)>,
     ) -> Result<Vec<(String, String)>, String> {
         if let Some(refreshed_servers) =
             GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_env()?
         {
             return Ok(refreshed_servers);
         }
-        Ok(GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(current_servers))
+        #[cfg(test)]
+        {
+            Ok(
+                GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
+                    _current_servers,
+                ),
+            )
+        }
+        #[cfg(not(test))]
+        {
+            let refreshed_servers = remote_services::fetch_public_servers(Some("en"))?;
+            Ok(
+                GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
+                    refreshed_servers,
+                ),
+            )
+        }
     }
 
     fn detached_missing_media_target(&self, state: &SyncplayGuiShellAppState) -> Option<String> {
@@ -4743,7 +4897,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     }
                 }
                 GuiRuntimeRequest::CompletePendingOperation(
-                    GuiPendingCompletionRequest::RefreshPublicServers(_servers),
+                    GuiPendingCompletionRequest::RefreshPublicServers(requested_servers),
                 ) => {
                     let current_servers = projected_state
                         .public_servers
@@ -4753,6 +4907,12 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         .collect();
                     let refresh_result = if let Some(session) = self.session.as_mut() {
                         session.refresh_public_servers(current_servers)
+                    } else if !requested_servers.is_empty() {
+                        Ok(
+                            GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
+                                requested_servers,
+                            ),
+                        )
                     } else {
                         Self::refresh_public_servers_without_session(current_servers)
                     };
@@ -5924,6 +6084,12 @@ struct GuiTextEditSessionState {
     is_dirty: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiRoomHistoryEditSessionState {
+    buffer: String,
+    is_dirty: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuiTransientNotificationLevel {
     Info,
@@ -6018,6 +6184,11 @@ enum GuiShellAction {
     OpenModal(GuiShellModal),
     CloseModal,
     DismissUpdateNotice,
+    BeginUpdateCheck {
+        user_initiated: bool,
+    },
+    ApplyUpdateCheckResult(remote_services::LegacyUpdateCheckResult),
+    ApplyStartupPublicServerCache(Vec<(String, String)>),
     TrustTlsCertificatePrompt,
     RejectTlsCertificatePrompt,
     TriggerSelectedMenuAction,
@@ -6079,6 +6250,10 @@ enum GuiShellAction {
     UpdateConfigurationTextEdit(String),
     CommitConfigurationTextEdit,
     CancelConfigurationTextEdit,
+    BeginRoomHistoryEdit,
+    UpdateRoomHistoryEdit(String),
+    CommitRoomHistoryEdit,
+    CancelRoomHistoryEdit,
     UpdateNewMainWindowUserDraft(String),
     CommitNewMainWindowUser,
     UpdateNewPlaylistEntryDraft(String),
@@ -6812,6 +6987,34 @@ impl FirstRunConfigurationDialogDraft {
         self.settings.clone()
     }
 
+    fn room_history_multiline_text(&self) -> String {
+        self.settings
+            .room_list
+            .as_ref()
+            .map(|rooms| rooms.join("\n"))
+            .unwrap_or_default()
+    }
+
+    fn apply_room_history_multiline_text(&mut self, value: &str) {
+        let mut rooms = value
+            .lines()
+            .map(str::to_owned)
+            .filter(|room| !room.trim().is_empty())
+            .collect::<Vec<_>>();
+        rooms.sort();
+        self.settings.room_list = if rooms.is_empty() { None } else { Some(rooms) };
+
+        let room_history_count = self.settings.room_list.as_ref().map_or(0, Vec::len);
+        if let Some(control) = self
+            .sections
+            .iter_mut()
+            .find(|section| section.title == "Connection")
+            .and_then(|section| section.control_mut("Room History"))
+        {
+            control.value = room_history_count.to_string();
+        }
+    }
+
     fn control(&self, section_title: &str, label: &str) -> Option<&GuiDialogControl> {
         self.sections
             .iter()
@@ -7089,6 +7292,16 @@ impl GuiTextEditSessionState {
     }
 }
 
+impl GuiRoomHistoryEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Room History Edit] dirty={}, entries={}",
+            bool_label(self.is_dirty),
+            self.buffer.lines().count()
+        )]
+    }
+}
+
 impl MainWindowShellState {
     fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let room_name = settings
@@ -7334,7 +7547,7 @@ impl MenuDialogShellState {
                 },
             ],
             tls_prompt_expected: settings.only_switch_to_trusted_domains.unwrap_or(false),
-            update_notice_expected: settings.check_for_updates_automatically.unwrap_or(false),
+            update_notice_expected: false,
             about_dialog_available: true,
         }
     }
@@ -7526,6 +7739,8 @@ impl SyncplayGuiShellAppState {
             public_server_edit_session: None,
             main_window_user_edit_session: None,
             text_edit_session: None,
+            room_history_edit_session: None,
+            update_check: GuiUpdateCheckState::default(),
             runtime_validation_issues: Vec::new(),
             notifications: Vec::new(),
             validation: GuiValidationState::default(),
@@ -7557,6 +7772,15 @@ impl SyncplayGuiShellAppState {
             }
             GuiShellAction::CloseModal => self.close_modal_window(),
             GuiShellAction::DismissUpdateNotice => self.dismiss_update_notice(),
+            GuiShellAction::BeginUpdateCheck { user_initiated } => {
+                self.begin_update_check(user_initiated)
+            }
+            GuiShellAction::ApplyUpdateCheckResult(result) => {
+                self.apply_update_check_result(result)
+            }
+            GuiShellAction::ApplyStartupPublicServerCache(servers) => {
+                self.apply_startup_public_server_cache(servers)
+            }
             GuiShellAction::TrustTlsCertificatePrompt => self.complete_tls_certificate_prompt(true),
             GuiShellAction::RejectTlsCertificatePrompt => {
                 self.complete_tls_certificate_prompt(false)
@@ -8039,6 +8263,10 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::BeginRoomHistoryEdit => self.begin_room_history_edit(),
+            GuiShellAction::UpdateRoomHistoryEdit(buffer) => self.update_room_history_edit(buffer),
+            GuiShellAction::CommitRoomHistoryEdit => self.commit_room_history_edit(),
+            GuiShellAction::CancelRoomHistoryEdit => self.cancel_room_history_edit(),
             GuiShellAction::SelectMainWindowUser(index) => {
                 if index >= self.main_window.users.len() {
                     return self
@@ -8293,6 +8521,12 @@ impl SyncplayGuiShellAppState {
                 .map(GuiTextEditSessionState::render_lines)
                 .unwrap_or_else(|| vec!["[Text Edit] editing=(none)".to_owned()]),
         );
+        lines.extend(
+            self.room_history_edit_session
+                .as_ref()
+                .map(GuiRoomHistoryEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Room History Edit] editing=(none)".to_owned()]),
+        );
         lines.push(format!(
             "[Notifications] count={}",
             self.notifications.len()
@@ -8369,6 +8603,14 @@ impl SyncplayGuiShellAppState {
             GuiWidgetKind::Panel,
             vec![
                 GuiWidgetNode::leaf(
+                    "config-command:edit-room-history",
+                    "Edit Room History",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.pending_operation.is_none(),
+                    false,
+                ),
+                GuiWidgetNode::leaf(
                     "config-command:save",
                     "Save",
                     GuiWidgetKind::Button,
@@ -8402,6 +8644,40 @@ impl SyncplayGuiShellAppState {
                 ),
             ],
         ));
+
+        if let Some(session) = &self.room_history_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "room-history:edit-session",
+                "Room History Edit",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "room-history:edit:entries",
+                        "Room History Entries",
+                        GuiWidgetKind::TextArea,
+                        Some(session.buffer.clone()),
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "room-history:edit:commit",
+                        "Save Room History",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "room-history:edit:cancel",
+                        "Cancel Room History Edit",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
 
         GuiWidgetNode::branch(
             "configuration-root",
@@ -8839,6 +9115,28 @@ impl SyncplayGuiShellAppState {
             true,
             false,
         )];
+        if modal == GuiShellModal::UpdateNotice {
+            if let Some(message) = self.update_check.message.as_ref() {
+                children.push(GuiWidgetNode::leaf(
+                    "shell:modal:update:message",
+                    "Message",
+                    GuiWidgetKind::Status,
+                    Some(message.clone()),
+                    true,
+                    false,
+                ));
+            }
+            if let Some(url) = self.update_check.url.as_ref() {
+                children.push(GuiWidgetNode::leaf(
+                    "shell:modal:update:url",
+                    "Update URL",
+                    GuiWidgetKind::Status,
+                    Some(url.clone()),
+                    true,
+                    false,
+                ));
+            }
+        }
         children.extend(GuiWidgetEguiRenderer::modal_actions(modal).into_iter().map(
             |(id, label, _)| {
                 GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false)
@@ -9226,6 +9524,35 @@ impl SyncplayGuiShellAppState {
         )
     }
 
+    fn quick_actions_widget_tree(&self) -> GuiWidgetNode {
+        let can_open_media_file = self
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Open Media File")
+            })
+            .is_some_and(|action| action.enabled);
+
+        GuiWidgetNode::branch(
+            "shell:quick-actions",
+            "Quick Actions",
+            GuiWidgetKind::Panel,
+            vec![GuiWidgetNode::leaf(
+                "shell:quick:open-media-file",
+                "Open Media File",
+                GuiWidgetKind::Button,
+                None,
+                can_open_media_file,
+                false,
+            )],
+        )
+    }
+
     fn shell_widget_tree(&self) -> GuiWidgetNode {
         let mut configuration = self.configuration_widget_tree();
         configuration.selected = self.active_view == GuiShellView::Configuration;
@@ -9303,6 +9630,7 @@ impl SyncplayGuiShellAppState {
                     false,
                 ),
                 self.shell_modal_widget_tree(),
+                self.quick_actions_widget_tree(),
                 self.command_status_widget_tree(),
                 self.validation_widget_tree(),
                 notifications,
@@ -9507,6 +9835,8 @@ impl SyncplayGuiShellAppState {
         let public_server_edit_session = self.public_server_edit_session.clone();
         let main_window_user_edit_session = self.main_window_user_edit_session.clone();
         let text_edit_session = self.text_edit_session.clone();
+        let room_history_edit_session = self.room_history_edit_session.clone();
+        let update_check = self.update_check.clone();
         let runtime_validation_issues = self.runtime_validation_issues.clone();
         let notifications = self.notifications.clone();
         let last_media_dialog_directory = self.last_media_dialog_directory.clone();
@@ -9549,6 +9879,8 @@ impl SyncplayGuiShellAppState {
         self.public_server_edit_session = public_server_edit_session;
         self.main_window_user_edit_session = main_window_user_edit_session;
         self.text_edit_session = text_edit_session;
+        self.room_history_edit_session = room_history_edit_session;
+        self.update_check = update_check;
         self.runtime_validation_issues = runtime_validation_issues;
         self.notifications = notifications;
         self.last_media_dialog_directory = last_media_dialog_directory;
@@ -10516,11 +10848,67 @@ impl SyncplayGuiShellAppState {
     fn announce_update_notice_available(&mut self) -> bool {
         self.menus.update_notice_expected = true;
         self.open_modal = Some(GuiShellModal::UpdateNotice);
+        if self.update_check.message.is_none() {
+            self.update_check.message =
+                Some("An update notice is available for this client build.".to_owned());
+        }
         self.push_system_chat_message("Update notice opened.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
             "Update notice opened.".to_owned(),
         );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_check_language(&self) -> String {
+        self.configuration
+            .to_stored_settings()
+            .language
+            .as_deref()
+            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .unwrap_or("en")
+            .to_owned()
+    }
+
+    fn begin_update_check(&mut self, user_initiated: bool) -> bool {
+        let language = self.update_check_language();
+        let result = remote_services::check_for_updates(Some(language.as_str()), user_initiated);
+        self.apply_update_check_result(result)
+    }
+
+    fn apply_update_check_result(
+        &mut self,
+        result: remote_services::LegacyUpdateCheckResult,
+    ) -> bool {
+        let mut settings = self.configuration.to_stored_settings();
+        settings.last_checked_for_updates = Some(result.checked_at_utc.clone());
+        if let Some(public_servers) = result.public_servers.as_ref() {
+            settings.public_servers = Some(public_servers.clone());
+        }
+        self.resync_from_settings(settings);
+        self.update_check = GuiUpdateCheckState {
+            status: Some(result.status.clone()),
+            message: Some(result.message.clone()),
+            url: result.url.clone(),
+            last_checked_for_updates: Some(result.checked_at_utc.clone()),
+            user_initiated: result.user_initiated,
+        };
+        self.menus.update_notice_expected = self.update_check.should_open_modal();
+        self.open_modal = self
+            .update_check
+            .should_open_modal()
+            .then_some(GuiShellModal::UpdateNotice);
+        self.push_system_chat_message(result.message.clone());
+        self.push_transient_notification(self.update_check.status_level(), result.message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn apply_startup_public_server_cache(&mut self, servers: Vec<(String, String)>) -> bool {
+        let mut settings = self.configuration.to_stored_settings();
+        settings.public_servers = Some(servers);
+        self.resync_from_settings(settings);
         self.clear_action_error_and_refresh();
         true
     }
@@ -11036,6 +11424,60 @@ impl SyncplayGuiShellAppState {
         true
     }
 
+    fn begin_room_history_edit(&mut self) -> bool {
+        if self.room_history_edit_session.is_some() {
+            return self.record_action_error("A room-history edit session is already active.");
+        }
+        self.room_history_edit_session = Some(GuiRoomHistoryEditSessionState {
+            buffer: self.configuration.room_history_multiline_text(),
+            is_dirty: false,
+        });
+        self.active_view = GuiShellView::Configuration;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_room_history_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.room_history_edit_session.as_mut() else {
+            return self.record_action_error("No room-history edit session is currently active.");
+        };
+        let current_value = self.configuration.room_history_multiline_text();
+        session.is_dirty = buffer != current_value;
+        session.buffer = buffer;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn commit_room_history_edit(&mut self) -> bool {
+        let Some(session) = self.room_history_edit_session.clone() else {
+            return self.record_action_error("No room-history edit session is currently active.");
+        };
+        self.configuration
+            .apply_room_history_multiline_text(&session.buffer);
+        self.room_history_edit_session = None;
+        let room_history_count = self
+            .configuration
+            .settings
+            .room_list
+            .as_ref()
+            .map_or(0, Vec::len);
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Room history updated: {room_history_count} entries."),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_room_history_edit(&mut self) -> bool {
+        if self.room_history_edit_session.is_none() {
+            return self.record_action_error("No room-history edit session is currently active.");
+        }
+        self.room_history_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     fn begin_configuration_save(&mut self) -> bool {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
@@ -11335,7 +11777,7 @@ impl SyncplayGuiShellAppState {
                 true
             }
             ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
-            ("Advanced", "Update Check") => self.announce_update_notice_available(),
+            ("Advanced", "Update Check") => self.begin_update_check(true),
             ("Window", "Show Chat") | ("Window", "Show Playlist") | ("Window", "Show Users") => {
                 self.active_view = GuiShellView::MainWindow;
                 self.push_system_chat_message(format!(
@@ -11347,7 +11789,7 @@ impl SyncplayGuiShellAppState {
             }
             ("Help", "About") => self.announce_about_dialog_requested(),
             ("Help", "Manual / Command Help") => self.announce_help_requested(),
-            ("Help", "Check for Updates") => self.announce_update_notice_available(),
+            ("Help", "Check for Updates") => self.begin_update_check(true),
             _ => self.record_action_error("The selected menu action is not mapped yet."),
         }
     }
@@ -11729,6 +12171,10 @@ impl SyncplayGuiShellAppState {
         self.resync_from_settings(settings);
         self.selection.selected_media_search_directory = Some(target_index);
         self.apply_selection_to_surfaces();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Syncplay media directories have been updated.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -11761,6 +12207,10 @@ impl SyncplayGuiShellAppState {
             Some(index)
         };
         self.apply_selection_to_surfaces();
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Syncplay media directories have been updated.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -13032,7 +13482,11 @@ where
     if GuiStartupPlayerIpcSource::from_lookup(&lookup).is_none() {
         messages.push(GuiStartupPlayerIpcSource::missing_startup_message());
     }
-    gui_startup_actions_from_messages(messages)
+    let mut actions = gui_startup_actions_from_messages(messages);
+    if !cfg!(test) {
+        actions.extend(gui_startup_remote_actions(settings));
+    }
+    actions
 }
 
 #[cfg(test)]
@@ -13104,6 +13558,51 @@ fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellActio
         message: summary_message,
     });
     actions
+}
+
+fn gui_startup_remote_actions(settings: &StoredClientSettingsMvp) -> Vec<GuiShellAction> {
+    gui_startup_remote_actions_with_fetchers(
+        settings,
+        SystemTime::now(),
+        |language| remote_services::check_for_updates(Some(language), false),
+        |language| remote_services::fetch_public_servers(Some(language)),
+    )
+}
+
+fn gui_startup_remote_actions_with_fetchers<FUpdate, FPublicServers>(
+    settings: &StoredClientSettingsMvp,
+    now: SystemTime,
+    fetch_update_check: FUpdate,
+    fetch_public_servers: FPublicServers,
+) -> Vec<GuiShellAction>
+where
+    FUpdate: Fn(&str) -> remote_services::LegacyUpdateCheckResult,
+    FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String>,
+{
+    if settings.check_for_updates_automatically != Some(true) {
+        return Vec::new();
+    }
+
+    let language = settings
+        .language
+        .as_deref()
+        .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+        .unwrap_or("en");
+
+    if remote_services::should_run_automatic_update_check(Some(settings), now) {
+        return vec![GuiShellAction::ApplyUpdateCheckResult(fetch_update_check(
+            language,
+        ))];
+    }
+
+    if settings.public_servers.as_ref().is_none_or(Vec::is_empty)
+        && let Ok(servers) = fetch_public_servers(language)
+        && !servers.is_empty()
+    {
+        return vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
+    }
+
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -13633,7 +14132,7 @@ mod tests {
         );
 
         assert!(state.tls_prompt_expected);
-        assert!(state.update_notice_expected);
+        assert!(!state.update_notice_expected);
         assert!(state.about_dialog_available);
     }
 
@@ -14088,6 +14587,79 @@ mod tests {
                 .last()
                 .map(|row| row.message.as_str()),
             Some("TLS certificate trusted for this session.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_user_initiated_update_check_results() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
+            super::remote_services::LegacyUpdateCheckResult {
+                status: super::remote_services::LegacyUpdateCheckStatus::UpdateAvailable,
+                message: "A new version of Syncplay is available.".to_owned(),
+                url: Some("https://syncplay.pl/download/".to_owned()),
+                public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned(),)]),
+                checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
+                user_initiated: true,
+            }
+        )));
+
+        assert!(state.menus.update_notice_expected);
+        assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+        assert_eq!(
+            state.update_check.message.as_deref(),
+            Some("A new version of Syncplay is available.")
+        );
+        assert_eq!(
+            state
+                .configuration
+                .to_stored_settings()
+                .last_checked_for_updates
+                .as_deref(),
+            Some("2026-03-08 09:10:11.123")
+        );
+        assert_eq!(state.public_servers.servers.len(), 1);
+        assert_eq!(
+            state
+                .public_servers
+                .servers
+                .first()
+                .map(|row| (row.label.as_str(), row.address.as_str())),
+            Some(("Primary", "syncplay.pl:8999"))
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("A new version of Syncplay is available.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when_up_to_date() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
+            super::remote_services::LegacyUpdateCheckResult {
+                status: super::remote_services::LegacyUpdateCheckStatus::UpToDate,
+                message: "Syncplay is up to date".to_owned(),
+                url: None,
+                public_servers: None,
+                checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
+                user_initiated: false,
+            }
+        )));
+
+        assert!(!state.menus.update_notice_expected);
+        assert_eq!(state.open_modal, None);
+        assert_eq!(
+            state.update_check.message.as_deref(),
+            Some("Syncplay is up to date")
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Syncplay is up to date")
         );
     }
 
@@ -15873,7 +16445,7 @@ mod tests {
         }));
 
         assert!(state.menus.tls_prompt_expected);
-        assert!(state.menus.update_notice_expected);
+        assert!(!state.menus.update_notice_expected);
     }
 
     #[test]
@@ -19148,6 +19720,59 @@ mod tests {
     }
 
     #[test]
+    fn gui_startup_remote_actions_run_due_automatic_update_checks() {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: Some(true),
+            last_checked_for_updates: None,
+            ..StoredClientSettingsMvp::default()
+        };
+        let expected = super::remote_services::LegacyUpdateCheckResult {
+            status: super::remote_services::LegacyUpdateCheckStatus::UpdateAvailable,
+            message: "Remote startup update available.".to_owned(),
+            url: Some("https://syncplay.pl/download/".to_owned()),
+            public_servers: None,
+            checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
+            user_initiated: false,
+        };
+
+        let actions = super::gui_startup_remote_actions_with_fetchers(
+            &settings,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
+            |_| expected.clone(),
+            |_| Ok(Vec::new()),
+        );
+
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::ApplyUpdateCheckResult(expected)]
+        );
+    }
+
+    #[test]
+    fn gui_startup_remote_actions_seed_public_servers_when_cache_is_empty() {
+        let settings = StoredClientSettingsMvp {
+            check_for_updates_automatically: Some(true),
+            last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let actions = super::gui_startup_remote_actions_with_fetchers(
+            &settings,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
+            |_| panic!("update check should not run when the timestamp is still fresh"),
+            |_| Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
+        );
+
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::ApplyStartupPublicServerCache(vec![(
+                "Primary".to_owned(),
+                "syncplay.pl:8999".to_owned(),
+            )])]
+        );
+    }
+
+    #[test]
     fn gui_startup_actions_from_lookup_prefers_file_public_server_source() {
         let settings = StoredClientSettingsMvp {
             public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
@@ -19537,6 +20162,7 @@ mod tests {
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: Some("D:/Media".to_owned()),
             last_media_dialog_directory: Some("E:/Dialogs".to_owned()),
+            last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -19576,6 +20202,7 @@ mod tests {
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: Some("C:/Media".to_owned()),
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+            last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -19641,6 +20268,7 @@ mod tests {
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: None,
             last_media_dialog_directory: None,
+            last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -20098,6 +20726,68 @@ mod tests {
     }
 
     #[test]
+    fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room_list: Some(vec!["beta".to_owned(), "alpha".to_owned()]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+        let configuration_tree = state.configuration_widget_tree();
+        let editor = configuration_tree
+            .find("room-history:edit:entries")
+            .expect("room-history text area should exist while editing");
+        assert_eq!(editor.kind, GuiWidgetKind::TextArea);
+        assert_eq!(editor.value.as_deref(), Some("beta\nalpha"));
+
+        assert!(state.apply(GuiShellAction::UpdateRoomHistoryEdit(
+            "zeta\n\nalpha\nbeta".to_owned()
+        )));
+        assert!(state.apply(GuiShellAction::CommitRoomHistoryEdit));
+
+        assert_eq!(
+            state.configuration.to_stored_settings().room_list,
+            Some(vec![
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "zeta".to_owned(),
+            ])
+        );
+        assert_eq!(
+            state
+                .configuration
+                .control_value("Connection", "Room History"),
+            Some("3")
+        );
+        assert!(state.room_history_edit_session.is_none());
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Room history updated: 3 entries.")
+        );
+    }
+
+    #[test]
+    fn gui_shell_app_state_cancels_room_history_edit_without_changing_settings() {
+        let original = vec!["beta".to_owned(), "alpha".to_owned()];
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room_list: Some(original.clone()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+        assert!(state.apply(GuiShellAction::UpdateRoomHistoryEdit(
+            "zeta\nalpha".to_owned()
+        )));
+        assert!(state.apply(GuiShellAction::CancelRoomHistoryEdit));
+
+        assert_eq!(
+            state.configuration.to_stored_settings().room_list,
+            Some(original)
+        );
+        assert!(state.room_history_edit_session.is_none());
+    }
+
+    #[test]
     fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         let shared_playlist_state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -20157,6 +20847,7 @@ mod tests {
         let menu_action = shell_tree.find("menus:action:0:0").unwrap();
         let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
         let seek_menu_action = shell_tree.find("menus:action:1:1").unwrap();
+        let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
         let user_row = shell_tree.find("main-window:user:0").unwrap();
         let room_set_button = shell_tree.find("main-window:room:set").unwrap();
         let room_join_button = shell_tree.find("main-window:room:join").unwrap();
@@ -20209,6 +20900,8 @@ mod tests {
                 GuiShellAction::TriggerSelectedMenuAction,
             ]
         );
+        assert_eq!(quick_open_media.kind, GuiWidgetKind::Button);
+        assert!(quick_open_media.enabled);
         assert_eq!(
             GuiWidgetEguiRenderer::action_for_list_item_node(user_row),
             Some(GuiShellAction::SelectMainWindowUser(0))
@@ -20353,7 +21046,7 @@ mod tests {
         assert_eq!(saved.language.as_deref(), Some("pt_BR"));
         assert_eq!(saved.check_for_updates_automatically, Some(true));
         assert!(driver.state().menus.tls_prompt_expected);
-        assert!(driver.state().menus.update_notice_expected);
+        assert!(!driver.state().menus.update_notice_expected);
         assert!(
             driver
                 .widget("public-servers:row:0")
@@ -21331,6 +22024,7 @@ assert-pending\tnone\n"
                 selected_public_server_address: Some("custom.example:9001".to_owned()),
                 selected_media_search_directory: None,
                 last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+                last_checked_for_updates: None,
                 public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
             },
         )
@@ -24730,7 +25424,7 @@ assert-pending\tnone\n"
         );
         assert!(persisted_state.main_window.shared_playlist_enabled);
         assert!(persisted_state.menus.tls_prompt_expected);
-        assert!(persisted_state.menus.update_notice_expected);
+        assert!(!persisted_state.menus.update_notice_expected);
         let window = persisted_state
             .menus
             .sections
@@ -24778,6 +25472,18 @@ assert-pending\tnone\n"
             assert!(no_runtime_state.apply(action));
         }
         assert!(no_runtime_state.pending_operation.is_none());
+        assert_eq!(
+            no_runtime_state
+                .public_servers
+                .servers
+                .iter()
+                .map(|row| (row.label.as_str(), row.address.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Alpha", "alpha.example:8999"),
+                ("Beta", "beta.example:9000"),
+            ]
+        );
         assert_eq!(
             no_runtime_state
                 .notifications

@@ -47,7 +47,7 @@ activate	config:System:Auto Update
 add-media-search-directory	C:/Media
 assert-value	config:Media Search:Directory Count	1
 assert-value	menus:dialog:tls	yes
-assert-value	menus:dialog:update	yes
+assert-value	menus:dialog:update	no
 enter-text	config:Connection:Port	false	70000
 assert-value	shell:validation:status	1 issue(s)
 assert-label	shell:validation:issue:0	Connection / Port

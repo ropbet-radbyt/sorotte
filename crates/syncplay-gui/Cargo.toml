@@ -12,7 +12,10 @@ test = false
 [dependencies]
 eframe = "0.33.3"
 egui = "0.33.3"
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls-webpki-roots-no-provider"] }
 rfd = "0.15.4"
+rustls.workspace = true
+serde_json = "1.0.149"
 syncplay-compat = { path = "../syncplay-compat" }
 syncplay-client-app = { path = "../syncplay-client-app" }
 syncplay-client-core = { path = "../syncplay-client-core" }

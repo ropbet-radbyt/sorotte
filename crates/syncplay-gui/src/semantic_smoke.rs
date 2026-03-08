@@ -1022,6 +1022,7 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: Some("C:/Media".to_owned()),
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+            last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
         super::persist_gui_ui_state_at_root(&root, &persisted_ui_state).map_err(|error| {
@@ -1342,7 +1343,17 @@ fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScena
             return Err("detached semantic refresh flow could not begin refresh".to_owned());
         }
         refresh_handle.push_request(super::GuiRuntimeRequest::CompletePendingOperation(
-            super::GuiPendingCompletionRequest::RefreshPublicServers(Vec::new()),
+            super::GuiPendingCompletionRequest::RefreshPublicServers(vec![
+                (
+                    " Detached Primary ".to_owned(),
+                    " detached.example:8999 ".to_owned(),
+                ),
+                ("Duplicate".to_owned(), "DETACHED.EXAMPLE:8999".to_owned()),
+                (
+                    "Detached Backup".to_owned(),
+                    "backup.example:9000".to_owned(),
+                ),
+            ]),
         ));
         super::GuiQueuedRuntimeOwner::pump(&mut refresh_owner, &refresh_handle, &refresh_state);
         let refresh_actions = refresh_handle.drain_actions();
@@ -1352,8 +1363,8 @@ fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScena
                 super::GuiShellAction::CompletePublicServerRefresh(servers)
                     if servers
                         == &vec![
-                            ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
-                            ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                            ("Detached Primary".to_owned(), "detached.example:8999".to_owned()),
+                            ("Detached Backup".to_owned(), "backup.example:9000".to_owned()),
                         ]
             )
         }) {

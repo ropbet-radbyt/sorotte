@@ -1961,11 +1961,38 @@ fn saved_configuration_mismatch_message(
 ) -> Option<String> {
     let expected = expected_saved_configuration(media_search_directory);
 
-    if settings == &expected {
+    let mut normalized = settings.clone();
+    if normalized
+        .last_checked_for_updates
+        .as_deref()
+        .is_some_and(looks_like_legacy_update_timestamp)
+    {
+        normalized.last_checked_for_updates = None;
+    }
+
+    if normalized == expected {
         None
     } else {
         Some(format!("expected {:?}, got {:?}", expected, settings,))
     }
+}
+
+fn looks_like_legacy_update_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 23
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b' '
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'.'
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b' ',
+            13 | 16 => *byte == b':',
+            19 => *byte == b'.',
+            _ => byte.is_ascii_digit(),
+        })
 }
 
 fn expected_saved_configuration(media_search_directory: &str) -> StoredClientSettingsMvp {
@@ -3261,13 +3288,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     steps.push("config-osd-persisted".to_owned());
     steps.push("config-system-persisted".to_owned());
 
-    if let Err(error) = invoke_named_control_with_wait(
-        driver,
-        window,
-        "Shared Playlists",
-        NativeControlKind::Any,
-        step_timeout,
-    ) {
+    if let Err(error) = wait_for_accessible_name(driver, window, "Shared Playlists", step_timeout) {
         steps.push(format!(
             "open-media-prep-shared-playlists-skipped:{}",
             error.replace('|', "/").replace('\n', " ")
@@ -3293,14 +3314,25 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             step_timeout,
         ) {
             Ok(()) => true,
-            Err(fallback_error) => {
-                steps.push(format!(
-                    "open-media-file-skipped:{}",
-                    format!("menu-item-failure={primary_error}; fallback-failure={fallback_error}")
+            Err(fallback_error) => match invoke_named_control_with_wait(
+                driver,
+                window,
+                "Open Media File",
+                NativeControlKind::Button,
+                step_timeout,
+            ) {
+                Ok(()) => true,
+                Err(button_error) => {
+                    steps.push(format!(
+                        "open-media-file-skipped:{}",
+                        format!(
+                            "menu-item-failure={primary_error}; fallback-failure={fallback_error}; button-failure={button_error}"
+                        )
                         .replace('|', "/")
-                ));
-                false
-            }
+                    ));
+                    false
+                }
+            },
         }
     } else {
         true

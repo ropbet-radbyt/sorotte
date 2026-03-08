@@ -1,3 +1,29 @@
+const DEFAULT_PUBLIC_SERVER_LIST_RESPONSE: &str =
+    "[['Alpha', 'alpha.example:8999'], ['Beta', 'beta.example:9000']]";
+const DEFAULT_UPDATE_CHECK_RESPONSE: &str =
+    r#"{"version-status":"uptodate","version-message":"Syncplay is up to date."}"#;
+
+fn install_semantic_remote_response_defaults() {
+    if std::env::var_os("SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE").is_none() {
+        // SAFETY: The suite installs deterministic defaults before any scenario runtime threads start.
+        unsafe {
+            std::env::set_var(
+                "SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE",
+                DEFAULT_PUBLIC_SERVER_LIST_RESPONSE,
+            );
+        }
+    }
+    if std::env::var_os("SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE").is_none() {
+        // SAFETY: The suite installs deterministic defaults before any scenario runtime threads start.
+        unsafe {
+            std::env::set_var(
+                "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE",
+                DEFAULT_UPDATE_CHECK_RESPONSE,
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SuiteOutputFormat {
     Text,
@@ -156,6 +182,7 @@ fn render_summary_json(
 }
 
 fn main() {
+    install_semantic_remote_response_defaults();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse_options(&args) {
         Ok(options) => options,
