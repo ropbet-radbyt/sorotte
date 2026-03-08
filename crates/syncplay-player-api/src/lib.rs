@@ -144,6 +144,9 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         None
     }
+    fn take_pending_chat_request(&mut self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -256,6 +259,7 @@ mod tests {
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
         assert_eq!(player.take_playback_telemetry_update(), None);
+        assert_eq!(player.take_pending_chat_request(), None);
     }
 
     #[test]

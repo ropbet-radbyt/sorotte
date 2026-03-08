@@ -1119,6 +1119,16 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_player_chat_input_if_needed(&mut self) -> Result<usize, PlayerError> {
+        let mut sent = 0usize;
+        while let Some(message) = self.player.take_pending_chat_request() {
+            if self.run_send_chat_message(message)? {
+                sent += 1;
+            }
+        }
+        Ok(sent)
+    }
+
     pub fn run_toggle_ready(&mut self, manually_initiated: bool) -> Result<bool, PlayerError> {
         let actions = self
             .session
@@ -5289,6 +5299,7 @@ mod tests {
         fail_set_position: bool,
         pending_local_file_update: Option<LocalFileUpdate>,
         pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
+        pending_chat_requests: std::collections::VecDeque<String>,
     }
 
     impl PlayerAdapter for RecordingPlayer {
@@ -5320,6 +5331,10 @@ mod tests {
 
         fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
             self.pending_playback_telemetry_update.take()
+        }
+
+        fn take_pending_chat_request(&mut self) -> Option<String> {
+            self.pending_chat_requests.pop_front()
         }
     }
 
@@ -13740,6 +13755,66 @@ mod tests {
             "chat send should resume after reconnect hello"
         );
         assert_eq!(runtime.control().outbound_messages().len(), 1);
+    }
+
+    #[test]
+    fn client_runtime_player_chat_input_dispatches_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer {
+            pending_chat_requests: std::collections::VecDeque::from([String::from(
+                "hello from mpv",
+            )]),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert_eq!(
+            runtime
+                .run_player_chat_input_if_needed()
+                .expect("player chat input should dispatch"),
+            1
+        );
+
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        let ProtocolMessage::Chat(chat_message) = &runtime.control().outbound_messages()[0] else {
+            panic!("queued outbound message should be Chat");
+        };
+        assert_eq!(
+            chat_message.chat,
+            ChatPayload::Text("hello from mpv".to_owned())
+        );
+    }
+
+    #[test]
+    fn client_runtime_player_chat_input_is_suppressed_when_server_chat_is_disabled() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"chat":false}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer {
+            pending_chat_requests: std::collections::VecDeque::from([String::from(
+                "hello from mpv",
+            )]),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert_eq!(
+            runtime
+                .run_player_chat_input_if_needed()
+                .expect("suppressed player chat input should not fail"),
+            0
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
     }
 
     #[test]

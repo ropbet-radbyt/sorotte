@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -1067,10 +1068,76 @@ fn legacy_syncplayintf_script_candidate_paths_legacy_compatible() -> Vec<PathBuf
     ]
 }
 
+const LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER: &str = "-- syncplay-rust-chat-input-bridge";
+
+fn legacy_syncplayintf_chat_input_bridge_source_legacy_compatible() -> &'static str {
+    r#"
+-- syncplay-rust-chat-input-bridge
+local syncplay_rust_original_handle_enter = handle_enter
+function handle_enter()
+    if repl_active and line ~= '' then
+        local syncplay_rust_chat_line = line
+        if opts['backslashSubstituteCharacter'] ~= nil then
+            syncplay_rust_chat_line = string.gsub(syncplay_rust_chat_line, opts['backslashSubstituteCharacter'], "\\")
+        end
+        mp.commandv("script-message", "syncplayintf-chat", syncplay_rust_chat_line)
+    end
+    syncplay_rust_original_handle_enter()
+end
+"#
+}
+
+fn legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(
+    source: &str,
+) -> String {
+    if source.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER) {
+        return source.to_owned();
+    }
+
+    let mut patched = source.to_owned();
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    patched.push_str(legacy_syncplayintf_chat_input_bridge_source_legacy_compatible());
+    patched
+}
+
+fn prepare_legacy_syncplayintf_script_path_legacy_compatible(
+    source_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    let source = fs::read_to_string(source_path).map_err(|error| {
+        anyhow!(
+            "failed to read syncplayintf.lua from '{}': {error}",
+            source_path.display()
+        )
+    })?;
+    if source.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER) {
+        return Ok(source_path.to_path_buf());
+    }
+
+    let patched =
+        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(&source);
+    let target_path = std::env::temp_dir().join(format!(
+        "syncplay-rust-syncplayintf-{}.lua",
+        std::process::id()
+    ));
+    fs::write(&target_path, patched).map_err(|error| {
+        anyhow!(
+            "failed to write patched syncplayintf.lua to '{}': {error}",
+            target_path.display()
+        )
+    })?;
+    Ok(target_path)
+}
+
 fn find_legacy_syncplayintf_script_path_legacy_compatible() -> Option<PathBuf> {
-    legacy_syncplayintf_script_candidate_paths_legacy_compatible()
+    let source_path = legacy_syncplayintf_script_candidate_paths_legacy_compatible()
         .into_iter()
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| candidate.is_file())?;
+    Some(
+        prepare_legacy_syncplayintf_script_path_legacy_compatible(&source_path)
+            .unwrap_or(source_path),
+    )
 }
 
 fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
@@ -1082,7 +1149,7 @@ fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
         .configure_legacy_syncplay_ui_settings(resolved.clone())
         .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))?;
 
-    if resolved.chat_output_enabled
+    if (resolved.chat_output_enabled || resolved.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path_legacy_compatible()
         && let Err(error) = player.load_legacy_syncplayintf_script(&script_path)
     {
@@ -4063,6 +4130,8 @@ async fn flush_runtime_protocol_lines(
     Ok(())
 }
 
+const PLAYER_CHAT_INPUT_POLL_INTERVAL_MS: u64 = 100;
+
 fn publish_pending_local_file_updates(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     config: &ClientLoopConfig,
@@ -4077,6 +4146,12 @@ fn publish_pending_local_file_updates(
         }
     }
     Ok(())
+}
+
+fn drain_player_chat_input_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<bool> {
+    Ok(runtime.run_player_chat_input_if_needed()? > 0)
 }
 
 #[cfg(test)]
@@ -5437,6 +5512,8 @@ where
     let connected_start = Instant::now();
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
+    let mut player_chat_input_tick =
+        tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut local_user_offset_seconds = 0.0f64;
@@ -5544,6 +5621,11 @@ where
                     },
                 )
                 .await?;
+            }
+            _ = player_chat_input_tick.tick() => {
+                if drain_player_chat_input_legacy_compatible(runtime)? {
+                    flush_runtime_protocol_lines(runtime, &mut writer).await?;
+                }
             }
             local_line = recv_local_input_line(&mut local_input_rx) => {
                 let Some(local_line) = local_line else {
@@ -6223,12 +6305,13 @@ mod tests {
     use super::spawn_legacy_external_player_from_spec_legacy_compatible;
     use super::{
         AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-        ConnectedSessionExit, LegacyClientArgOverrides, LegacyExternalPlayerLaunchSpec,
-        LocalInputCommand, LocalOffsetCommand, ManagedMpvLaunchEnvConfig,
-        PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
-        ReconnectCorrectionDiagnosticsFormat, ReconnectCorrectionDiagnosticsState,
-        StoredClientSettingsMvp, apply_chat_policy_overrides, apply_client_behavior_overrides,
-        apply_legacy_client_arg_managed_mpv_overrides, apply_legacy_client_arg_overrides,
+        ConnectedSessionExit, LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER,
+        LegacyClientArgOverrides, LegacyExternalPlayerLaunchSpec, LocalInputCommand,
+        LocalOffsetCommand, ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction,
+        ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
+        ReconnectCorrectionDiagnosticsState, StoredClientSettingsMvp, apply_chat_policy_overrides,
+        apply_client_behavior_overrides, apply_legacy_client_arg_managed_mpv_overrides,
+        apply_legacy_client_arg_overrides,
         apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
         apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
         apply_stored_legacy_startup_player_defaults_if_arg_absent,
@@ -6245,6 +6328,7 @@ mod tests {
         format_file_difference_summary, generate_room_password_legacy_compatible,
         legacy_external_player_launch_spec_from_overrides_legacy_compatible,
         legacy_syncplay_ui_settings_from_stored_settings,
+        legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible,
         legacy_utc_timestamp_string_legacy_compatible,
         load_syncplay_cli_stored_settings_mvp_legacy_compatible,
         managed_mpv_launch_env_config_from_env, normalize_controlled_room_input,
@@ -23519,6 +23603,21 @@ mod tests {
                 ..LegacySyncplayUiSettings::default()
             }
         );
+    }
+
+    #[test]
+    fn legacy_syncplayintf_script_source_with_chat_input_bridge_appends_once() {
+        let source = "function handle_enter()\nend\n";
+
+        let patched =
+            legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(source);
+        assert!(patched.contains(source));
+        assert!(patched.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
+        assert!(patched.contains(r#"mp.commandv("script-message", "syncplayintf-chat""#));
+
+        let repatched =
+            legacy_syncplayintf_script_source_with_chat_input_bridge_legacy_compatible(&patched);
+        assert_eq!(repatched, patched);
     }
 
     #[test]

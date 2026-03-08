@@ -47,6 +47,7 @@ const MPV_PROPERTY_DURATION: &str = "duration";
 const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
 const MPV_RESPONSE_SUCCESS: &str = "success";
 const MPV_EVENT_PROPERTY_CHANGE: &str = "property-change";
+const MPV_EVENT_CLIENT_MESSAGE: &str = "client-message";
 const MPV_OBS_PATH_ID: u64 = 1;
 const MPV_OBS_DURATION_ID: u64 = 2;
 const MPV_OBS_FILE_SIZE_ID: u64 = 3;
@@ -55,6 +56,7 @@ const MPV_OBS_TIME_POS_ID: u64 = 5;
 const MPV_OBS_SPEED_ID: u64 = 6;
 const LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL: i64 = 1;
 const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "syncplayintf";
+const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT: &str = "syncplayintf-chat";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacySyncplayOsdKind {
@@ -105,7 +107,7 @@ impl LegacySyncplayUiSettings {
         let options = [
             (
                 "chatInputEnabled",
-                legacy_syncplay_bool_string_compatible(false),
+                legacy_syncplay_bool_string_compatible(self.chat_input_enabled),
             ),
             (
                 "chatInputFontFamily",
@@ -154,7 +156,7 @@ impl LegacySyncplayUiSettings {
             ("chatBottomMargin", self.chat_bottom_margin.to_string()),
             (
                 "chatDirectInput",
-                legacy_syncplay_bool_string_compatible(false),
+                legacy_syncplay_bool_string_compatible(self.chat_direct_input),
             ),
             (
                 "notificationTimeout",
@@ -271,6 +273,7 @@ pub struct MpvAdapter {
     current_path: Option<String>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
+    pending_chat_requests: VecDeque<String>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     observed_state: MpvObservedState,
     observers_registered: bool,
@@ -308,6 +311,7 @@ impl fmt::Debug for MpvAdapter {
                 "pending_playback_telemetry_update",
                 &self.pending_playback_telemetry_update,
             )
+            .field("pending_chat_requests", &self.pending_chat_requests)
             .field(
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
@@ -353,6 +357,7 @@ impl Default for MpvAdapter {
             current_path: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
+            pending_chat_requests: VecDeque::new(),
             last_polled_local_file_update: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
@@ -717,6 +722,24 @@ impl MpvAdapter {
         }
     }
 
+    fn chat_input_polling_enabled(&self) -> bool {
+        self.legacy_syncplayintf_script_loaded
+            && self.legacy_syncplay_ui_settings.chat_input_enabled
+    }
+
+    fn poll_ipc_events_for_chat_input_if_enabled(&mut self) {
+        if !self.chat_input_polling_enabled() {
+            return;
+        }
+
+        let Some(ipc_client) = self.ipc_client.as_mut() else {
+            return;
+        };
+
+        let _ = ipc_client.get_property(MPV_PROPERTY_PAUSE);
+        self.drain_ipc_events_if_attached();
+    }
+
     fn drain_ipc_events_if_attached(&mut self) {
         let pending_events = match self.ipc_client.as_mut() {
             Some(ipc_client) => ipc_client.take_pending_events(),
@@ -731,8 +754,14 @@ impl MpvAdapter {
         let Some(event_name) = event.get("event").and_then(Value::as_str) else {
             return;
         };
-        if event_name != MPV_EVENT_PROPERTY_CHANGE {
-            return;
+
+        match event_name {
+            MPV_EVENT_PROPERTY_CHANGE => {}
+            MPV_EVENT_CLIENT_MESSAGE => {
+                self.handle_client_message_event(event);
+                return;
+            }
+            _ => return,
         }
 
         let Some(property_name) = event.get("name").and_then(Value::as_str) else {
@@ -799,6 +828,22 @@ impl MpvAdapter {
         if file_metadata_changed {
             self.maybe_emit_local_file_update_from_observed_state();
         }
+    }
+
+    fn handle_client_message_event(&mut self, event: &Value) {
+        let Some(args) = event.get("args").and_then(Value::as_array) else {
+            return;
+        };
+        let Some(message_name) = args.first().and_then(Value::as_str) else {
+            return;
+        };
+        if message_name != LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT {
+            return;
+        }
+        let Some(message) = args.get(1).and_then(Value::as_str) else {
+            return;
+        };
+        self.pending_chat_requests.push_back(message.to_owned());
     }
 
     fn maybe_emit_local_file_update_from_observed_state(&mut self) {
@@ -1104,6 +1149,18 @@ impl PlayerAdapter for MpvAdapter {
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.pending_playback_telemetry_update.take()
+    }
+
+    fn take_pending_chat_request(&mut self) -> Option<String> {
+        if self.pending_chat_requests.is_empty() && !self.chat_input_polling_enabled() {
+            return None;
+        }
+        self.ensure_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        if self.pending_chat_requests.is_empty() {
+            self.poll_ipc_events_for_chat_input_if_enabled();
+        }
+        self.pending_chat_requests.pop_front()
     }
 }
 
@@ -2107,7 +2164,7 @@ mod tests {
         let options = second_payload["command"][3]
             .as_str()
             .expect("syncplayintf options should be a string");
-        assert!(options.contains("chatInputEnabled=False"));
+        assert!(options.contains("chatInputEnabled=True"));
         assert!(options.contains("chatInputFontUnderline=True"));
         assert!(options.contains("chatInputFontFamily=serif"));
         assert!(options.contains("chatInputRelativeFontSize=18"));
@@ -2123,7 +2180,7 @@ mod tests {
         assert!(options.contains("chatTopMargin=40"));
         assert!(options.contains("chatLeftMargin=35"));
         assert!(options.contains("chatBottomMargin=45"));
-        assert!(options.contains("chatDirectInput=False"));
+        assert!(options.contains("chatDirectInput=True"));
         assert!(options.contains("notificationTimeout=4"));
         assert!(options.contains("alertTimeout=6"));
         assert!(options.contains("chatTimeout=8"));
@@ -2553,6 +2610,29 @@ mod tests {
             "commanded local state currently wins over earlier async time-pos event in this slice"
         );
         assert_eq!(adapter.playback_rate(), 1.10);
+    }
+
+    #[test]
+    fn client_message_events_from_syncplayintf_queue_pending_chat_requests() {
+        let (transport, _state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+            r#"{"request_id":5,"error":"success"}"#,
+            r#"{"request_id":6,"error":"success"}"#,
+            r#"{"event":"client-message","args":["syncplayintf-chat","hello \\ world"]}"#,
+            r#"{"request_id":7,"error":"success","data":false}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+        adapter.legacy_syncplayintf_script_loaded = true;
+        adapter.legacy_syncplay_ui_settings.chat_input_enabled = true;
+
+        assert_eq!(
+            adapter.take_pending_chat_request(),
+            Some("hello \\ world".to_owned())
+        );
+        assert_eq!(adapter.take_pending_chat_request(), None);
     }
 
     #[cfg(windows)]

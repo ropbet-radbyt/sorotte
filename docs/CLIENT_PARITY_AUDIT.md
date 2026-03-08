@@ -70,23 +70,26 @@ These settings now drive CLI/headless `mpv` runtime behavior for both managed la
 - advanced chat presentation settings are now applied through `script-message-to syncplayintf set_syncplayintf_options`, so the Rust headless path can use the upstream chatroom/scrolling layout, margins, font sizing, and history rules without reimplementing the Lua renderer
 - the standard `mpv` OSD is moved away from the chat area when the stored chat/OSD layout rules require it
 
+### Headless `mpv` Chat Input Runtime Parity
+
+The remaining input-side no-op gap in this bucket is now closed as well.
+
+These settings now affect runtime behavior for managed launch and explicit JSON-IPC attach mode:
+
+- `chatInputEnabled`
+- `chatDirectInput`
+- chat input font family, size, weight, underline, color, and position
+
+The Rust headless path now:
+
+- loads a patched runtime copy of the upstream `syncplayintf.lua` script so `mpv` chat submission emits a JSON-IPC-visible `client-message` event without forking the upstream Lua file in-tree
+- consumes those `client-message` events in the Rust `mpv` adapter and routes them through the existing outbound Syncplay chat flow
+- preserves the legacy Python/Lua backslash workaround while translating `mpv`-side input back into normal Syncplay chat payloads
+- loads the Lua script whenever either chat output or chat input is enabled, so input-only chat configurations are no longer runtime no-ops
+
 ## Highest-Priority Remaining Work
 
-### 1. GUI-Only Settings vs Runtime Behavior
-
-The storage-only portion of this gap is smaller now, but it is not fully closed yet. The remaining no-op area is now the player-side chat input/control surface rather than the basic OSD/runtime toggles or output rendering.
-
-Still unresolved:
-
-- mpv-side chat input behavior (`chatInputEnabled`, `chatDirectInput`, and related input styling/options) is still not supported end to end because the current Rust adapter does not consume the Lua script stdout/control path needed to turn `mpv` keystrokes into Syncplay chat messages
-- the Rust runtime currently forces the Lua-side input path off while still using the Lua-side output renderer, so output settings work but input-specific GUI settings remain no-op at runtime
-
-The next decision for this bucket is still the same:
-
-- either extend Rust headless mode with a safe Lua/script integration path for the remaining input-side settings
-- or document the remaining script-driven chat input surface as intentionally out of scope for Rust headless mode
-
-### 2. Maintainability Risk While Closing Parity
+### 1. Maintainability Risk While Closing Parity
 
 Parity work is landing in very large modules:
 
@@ -105,7 +108,7 @@ This is not a parity gap by itself, but it is a delivery risk. New feature work 
 
 ## Practical Priority Order
 
-1. Revisit GUI-only runtime-setting parity decisions after the player/runtime path is steadier.
-2. Keep extracting large modules as parity work lands.
-3. Port non-`mpv` player backends after `mpv` parity is complete.
-4. Expand broader GUI/client workflow validation after the Windows-first path is no longer the main blocker.
+1. Keep extracting large modules as parity work lands.
+2. Port non-`mpv` player backends after `mpv` parity is complete.
+3. Expand broader GUI/client workflow validation after the Windows-first path is no longer the main blocker.
+4. Automate more real-`mpv` coverage in CI instead of relying on ignored/manual smokes.
