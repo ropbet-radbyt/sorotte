@@ -11,9 +11,11 @@ use syncplay_player_api::{
 };
 
 const MPV_COMMAND_SET_PROPERTY: &str = "set_property";
+const MPV_COMMAND_SET: &str = "set";
 const MPV_COMMAND_GET_PROPERTY: &str = "get_property";
 const MPV_COMMAND_OBSERVE_PROPERTY: &str = "observe_property";
 const MPV_COMMAND_LOADFILE: &str = "loadfile";
+const MPV_COMMAND_APPLY_PROFILE: &str = "apply-profile";
 const MPV_LOADFILE_REPLACE: &str = "replace";
 const MPV_PROPERTY_PAUSE: &str = "pause";
 const MPV_PROPERTY_TIME_POS: &str = "time-pos";
@@ -531,6 +533,16 @@ impl PlayerAdapter for MpvAdapter {
         ]))?;
         self.current_path = Some(path.to_owned());
         self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
+        Ok(())
+    }
+
+    fn set_option_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([MPV_COMMAND_SET, name, value]))?;
+        Ok(())
+    }
+
+    fn apply_profile(&mut self, profile: &str) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([MPV_COMMAND_APPLY_PROFILE, profile]))?;
         Ok(())
     }
 
@@ -1617,6 +1629,48 @@ mod tests {
             payload,
             json!({
                 "command": ["loadfile", "movie.mkv", "replace"],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn set_option_string_sends_json_ipc_set_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .set_option_string("script-opts", "osc=no")
+            .expect("attached mpv transport should accept generic option updates");
+
+        let writes = state.writes();
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["set", "script-opts", "osc=no"],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn apply_profile_sends_json_ipc_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .apply_profile("fast")
+            .expect("attached mpv transport should accept apply-profile");
+
+        let writes = state.writes();
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["apply-profile", "fast"],
                 "request_id": 1
             })
         );

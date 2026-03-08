@@ -69,6 +69,12 @@ pub trait PlayerAdapter: Send + Sync {
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("open_file"))
     }
+    fn set_option_string(&mut self, _name: &str, _value: &str) -> Result<(), PlayerError> {
+        Err(PlayerError::Unsupported("set_option_string"))
+    }
+    fn apply_profile(&mut self, _profile: &str) -> Result<(), PlayerError> {
+        Err(PlayerError::Unsupported("apply_profile"))
+    }
     fn set_paused(&mut self, _paused: bool) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("set_paused"))
     }
@@ -158,6 +164,14 @@ mod tests {
         assert_eq!(
             player.open_file("movie.mkv"),
             Err(PlayerError::Unsupported("open_file"))
+        );
+        assert_eq!(
+            player.set_option_string("script-opts", "osc=no"),
+            Err(PlayerError::Unsupported("set_option_string"))
+        );
+        assert_eq!(
+            player.apply_profile("fast"),
+            Err(PlayerError::Unsupported("apply_profile"))
         );
         assert_eq!(
             player.set_paused(true),

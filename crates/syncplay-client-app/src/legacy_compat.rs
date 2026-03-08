@@ -75,7 +75,7 @@ pub fn legacy_configuration_getter_startup_compat_entries()
         LegacyConfigurationGetterStartupCompatEntry {
             input: "--player-path",
             status: Supported,
-            note: "legacy mpv paths auto-select managed mpv integration; non-mpv values remain supported as launch-only unmanaged fallback and are explicitly ignored by managed mpv or explicit-IPC modes",
+            note: "legacy mpv paths auto-select managed mpv integration with Python-style mpv path resolution; non-mpv values remain supported as launch-only unmanaged fallback and are explicitly ignored by managed mpv or explicit-IPC modes",
         },
         LegacyConfigurationGetterStartupCompatEntry {
             input: "-psn",
@@ -110,7 +110,7 @@ pub fn legacy_configuration_getter_startup_compat_entries()
         LegacyConfigurationGetterStartupCompatEntry {
             input: "_args",
             status: Supported,
-            note: "launch modes forward arbitrary argv with Python-style file routing; explicit-mpv-IPC supports the documented finite translation subset (--pause/--start/--speed/--volume/--mute/--deinterlace/--keepaspect/--keepaspect-window/--sub-visibility/--osd-bar/--fullscreen/--ontop/--border/--force-window/--keep-open/--keep-open-pause/--cursor-autohide-fs-only/--stop-screensaver/--window-maximized/--window-minimized), and all other tokens are treated as launch-only with a deterministic attach-mode warning",
+            note: "launch modes forward arbitrary argv with Python-style file routing; explicit-mpv-IPC applies the runtime property subset plus generic --name=value / --profile attach commands, and only remaining launch-only tokens emit a deterministic attach-mode warning",
         },
     ]
 }
@@ -203,12 +203,12 @@ pub fn legacy_configuration_getter_ini_compat_entries()
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.playerPath",
             status: Supported,
-            note: "loaded/persisted into legacy player startup path default (managed/unmanaged startup semantics remain partial)",
+            note: "loaded/persisted into the legacy player startup path default, including Python-style managed mpv path resolution and launch routing",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.perPlayerArguments",
             status: Supported,
-            note: "Python-serialized dict is loaded/persisted for startup player-arg defaults keyed by playerPath (startup runtime semantics remain partial)",
+            note: "Python-serialized dict is loaded/persisted for startup player-arg defaults keyed by playerPath across stored config, CLI overrides, managed launch, and explicit-mpv-IPC attach mode",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.roomList",

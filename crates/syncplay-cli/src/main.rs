@@ -526,9 +526,16 @@ struct LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
     unsupported_tokens: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LegacyExplicitMpvIpcStartupPlayerCommand {
+    SetOptionString { name: String, value: String },
+    ApplyProfile { profile: String },
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 struct LegacyExplicitMpvIpcStartupPlayerArgAnalysis {
     parsed: LegacyExplicitMpvIpcStartupPlayerArgs,
+    runtime_commands: Vec<LegacyExplicitMpvIpcStartupPlayerCommand>,
     diagnostics: LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
 }
 
@@ -1935,7 +1942,7 @@ fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyClientArgOver
     }
     if !overrides.player_args.is_empty() {
         eprintln!(
-            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC only applies a best-effort runtime subset (--pause/--no-pause, --start, --speed, --volume, --mute/--no-mute, --deinterlace/--no-deinterlace, --keepaspect/--no-keepaspect, --keepaspect-window/--no-keepaspect-window, --sub-visibility/--no-sub-visibility, --osd-bar/--no-osd-bar, --fs/--fullscreen, --ontop/--no-ontop, --border/--no-border, --force-window/--no-force-window, --keep-open/--no-keep-open, --keep-open-pause/--no-keep-open-pause, --cursor-autohide-fs-only/--no-cursor-autohide-fs-only, --stop-screensaver/--no-stop-screensaver, --window-maximized/--no-window-maximized, --window-minimized/--no-window-minimized)"
+            "warning: legacy player arguments after [file] are forwarded for managed mpv and unmanaged external launch; explicit-mpv-IPC applies the runtime property subset plus generic --name=value / --profile attach commands, and only remaining launch-only tokens are warned"
         );
     }
 }
@@ -2501,14 +2508,81 @@ fn apply_legacy_client_arg_managed_mpv_overrides(
     }
 }
 
+fn push_unique_pathbuf_legacy_compatible(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !paths.iter().any(|existing| existing == &candidate) {
+        paths.push(candidate);
+    }
+}
+
+#[cfg(windows)]
+fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+    &["mpv.exe", "mpv.com"]
+}
+
+#[cfg(not(windows))]
+fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+    &["mpv"]
+}
+
+fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> PathBuf {
+    let mut candidates = vec![requested.to_path_buf()];
+    if requested.is_dir() || !requested.exists() {
+        for file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
+            push_unique_pathbuf_legacy_compatible(&mut candidates, requested.join(file_name));
+        }
+    }
+    if !requested.exists()
+        && let Some(parent) = requested.parent()
+        && let Some(file_name) = requested.file_name().and_then(|value| value.to_str())
+    {
+        let normalized = file_name.trim().to_ascii_lowercase();
+        if matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com") {
+            for candidate_file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
+                push_unique_pathbuf_legacy_compatible(
+                    &mut candidates,
+                    parent.join(candidate_file_name),
+                );
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| requested.to_path_buf())
+}
+
+fn managed_mpv_launch_program_requires_existing_file_legacy_compatible(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .to_string_lossy()
+            .chars()
+            .any(|character| matches!(character, '/' | '\\'))
+}
+
 fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) -> bool {
-    let file_name = player_path
+    let trimmed = player_path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let normalized = trimmed.replace('\\', "/").to_ascii_lowercase();
+    if normalized.contains("mpvnet") || !normalized.contains("mpv") {
+        return false;
+    }
+
+    let file_name = Path::new(trimmed)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(trimmed)
         .trim()
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(player_path);
-    let normalized = file_name.trim().to_ascii_lowercase();
-    matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com")
+        .to_ascii_lowercase();
+    if matches!(file_name.as_str(), "mpv" | "mpv.exe" | "mpv.com") {
+        return true;
+    }
+
+    let requested = Path::new(trimmed);
+    let resolved = resolve_managed_mpv_launch_program_legacy_compatible(requested);
+    resolved.is_file()
+        || !managed_mpv_launch_program_requires_existing_file_legacy_compatible(&resolved)
 }
 
 fn legacy_player_path_compatibility_warning_line_legacy_compatible(
@@ -2517,7 +2591,7 @@ fn legacy_player_path_compatibility_warning_line_legacy_compatible(
     let player_path = overrides.player_path.as_deref()?;
     if legacy_player_path_requests_managed_mpv_legacy_compatible(player_path) {
         Some(
-            "warning: legacy --player-path selects managed mpv integration for mpv binaries; non-mpv values remain launch-only unmanaged fallback",
+            "warning: legacy --player-path selects managed mpv integration for Python-style mpv paths; non-mpv values remain launch-only unmanaged fallback",
         )
     } else {
         Some(
@@ -2583,6 +2657,47 @@ fn format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
     value: &str,
 ) -> String {
     format!("{flag} {value}")
+}
+
+fn parse_legacy_explicit_mpv_ipc_generic_option_assignment_legacy_compatible(
+    arg: &str,
+) -> Option<(String, String)> {
+    let option = arg
+        .strip_prefix("--")
+        .or_else(|| arg.strip_prefix('-'))
+        .filter(|option| !option.is_empty())?;
+    let (name, value) = option.split_once('=')?;
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return None;
+    }
+    Some((trimmed_name.to_owned(), value.to_owned()))
+}
+
+fn legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(
+    command: &LegacyExplicitMpvIpcStartupPlayerCommand,
+) -> (&str, Option<&str>) {
+    match command {
+        LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, .. } => {
+            ("set-option", Some(name.as_str()))
+        }
+        LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile { .. } => ("apply-profile", None),
+    }
+}
+
+fn push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+    commands: &mut Vec<LegacyExplicitMpvIpcStartupPlayerCommand>,
+    command: LegacyExplicitMpvIpcStartupPlayerCommand,
+) {
+    let command_key =
+        legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(&command);
+    if let Some(existing_index) = commands.iter().position(|existing| {
+        legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(existing)
+            == command_key
+    }) {
+        commands.remove(existing_index);
+    }
+    commands.push(command);
 }
 
 fn analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
@@ -3086,6 +3201,57 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
             index += 1;
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--profile=") {
+            if value.trim().is_empty() {
+                analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            } else {
+                push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+                    &mut analysis.runtime_commands,
+                    LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+                        profile: value.to_owned(),
+                    },
+                );
+                analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            }
+            index += 1;
+            continue;
+        }
+        if arg == "--profile" {
+            if let Some(next) = player_args.get(index + 1) {
+                if next.starts_with("--") {
+                    analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+                    index += 1;
+                    continue;
+                }
+                push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+                    &mut analysis.runtime_commands,
+                    LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+                        profile: next.to_owned(),
+                    },
+                );
+                analysis.diagnostics.supported_tokens.push(
+                    format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
+                        arg, next,
+                    ),
+                );
+                index += 2;
+                continue;
+            }
+            analysis.diagnostics.malformed_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some((name, value)) =
+            parse_legacy_explicit_mpv_ipc_generic_option_assignment_legacy_compatible(arg)
+        {
+            push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+                &mut analysis.runtime_commands,
+                LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, value },
+            );
+            analysis.diagnostics.supported_tokens.push(arg.to_owned());
+            index += 1;
+            continue;
+        }
 
         analysis.diagnostics.unsupported_tokens.push(arg.to_owned());
         index += 1;
@@ -3204,20 +3370,45 @@ where
     if explicit_mpv_ipc_path_from_env().is_none() {
         return Ok(false);
     }
+    let startup_arg_analysis =
+        analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
+            &overrides.player_args,
+        );
+    let startup_args = &startup_arg_analysis.parsed;
     let mut applied = false;
+    let mut applied_supported_commands = 0usize;
+    for command in &startup_arg_analysis.runtime_commands {
+        match command {
+            LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, value } => {
+                retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+                    player.set_option_string(name, value)
+                })
+                .map_err(|error| {
+                    anyhow!(
+                        "failed applying legacy explicit-mpv-IPC startup '--{name}={value}' override: {error}"
+                    )
+                })?;
+            }
+            LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile { profile } => {
+                retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+                    player.apply_profile(profile)
+                })
+                .map_err(|error| {
+                    anyhow!(
+                        "failed applying legacy explicit-mpv-IPC startup '--profile={profile}' override: {error}"
+                    )
+                })?;
+            }
+        }
+        applied_supported_commands += 1;
+        applied = true;
+    }
     if let Some(file) = overrides.file.as_deref() {
         player.open_file(file).map_err(|error| {
             anyhow!("failed opening legacy startup file via attached player: {error}")
         })?;
         applied = true;
     }
-
-    let startup_arg_analysis =
-        analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(
-            &overrides.player_args,
-        );
-    let startup_args = &startup_arg_analysis.parsed;
-    let mut applied_supported_commands = 0usize;
     if let Some(start_position_seconds) = startup_args.start_position_seconds {
         retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
             player.set_position(start_position_seconds)
@@ -3506,12 +3697,15 @@ fn create_mpv_adapter_from_path_or_stub(ipc_path: &str) -> MpvAdapter {
 fn spawn_managed_mpv_and_attach(
     config: ManagedMpvLaunchEnvConfig,
 ) -> anyhow::Result<(MpvAdapter, ManagedMpvProcessGuard)> {
-    let mpv_bin = config.mpv_bin.or_else(find_default_managed_mpv_bin).ok_or_else(|| {
+    let requested_mpv_bin = config.mpv_bin.or_else(find_default_managed_mpv_bin).ok_or_else(|| {
         anyhow!(
             "managed mpv launch requested but no mpv binary was found; set SYNCPLAY_CLIENT_MPV_MANAGED_BIN"
         )
     })?;
-    if !mpv_bin.exists() {
+    let mpv_bin = resolve_managed_mpv_launch_program_legacy_compatible(&requested_mpv_bin);
+    if managed_mpv_launch_program_requires_existing_file_legacy_compatible(&mpv_bin)
+        && !mpv_bin.is_file()
+    {
         return Err(anyhow!(
             "managed mpv binary does not exist: {}",
             mpv_bin.display()
@@ -6830,7 +7024,38 @@ mod tests {
     }
 
     #[test]
-    fn legacy_player_path_requests_managed_mpv_legacy_compatible_recognizes_only_mpv_binaries() {
+    fn resolve_managed_mpv_launch_program_legacy_compatible_expands_python_style_directory_inputs()
+    {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let portable_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-managed-mpv-resolution-{unique_suffix}-portable-mpv"
+        ));
+        std::fs::create_dir_all(&portable_dir).expect("portable mpv dir should be created");
+        #[cfg(windows)]
+        let mpv_executable = portable_dir.join("mpv.exe");
+        #[cfg(not(windows))]
+        let mpv_executable = portable_dir.join("mpv");
+        std::fs::write(&mpv_executable, b"").expect("portable mpv executable should be created");
+
+        assert_eq!(
+            super::resolve_managed_mpv_launch_program_legacy_compatible(&portable_dir),
+            mpv_executable
+        );
+        assert_eq!(
+            super::resolve_managed_mpv_launch_program_legacy_compatible(&portable_dir.join("mpv")),
+            mpv_executable
+        );
+
+        let _ = std::fs::remove_file(&mpv_executable);
+        let _ = std::fs::remove_dir(&portable_dir);
+    }
+
+    #[test]
+    fn legacy_player_path_requests_managed_mpv_legacy_compatible_matches_python_style_mpv_paths() {
+        assert!(super::legacy_player_path_requests_managed_mpv_legacy_compatible("mpv"));
         assert!(
             super::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/mpv.exe")
         );
@@ -6846,6 +7071,35 @@ mod tests {
                 "C:/players/mpvnet.exe"
             )
         );
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic enough for test")
+            .as_nanos();
+        let portable_dir = std::env::temp_dir().join(format!(
+            "syncplay-cli-mpv-path-resolution-{unique_suffix}-portable-mpv"
+        ));
+        std::fs::create_dir_all(&portable_dir).expect("portable mpv dir should be created");
+        #[cfg(windows)]
+        let mpv_executable = portable_dir.join("mpv.exe");
+        #[cfg(not(windows))]
+        let mpv_executable = portable_dir.join("mpv");
+        std::fs::write(&mpv_executable, b"").expect("portable mpv executable should be created");
+
+        assert!(
+            super::legacy_player_path_requests_managed_mpv_legacy_compatible(
+                portable_dir.to_string_lossy().as_ref()
+            )
+        );
+        let unresolved_prefix = portable_dir.join("mpv");
+        assert!(
+            super::legacy_player_path_requests_managed_mpv_legacy_compatible(
+                unresolved_prefix.to_string_lossy().as_ref()
+            )
+        );
+
+        let _ = std::fs::remove_file(&mpv_executable);
+        let _ = std::fs::remove_dir(&portable_dir);
     }
 
     #[test]
@@ -6863,7 +7117,7 @@ mod tests {
         assert_eq!(
             super::legacy_player_path_compatibility_warning_line_legacy_compatible(&mpv_overrides),
             Some(
-                "warning: legacy --player-path selects managed mpv integration for mpv binaries; non-mpv values remain launch-only unmanaged fallback"
+                "warning: legacy --player-path selects managed mpv integration for Python-style mpv paths; non-mpv values remain launch-only unmanaged fallback"
             )
         );
         assert_eq!(
@@ -6999,6 +7253,8 @@ mod tests {
             "--osd-bar=yes".to_owned(),
             "--window-maximized=true".to_owned(),
             "--window-minimized=false".to_owned(),
+            "--profile=fast".to_owned(),
+            "--script-opts=osc=no".to_owned(),
             "--pause=maybe".to_owned(),
             "--speed".to_owned(),
             "fast".to_owned(),
@@ -7033,6 +7289,18 @@ mod tests {
             }
         );
         assert_eq!(
+            analysis.runtime_commands,
+            vec![
+                super::LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+                    profile: "fast".to_owned()
+                },
+                super::LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+                    name: "script-opts".to_owned(),
+                    value: "osc=no".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
             analysis.diagnostics,
             super::LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
                 supported_tokens: vec![
@@ -7054,10 +7322,37 @@ mod tests {
                     "--osd-bar=yes".to_owned(),
                     "--window-maximized=true".to_owned(),
                     "--window-minimized=false".to_owned(),
+                    "--profile=fast".to_owned(),
+                    "--script-opts=osc=no".to_owned(),
                 ],
                 malformed_tokens: vec!["--pause=maybe".to_owned(), "--speed fast".to_owned()],
                 unsupported_tokens: vec!["--unknown".to_owned()],
             }
+        );
+    }
+
+    #[test]
+    fn analyze_legacy_explicit_mpv_ipc_startup_player_args_runtime_commands_last_wins() {
+        let args = vec![
+            "--profile=fast".to_owned(),
+            "--script-opts=osc=no".to_owned(),
+            "--profile=slow".to_owned(),
+            "--script-opts=osc=yes".to_owned(),
+        ];
+
+        let analysis =
+            super::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+        assert_eq!(
+            analysis.runtime_commands,
+            vec![
+                super::LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+                    profile: "slow".to_owned()
+                },
+                super::LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+                    name: "script-opts".to_owned(),
+                    value: "osc=yes".to_owned(),
+                },
+            ]
         );
     }
 
@@ -7113,9 +7408,10 @@ mod tests {
                 "--volume=50".to_owned(),
                 "--mute".to_owned(),
                 "--ontop".to_owned(),
+                "--profile=fast".to_owned(),
             ],
             malformed_tokens: vec!["--pause=maybe".to_owned()],
-            unsupported_tokens: vec!["--profile=fast".to_owned()],
+            unsupported_tokens: vec!["--untouchable".to_owned()],
         };
 
         let lines =
@@ -7126,9 +7422,9 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=5, malformed=1, unsupported=1)".to_owned(),
+                "info: explicit-mpv-IPC startup _args summary: applied=2 ignored=2 (recognized-supported-tokens=6, malformed=1, unsupported=1)".to_owned(),
                 "warning: explicit-mpv-IPC malformed _args were ignored: --pause=maybe".to_owned(),
-                "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: --profile=fast".to_owned(),
+                "warning: explicit-mpv-IPC launch-only _args were ignored in attach mode: --untouchable".to_owned(),
             ]
         );
     }
@@ -7204,7 +7500,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_supported_player_args_after_open_file()
+    fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runtime_commands_and_supported_player_args()
      {
         #[derive(Default)]
         struct RecordingPlayer {
@@ -7216,6 +7512,14 @@ mod tests {
             }
             fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
                 self.events.push(format!("open:{path}"));
+                Ok(())
+            }
+            fn set_option_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
+                self.events.push(format!("option:{name}={value}"));
+                Ok(())
+            }
+            fn apply_profile(&mut self, profile: &str) -> Result<(), PlayerError> {
+                self.events.push(format!("profile:{profile}"));
                 Ok(())
             }
             fn set_paused(&mut self, paused: bool) -> Result<(), PlayerError> {
@@ -7335,6 +7639,8 @@ mod tests {
             player_path: None,
             file: Some("movie.mkv".to_owned()),
             player_args: vec![
+                "--profile=fast".to_owned(),
+                "--script-opts=osc=no".to_owned(),
                 "--fs".to_owned(),
                 "--start".to_owned(),
                 "12.5".to_owned(),
@@ -7395,6 +7701,8 @@ mod tests {
         assert_eq!(
             player.events,
             vec![
+                "profile:fast".to_owned(),
+                "option:script-opts=osc=no".to_owned(),
                 "open:movie.mkv".to_owned(),
                 "seek:12.5".to_owned(),
                 "pause:true".to_owned(),

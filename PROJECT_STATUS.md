@@ -55,7 +55,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 ## Remaining work (priority checklist)
 
 - [ ] Let GUI public-server connect/refresh and missing-media search work without requiring an already attached session runtime.
-- [ ] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
+- [x] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
 - [ ] Implement the remaining GUI/background behaviors still called out as unimplemented in compatibility notes (server-browser behavior, background cache refresh, room-history management, update probing).
 - [ ] Make menu-driven `Open Media File` reliably available through the native GUI/accessibility surface instead of relying on a skipped native-smoke step.
 - [ ] Decide whether GUI-only stored settings that are currently storage-compatible/no-op in headless mode need real runtime behavior for parity, or should stay explicitly out of scope.
