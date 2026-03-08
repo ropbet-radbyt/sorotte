@@ -47,10 +47,16 @@ The previously-audited GUI/background gaps in this bucket are now covered:
 
 ### Headless `mpv` OSD Runtime Parity
 
-The headless `mpv` path now applies a first real slice of the previously GUI-only runtime settings:
+The headless `mpv` path now applies a real slice of the previously GUI-only runtime settings:
 
 - `showOSD`
 - `chatOutputEnabled`
+- `chatOutputMode`
+- chat output fonts and weights
+- `chatMaxLines`
+- `chatTopMargin`
+- `chatLeftMargin`
+- `chatBottomMargin`
 - `chatMoveOSD`
 - `chatOSDMargin`
 - `notificationTimeout`
@@ -59,25 +65,26 @@ The headless `mpv` path now applies a first real slice of the previously GUI-onl
 
 These settings now drive CLI/headless `mpv` runtime behavior for both managed launch and explicit JSON-IPC attach mode:
 
-- localized Syncplay notifications and chat output are mirrored to `mpv` OSD with `show-text`
+- localized Syncplay notifications and chat output are mirrored either through plain `show-text` fallback or the upstream `syncplayintf.lua` script path, depending on whether chat output is enabled
 - chat output can remain visible even when general `showOSD` is disabled, matching the upstream split between chat output and general notifications
+- advanced chat presentation settings are now applied through `script-message-to syncplayintf set_syncplayintf_options`, so the Rust headless path can use the upstream chatroom/scrolling layout, margins, font sizing, and history rules without reimplementing the Lua renderer
 - the standard `mpv` OSD is moved away from the chat area when the stored chat/OSD layout rules require it
 
 ## Highest-Priority Remaining Work
 
 ### 1. GUI-Only Settings vs Runtime Behavior
 
-The storage-only portion of this gap is smaller now, but it is not fully closed yet. The remaining no-op area is the advanced script-driven `mpv` chat UI surface rather than the basic OSD/runtime toggles.
+The storage-only portion of this gap is smaller now, but it is not fully closed yet. The remaining no-op area is now the player-side chat input/control surface rather than the basic OSD/runtime toggles or output rendering.
 
 Still unresolved:
 
-- advanced chat presentation settings such as `chatOutputMode`, fonts, chat margins, and chat history layout are still not rendered by the Rust headless path
-- mpv-side chat input behavior (`chatInputEnabled`, `chatDirectInput`, and related input styling/options) is still not supported because the current Rust adapter is JSON-IPC-only and does not consume the Lua script stdout/control path
+- mpv-side chat input behavior (`chatInputEnabled`, `chatDirectInput`, and related input styling/options) is still not supported end to end because the current Rust adapter does not consume the Lua script stdout/control path needed to turn `mpv` keystrokes into Syncplay chat messages
+- the Rust runtime currently forces the Lua-side input path off while still using the Lua-side output renderer, so output settings work but input-specific GUI settings remain no-op at runtime
 
 The next decision for this bucket is still the same:
 
-- either extend Rust headless mode with a safe Lua/script integration path for those remaining settings
-- or document the remaining script-driven chat/input surface as intentionally out of scope for Rust headless mode
+- either extend Rust headless mode with a safe Lua/script integration path for the remaining input-side settings
+- or document the remaining script-driven chat input surface as intentionally out of scope for Rust headless mode
 
 ### 2. Maintainability Risk While Closing Parity
 

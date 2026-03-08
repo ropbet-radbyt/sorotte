@@ -957,8 +957,84 @@ fn legacy_syncplay_ui_settings_from_stored_settings(
     if let Some(chat_input_enabled) = settings.chat_input_enabled {
         resolved.chat_input_enabled = chat_input_enabled;
     }
-    if let Some(chat_input_position) = settings.chat_input_position.as_deref() {
-        resolved.chat_input_position_top = chat_input_position.trim().eq_ignore_ascii_case("Top");
+    if let Some(chat_input_font_underline) = settings.chat_input_font_underline {
+        resolved.chat_input_font_underline = chat_input_font_underline;
+    }
+    if let Some(chat_input_font_family) = settings
+        .chat_input_font_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolved.chat_input_font_family = chat_input_font_family.to_owned();
+    }
+    if let Some(chat_input_relative_font_size) = settings
+        .chat_input_relative_font_size
+        .filter(|value| *value > 0)
+    {
+        resolved.chat_input_relative_font_size = chat_input_relative_font_size;
+    }
+    if let Some(chat_input_font_weight) = settings.chat_input_font_weight {
+        resolved.chat_input_font_weight = chat_input_font_weight;
+    }
+    if let Some(chat_input_font_color) = settings
+        .chat_input_font_color
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolved.chat_input_font_color = chat_input_font_color.to_owned();
+    }
+    if let Some(chat_input_position) = settings
+        .chat_input_position
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolved.chat_input_position = chat_input_position.to_owned();
+    }
+    if let Some(chat_direct_input) = settings.chat_direct_input {
+        resolved.chat_direct_input = chat_direct_input;
+    }
+    if let Some(chat_output_font_underline) = settings.chat_output_font_underline {
+        resolved.chat_output_font_underline = chat_output_font_underline;
+    }
+    if let Some(chat_output_font_family) = settings
+        .chat_output_font_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolved.chat_output_font_family = chat_output_font_family.to_owned();
+    }
+    if let Some(chat_output_relative_font_size) = settings
+        .chat_output_relative_font_size
+        .filter(|value| *value > 0)
+    {
+        resolved.chat_output_relative_font_size = chat_output_relative_font_size;
+    }
+    if let Some(chat_output_font_weight) = settings.chat_output_font_weight {
+        resolved.chat_output_font_weight = chat_output_font_weight;
+    }
+    if let Some(chat_output_mode) = settings
+        .chat_output_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolved.chat_output_mode = chat_output_mode.to_owned();
+    }
+    if let Some(chat_max_lines) = settings.chat_max_lines.filter(|value| *value > 0) {
+        resolved.chat_max_lines = chat_max_lines;
+    }
+    if let Some(chat_top_margin) = settings.chat_top_margin.filter(|value| *value >= 0) {
+        resolved.chat_top_margin = chat_top_margin;
+    }
+    if let Some(chat_left_margin) = settings.chat_left_margin.filter(|value| *value >= 0) {
+        resolved.chat_left_margin = chat_left_margin;
+    }
+    if let Some(chat_bottom_margin) = settings.chat_bottom_margin.filter(|value| *value >= 0) {
+        resolved.chat_bottom_margin = chat_bottom_margin;
     }
     if let Some(chat_move_osd) = settings.chat_move_osd {
         resolved.chat_move_osd = chat_move_osd;
@@ -981,15 +1057,43 @@ fn legacy_syncplay_ui_settings_from_stored_settings(
     resolved
 }
 
+fn legacy_syncplayintf_script_candidate_paths_legacy_compatible() -> Vec<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    vec![
+        manifest_dir.join("../../resources/syncplayintf.lua"),
+        manifest_dir
+            .join("../../.interop-cache/syncplay-legacy/syncplay/resources/syncplayintf.lua"),
+        manifest_dir.join("../../../syncplay/syncplay/resources/syncplayintf.lua"),
+    ]
+}
+
+fn find_legacy_syncplayintf_script_path_legacy_compatible() -> Option<PathBuf> {
+    legacy_syncplayintf_script_candidate_paths_legacy_compatible()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
 fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
     player: &mut MpvAdapter,
     settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<()> {
+    let resolved = legacy_syncplay_ui_settings_from_stored_settings(settings);
     player
-        .configure_legacy_syncplay_ui_settings(legacy_syncplay_ui_settings_from_stored_settings(
-            settings,
-        ))
-        .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))
+        .configure_legacy_syncplay_ui_settings(resolved.clone())
+        .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))?;
+
+    if resolved.chat_output_enabled
+        && let Some(script_path) = find_legacy_syncplayintf_script_path_legacy_compatible()
+        && let Err(error) = player.load_legacy_syncplayintf_script(&script_path)
+    {
+        eprintln!(
+            "warning: failed to load legacy mpv syncplayintf.lua from '{}' via JSON IPC: {}",
+            script_path.display(),
+            error
+        );
+    }
+
+    Ok(())
 }
 
 fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
@@ -23366,9 +23470,21 @@ mod tests {
             legacy_syncplay_ui_settings_from_stored_settings(Some(&StoredClientSettingsMvp {
                 show_osd: Some(false),
                 chat_input_enabled: Some(false),
+                chat_input_font_family: Some("serif".to_owned()),
+                chat_input_relative_font_size: Some(18),
+                chat_input_font_weight: Some(50),
+                chat_input_font_color: Some("#abcdef".to_owned()),
                 chat_input_position: Some("Bottom".to_owned()),
                 chat_output_enabled: Some(false),
+                chat_output_font_family: Some("monospace".to_owned()),
+                chat_output_relative_font_size: Some(30),
+                chat_output_font_weight: Some(75),
+                chat_output_mode: Some("Scrolling".to_owned()),
                 chat_move_osd: Some(false),
+                chat_max_lines: Some(9),
+                chat_top_margin: Some(40),
+                chat_left_margin: Some(35),
+                chat_bottom_margin: Some(45),
                 chat_osd_margin: Some(220),
                 notification_timeout_seconds: Some(4),
                 alert_timeout_seconds: Some(6),
@@ -23382,12 +23498,25 @@ mod tests {
                 show_osd: false,
                 chat_output_enabled: false,
                 chat_input_enabled: false,
-                chat_input_position_top: false,
+                chat_input_font_family: "serif".to_owned(),
+                chat_input_relative_font_size: 18,
+                chat_input_font_weight: 50,
+                chat_input_font_color: "#abcdef".to_owned(),
+                chat_input_position: "Bottom".to_owned(),
+                chat_output_font_family: "monospace".to_owned(),
+                chat_output_relative_font_size: 30,
+                chat_output_font_weight: 75,
+                chat_output_mode: "Scrolling".to_owned(),
                 chat_move_osd: false,
+                chat_max_lines: 9,
+                chat_top_margin: 40,
+                chat_left_margin: 35,
+                chat_bottom_margin: 45,
                 chat_osd_margin: 220,
                 notification_timeout_ms: 4_000,
                 alert_timeout_ms: 6_000,
                 chat_timeout_ms: 9_000,
+                ..LegacySyncplayUiSettings::default()
             }
         );
     }
@@ -23400,6 +23529,7 @@ mod tests {
             chat_output_enabled: Some(false),
             chat_input_enabled: Some(false),
             chat_input_position: Some("Bottom".to_owned()),
+            chat_output_mode: Some("Scrolling".to_owned()),
             chat_move_osd: Some(false),
             chat_osd_margin: Some(180),
             notification_timeout_seconds: Some(2),
@@ -23418,12 +23548,14 @@ mod tests {
                 show_osd: false,
                 chat_output_enabled: false,
                 chat_input_enabled: false,
-                chat_input_position_top: false,
+                chat_input_position: "Bottom".to_owned(),
+                chat_output_mode: "Scrolling".to_owned(),
                 chat_move_osd: false,
                 chat_osd_margin: 180,
                 notification_timeout_ms: 2_000,
                 alert_timeout_ms: 4_000,
                 chat_timeout_ms: 8_000,
+                ..LegacySyncplayUiSettings::default()
             }
         );
     }
