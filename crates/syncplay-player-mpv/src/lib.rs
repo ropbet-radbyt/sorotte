@@ -16,6 +16,7 @@ const MPV_COMMAND_GET_PROPERTY: &str = "get_property";
 const MPV_COMMAND_OBSERVE_PROPERTY: &str = "observe_property";
 const MPV_COMMAND_LOADFILE: &str = "loadfile";
 const MPV_COMMAND_APPLY_PROFILE: &str = "apply-profile";
+const MPV_COMMAND_SHOW_TEXT: &str = "show-text";
 const MPV_LOADFILE_REPLACE: &str = "replace";
 const MPV_PROPERTY_PAUSE: &str = "pause";
 const MPV_PROPERTY_TIME_POS: &str = "time-pos";
@@ -37,6 +38,8 @@ const MPV_PROPERTY_SUB_VISIBILITY: &str = "sub-visibility";
 const MPV_PROPERTY_OSD_BAR: &str = "osd-bar";
 const MPV_PROPERTY_WINDOW_MAXIMIZED: &str = "window-maximized";
 const MPV_PROPERTY_WINDOW_MINIMIZED: &str = "window-minimized";
+const MPV_PROPERTY_OSD_ALIGN_Y: &str = "osd-align-y";
+const MPV_PROPERTY_OSD_MARGIN_Y: &str = "osd-margin-y";
 const MPV_PROPERTY_PATH: &str = "path";
 const MPV_PROPERTY_DURATION: &str = "duration";
 const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
@@ -48,6 +51,50 @@ const MPV_OBS_FILE_SIZE_ID: u64 = 3;
 const MPV_OBS_PAUSE_ID: u64 = 4;
 const MPV_OBS_TIME_POS_ID: u64 = 5;
 const MPV_OBS_SPEED_ID: u64 = 6;
+const LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL: i64 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacySyncplayOsdKind {
+    Notification,
+    Alert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacySyncplayUiSettings {
+    pub show_osd: bool,
+    pub chat_output_enabled: bool,
+    pub chat_input_enabled: bool,
+    pub chat_input_position_top: bool,
+    pub chat_move_osd: bool,
+    pub chat_osd_margin: i64,
+    pub notification_timeout_ms: u64,
+    pub alert_timeout_ms: u64,
+    pub chat_timeout_ms: u64,
+}
+
+impl LegacySyncplayUiSettings {
+    fn should_move_osd(&self) -> bool {
+        self.chat_move_osd
+            && (self.chat_output_enabled
+                || (self.chat_input_enabled && self.chat_input_position_top))
+    }
+}
+
+impl Default for LegacySyncplayUiSettings {
+    fn default() -> Self {
+        Self {
+            show_osd: true,
+            chat_output_enabled: true,
+            chat_input_enabled: true,
+            chat_input_position_top: true,
+            chat_move_osd: true,
+            chat_osd_margin: 110,
+            notification_timeout_ms: 3_000,
+            alert_timeout_ms: 5_000,
+            chat_timeout_ms: 7_000,
+        }
+    }
+}
 
 pub struct MpvAdapter {
     paused: bool,
@@ -76,6 +123,7 @@ pub struct MpvAdapter {
     last_polled_local_file_update: Option<LocalFileUpdate>,
     observed_state: MpvObservedState,
     observers_registered: bool,
+    legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
     ipc_client: Option<MpvJsonIpcClient>,
 }
 
@@ -114,6 +162,10 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("observed_state", &self.observed_state)
             .field("observers_registered", &self.observers_registered)
+            .field(
+                "legacy_syncplay_ui_settings",
+                &self.legacy_syncplay_ui_settings,
+            )
             .field("ipc_attached", &self.ipc_client.is_some())
             .finish()
     }
@@ -148,6 +200,7 @@ impl Default for MpvAdapter {
             last_polled_local_file_update: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
+            legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
             ipc_client: None,
         }
     }
@@ -257,6 +310,80 @@ impl MpvAdapter {
 
     pub fn queue_local_file_update(&mut self, update: LocalFileUpdate) {
         self.pending_local_file_update = Some(update);
+    }
+
+    pub fn legacy_syncplay_ui_settings(&self) -> &LegacySyncplayUiSettings {
+        &self.legacy_syncplay_ui_settings
+    }
+
+    pub fn set_property_string(&mut self, name: &str, value: &str) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([MPV_COMMAND_SET_PROPERTY, name, value]))
+    }
+
+    pub fn set_property_i64(&mut self, name: &str, value: i64) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([MPV_COMMAND_SET_PROPERTY, name, value]))
+    }
+
+    pub fn show_text(
+        &mut self,
+        text: &str,
+        duration_ms: u64,
+        level: i64,
+    ) -> Result<(), PlayerError> {
+        self.send_ipc_command_if_attached(json!([MPV_COMMAND_SHOW_TEXT, text, duration_ms, level]))
+    }
+
+    pub fn configure_legacy_syncplay_ui_settings(
+        &mut self,
+        settings: LegacySyncplayUiSettings,
+    ) -> Result<(), PlayerError> {
+        self.legacy_syncplay_ui_settings = settings;
+        if !self.legacy_syncplay_ui_settings.should_move_osd() {
+            return Ok(());
+        }
+
+        self.set_property_string(MPV_PROPERTY_OSD_ALIGN_Y, "bottom")?;
+        self.set_property_i64(
+            MPV_PROPERTY_OSD_MARGIN_Y,
+            self.legacy_syncplay_ui_settings.chat_osd_margin,
+        )
+    }
+
+    pub fn show_syncplay_legacy_message(
+        &mut self,
+        message: &str,
+        kind: LegacySyncplayOsdKind,
+    ) -> Result<(), PlayerError> {
+        if message.trim().is_empty() || !self.legacy_syncplay_ui_settings.show_osd {
+            return Ok(());
+        }
+
+        let duration_ms = match kind {
+            LegacySyncplayOsdKind::Notification => {
+                self.legacy_syncplay_ui_settings.notification_timeout_ms
+            }
+            LegacySyncplayOsdKind::Alert => self.legacy_syncplay_ui_settings.alert_timeout_ms,
+        };
+        self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
+    }
+
+    pub fn show_syncplay_legacy_chat_message(&mut self, message: &str) -> Result<(), PlayerError> {
+        if message.trim().is_empty() {
+            return Ok(());
+        }
+
+        let maybe_duration_ms = if self.legacy_syncplay_ui_settings.chat_output_enabled {
+            Some(self.legacy_syncplay_ui_settings.chat_timeout_ms)
+        } else if self.legacy_syncplay_ui_settings.show_osd {
+            Some(self.legacy_syncplay_ui_settings.notification_timeout_ms)
+        } else {
+            None
+        };
+
+        let Some(duration_ms) = maybe_duration_ms else {
+            return Ok(());
+        };
+        self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
     }
 
     fn ensure_observers_registered_if_attached(&mut self) {
@@ -993,7 +1120,7 @@ fn read_line_from_stream(stream: &mut impl Read, line: &mut String) -> io::Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{MpvAdapter, MpvJsonIpcTransport};
+    use super::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter, MpvJsonIpcTransport};
     use serde_json::{Value, json};
     use std::{
         collections::VecDeque,
@@ -1671,6 +1798,197 @@ mod tests {
             payload,
             json!({
                 "command": ["apply-profile", "fast"],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn show_text_sends_json_ipc_command_when_attached() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .show_text("syncplay notice", 4_000, 1)
+            .expect("attached mpv transport should accept show-text");
+
+        let writes = state.writes();
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["show-text", "syncplay notice", 4_000, 1],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn configure_legacy_syncplay_ui_settings_applies_osd_position_when_needed() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings::default())
+            .expect("legacy settings application should succeed");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 2);
+        let first_payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+        assert_eq!(
+            first_payload,
+            json!({
+                "command": ["set_property", "osd-align-y", "bottom"],
+                "request_id": 1
+            })
+        );
+        assert_eq!(
+            second_payload,
+            json!({
+                "command": ["set_property", "osd-margin-y", 110],
+                "request_id": 2
+            })
+        );
+        assert_eq!(
+            adapter.legacy_syncplay_ui_settings(),
+            &LegacySyncplayUiSettings::default()
+        );
+    }
+
+    #[test]
+    fn configure_legacy_syncplay_ui_settings_skips_osd_position_when_disabled() {
+        let (transport, state) = fake_transport_with_reads(&[]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+                chat_move_osd: false,
+                ..LegacySyncplayUiSettings::default()
+            })
+            .expect("legacy settings application should succeed");
+
+        assert!(state.writes().is_empty());
+    }
+
+    #[test]
+    fn show_syncplay_legacy_message_uses_notification_timeout_when_osd_is_enabled() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+                chat_move_osd: false,
+                notification_timeout_ms: 4_500,
+                ..LegacySyncplayUiSettings::default()
+            })
+            .expect("legacy settings application should succeed");
+
+        adapter
+            .show_syncplay_legacy_message("room updated", LegacySyncplayOsdKind::Notification)
+            .expect("show-text notification should succeed");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["show-text", "room updated", 4_500, 1],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn show_syncplay_legacy_message_uses_alert_timeout_when_requested() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+                chat_move_osd: false,
+                alert_timeout_ms: 6_000,
+                ..LegacySyncplayUiSettings::default()
+            })
+            .expect("legacy settings application should succeed");
+
+        adapter
+            .show_syncplay_legacy_message("autoplay", LegacySyncplayOsdKind::Alert)
+            .expect("show-text alert should succeed");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["show-text", "autoplay", 6_000, 1],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn show_syncplay_legacy_chat_message_uses_chat_timeout_even_when_show_osd_is_disabled() {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+                show_osd: false,
+                chat_move_osd: false,
+                chat_timeout_ms: 8_000,
+                ..LegacySyncplayUiSettings::default()
+            })
+            .expect("legacy settings application should succeed");
+
+        adapter
+            .show_syncplay_legacy_chat_message("<alice> hi")
+            .expect("chat show-text should succeed");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["show-text", "<alice> hi", 8_000, 1],
+                "request_id": 1
+            })
+        );
+    }
+
+    #[test]
+    fn show_syncplay_legacy_chat_message_falls_back_to_notification_timeout_when_chat_output_is_disabled()
+     {
+        let (transport, state) =
+            fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+        adapter
+            .configure_legacy_syncplay_ui_settings(LegacySyncplayUiSettings {
+                chat_output_enabled: false,
+                chat_move_osd: false,
+                notification_timeout_ms: 2_500,
+                ..LegacySyncplayUiSettings::default()
+            })
+            .expect("legacy settings application should succeed");
+
+        adapter
+            .show_syncplay_legacy_chat_message("<alice> hi")
+            .expect("chat fallback show-text should succeed");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 1);
+        let payload: Value = serde_json::from_str(writes[0].trim_end()).expect("valid json");
+        assert_eq!(
+            payload,
+            json!({
+                "command": ["show-text", "<alice> hi", 2_500, 1],
                 "request_id": 1
             })
         );

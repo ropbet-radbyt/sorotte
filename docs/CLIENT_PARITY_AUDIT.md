@@ -45,16 +45,39 @@ The previously-audited GUI/background gaps in this bucket are now covered:
 - Automatic update probing/dialog behavior is implemented, persists `lastCheckedForUpdates`, and is validated through unit coverage plus GUI semantic/native smoke passes.
 - The user-visible `Open Media File` flow is exercised by the Windows native smoke without a skip step.
 
+### Headless `mpv` OSD Runtime Parity
+
+The headless `mpv` path now applies a first real slice of the previously GUI-only runtime settings:
+
+- `showOSD`
+- `chatOutputEnabled`
+- `chatMoveOSD`
+- `chatOSDMargin`
+- `notificationTimeout`
+- `alertTimeout`
+- `chatTimeout`
+
+These settings now drive CLI/headless `mpv` runtime behavior for both managed launch and explicit JSON-IPC attach mode:
+
+- localized Syncplay notifications and chat output are mirrored to `mpv` OSD with `show-text`
+- chat output can remain visible even when general `showOSD` is disabled, matching the upstream split between chat output and general notifications
+- the standard `mpv` OSD is moved away from the chat area when the stored chat/OSD layout rules require it
+
 ## Highest-Priority Remaining Work
 
 ### 1. GUI-Only Settings vs Runtime Behavior
 
-Several GUI-oriented settings are storage-compatible today but intentionally no-op in the headless path, including groups of chat presentation and OSD layout settings. That is acceptable for config compatibility, but not equivalent to full runtime parity.
+The storage-only portion of this gap is smaller now, but it is not fully closed yet. The remaining no-op area is the advanced script-driven `mpv` chat UI surface rather than the basic OSD/runtime toggles.
 
-This is a lower-priority gap than players/runtime ownership, but it still needs an explicit decision:
+Still unresolved:
 
-- either wire those settings into real runtime behavior where parity matters
-- or document them as intentionally out of scope for Rust headless mode
+- advanced chat presentation settings such as `chatOutputMode`, fonts, chat margins, and chat history layout are still not rendered by the Rust headless path
+- mpv-side chat input behavior (`chatInputEnabled`, `chatDirectInput`, and related input styling/options) is still not supported because the current Rust adapter is JSON-IPC-only and does not consume the Lua script stdout/control path
+
+The next decision for this bucket is still the same:
+
+- either extend Rust headless mode with a safe Lua/script integration path for those remaining settings
+- or document the remaining script-driven chat/input surface as intentionally out of scope for Rust headless mode
 
 ### 2. Maintainability Risk While Closing Parity
 

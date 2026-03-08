@@ -120,7 +120,7 @@ use syncplay_client_core::{
     ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
 };
 use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
-use syncplay_player_mpv::MpvAdapter;
+use syncplay_player_mpv::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
 use syncplay_protocol::{
     HelloPayload, PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload,
     StatePayload, decode_message_line, encode_message_line,
@@ -926,6 +926,70 @@ fn apply_stored_client_settings_mvp_if_env_absent(
     if let Some(value) = config_plan.show_different_room_osd_override {
         config.show_different_room_osd_override = Some(value);
     }
+}
+
+fn timeout_ms_from_stored_client_setting_legacy_compatible(
+    value: Option<i64>,
+    default_ms: u64,
+) -> u64 {
+    value
+        .and_then(|seconds| {
+            let seconds = u64::try_from(seconds).ok()?;
+            seconds.checked_mul(1_000)
+        })
+        .unwrap_or(default_ms)
+}
+
+fn legacy_syncplay_ui_settings_from_stored_settings(
+    settings: Option<&StoredClientSettingsMvp>,
+) -> LegacySyncplayUiSettings {
+    let mut resolved = LegacySyncplayUiSettings::default();
+    let Some(settings) = settings else {
+        return resolved;
+    };
+
+    if let Some(show_osd) = settings.show_osd {
+        resolved.show_osd = show_osd;
+    }
+    if let Some(chat_output_enabled) = settings.chat_output_enabled {
+        resolved.chat_output_enabled = chat_output_enabled;
+    }
+    if let Some(chat_input_enabled) = settings.chat_input_enabled {
+        resolved.chat_input_enabled = chat_input_enabled;
+    }
+    if let Some(chat_input_position) = settings.chat_input_position.as_deref() {
+        resolved.chat_input_position_top = chat_input_position.trim().eq_ignore_ascii_case("Top");
+    }
+    if let Some(chat_move_osd) = settings.chat_move_osd {
+        resolved.chat_move_osd = chat_move_osd;
+    }
+    if let Some(chat_osd_margin) = settings.chat_osd_margin.filter(|value| *value >= 0) {
+        resolved.chat_osd_margin = chat_osd_margin;
+    }
+    resolved.notification_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
+        settings.notification_timeout_seconds,
+        resolved.notification_timeout_ms,
+    );
+    resolved.alert_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
+        settings.alert_timeout_seconds,
+        resolved.alert_timeout_ms,
+    );
+    resolved.chat_timeout_ms = timeout_ms_from_stored_client_setting_legacy_compatible(
+        settings.chat_timeout_seconds,
+        resolved.chat_timeout_ms,
+    );
+    resolved
+}
+
+fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+    player: &mut MpvAdapter,
+    settings: Option<&StoredClientSettingsMvp>,
+) -> anyhow::Result<()> {
+    player
+        .configure_legacy_syncplay_ui_settings(legacy_syncplay_ui_settings_from_stored_settings(
+            settings,
+        ))
+        .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))
 }
 
 fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
@@ -2331,7 +2395,9 @@ fn create_client_runtime(
     config: &ClientLoopConfig,
 ) -> ClientRuntime<MpvAdapter, QueuedRuntimeControl> {
     let session = create_client_session(config);
-    let player = create_mpv_adapter_from_env();
+    let mut player = create_mpv_adapter_from_env();
+    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(&mut player, None)
+        .expect("default legacy mpv OSD/chat settings should apply");
     ClientRuntime::new(session, player, QueuedRuntimeControl::default())
 }
 
@@ -2446,13 +2512,18 @@ impl Drop for ManagedMpvProcessGuard {
 fn create_client_runtime_with_managed_mpv_support(
     config: &ClientLoopConfig,
     legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<(
     ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     Option<ManagedMpvProcessGuard>,
 )> {
     let session = create_client_session(config);
-    let (player, managed_guard) =
+    let (mut player, managed_guard) =
         create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
+    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+        &mut player,
+        stored_settings,
+    )?;
     Ok((
         ClientRuntime::new(session, player, QueuedRuntimeControl::default()),
         managed_guard,
@@ -3929,6 +4000,7 @@ fn emit_file_difference_notification(summary: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn flush_file_difference_notifications_to_sink<F>(
     runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     state: &mut FileDifferenceNotificationState,
@@ -3941,6 +4013,76 @@ where
         state,
         runtime.session().file_differences_for_current_room(),
     ) {
+        notify(summary.as_str())?;
+    }
+
+    Ok(())
+}
+
+fn emit_mpv_osd_error_warning_legacy_compatible(context: &str, error: PlayerError) {
+    eprintln!("warning: failed to display {context} via mpv OSD: {error}");
+}
+
+fn emit_syncplay_player_osd_notification_legacy_compatible(
+    player: &mut MpvAdapter,
+    message: &str,
+    kind: LegacySyncplayOsdKind,
+    context: &str,
+) {
+    if let Err(error) = player.show_syncplay_legacy_message(message, kind) {
+        emit_mpv_osd_error_warning_legacy_compatible(context, error);
+    }
+}
+
+fn emit_syncplay_player_chat_notification_legacy_compatible(
+    player: &mut MpvAdapter,
+    message: &str,
+) {
+    if let Err(error) = player.show_syncplay_legacy_chat_message(message) {
+        emit_mpv_osd_error_warning_legacy_compatible("chat notification", error);
+    }
+}
+
+fn file_difference_notification_message_localized_legacy_compatible(
+    summary: &str,
+    language: Option<&str>,
+) -> String {
+    shared_localized_file_difference_notification_line_legacy_compatible(summary, language)
+}
+
+fn emit_file_difference_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    summary: &str,
+) {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let message = file_difference_notification_message_localized_legacy_compatible(
+        summary,
+        language.as_deref(),
+    );
+    emit_syncplay_player_osd_notification_legacy_compatible(
+        player,
+        &message,
+        LegacySyncplayOsdKind::Notification,
+        "file difference notification",
+    );
+}
+
+fn flush_file_difference_notifications_legacy_compatible<F>(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    state: &mut FileDifferenceNotificationState,
+    notify: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&str) -> anyhow::Result<()>,
+{
+    if let Some(summary) = shared_next_file_difference_notification_summary_legacy_compatible(
+        state,
+        runtime.session().file_differences_for_current_room(),
+    ) {
+        emit_file_difference_notification_to_player_legacy_compatible(
+            runtime.player_mut(),
+            &summary,
+        );
         notify(summary.as_str())?;
     }
 
@@ -4249,6 +4391,24 @@ fn emit_autoplay_countdown_notification(
     Ok(())
 }
 
+fn emit_autoplay_countdown_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    notification: &AutoplayCountdownNotification,
+) {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let message = autoplay_countdown_notification_message_localized_legacy_compatible(
+        notification,
+        language.as_deref(),
+    );
+    emit_syncplay_player_osd_notification_legacy_compatible(
+        player,
+        &message,
+        LegacySyncplayOsdKind::Alert,
+        "autoplay notification",
+    );
+}
+
+#[cfg(test)]
 fn flush_autoplay_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -4257,6 +4417,23 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
 {
     runtime.drain_autoplay_notifications_to_sink(|notification| notify(notification))
+}
+
+fn flush_autoplay_notifications_legacy_compatible<F>(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    notify: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
+{
+    for notification in runtime.drain_autoplay_notifications() {
+        emit_autoplay_countdown_notification_to_player_legacy_compatible(
+            runtime.player_mut(),
+            &notification,
+        );
+        notify(&notification)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4290,6 +4467,37 @@ fn emit_reconnect_transition_notification(
     Ok(())
 }
 
+fn emit_reconnect_transition_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    notification: &ReconnectTransitionNotification,
+) {
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let message = reconnect_transition_notification_message_localized_legacy_compatible(
+        notification,
+        language.as_deref(),
+    );
+    emit_syncplay_player_osd_notification_legacy_compatible(
+        player,
+        &message,
+        LegacySyncplayOsdKind::Notification,
+        "reconnect notification",
+    );
+}
+
+fn flush_reconnect_notifications_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<()> {
+    for notification in runtime.drain_reconnect_notifications() {
+        emit_reconnect_transition_notification_to_player_legacy_compatible(
+            runtime.player_mut(),
+            &notification,
+        );
+        emit_reconnect_transition_notification(&notification)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn flush_reconnect_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -4340,6 +4548,41 @@ fn emit_controller_auth_transition_notification(
     Ok(())
 }
 
+fn emit_controller_auth_transition_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    notification: &ControllerAuthTransitionNotification,
+) {
+    if controller_auth_notification_hidden_from_osd(notification) {
+        return;
+    }
+
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let message = controller_auth_transition_notification_message_localized_legacy_compatible(
+        notification,
+        language.as_deref(),
+    );
+    emit_syncplay_player_osd_notification_legacy_compatible(
+        player,
+        &message,
+        LegacySyncplayOsdKind::Notification,
+        "controller-auth notification",
+    );
+}
+
+fn flush_controller_auth_notifications_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<()> {
+    for notification in runtime.drain_controller_auth_notifications() {
+        emit_controller_auth_transition_notification_to_player_legacy_compatible(
+            runtime.player_mut(),
+            &notification,
+        );
+        emit_controller_auth_transition_notification(&notification)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn flush_controller_auth_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -4361,6 +4604,26 @@ fn chat_notification_message(notification: &ChatNotification) -> String {
 
 fn emit_chat_notification(notification: &ChatNotification) -> anyhow::Result<()> {
     println!("{}", chat_notification_message(notification));
+    Ok(())
+}
+
+fn emit_chat_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    notification: &ChatNotification,
+) {
+    emit_syncplay_player_chat_notification_legacy_compatible(
+        player,
+        &chat_notification_message(notification),
+    );
+}
+
+fn flush_chat_notifications_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<()> {
+    for notification in runtime.drain_chat_notifications() {
+        emit_chat_notification_to_player_legacy_compatible(runtime.player_mut(), &notification);
+        emit_chat_notification(&notification)?;
+    }
     Ok(())
 }
 
@@ -4433,6 +4696,7 @@ fn run_planned_local_runtime_action_legacy_compatible(
     }
 }
 
+#[cfg(test)]
 fn flush_chat_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -4479,6 +4743,41 @@ fn emit_user_change_notification(notification: &UserChangeNotification) -> anyho
     Ok(())
 }
 
+fn emit_user_change_notification_to_player_legacy_compatible(
+    player: &mut MpvAdapter,
+    notification: &UserChangeNotification,
+) {
+    if user_change_notification_hidden_from_osd(notification) {
+        return;
+    }
+
+    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let message = user_change_notification_message_localized_legacy_compatible(
+        notification,
+        language.as_deref(),
+    );
+    emit_syncplay_player_osd_notification_legacy_compatible(
+        player,
+        &message,
+        LegacySyncplayOsdKind::Notification,
+        "user-change notification",
+    );
+}
+
+fn flush_user_change_notifications_legacy_compatible(
+    runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> anyhow::Result<()> {
+    for notification in runtime.drain_user_change_notifications() {
+        emit_user_change_notification_to_player_legacy_compatible(
+            runtime.player_mut(),
+            &notification,
+        );
+        emit_user_change_notification(&notification)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn flush_user_change_notifications_to_sink<F>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     notify: &mut F,
@@ -4512,10 +4811,7 @@ where
                 )?;
             }
             ConnectedSessionDrainAction::FlushReconnectNotifications => {
-                flush_reconnect_notifications_to_sink(
-                    runtime,
-                    &mut emit_reconnect_transition_notification,
-                )?;
+                flush_reconnect_notifications_legacy_compatible(runtime)?;
             }
             ConnectedSessionDrainAction::FlushReconnectCorrectionDiagnostics(format) => {
                 flush_reconnect_correction_diagnostics_to_sink(
@@ -4527,25 +4823,19 @@ where
                 )?;
             }
             ConnectedSessionDrainAction::FlushControllerAuthNotifications => {
-                flush_controller_auth_notifications_to_sink(
-                    runtime,
-                    &mut emit_controller_auth_transition_notification,
-                )?;
+                flush_controller_auth_notifications_legacy_compatible(runtime)?;
             }
             ConnectedSessionDrainAction::FlushChatNotifications => {
-                flush_chat_notifications_to_sink(runtime, &mut emit_chat_notification)?;
+                flush_chat_notifications_legacy_compatible(runtime)?;
             }
             ConnectedSessionDrainAction::FlushUserChangeNotifications => {
-                flush_user_change_notifications_to_sink(
-                    runtime,
-                    &mut emit_user_change_notification,
-                )?;
+                flush_user_change_notifications_legacy_compatible(runtime)?;
             }
             ConnectedSessionDrainAction::FlushAutoplayNotifications => {
-                flush_autoplay_notifications_to_sink(runtime, notification_sink)?;
+                flush_autoplay_notifications_legacy_compatible(runtime, notification_sink)?;
             }
             ConnectedSessionDrainAction::FlushFileDifferenceNotifications => {
-                flush_file_difference_notifications_to_sink(
+                flush_file_difference_notifications_legacy_compatible(
                     runtime,
                     file_difference_state,
                     file_difference_sink,
@@ -5238,7 +5528,7 @@ async fn run_reconnect_backoff(
     retries: &mut u32,
 ) -> anyhow::Result<bool> {
     runtime.run_reconnect_retry(*retries)?;
-    flush_reconnect_notifications_to_sink(runtime, &mut emit_reconnect_transition_notification)?;
+    flush_reconnect_notifications_legacy_compatible(runtime)?;
     let mut reconnect_delay = None;
     let mut stop_requested = false;
     runtime.drain_reconnect_intents(
@@ -5385,6 +5675,7 @@ fn bootstrap_client_network_loop_state_legacy_compatible<F, G>(
     config: &ClientLoopConfig,
     startup_plan: ClientNetworkLoopStartupPlan,
     legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
     notification_sink: F,
     file_difference_sink: G,
 ) -> anyhow::Result<ClientNetworkLoopBootstrapState<F, G>>
@@ -5400,7 +5691,7 @@ where
         startup_playlist_file_on_connect,
     } = startup_plan;
     let (mut runtime, managed_mpv_process_guard) =
-        create_client_runtime_with_managed_mpv_support(config, legacy_overrides)?;
+        create_client_runtime_with_managed_mpv_support(config, legacy_overrides, stored_settings)?;
     if apply_legacy_explicit_mpv_ipc_startup
         && let Some(overrides) = legacy_overrides
         && let Err(error) =
@@ -5490,6 +5781,7 @@ async fn run_client_network_loop_from_startup_execution_plan_legacy_compatible(
     config: &ClientLoopConfig,
     startup: ClientNetworkLoopStartupExecutionPlan,
     legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<()> {
     let ClientNetworkLoopStartupExecutionPlan {
         diagnostics_config,
@@ -5499,6 +5791,7 @@ async fn run_client_network_loop_from_startup_execution_plan_legacy_compatible(
         config,
         startup_plan,
         legacy_overrides,
+        stored_settings,
         emit_autoplay_countdown_notification,
         emit_file_difference_notification,
     )?;
@@ -5609,10 +5902,26 @@ async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()
     run_client_network_loop_with_legacy_startup_overrides(config, None, None).await
 }
 
+#[cfg(test)]
 async fn run_client_network_loop_with_legacy_startup_overrides(
     config: &ClientLoopConfig,
     startup_playlist_file_on_connect: Option<&str>,
     legacy_overrides: Option<&LegacyClientArgOverrides>,
+) -> anyhow::Result<()> {
+    run_client_network_loop_with_legacy_startup_overrides_and_stored_settings(
+        config,
+        startup_playlist_file_on_connect,
+        legacy_overrides,
+        None,
+    )
+    .await
+}
+
+async fn run_client_network_loop_with_legacy_startup_overrides_and_stored_settings(
+    config: &ClientLoopConfig,
+    startup_playlist_file_on_connect: Option<&str>,
+    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettingsMvp>,
 ) -> anyhow::Result<()> {
     run_client_network_loop_from_startup_execution_plan_legacy_compatible(
         config,
@@ -5622,6 +5931,7 @@ async fn run_client_network_loop_with_legacy_startup_overrides(
             legacy_overrides,
         ),
         legacy_overrides,
+        stored_settings,
     )
     .await
 }
@@ -5780,10 +6090,11 @@ async fn main() -> anyhow::Result<()> {
         {
             eprintln!("warning: failed to launch legacy external player startup path: {error}");
         }
-        run_client_network_loop_with_legacy_startup_overrides(
+        run_client_network_loop_with_legacy_startup_overrides_and_stored_settings(
             &config,
             client_arg_overrides.load_playlist_from_file.as_deref(),
             Some(&client_arg_overrides),
+            stored_settings.as_ref(),
         )
         .await?;
         return Ok(());
@@ -5829,6 +6140,7 @@ mod tests {
         flush_user_change_notifications_to_sink, format_duration_legacy,
         format_file_difference_summary, generate_room_password_legacy_compatible,
         legacy_external_player_launch_spec_from_overrides_legacy_compatible,
+        legacy_syncplay_ui_settings_from_stored_settings,
         legacy_utc_timestamp_string_legacy_compatible,
         load_syncplay_cli_stored_settings_mvp_legacy_compatible,
         managed_mpv_launch_env_config_from_env, normalize_controlled_room_input,
@@ -5887,7 +6199,7 @@ mod tests {
         ReconnectTransitionNotification, UnpauseActionMode, UserChangeNotification,
     };
     use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
-    use syncplay_player_mpv::MpvAdapter;
+    use syncplay_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
     #[cfg(windows)]
     use syncplay_protocol::HelloPayload;
     use syncplay_protocol::{
@@ -23043,6 +23355,80 @@ mod tests {
     }
 
     #[test]
+    fn legacy_syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_supported_overrides()
+     {
+        assert_eq!(
+            legacy_syncplay_ui_settings_from_stored_settings(None),
+            LegacySyncplayUiSettings::default()
+        );
+
+        let resolved =
+            legacy_syncplay_ui_settings_from_stored_settings(Some(&StoredClientSettingsMvp {
+                show_osd: Some(false),
+                chat_input_enabled: Some(false),
+                chat_input_position: Some("Bottom".to_owned()),
+                chat_output_enabled: Some(false),
+                chat_move_osd: Some(false),
+                chat_osd_margin: Some(220),
+                notification_timeout_seconds: Some(4),
+                alert_timeout_seconds: Some(6),
+                chat_timeout_seconds: Some(9),
+                ..StoredClientSettingsMvp::default()
+            }));
+
+        assert_eq!(
+            resolved,
+            LegacySyncplayUiSettings {
+                show_osd: false,
+                chat_output_enabled: false,
+                chat_input_enabled: false,
+                chat_input_position_top: false,
+                chat_move_osd: false,
+                chat_osd_margin: 220,
+                notification_timeout_ms: 4_000,
+                alert_timeout_ms: 6_000,
+                chat_timeout_ms: 9_000,
+            }
+        );
+    }
+
+    #[test]
+    fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_settings() {
+        let config = test_client_loop_config();
+        let settings = StoredClientSettingsMvp {
+            show_osd: Some(false),
+            chat_output_enabled: Some(false),
+            chat_input_enabled: Some(false),
+            chat_input_position: Some("Bottom".to_owned()),
+            chat_move_osd: Some(false),
+            chat_osd_margin: Some(180),
+            notification_timeout_seconds: Some(2),
+            alert_timeout_seconds: Some(4),
+            chat_timeout_seconds: Some(8),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let (runtime, _managed_guard) =
+            create_client_runtime_with_managed_mpv_support(&config, None, Some(&settings))
+                .expect("runtime creation should succeed");
+
+        assert_eq!(
+            runtime.player().legacy_syncplay_ui_settings(),
+            &LegacySyncplayUiSettings {
+                show_osd: false,
+                chat_output_enabled: false,
+                chat_input_enabled: false,
+                chat_input_position_top: false,
+                chat_move_osd: false,
+                chat_osd_margin: 180,
+                notification_timeout_ms: 2_000,
+                alert_timeout_ms: 4_000,
+                chat_timeout_ms: 8_000,
+            }
+        );
+    }
+
+    #[test]
     fn create_client_runtime_applies_autoplay_require_same_filenames_flag() {
         let config = ClientLoopConfig {
             host: "127.0.0.1".to_owned(),
@@ -24164,7 +24550,7 @@ mod tests {
         let result = (|| {
             let config = test_client_loop_config();
             let (mut runtime, _managed_guard) =
-                create_client_runtime_with_managed_mpv_support(&config, None)
+                create_client_runtime_with_managed_mpv_support(&config, None, None)
                     .expect("managed mpv runtime creation should succeed");
 
             let expected_name = media_file
@@ -24602,7 +24988,7 @@ mod tests {
         let mut config = test_client_loop_config_with_addr(addr);
         config.max_connected_runtime_seconds = 6.0;
         let (mut runtime, _managed_guard) =
-            create_client_runtime_with_managed_mpv_support(&config, None)
+            create_client_runtime_with_managed_mpv_support(&config, None, None)
                 .expect("runtime creation with explicit mpv IPC should succeed");
         let stream = TcpStream::connect(addr)
             .await
@@ -24899,7 +25285,7 @@ mod tests {
         config.max_connected_runtime_seconds = 8.0;
         config.readiness_supported_override = Some(false);
         let (mut runtime, _managed_guard) =
-            create_client_runtime_with_managed_mpv_support(&config, None)
+            create_client_runtime_with_managed_mpv_support(&config, None, None)
                 .expect("runtime creation with explicit mpv IPC should succeed");
 
         let stream1 = TcpStream::connect(addr)
@@ -25181,7 +25567,7 @@ mod tests {
         config.rewind_threshold_seconds_override = Some(0.5);
 
         let (mut runtime, _managed_guard) =
-            create_client_runtime_with_managed_mpv_support(&config, None)
+            create_client_runtime_with_managed_mpv_support(&config, None, None)
                 .expect("runtime creation with explicit mpv IPC should succeed");
 
         // Seed a local position ahead of the room target so rewind desync correction should apply.
@@ -25449,7 +25835,7 @@ mod tests {
         config.fastforward_threshold_seconds_override = Some(6.0);
 
         let (mut runtime, _managed_guard) =
-            create_client_runtime_with_managed_mpv_support(&config, None)
+            create_client_runtime_with_managed_mpv_support(&config, None, None)
                 .expect("runtime creation with explicit mpv IPC should succeed");
 
         // Seed a borderline-behind local position and keep playback almost stationary so the
@@ -25718,7 +26104,7 @@ mod tests {
         config.fastforward_threshold_seconds_override = Some(6.0);
 
         let (mut runtime, _managed_guard) =
-            create_client_runtime_with_managed_mpv_support(&config, None)
+            create_client_runtime_with_managed_mpv_support(&config, None, None)
                 .expect("runtime creation with explicit mpv IPC should succeed");
 
         super::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
