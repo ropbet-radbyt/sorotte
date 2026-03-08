@@ -130,6 +130,8 @@ impl GuiSemanticStep {
             "reset-configuration" => GuiPendingOperationKind::ResetConfiguration,
             "reload-configuration" => GuiPendingOperationKind::ReloadConfiguration,
             "clear-gui-data" => GuiPendingOperationKind::ClearGuiData,
+            "connect-saved-server" => GuiPendingOperationKind::ConnectSavedServer,
+            "disconnect-session" => GuiPendingOperationKind::DisconnectSession,
             "connect-public-server" => GuiPendingOperationKind::ConnectPublicServer,
             "refresh-public-servers" => GuiPendingOperationKind::RefreshPublicServers,
             "search-missing-media" => GuiPendingOperationKind::SearchMissingMedia,

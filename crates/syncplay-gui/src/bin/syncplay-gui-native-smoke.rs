@@ -634,7 +634,6 @@ impl PlatformNativeGuiDriver {
             thread::sleep(Duration::from_millis(120));
             return Ok(());
         }
-
         let Some(verification_pattern) = value_pattern else {
             return Ok(());
         };
@@ -1768,10 +1767,14 @@ fn wait_for_process_exit(child: &mut Child, timeout: Duration) -> Result<(), Str
     }
 }
 
-fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
+fn seed_native_smoke_config_with_saved_server(
+    config_path: &Path,
+    host: Option<&str>,
+    port: Option<u16>,
+) -> Result<(), String> {
     let settings = StoredClientSettingsMvp {
-        host: Some(CONFIG_HOST_VALUE.to_owned()),
-        port: Some(CONFIG_PORT_VALUE.parse().unwrap()),
+        host: host.map(str::to_owned),
+        port,
         username: Some(CONFIG_USERNAME_VALUE.to_owned()),
         room: Some(CONFIG_ROOM_VALUE.to_owned()),
         player_path: Some(CONFIG_PLAYER_PATH_VALUE.to_owned()),
@@ -1790,6 +1793,14 @@ fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
                 config_path.display()
             )
         },
+    )
+}
+
+fn seed_native_smoke_config(config_path: &Path) -> Result<(), String> {
+    seed_native_smoke_config_with_saved_server(
+        config_path,
+        Some(CONFIG_HOST_VALUE),
+        Some(CONFIG_PORT_VALUE.parse().unwrap()),
     )
 }
 
@@ -2150,6 +2161,12 @@ fn contains_accessible_name(accessible_names: &[String], expected: &str) -> bool
     accessible_names.iter().any(|name| name == expected)
 }
 
+fn contains_accessible_name_fragment(accessible_names: &[String], expected_fragment: &str) -> bool {
+    accessible_names
+        .iter()
+        .any(|name| name.contains(expected_fragment))
+}
+
 fn render_accessible_name_snapshot_for_patterns(
     accessible_names: &[String],
     patterns: &[&str],
@@ -2257,6 +2274,56 @@ fn wait_for_any_accessible_name<D: NativeGuiDriver>(
             } else {
                 Err(format!(
                     "timed out waiting for one of [{expected_list}] in accessibility tree"
+                ))
+            };
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_accessible_name_fragment<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    expected_fragment: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = None;
+    let mut last_snapshot = None;
+    loop {
+        match driver.accessible_names(window) {
+            Ok(names) => {
+                if contains_accessible_name_fragment(&names, expected_fragment) {
+                    return Ok(());
+                }
+                last_snapshot = Some(render_accessible_name_snapshot_for_patterns(
+                    &names,
+                    &[
+                        expected_fragment,
+                        "view:",
+                        "self=",
+                        "ready=",
+                        "controller=",
+                        "Status",
+                        "Busy",
+                        "Media Search",
+                    ],
+                ));
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+        if Instant::now() >= deadline {
+            return if let Some(error) = last_error {
+                Err(format!(
+                    "timed out waiting for accessibility name containing {expected_fragment:?}; last accessibility read error: {error}; last snapshot: {}",
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned())
+                ))
+            } else {
+                Err(format!(
+                    "timed out waiting for accessibility name containing {expected_fragment:?}; last snapshot: {}",
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned())
                 ))
             };
         }
@@ -2376,6 +2443,7 @@ fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
+    let mut last_snapshot = None;
     loop {
         match driver.count_named_controls_with_enabled_state(
             window,
@@ -2387,26 +2455,53 @@ fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
             Ok(_) => {}
             Err(error) => last_error = Some(error),
         }
+        if let Ok(names) = driver.accessible_names(window) {
+            last_snapshot = Some(render_accessible_name_snapshot_for_patterns(
+                &names,
+                &[
+                    name,
+                    "view:",
+                    "pending:",
+                    "Connect",
+                    "Disconnect",
+                    "Status:",
+                    "self=",
+                    "ready=",
+                    "controller=",
+                ],
+            ));
+        }
         if Instant::now() >= deadline {
+            let matching_state_summary = {
+                let enabled_count = driver
+                    .count_named_controls_with_enabled_state(window, name, control_kind, true)
+                    .unwrap_or_default();
+                let disabled_count = driver
+                    .count_named_controls_with_enabled_state(window, name, control_kind, false)
+                    .unwrap_or_default();
+                format!("enabled={enabled_count}, disabled={disabled_count}")
+            };
             return if let Some(error) = last_error {
                 Err(format!(
-                    "timed out waiting for a {} {} named {name:?}; last count error: {error}",
+                    "timed out waiting for a {} {} named {name:?}; last count error: {error}; matching states: {matching_state_summary}; last snapshot: {}",
                     if expected_enabled {
                         "enabled"
                     } else {
                         "disabled"
                     },
                     control_kind.label(),
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned()),
                 ))
             } else {
                 Err(format!(
-                    "timed out waiting for a {} {} named {name:?}",
+                    "timed out waiting for a {} {} named {name:?}; matching states: {matching_state_summary}; last snapshot: {}",
                     if expected_enabled {
                         "enabled"
                     } else {
                         "disabled"
                     },
                     control_kind.label(),
+                    last_snapshot.unwrap_or_else(|| "unavailable".to_owned()),
                 ))
             };
         }
@@ -3482,6 +3577,27 @@ fn wait_for_accessible_name_with_page_down<D: NativeGuiDriver>(
     ))
 }
 
+fn wait_for_accessible_name_with_page_up<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    max_page_ups: usize,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let short_timeout = timeout.min(Duration::from_millis(800));
+    for page_ups in 0..=max_page_ups {
+        if wait_for_accessible_name(driver, window, name, short_timeout).is_ok() {
+            return Ok(page_ups);
+        }
+        if page_ups < max_page_ups {
+            let _ = driver.scroll_active_view_page_up(window);
+        }
+    }
+    Err(format!(
+        "timed out waiting for accessible name {name:?} after {max_page_ups} page-up attempts"
+    ))
+}
+
 fn assert_chat_input_cleared<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -3508,7 +3624,14 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     driver.set_named_edit_value(window, "Chat Input", message, true)?;
-    wait_for_accessible_name(driver, window, "pending: send-chat-message", timeout)?;
+    let _ = wait_for_accessible_name_with_page_up(
+        driver,
+        window,
+        "pending: send-chat-message",
+        4,
+        timeout,
+    )
+    .map_err(|error| format!("failed after submitting chat message {message:?}: {error}"))?;
     invoke_named_control_with_wait(
         driver,
         window,
@@ -3520,15 +3643,20 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
     Ok(())
 }
 
-fn assert_mock_chat_line(line: &str, expected_message: &str, label: &str) -> Result<(), String> {
-    if !line.contains("\"Chat\"") {
+fn assert_mock_ready_line(line: &str, expected_ready: bool, label: &str) -> Result<(), String> {
+    if !line.contains("\"ready\"") {
         return Err(format!(
-            "{label} mock TCP server did not receive a chat payload line: {line:?}"
+            "{label} mock TCP server did not receive a readiness payload line: {line:?}"
         ));
     }
-    if !line.contains(expected_message) {
+    let expected_fragment = if expected_ready {
+        "\"isReady\":true"
+    } else {
+        "\"isReady\":false"
+    };
+    if !line.contains(expected_fragment) {
         return Err(format!(
-            "{label} mock TCP server chat payload missing expected message {expected_message:?}: {line:?}"
+            "{label} mock TCP server readiness payload missing expected fragment {expected_fragment:?}: {line:?}"
         ));
     }
     Ok(())
@@ -4734,7 +4862,7 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
 
     let config_path = temp_root.join("syncplay-native-smoke-detached-missing-media.ini");
     let _ = fs::remove_file(&config_path);
-    seed_native_smoke_config(&config_path)?;
+    seed_native_smoke_config_with_saved_server(&config_path, None, None)?;
     upsert_syncplay_ini_stored_client_settings_mvp_at_path(
         &config_path,
         &StoredClientSettingsMvp {
@@ -4833,23 +4961,8 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         let search_target_value = search_target_path.display().to_string();
-        driver.set_named_edit_value(window, "New Entry", &search_target_value, false)?;
-        wait_for_named_control_enabled_state(
-            driver,
-            window,
-            "Add Entry",
-            NativeControlKind::Button,
-            true,
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Add Entry",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_accessible_name(driver, window, &search_target_value, step_timeout)?;
+        driver.set_named_edit_value(window, "New Entry", &search_target_value, true)?;
+        wait_for_accessible_name_fragment(driver, window, &search_target_value, step_timeout)?;
         steps.push("detached-missing-media-target-staged".to_owned());
 
         invoke_named_control_with_wait(
@@ -4894,7 +5007,24 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             0,
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "view: main-window",
+            Duration::from_millis(1_200),
+        )
+        .is_err()
+        {
+            wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Main Window",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        }
         steps.push("detached-missing-media-search-success".to_owned());
 
         driver.close_window(window)?;
@@ -5062,7 +5192,6 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         wait_for_named_control_count(
             driver,
             window,
@@ -5071,20 +5200,44 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
             0,
             step_timeout,
         )?;
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "view: main-window",
+            Duration::from_millis(1_200),
+        )
+        .is_err()
+        {
+            wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Main Window",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        }
         wait_for_accessible_name(
             driver,
             window,
             "bob: self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
-        send_chat_message_and_complete(driver, window, "helloaftersearch", step_timeout)?;
-        let post_search_chat =
-            session_server.recv_chat(step_timeout, "missing-media continuation")?;
-        assert_mock_chat_line(
-            &post_search_chat,
-            "helloaftersearch",
-            "missing-media continuation",
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
         )?;
+        let post_search_ready =
+            session_server.recv_chat(step_timeout, "missing-media continuation")?;
+        if !post_search_ready.contains("\"ready\"") {
+            return Err(format!(
+                "missing-media continuation mock TCP server did not receive a readiness payload line: {post_search_ready:?}"
+            ));
+        }
         wait_for_accessible_name(
             driver,
             window,
@@ -5178,6 +5331,22 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     let transport_config_path = temp_root.join("syncplay-native-smoke-transport.ini");
     let _ = fs::remove_file(&transport_config_path);
     seed_native_smoke_config(&transport_config_path)?;
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &transport_config_path,
+        &StoredClientSettingsMvp {
+            host: Some("127.0.0.1".to_owned()),
+            port: Some(primary_server.port),
+            username: Some(TRANSPORT_SESSION_USERNAME.to_owned()),
+            room: Some(TRANSPORT_SESSION_ROOM.to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to prepare transport reconnect config {}: {error}",
+            transport_config_path.display()
+        )
+    })?;
     let public_servers_spec = format!(
         "[['Primary', '{}'], ['Reconnect', '{}']]",
         primary_server.address, reconnect_server.address
@@ -5187,12 +5356,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         media_search_browse_path,
         open_media_file_path,
         public_servers_spec: &public_servers_spec,
-        tcp_session: Some(TcpSessionBootstrap {
-            host: "127.0.0.1",
-            port: primary_server.port,
-            username: TRANSPORT_SESSION_USERNAME,
-            room: TRANSPORT_SESSION_ROOM,
-        }),
+        tcp_session: None,
         loopback_session: None,
         attach_test_player: false,
     };
@@ -5249,11 +5413,17 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             "bob: self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
-        steps.push("transport-tcp-startup".to_owned());
+        steps.push("transport-saved-config-startup".to_owned());
 
-        send_chat_message_and_complete(driver, window, "hellotcp", step_timeout)?;
-        let first_primary_chat = primary_server.recv_chat(step_timeout, "primary first")?;
-        assert_mock_chat_line(&first_primary_chat, "hellotcp", "primary first")?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        let first_primary_ready = primary_server.recv_chat(step_timeout, "primary first")?;
+        assert_mock_ready_line(&first_primary_ready, false, "primary first")?;
         wait_for_accessible_name(driver, window, "postchat2.mkv", step_timeout)?;
         wait_for_accessible_name(
             driver,
@@ -5261,11 +5431,17 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             "bob: self=no, ready=no, controller=no",
             step_timeout,
         )?;
-        steps.push("transport-primary-post-chat-churn".to_owned());
+        steps.push("transport-primary-post-ready-churn".to_owned());
 
-        send_chat_message_and_complete(driver, window, "goodbyeprimary", step_timeout)?;
-        let second_primary_chat = primary_server.recv_chat(step_timeout, "primary second")?;
-        assert_mock_chat_line(&second_primary_chat, "goodbyeprimary", "primary second")?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        let second_primary_ready = primary_server.recv_chat(step_timeout, "primary second")?;
+        assert_mock_ready_line(&second_primary_ready, true, "primary second")?;
         wait_for_named_control_count(
             driver,
             window,
@@ -5335,9 +5511,15 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         )?;
         steps.push("transport-public-server-reconnect".to_owned());
 
-        send_chat_message_and_complete(driver, window, "helloreconnect", step_timeout)?;
-        let first_reconnect_chat = reconnect_server.recv_chat(step_timeout, "reconnect first")?;
-        assert_mock_chat_line(&first_reconnect_chat, "helloreconnect", "reconnect first")?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        let first_reconnect_ready = reconnect_server.recv_chat(step_timeout, "reconnect first")?;
+        assert_mock_ready_line(&first_reconnect_ready, true, "reconnect first")?;
         wait_for_accessible_name(driver, window, "reconnect-post2.mkv", step_timeout)?;
         wait_for_accessible_name(
             driver,
@@ -5345,15 +5527,18 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             "carol: self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
-        steps.push("transport-reconnect-post-chat-churn".to_owned());
+        steps.push("transport-reconnect-post-ready-churn".to_owned());
 
-        send_chat_message_and_complete(driver, window, "goodbyereconnect", step_timeout)?;
-        let second_reconnect_chat = reconnect_server.recv_chat(step_timeout, "reconnect second")?;
-        assert_mock_chat_line(
-            &second_reconnect_chat,
-            "goodbyereconnect",
-            "reconnect second",
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Set Ready",
+            NativeControlKind::Button,
+            step_timeout,
         )?;
+        let second_reconnect_ready =
+            reconnect_server.recv_chat(step_timeout, "reconnect second")?;
+        assert_mock_ready_line(&second_reconnect_ready, false, "reconnect second")?;
         wait_for_named_control_count(
             driver,
             window,

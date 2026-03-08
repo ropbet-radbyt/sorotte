@@ -86,7 +86,18 @@ complete-pending
 assert-pending	none
 assert-value	shell:command:busy	no
 assert-value	shell:command:save	enabled
+assert-value	shell:command:connect-saved-server	enabled
 assert-enabled	config:Connection:Host	true
+activate	config-command:connect
+assert-pending	connect-saved-server
+cancel-pending
+assert-pending	none
+activate	main-window-root
+assert-selected	main-window-root	true
+assert-value	main-window:connection-status	disconnected
+assert-value	main-window:connection-target	syncplay.example:8999
+assert-enabled	main-window:connection:connect	true
+assert-enabled	main-window:connection:disconnect	false
 activate	public-servers-root
 assert-selected	public-servers-root	true
 activate	public-servers:row:0

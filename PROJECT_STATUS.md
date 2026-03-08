@@ -10,7 +10,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 - `cargo test --workspace` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
-- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`7/7` scenarios).
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`8/8` scenarios).
 - `cargo build -p syncplay-gui --bin syncplay-gui` passed.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000` passed.
 - The native smoke interaction trace still had to skip menu-driven `Open Media File` invocation because the action was not exposed as an enabled native menu/control.
@@ -20,7 +20,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because the default GUI workflow still has major gaps: there is no first-class config-driven connect path, room join/leave can still be optimistic shell state, shared-playlist file opening is not a real runtime operation yet, and drag-and-drop ingest is still missing. Non-`mpv` players are currently deferred until `mpv` parity is complete.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because the default GUI workflow still has major gaps after connection: room join/leave can still be optimistic shell state, shared-playlist file opening is not a real runtime operation yet, and drag-and-drop ingest is still missing. Non-`mpv` players are currently deferred until `mpv` parity is complete.
 
 ## Documentation set (current)
 
@@ -46,6 +46,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] `mpv` JSON IPC integration with attach/control/property updates and unit coverage in `syncplay-player-mpv`.
 - [x] Managed `mpv` launch and explicit-IPC attach flows (with additional real-`mpv` smokes available as ignored tests).
 - [x] GUI configuration/main-window shell with semantic smoke coverage and Windows native accessibility smoke coverage.
+- [x] First-class GUI saved-config connect/disconnect flow, including startup auto-connect from persisted host/port settings and explicit session lifecycle controls on the configuration and main-window surfaces.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
 - [x] Compatibility/interop test infrastructure comparing Rust runtime behavior to captured Python Syncplay traces/scenarios.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
@@ -54,10 +55,10 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 
 ## Remaining work (priority checklist)
 
-- [ ] Add a first-class GUI connect/disconnect flow that starts a client session from saved host/port settings without relying on env bootstrap or a public-server detour.
 - [ ] Make main-window room join/leave runtime-authoritative so disconnected or pre-Hello states cannot fake a successful room change.
 - [ ] Replace preview-only shared-playlist file-open behavior with real player/session/playlist dispatch.
 - [ ] Add desktop drag-and-drop for media/playlist ingest plus semantic/native smoke coverage.
+- [ ] Tighten GUI command availability so non-working room/media paths stop looking production-ready.
 - [x] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
 - [ ] End-to-end release packaging process (artifacts, versioning, changelog, signing strategy if needed).
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
@@ -77,7 +78,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 ## Notes on scope
 
 - Current evidence supports "substantially implemented client/server rewrite with a verified GUI shell," not "full replacement" parity.
-- The GUI is real and test-covered, but some of the default user-facing actions still stop at shell-state projection unless a runtime was attached through a narrower path.
+- The GUI is real and test-covered, and saved-config connection is now runtime-backed, but some user-facing actions still stop at shell-state projection even after a real session exists.
 - The server runtime library remains further along than the user-facing `syncplay-server` CLI parity surface, even though a real alpha executable entrypoint now exists.
 - Real `mpv` integration exists, but some validation remains environment-specific and intentionally excluded from default test runs.
 - Non-`mpv` player integration is not represented as a first-class implemented runtime adapter in this workspace today, and that work is intentionally deferred behind `mpv` parity.

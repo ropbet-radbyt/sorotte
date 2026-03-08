@@ -861,6 +861,8 @@ struct GuiCommandAvailabilityState {
     can_save_configuration: bool,
     can_reset_configuration: bool,
     can_reload_configuration: bool,
+    can_connect_saved_server: bool,
+    can_disconnect_session: bool,
     can_connect_public_server: bool,
     can_refresh_public_servers: bool,
     can_search_missing_media: bool,
@@ -873,6 +875,8 @@ struct GuiCommandAvailabilityRuntimeOverride {
     can_save_configuration: Option<bool>,
     can_reset_configuration: Option<bool>,
     can_reload_configuration: Option<bool>,
+    can_connect_saved_server: Option<bool>,
+    can_disconnect_session: Option<bool>,
     can_connect_public_server: Option<bool>,
     can_refresh_public_servers: Option<bool>,
     can_search_missing_media: Option<bool>,
@@ -984,6 +988,14 @@ struct GuiSavedConfigurationRuntimeSnapshot {
 struct GuiConfigurationRuntimeSnapshot {
     draft_settings: StoredClientSettingsMvp,
     saved_settings: StoredClientSettingsMvp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiSavedSessionConnectTarget {
+    address: String,
+    username: String,
+    room: String,
+    controlled_room_password_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1722,10 +1734,16 @@ impl GuiWidgetEguiRenderer {
     ) -> Vec<GuiShellAction> {
         match node.id.as_str() {
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
+            "config-command:connect" => vec![GuiShellAction::BeginSavedServerConnect],
+            "config-command:disconnect" => vec![GuiShellAction::BeginSessionDisconnect],
             "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "main-window:connection:connect" => vec![GuiShellAction::BeginSavedServerConnect],
+            "main-window:connection:disconnect" => {
+                vec![GuiShellAction::BeginSessionDisconnect]
+            }
             "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
             "main-window:room:set" => {
                 vec![GuiShellAction::SetMainWindowRoom(
@@ -3873,6 +3891,7 @@ struct GuiPersistedConfigRuntimeOwner {
     session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
     session_transport: Option<GuiQueuedSessionTransportHandle>,
     session_transport_driver: Option<Box<dyn GuiSessionTransportDriver>>,
+    startup_saved_connect_attempted: bool,
     player: Option<Box<dyn PlayerAdapter>>,
     player_unavailability_reason: Option<String>,
     player_local_file: Option<LocalFileUpdate>,
@@ -3887,6 +3906,7 @@ impl GuiPersistedConfigRuntimeOwner {
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            startup_saved_connect_attempted: false,
             player: None,
             player_unavailability_reason: None,
             player_local_file: None,
@@ -4298,6 +4318,200 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(None)
     }
 
+    fn session_active(&self) -> bool {
+        self.session.is_some() || self.session_transport_driver.is_some()
+    }
+
+    fn sessionless_main_window_snapshot(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> MainWindowRuntimeSnapshot {
+        let baseline_main_window =
+            MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
+        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&baseline_main_window);
+        let player_attached = self.player.is_some();
+        snapshot.can_toggle_pause = player_attached;
+        snapshot.can_seek = player_attached;
+        snapshot.can_manage_playlist = player_attached && snapshot.shared_playlist_enabled;
+        if !snapshot.shared_playlist_enabled {
+            snapshot.playlist = self.player_local_file_playlist_entries();
+        }
+        if player_attached && let Some(paused) = self.player_paused {
+            snapshot.playback_paused = paused;
+        }
+        snapshot
+    }
+
+    fn sessionless_menu_dialog_runtime_snapshot(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<MenuDialogRuntimeSnapshot> {
+        let settings = state.configuration.to_stored_settings();
+        let desired_show_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
+            || settings.chat_output_enabled.unwrap_or(false);
+        let desired_show_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
+        let mut action_overrides = Vec::new();
+        for (section_title, action_label, enabled) in [
+            ("Window", "Show Chat", desired_show_chat_enabled),
+            ("Window", "Show Playlist", desired_show_playlist_enabled),
+        ] {
+            let current_enabled = state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == section_title)
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == action_label)
+                })
+                .map(|action| action.enabled);
+            if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
+                action_overrides.push(MenuActionRuntimeOverride {
+                    section_title,
+                    action_label,
+                    enabled,
+                });
+            }
+        }
+        if action_overrides.is_empty() {
+            return None;
+        }
+        Some(MenuDialogRuntimeSnapshot {
+            action_overrides,
+            tls_prompt_expected: state.menus.tls_prompt_expected,
+            update_notice_expected: state.menus.update_notice_expected,
+            about_dialog_available: state.menus.about_dialog_available,
+        })
+    }
+
+    fn sessionless_projection_actions(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let mut actions = Vec::new();
+        let main_window_snapshot = self.sessionless_main_window_snapshot(state);
+        if main_window_snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window) {
+            actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                main_window_snapshot,
+            ));
+        }
+        if let Some(menu_snapshot) = self.sessionless_menu_dialog_runtime_snapshot(state) {
+            actions.push(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
+                menu_snapshot,
+            ));
+        }
+        actions
+    }
+
+    fn push_runtime_error_notification(
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        message: String,
+    ) {
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message,
+            }],
+        );
+    }
+
+    fn complete_saved_server_connect_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        clear_pending: bool,
+    ) {
+        let Some(target) = projected_state.saved_session_connect_target() else {
+            let message =
+                "Configured server connect requires a saved host and a valid port.".to_owned();
+            if clear_pending {
+                self.clear_pending_operation_with_runtime_error(handle, projected_state, message);
+            } else {
+                Self::push_runtime_error_notification(handle, projected_state, message);
+            }
+            return;
+        };
+        let transport_driver = match GuiTcpSessionTransportDriver::connect_from_host_arg(
+            &target.address,
+        ) {
+            Ok(driver) => driver,
+            Err(error) => {
+                let message = format!(
+                    "Configured server connect through the detached session runtime failed: {error}"
+                );
+                if clear_pending {
+                    self.clear_pending_operation_with_runtime_error(
+                        handle,
+                        projected_state,
+                        message,
+                    );
+                } else {
+                    Self::push_runtime_error_notification(handle, projected_state, message);
+                }
+                return;
+            }
+        };
+        let session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+            target.username,
+            target.room,
+            target.controlled_room_password_override,
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                let message = format!(
+                    "Configured server connect through the detached session runtime failed: {error}"
+                );
+                if clear_pending {
+                    self.clear_pending_operation_with_runtime_error(
+                        handle,
+                        projected_state,
+                        message,
+                    );
+                } else {
+                    Self::push_runtime_error_notification(handle, projected_state, message);
+                }
+                return;
+            }
+        };
+
+        self.session = Some(Box::new(session));
+        if self.session_transport.is_none() {
+            self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
+        }
+        if let Some(session_transport) = self.session_transport.as_ref() {
+            session_transport.clear_protocol_lines();
+        }
+        self.session_transport_driver = Some(Box::new(transport_driver));
+
+        let mut actions = self.sessionless_projection_actions(projected_state);
+        if clear_pending {
+            actions.push(GuiShellAction::CompleteSavedServerConnect);
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
+    }
+
+    fn complete_session_disconnect_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if let Some(session_transport) = self.session_transport.as_ref() {
+            session_transport.clear_protocol_lines();
+        }
+        self.session = None;
+        self.session_transport = None;
+        self.session_transport_driver = None;
+
+        let mut actions = self.sessionless_projection_actions(projected_state);
+        actions.push(GuiShellAction::CompleteSessionDisconnect);
+        Self::push_actions_and_project(handle, projected_state, actions);
+    }
+
     fn push_actions_and_project(
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
@@ -4472,6 +4686,8 @@ impl GuiPersistedConfigRuntimeOwner {
             can_save_configuration: !busy && state.validation.issues.is_empty(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
+            can_connect_saved_server: !busy && state.saved_session_connect_target().is_some(),
+            can_disconnect_session: !busy && self.session_active(),
             can_connect_public_server: !busy && state.public_servers.can_connect,
             can_refresh_public_servers: !busy && state.public_servers.can_refresh,
             can_search_missing_media: !busy && state.media_search.can_search_missing_media,
@@ -4656,6 +4872,19 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
+        if !self.startup_saved_connect_attempted {
+            self.startup_saved_connect_attempted = true;
+            if projected_state.pending_operation.is_none()
+                && !self.session_active()
+                && projected_state.saved_session_connect_target().is_some()
+            {
+                self.complete_saved_server_connect_runtime(handle, &mut projected_state, false);
+                self.flush_session_transport_outbound(handle, &mut projected_state);
+                self.pump_session_transport_driver(handle, &mut projected_state);
+                self.drain_session_transport_inbound(handle, &mut projected_state);
+                self.drain_session_runtime_actions(handle, &mut projected_state);
+            }
+        }
         for request in handle.drain_requests() {
             match request {
                 request @ GuiRuntimeRequest::OpenMediaFiles {
@@ -4823,6 +5052,16 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         ];
                         Self::push_actions_and_project(handle, &mut projected_state, actions);
                     }
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::ConnectSavedServer,
+                ) => {
+                    self.complete_saved_server_connect_runtime(handle, &mut projected_state, true);
+                }
+                GuiRuntimeRequest::CompletePendingOperation(
+                    GuiPendingCompletionRequest::DisconnectSession,
+                ) => {
+                    self.complete_session_disconnect_runtime(handle, &mut projected_state);
                 }
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::ConnectPublicServer,
@@ -5221,6 +5460,8 @@ enum GuiPendingCompletionRequest {
     ResetConfiguration(StoredClientSettingsMvp),
     ReloadConfiguration(StoredClientSettingsMvp),
     ClearGuiData,
+    ConnectSavedServer,
+    DisconnectSession,
     ConnectPublicServer,
     RefreshPublicServers(Vec<(String, String)>),
     SearchMissingMedia,
@@ -5242,6 +5483,8 @@ impl GuiPendingCompletionRequest {
                 Self::ReloadConfiguration(state.saved_configuration.clone())
             }
             GuiPendingOperationKind::ClearGuiData => Self::ClearGuiData,
+            GuiPendingOperationKind::ConnectSavedServer => Self::ConnectSavedServer,
+            GuiPendingOperationKind::DisconnectSession => Self::DisconnectSession,
             GuiPendingOperationKind::ConnectPublicServer => Self::ConnectPublicServer,
             GuiPendingOperationKind::RefreshPublicServers => Self::RefreshPublicServers(
                 state
@@ -5271,6 +5514,8 @@ impl GuiPendingCompletionRequest {
                 GuiShellAction::CompleteConfigurationReload(settings)
             }
             Self::ClearGuiData => GuiShellAction::CompleteClearGuiData,
+            Self::ConnectSavedServer => GuiShellAction::CompleteSavedServerConnect,
+            Self::DisconnectSession => GuiShellAction::CompleteSessionDisconnect,
             Self::ConnectPublicServer => GuiShellAction::CompleteSelectedPublicServerConnect,
             Self::RefreshPublicServers(servers) => {
                 GuiShellAction::CompletePublicServerRefresh(servers)
@@ -5906,17 +6151,25 @@ impl GuiEframeNativeHost {
         )
     }
 
-    fn with_queued_preview_runtime() -> Self {
-        Self::with_queued_runtime_owner(true, GuiPersistedConfigRuntimeOwner::default())
+    fn with_queued_preview_runtime_for_config_path(config_path: Option<PathBuf>) -> Self {
+        Self::with_queued_runtime_owner(
+            true,
+            GuiPersistedConfigRuntimeOwner::with_config_path(config_path),
+        )
     }
 
-    #[allow(dead_code)]
-    fn with_client_core_chat_session(
+    fn with_queued_preview_runtime() -> Self {
+        Self::with_queued_preview_runtime_for_config_path(None)
+    }
+
+    fn with_client_core_chat_session_for_config_path(
         username: impl Into<String>,
         room: impl Into<String>,
+        config_path: Option<PathBuf>,
     ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
-        let (owner, session_transport) = GuiPersistedConfigRuntimeOwner::default()
-            .with_client_core_chat_session_runtime(username, room)?;
+        let (owner, session_transport) =
+            GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
+                .with_client_core_chat_session_runtime(username, room)?;
         Ok((
             Self::with_queued_runtime_owner(true, owner),
             session_transport,
@@ -5924,12 +6177,39 @@ impl GuiEframeNativeHost {
     }
 
     #[allow(dead_code)]
+    fn with_client_core_chat_session(
+        username: impl Into<String>,
+        room: impl Into<String>,
+    ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
+        Self::with_client_core_chat_session_for_config_path(username, room, None)
+    }
+
+    fn with_client_core_chat_loopback_session_for_config_path(
+        username: impl Into<String>,
+        room: impl Into<String>,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let owner = GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
+            .with_client_core_chat_loopback_session_runtime(username, room)?;
+        Ok(Self::with_queued_runtime_owner(true, owner))
+    }
+
+    #[allow(dead_code)]
     fn with_client_core_chat_loopback_session(
         username: impl Into<String>,
         room: impl Into<String>,
     ) -> Result<Self, String> {
-        let owner = GuiPersistedConfigRuntimeOwner::default()
-            .with_client_core_chat_loopback_session_runtime(username, room)?;
+        Self::with_client_core_chat_loopback_session_for_config_path(username, room, None)
+    }
+
+    fn with_client_core_chat_tcp_session_for_config_path(
+        username: impl Into<String>,
+        room: impl Into<String>,
+        host_arg: impl AsRef<str>,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let owner = GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
+            .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
         Ok(Self::with_queued_runtime_owner(true, owner))
     }
 
@@ -5939,9 +6219,7 @@ impl GuiEframeNativeHost {
         room: impl Into<String>,
         host_arg: impl AsRef<str>,
     ) -> Result<Self, String> {
-        let owner = GuiPersistedConfigRuntimeOwner::default()
-            .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
-        Ok(Self::with_queued_runtime_owner(true, owner))
+        Self::with_client_core_chat_tcp_session_for_config_path(username, room, host_arg, None)
     }
 
     #[allow(dead_code)]
@@ -6022,6 +6300,8 @@ enum GuiPendingOperationKind {
     ResetConfiguration,
     ReloadConfiguration,
     ClearGuiData,
+    ConnectSavedServer,
+    DisconnectSession,
     ConnectPublicServer,
     RefreshPublicServers,
     SearchMissingMedia,
@@ -6036,6 +6316,8 @@ impl GuiPendingOperationKind {
             Self::ResetConfiguration => "reset-configuration",
             Self::ReloadConfiguration => "reload-configuration",
             Self::ClearGuiData => "clear-gui-data",
+            Self::ConnectSavedServer => "connect-saved-server",
+            Self::DisconnectSession => "disconnect-session",
             Self::ConnectPublicServer => "connect-public-server",
             Self::RefreshPublicServers => "refresh-public-servers",
             Self::SearchMissingMedia => "search-missing-media",
@@ -6309,6 +6591,12 @@ enum GuiShellAction {
         value: bool,
     },
     AnnouncePublicServerSelectionChanged(usize),
+    BeginSavedServerConnect,
+    CompleteSavedServerConnect,
+    CancelSavedServerConnect,
+    BeginSessionDisconnect,
+    CompleteSessionDisconnect,
+    CancelSessionDisconnect,
     BeginSelectedPublicServerConnect,
     CompleteSelectedPublicServerConnect,
     BeginPublicServerRefresh,
@@ -7120,6 +7408,8 @@ impl GuiCommandAvailabilityState {
         self.can_save_configuration
             || self.can_reset_configuration
             || self.can_reload_configuration
+            || self.can_connect_saved_server
+            || self.can_disconnect_session
             || self.can_connect_public_server
             || self.can_refresh_public_servers
             || self.can_search_missing_media
@@ -7130,11 +7420,13 @@ impl GuiCommandAvailabilityState {
     fn render_lines(&self, pending_operation: Option<&GuiPendingOperationState>) -> Vec<String> {
         vec![
             format!(
-                "[Commands] busy={}, save_configuration={}, reset_configuration={}, reload_configuration={}, connect_public_server={}, refresh_public_servers={}, search_missing_media={}, toggle_pause={}, send_chat_message={}",
+                "[Commands] busy={}, save_configuration={}, reset_configuration={}, reload_configuration={}, connect_saved_server={}, disconnect_session={}, connect_public_server={}, refresh_public_servers={}, search_missing_media={}, toggle_pause={}, send_chat_message={}",
                 bool_label(pending_operation.is_some()),
                 bool_label(self.can_save_configuration),
                 bool_label(self.can_reset_configuration),
                 bool_label(self.can_reload_configuration),
+                bool_label(self.can_connect_saved_server),
+                bool_label(self.can_disconnect_session),
                 bool_label(self.can_connect_public_server),
                 bool_label(self.can_refresh_public_servers),
                 bool_label(self.can_search_missing_media),
@@ -7166,6 +7458,12 @@ impl GuiCommandAvailabilityRuntimeOverride {
             can_reload_configuration: (baseline.can_reload_configuration
                 != snapshot.can_reload_configuration)
                 .then_some(snapshot.can_reload_configuration),
+            can_connect_saved_server: (baseline.can_connect_saved_server
+                != snapshot.can_connect_saved_server)
+                .then_some(snapshot.can_connect_saved_server),
+            can_disconnect_session: (baseline.can_disconnect_session
+                != snapshot.can_disconnect_session)
+                .then_some(snapshot.can_disconnect_session),
             can_connect_public_server: (baseline.can_connect_public_server
                 != snapshot.can_connect_public_server)
                 .then_some(snapshot.can_connect_public_server),
@@ -7193,6 +7491,12 @@ impl GuiCommandAvailabilityRuntimeOverride {
         if let Some(value) = self.can_reload_configuration {
             command_availability.can_reload_configuration = value;
         }
+        if let Some(value) = self.can_connect_saved_server {
+            command_availability.can_connect_saved_server = value;
+        }
+        if let Some(value) = self.can_disconnect_session {
+            command_availability.can_disconnect_session = value;
+        }
         if let Some(value) = self.can_connect_public_server {
             command_availability.can_connect_public_server = value;
         }
@@ -7219,6 +7523,12 @@ impl GuiCommandAvailabilityRuntimeOverride {
         }
         if self.can_reload_configuration == Some(baseline.can_reload_configuration) {
             self.can_reload_configuration = None;
+        }
+        if self.can_connect_saved_server == Some(baseline.can_connect_saved_server) {
+            self.can_connect_saved_server = None;
+        }
+        if self.can_disconnect_session == Some(baseline.can_disconnect_session) {
+            self.can_disconnect_session = None;
         }
         if self.can_connect_public_server == Some(baseline.can_connect_public_server) {
             self.can_connect_public_server = None;
@@ -8417,6 +8727,12 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::AnnouncePublicServerSelectionChanged(index) => {
                 self.announce_public_server_selection_changed(index)
             }
+            GuiShellAction::BeginSavedServerConnect => self.begin_saved_server_connect(),
+            GuiShellAction::CompleteSavedServerConnect => self.complete_saved_server_connect(),
+            GuiShellAction::CancelSavedServerConnect => self.cancel_saved_server_connect(),
+            GuiShellAction::BeginSessionDisconnect => self.begin_session_disconnect(),
+            GuiShellAction::CompleteSessionDisconnect => self.complete_session_disconnect(),
+            GuiShellAction::CancelSessionDisconnect => self.cancel_session_disconnect(),
             GuiShellAction::BeginSelectedPublicServerConnect => {
                 self.begin_selected_public_server_connect()
             }
@@ -8611,6 +8927,22 @@ impl SyncplayGuiShellAppState {
                     false,
                 ),
                 GuiWidgetNode::leaf(
+                    "config-command:connect",
+                    self.saved_session_connect_button_label(),
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_connect_saved_server,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-command:disconnect",
+                    "Disconnect",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.commands.can_disconnect_session,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
                     "config-command:save",
                     "Save",
                     GuiWidgetKind::Button,
@@ -8720,7 +9052,58 @@ impl SyncplayGuiShellAppState {
         let can_edit_user = can_manage_users && selected_user.is_some();
         let can_remove_user = can_manage_users && selected_user.is_some_and(|user| !user.is_self);
         let can_add_user = can_manage_users && !self.new_main_window_user_draft.trim().is_empty();
+        let saved_session_target = self.saved_session_connect_target();
+        let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
+            Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
+            Some(GuiPendingOperationKind::DisconnectSession) => "disconnecting",
+            _ if self.commands.can_disconnect_session => "connected",
+            _ if saved_session_target.is_some() => "disconnected",
+            _ => "not-configured",
+        };
+        let connection_target = saved_session_target
+            .as_ref()
+            .map(|target| target.address.clone())
+            .unwrap_or_else(|| "(not configured)".to_owned());
         let mut children = vec![
+            GuiWidgetNode::branch(
+                "main-window:connection",
+                "Connection",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:connection-status",
+                        "Status",
+                        GuiWidgetKind::Status,
+                        Some(connection_status.to_owned()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:connection-target",
+                        "Target",
+                        GuiWidgetKind::Status,
+                        Some(connection_target),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:connection:connect",
+                        self.saved_session_connect_button_label(),
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_connect_saved_server,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:connection:disconnect",
+                        "Disconnect",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_disconnect_session,
+                        false,
+                    ),
+                ],
+            ),
             GuiWidgetNode::leaf(
                 "main-window:room",
                 "Room",
@@ -9425,6 +9808,16 @@ impl SyncplayGuiShellAppState {
             ("reset", "Reset", self.commands.can_reset_configuration),
             ("reload", "Reload", self.commands.can_reload_configuration),
             (
+                "connect-saved-server",
+                "Connect Saved Server",
+                self.commands.can_connect_saved_server,
+            ),
+            (
+                "disconnect-session",
+                "Disconnect Session",
+                self.commands.can_disconnect_session,
+            ),
+            (
                 "connect-public-server",
                 "Connect Public Server",
                 self.commands.can_connect_public_server,
@@ -9929,6 +10322,74 @@ impl SyncplayGuiShellAppState {
         self.configuration.to_stored_settings() != self.saved_configuration
     }
 
+    fn saved_session_connect_target(&self) -> Option<GuiSavedSessionConnectTarget> {
+        let raw_host = self
+            .configuration
+            .control_value("Connection", "Host")
+            .unwrap_or_default()
+            .trim();
+        if raw_host.is_empty() {
+            return None;
+        }
+        let (normalized_host, _) =
+            parse_host_and_optional_port_from_host_arg_legacy_compatible(raw_host);
+        let normalized_host = normalized_host.trim();
+        if normalized_host.is_empty() {
+            return None;
+        }
+
+        let raw_port = self
+            .configuration
+            .control_value("Connection", "Port")
+            .unwrap_or_default()
+            .trim();
+        let port = if raw_port.is_empty() {
+            self.configuration.to_stored_settings().port.unwrap_or(8999)
+        } else {
+            raw_port.parse::<u16>().ok().filter(|port| *port > 0)?
+        };
+
+        let mut settings = self.configuration.to_stored_settings();
+        settings.host = Some(normalized_host.to_owned());
+        settings.port = Some(port);
+        settings.username = settings
+            .username
+            .take()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        settings.room = settings
+            .room
+            .take()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if settings.room.is_none()
+            && let Some(room) = settings.room_list.as_ref().and_then(|rooms| {
+                rooms.iter().find_map(|room| {
+                    let trimmed = room.trim();
+                    (!trimmed.is_empty()).then_some(trimmed.to_owned())
+                })
+            })
+        {
+            settings.room = Some(room);
+        }
+        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let address = format!("{normalized_host}:{port}");
+        Some(GuiSavedSessionConnectTarget {
+            address,
+            username: runtime_settings.settings.username.unwrap_or_default(),
+            room: runtime_settings.settings.room.unwrap_or_default(),
+            controlled_room_password_override: runtime_settings.controlled_room_password_override,
+        })
+    }
+
+    fn saved_session_connect_button_label(&self) -> &'static str {
+        if self.commands.can_disconnect_session {
+            "Reconnect"
+        } else {
+            "Connect"
+        }
+    }
+
     fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {
         persisted_ui_state.apply_to_shell_state(self);
         self.refresh_validation();
@@ -10164,6 +10625,8 @@ impl SyncplayGuiShellAppState {
             can_save_configuration: !busy && self.validation.issues.is_empty(),
             can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
+            can_connect_saved_server: !busy && self.saved_session_connect_target().is_some(),
+            can_disconnect_session: false,
             can_connect_public_server: !busy && self.public_servers.can_connect,
             can_refresh_public_servers: !busy && self.public_servers.can_refresh,
             can_search_missing_media: !busy && self.media_search.can_search_missing_media,
@@ -12298,6 +12761,133 @@ impl SyncplayGuiShellAppState {
         true
     }
 
+    fn begin_saved_server_connect(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_connect_saved_server {
+            return self.record_action_error(
+                "Configured server connect requires a saved host and a valid port.",
+            );
+        }
+        let Some(target) = self.saved_session_connect_target() else {
+            return self.record_action_error(
+                "Configured server connect requires a saved host and a valid port.",
+            );
+        };
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ConnectSavedServer,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Connecting to configured server: {}.", target.address),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_saved_server_connect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self
+                .record_action_error("No configured-server connect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ConnectSavedServer {
+            return self
+                .record_action_error("No configured-server connect is currently in progress.");
+        }
+        let Some(target) = self.saved_session_connect_target() else {
+            self.pending_operation = None;
+            return self.record_action_error(
+                "Configured server connect requires a saved host and a valid port.",
+            );
+        };
+        self.pending_operation = None;
+        self.active_view = GuiShellView::MainWindow;
+        self.push_system_chat_message(format!(
+            "Connected to configured server: {}.",
+            target.address
+        ));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Connected to configured server: {}.", target.address),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_saved_server_connect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self
+                .record_action_error("No configured-server connect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ConnectSavedServer {
+            return self
+                .record_action_error("No configured-server connect is currently in progress.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Configured server connect canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_session_disconnect(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if !self.commands.can_disconnect_session {
+            return self.record_action_error(
+                "Session disconnect is unavailable when no session runtime is active.",
+            );
+        }
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::DisconnectSession,
+        });
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Disconnecting the current session.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn complete_session_disconnect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No session disconnect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::DisconnectSession {
+            return self.record_action_error("No session disconnect is currently in progress.");
+        }
+        self.pending_operation = None;
+        self.push_system_chat_message("Session disconnected.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Session disconnected.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_session_disconnect(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No session disconnect is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::DisconnectSession {
+            return self.record_action_error("No session disconnect is currently in progress.");
+        }
+
+        self.pending_operation = None;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Session disconnect canceled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     fn begin_selected_public_server_connect(&mut self) -> bool {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
@@ -12788,6 +13378,8 @@ impl SyncplayGuiShellAppState {
             GuiPendingOperationKind::ResetConfiguration => self.cancel_configuration_reset(),
             GuiPendingOperationKind::ReloadConfiguration => self.cancel_configuration_reload(),
             GuiPendingOperationKind::ClearGuiData => self.cancel_clear_gui_data(),
+            GuiPendingOperationKind::ConnectSavedServer => self.cancel_saved_server_connect(),
+            GuiPendingOperationKind::DisconnectSession => self.cancel_session_disconnect(),
             GuiPendingOperationKind::ConnectPublicServer => {
                 self.cancel_selected_public_server_connect()
             }
@@ -13316,24 +13908,30 @@ where
 
 fn gui_startup_host_and_settings() -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String>
 {
+    let config_path = resolve_syncplay_gui_config_path_legacy_compatible();
     let settings = gui_startup_settings_from_lookup(env_trimmed, |path| {
         std::fs::read_to_string(path).map_err(|error| error.to_string())
     })?;
     if let Some(bootstrap) = gui_client_core_chat_loopback_bootstrap_from_lookup(env_trimmed)? {
-        let host = GuiEframeNativeHost::with_client_core_chat_loopback_session(
+        let host = GuiEframeNativeHost::with_client_core_chat_loopback_session_for_config_path(
             bootstrap.username,
             bootstrap.room,
+            config_path,
         )?;
         return Ok((host, settings));
     }
     let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(env_trimmed)? else {
-        return Ok((GuiEframeNativeHost::default(), settings));
+        return Ok((
+            GuiEframeNativeHost::with_queued_preview_runtime_for_config_path(config_path),
+            settings,
+        ));
     };
 
-    let host = GuiEframeNativeHost::with_client_core_chat_tcp_session(
+    let host = GuiEframeNativeHost::with_client_core_chat_tcp_session_for_config_path(
         bootstrap.username.clone(),
         bootstrap.room.clone(),
         bootstrap.host_arg(),
+        config_path,
     )?;
     Ok((host, settings))
 }
@@ -14247,7 +14845,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: false,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: false,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: false,
                     can_send_chat_message: false,
@@ -14364,7 +14964,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: true,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: true,
                     can_send_chat_message: false,
@@ -14960,7 +15562,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: false,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: false,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: false,
                     can_send_chat_message: false,
@@ -14980,7 +15584,9 @@ mod tests {
                 can_reset_configuration: false,
                 can_reload_configuration: false,
                 can_connect_public_server: false,
+                can_connect_saved_server: false,
                 can_refresh_public_servers: false,
+                can_disconnect_session: false,
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
@@ -15090,7 +15696,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: false,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: false,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: false,
                     can_send_chat_message: false,
@@ -15147,7 +15755,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: false,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: false,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: false,
                     can_send_chat_message: false,
@@ -15605,7 +16215,9 @@ mod tests {
                     can_reset_configuration: true,
                     can_reload_configuration: true,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: true,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: false,
                     can_send_chat_message: false,
@@ -15701,7 +16313,9 @@ mod tests {
                     can_reset_configuration: false,
                     can_reload_configuration: true,
                     can_connect_public_server: false,
+                    can_connect_saved_server: false,
                     can_refresh_public_servers: true,
+                    can_disconnect_session: false,
                     can_search_missing_media: false,
                     can_toggle_pause: true,
                     can_send_chat_message: false,
@@ -19662,7 +20276,7 @@ mod tests {
                 .contains("[Selection] user=0, playlist=(none), menu=0:0, media_directory=(none)")
         );
         assert!(notice.contains(
-            "[Commands] busy=no, save_configuration=yes, reset_configuration=no, reload_configuration=yes, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=no"
+            "[Commands] busy=no, save_configuration=yes, reset_configuration=no, reload_configuration=yes, connect_saved_server=no, disconnect_session=no, connect_public_server=no, refresh_public_servers=yes, search_missing_media=no, toggle_pause=no, send_chat_message=no"
         ));
         assert!(notice.contains("[Pending] operation=(none)"));
         assert!(notice.contains("[Control Focus] focused=(none)"));
@@ -22188,7 +22802,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: false,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: false,
@@ -22218,7 +22834,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: false,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: true,
@@ -23487,7 +24105,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: true,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: false,
@@ -23561,7 +24181,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: true,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: true,
@@ -23876,7 +24498,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: true,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: false,
@@ -23948,7 +24572,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: true,
                         can_search_missing_media: false,
                         can_toggle_pause: false,
                         can_send_chat_message: true,
@@ -26279,7 +26905,7 @@ assert-pending\tnone\n"
         ];
         super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
         let inbound_actions = handle.drain_actions();
-        assert_eq!(inbound_actions.len(), 2);
+        assert_eq!(inbound_actions.len(), 3);
         assert!(matches!(
             &inbound_actions[0],
             GuiShellAction::PushChatMessage { sender, message }
@@ -26290,6 +26916,24 @@ assert-pending\tnone\n"
             GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot)
                 if snapshot.active_view == GuiShellView::PublicServers
         ));
+        assert_eq!(
+            inbound_actions[2],
+            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: true,
+                    can_connect_public_server: true,
+                    can_connect_saved_server: false,
+                    can_refresh_public_servers: true,
+                    can_disconnect_session: true,
+                    can_search_missing_media: true,
+                    can_toggle_pause: false,
+                    can_send_chat_message: true,
+                },
+                pending_operation: None,
+            })
+        );
         for action in inbound_actions {
             assert!(state.apply(action));
         }
@@ -26460,6 +27104,7 @@ assert-pending\tnone\n"
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            startup_saved_connect_attempted: false,
             player: Some(Box::new(TelemetryPlayerAdapter {
                 state: player_state.clone(),
             })),
@@ -26519,7 +27164,9 @@ assert-pending\tnone\n"
                         can_reset_configuration: false,
                         can_reload_configuration: true,
                         can_connect_public_server: false,
+                        can_connect_saved_server: false,
                         can_refresh_public_servers: true,
+                        can_disconnect_session: false,
                         can_search_missing_media: false,
                         can_toggle_pause: true,
                         can_send_chat_message: false,
@@ -26689,6 +27336,7 @@ assert-pending\tnone\n"
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            startup_saved_connect_attempted: false,
             player: Some(Box::new(RecordingPlayerAdapter {
                 state: player_state.clone(),
             })),
