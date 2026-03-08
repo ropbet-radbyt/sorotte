@@ -373,6 +373,8 @@ static GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED: Onc
 const GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION: &str = "Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT: &str = "# Persistence, clear-GUI-data, and config-migration flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\thost\tpersisted.example\nsetting\troom\tPersistenceRoom\nsetting\tplayer-path\tC:/Windows/System32/notepad.exe\n";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION: &str = "Seeds legacy GUI-side state next to syncplay.ini, verifies non-INI restore on startup, runs the clear-GUI-data flow through the runtime owner, and proves GUI-owned public-server state wins predictably over conflicting syncplay.ini rows during migration.";
+const GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT: &str = "# Detached runtime ownership flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tsemantic-user\nsetting\troom\tsemantic-room\nsetting\tpublic-server\tPrimary\t127.0.0.1:8999\nsetting\tmedia-search-directory\tC:/Media\n";
+const GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_DESCRIPTION: &str = "Bootstraps detached public-server connect from GUI state against a local mock server, refreshes browser rows without a preexisting session, and searches missing media from detached GUI playlist state.";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT: &str = "# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\tinterop-room\nsetting\tshared-playlist-enabled\ttrue\n";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION: &str = "Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, switches the GUI between rooms and back, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.";
 const GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONTROLLED_ROOM_FLOW_SCRIPT: &str = "# Live Python reference-peer controlled-room flow against the legacy Syncplay server\n# Peer: interop-py-peer\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tinterop-gui-user\nsetting\troom\t+interop-room:447CE7E3548D:AB-123-456\nsetting\tshared-playlist-enabled\ttrue\n";
@@ -425,6 +427,9 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
             &GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_SCRIPT_NORMALIZED,
         )),
         "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT),
+        "detached-runtime-ownership-flow" => {
+            Some(GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT)
+        }
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_SCRIPT)
         }
@@ -446,6 +451,9 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
             Some(GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION)
         }
         "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION),
+        "detached-runtime-ownership-flow" => {
+            Some(GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_DESCRIPTION)
+        }
         "live-python-peer-connect-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_LIVE_PYTHON_PEER_CONNECT_FLOW_DESCRIPTION)
         }
@@ -529,6 +537,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "runtime-chat-flow",
         "runtime-transport-churn-flow",
         "persistence-reset-flow",
+        "detached-runtime-ownership-flow",
         "live-python-peer-connect-flow",
         "live-python-peer-controlled-room-flow",
     ]
@@ -593,6 +602,9 @@ pub(super) fn run_gui_semantic_scenario_named(
     if name == "persistence-reset-flow" {
         return run_gui_semantic_persistence_reset_flow();
     }
+    if name == "detached-runtime-ownership-flow" {
+        return run_gui_semantic_detached_runtime_ownership_flow();
+    }
     let scenario = gui_semantic_scenario_named(name).ok_or_else(|| {
         format!(
             "unknown semantic scenario {name:?}. Available: {}",
@@ -654,7 +666,9 @@ pub fn run_syncplay_gui_semantic_report_from_named_with_append_script_path(
 ) -> Result<GuiSemanticScenarioReport, String> {
     if matches!(
         name,
-        "live-python-peer-connect-flow" | "live-python-peer-controlled-room-flow"
+        "detached-runtime-ownership-flow"
+            | "live-python-peer-connect-flow"
+            | "live-python-peer-controlled-room-flow"
     ) {
         return Err(format!(
             "--append-script does not support custom semantic scenario {name:?}"
@@ -1152,6 +1166,289 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
     })();
     let _ = std::fs::remove_dir_all(&root);
     result
+}
+
+fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScenarioReport, String> {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("failed to bind detached semantic TCP listener: {error}"))?;
+    let address = listener.local_addr().map_err(|error| {
+        format!("failed to read detached semantic TCP listener address: {error}")
+    })?;
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener
+            .accept()
+            .map_err(|error| format!("detached semantic TCP listener accept failed: {error}"))?;
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(|error| format!("detached semantic TCP stream clone failed: {error}"))?,
+        );
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .map_err(|error| format!("detached semantic TCP hello read failed: {error}"))?;
+        hello_tx
+            .send(hello_line)
+            .map_err(|error| format!("detached semantic TCP hello report failed: {error}"))?;
+        for line in [
+            r#"{"Hello":{"username":"semantic-user","room":{"name":"semantic-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Set":{"playlistChange":{"files":["missing-source.mkv","missing-target.mkv"],"user":"semantic-user"}}}"#,
+            r#"{"Set":{"playlistIndex":{"index":1,"user":"semantic-user"}}}"#,
+        ] {
+            stream
+                .write_all(line.as_bytes())
+                .map_err(|error| format!("detached semantic TCP write failed: {error}"))?;
+            stream.write_all(b"\r\n").map_err(|error| {
+                format!("detached semantic TCP line termination failed: {error}")
+            })?;
+        }
+        stream
+            .flush()
+            .map_err(|error| format!("detached semantic TCP flush failed: {error}"))?;
+        release_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| format!("detached semantic TCP release wait failed: {error}"))?;
+        Ok(())
+    });
+
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "syncplay-gui-semantic-detached-runtime-{}-{unique_suffix}",
+        std::process::id()
+    ));
+    let result = (|| -> Result<GuiSemanticScenarioReport, String> {
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).map_err(|error| {
+            format!(
+                "failed to create detached semantic temp root {}: {error}",
+                root.display()
+            )
+        })?;
+        let found_path = root.join("missing-target.mkv");
+        std::fs::write(&found_path, b"semantic-detached-runtime-target").map_err(|error| {
+            format!(
+                "failed to create detached semantic target {}: {error}",
+                found_path.display()
+            )
+        })?;
+        let found_path_text = found_path.display().to_string();
+
+        let mut connect_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let connect_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut connect_state = super::SyncplayGuiShellAppState::from_stored_settings(
+            &super::StoredClientSettingsMvp {
+                username: Some("semantic-user".to_owned()),
+                room: Some("semantic-room".to_owned()),
+                public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
+                ..super::StoredClientSettingsMvp::default()
+            },
+        );
+
+        if !connect_state.apply(super::GuiShellAction::SelectPublicServer(0))
+            || !connect_state.apply(super::GuiShellAction::BeginSelectedPublicServerConnect)
+        {
+            return Err(
+                "detached semantic connect flow could not stage the selected public-server connect"
+                    .to_owned(),
+            );
+        }
+        connect_handle.push_request(super::GuiRuntimeRequest::CompletePendingOperation(
+            super::GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+        let connect_actions = connect_handle.drain_actions();
+        if !connect_actions.iter().any(|action| {
+            matches!(
+                action,
+                super::GuiShellAction::CompleteSelectedPublicServerConnect
+            )
+        }) {
+            return Err(
+                "detached semantic connect flow did not complete through the runtime owner"
+                    .to_owned(),
+            );
+        }
+        for action in connect_actions {
+            if !connect_state.apply(action) {
+                return Err(
+                    "detached semantic connect flow rejected a runtime completion action"
+                        .to_owned(),
+                );
+            }
+        }
+        let hello_line = hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| {
+                format!("detached semantic connect flow did not observe a GUI hello: {error}")
+            })?;
+        if !hello_line.contains("\"semantic-user\"") || !hello_line.contains("\"semantic-room\"") {
+            return Err(format!(
+                "detached semantic connect flow emitted an unexpected hello payload: {hello_line:?}"
+            ));
+        }
+
+        super::GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+        let hello_actions = connect_handle.drain_actions();
+        if !hello_actions.iter().any(|action| {
+            matches!(
+                action,
+                super::GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if snapshot.room_name == "semantic-room"
+                        && snapshot
+                            .playlist
+                            .iter()
+                            .any(|item| item == "missing-target.mkv")
+            )
+        }) {
+            return Err(
+                "detached semantic connect flow did not project the mock server playlist"
+                    .to_owned(),
+            );
+        }
+        for action in hello_actions {
+            if !connect_state.apply(action) {
+                return Err(
+                    "detached semantic connect flow rejected a projected session action".to_owned(),
+                );
+            }
+        }
+
+        let mut refresh_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let refresh_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut refresh_state = super::SyncplayGuiShellAppState::from_stored_settings(
+            &super::StoredClientSettingsMvp {
+                public_servers: Some(vec![
+                    (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
+                    ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
+                    ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                ]),
+                ..super::StoredClientSettingsMvp::default()
+            },
+        );
+        if !refresh_state.apply(super::GuiShellAction::BeginPublicServerRefresh) {
+            return Err("detached semantic refresh flow could not begin refresh".to_owned());
+        }
+        refresh_handle.push_request(super::GuiRuntimeRequest::CompletePendingOperation(
+            super::GuiPendingCompletionRequest::RefreshPublicServers(Vec::new()),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut refresh_owner, &refresh_handle, &refresh_state);
+        let refresh_actions = refresh_handle.drain_actions();
+        if !refresh_actions.iter().any(|action| {
+            matches!(
+                action,
+                super::GuiShellAction::CompletePublicServerRefresh(servers)
+                    if servers
+                        == &vec![
+                            ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                            ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                        ]
+            )
+        }) {
+            return Err(
+                "detached semantic refresh flow did not normalize the disconnected public-server rows"
+                    .to_owned(),
+            );
+        }
+        for action in refresh_actions {
+            if !refresh_state.apply(action) {
+                return Err(
+                    "detached semantic refresh flow rejected a refresh completion action"
+                        .to_owned(),
+                );
+            }
+        }
+
+        let mut search_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let search_handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut search_state = super::SyncplayGuiShellAppState::from_stored_settings(
+            &super::StoredClientSettingsMvp {
+                media_search_directories: Some(vec![root.display().to_string()]),
+                shared_playlist_enabled: Some(true),
+                ..super::StoredClientSettingsMvp::default()
+            },
+        );
+        if !search_state.apply(super::GuiShellAction::SwitchView(
+            super::GuiShellView::MediaSearch,
+        )) || !search_state.apply(super::GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "missing-target.mkv".to_owned(),
+        ])) || !search_state.apply(super::GuiShellAction::BeginMissingMediaSearch)
+        {
+            return Err("detached semantic search flow could not stage the search".to_owned());
+        }
+        search_handle.push_request(super::GuiRuntimeRequest::CompletePendingOperation(
+            super::GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut search_owner, &search_handle, &search_state);
+        let search_actions = search_handle.drain_actions();
+        if search_actions
+            != vec![super::GuiShellAction::CompleteMissingMediaSearch(Some(
+                found_path_text.clone(),
+            ))]
+        {
+            return Err(format!(
+                "detached semantic search flow returned unexpected actions: {search_actions:?}"
+            ));
+        }
+        for action in search_actions {
+            if !search_state.apply(action) {
+                return Err(
+                    "detached semantic search flow rejected a search completion action".to_owned(),
+                );
+            }
+        }
+        let expected_search_message = format!("Missing media found: {found_path_text}.");
+        if search_state
+            .notifications
+            .last()
+            .map(|notification| notification.message.as_str())
+            != Some(expected_search_message.as_str())
+        {
+            return Err(
+                "detached semantic search flow did not surface the located media notification"
+                    .to_owned(),
+            );
+        }
+
+        Ok(GuiSemanticScenarioReport {
+            scenario: "detached-runtime-ownership-flow".to_owned(),
+            view: search_state.active_view.label().to_owned(),
+            modal: search_state
+                .open_modal
+                .map(|modal| modal.label().to_owned())
+                .unwrap_or_else(|| "none".to_owned()),
+            pending: search_state
+                .pending_operation
+                .as_ref()
+                .map(|pending| pending.kind.label().to_owned())
+                .unwrap_or_else(|| "none".to_owned()),
+            widgets: search_state.shell_widget_tree().node_count(),
+        })
+    })();
+
+    let _ = release_tx.send(());
+    let server_result = server_thread
+        .join()
+        .map_err(|_| "detached semantic TCP server thread panicked".to_owned())?;
+    let _ = std::fs::remove_dir_all(&root);
+    match (result, server_result) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(server_error)) => Err(format!("{error}; {server_error}")),
+    }
 }
 
 fn run_gui_semantic_live_python_peer_connect_flow() -> Result<GuiSemanticScenarioReport, String> {

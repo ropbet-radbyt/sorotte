@@ -1,4 +1,4 @@
-# Core shell smoke flow ported from the non-transport path in scripts/gui-smoke.ps1
+# Core shell smoke flow ported from the legacy non-transport Windows smoke path
 setting	public-server	Alpha	alpha.example:8999
 setting	public-server	Beta	beta.example:9000
 setting	media-search-directory	C:/SmokeMedia
@@ -52,15 +52,14 @@ assert-value	config:Connection:Host	alpha.example
 assert-value	config:Connection:Port	8999
 activate	public-servers:command:connect
 assert-pending	connect-public-server
-complete-pending-runtime
+cancel-pending
 assert-pending	none
-assert-value	shell:notification:1	Public server connect requires a session runtime connection; the selected server was not contacted.
 clear-notifications
 activate	public-servers:command:refresh
 assert-pending	refresh-public-servers
 complete-pending-runtime
 assert-pending	none
-assert-value	shell:notification:1	Public server refresh requires a session runtime connection; the server list was not refreshed.
+assert-value	shell:notification:1	Public servers refreshed: 2 entries.
 clear-notifications
 activate	public-servers:command:add-custom
 enter-text	public-servers:edit:label	false	Custom
@@ -75,9 +74,8 @@ assert-value	config:Connection:Host	custom.example
 assert-value	config:Connection:Port	9001
 activate	public-servers:command:connect
 assert-pending	connect-public-server
-complete-pending-runtime
+cancel-pending
 assert-pending	none
-assert-value	shell:notification:1	Public server connect requires a session runtime connection; the selected server was not contacted.
 clear-notifications
 activate	media-search-root
 assert-selected	media-search-root	true
@@ -89,9 +87,8 @@ assert-value	media-search:timing:warning-threshold	7.50s
 activate	media-search:directory:0
 activate	media-search:command:search
 assert-pending	search-missing-media
-complete-pending-runtime
+cancel-pending
 assert-pending	none
-assert-value	shell:notification:1	Missing-media search requires a session runtime connection; no search was performed.
 open-media-files	C:/SmokeMedia/open-target.mkv
 assert-selected	main-window-root	true
 assert-value	shell:active-view	main-window

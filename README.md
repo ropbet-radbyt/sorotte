@@ -2,32 +2,33 @@
 
 Rust rewrite workspace for Syncplay.
 
-## Current state (audited 2026-02-24)
+## Current state (audited 2026-03-08)
 
-- Headless Rust CLI client is implemented and actively test-covered.
-- `syncplay-cli` integrates with `mpv` (managed launch and explicit JSON IPC attach).
+- Headless Rust CLI client is implemented, test-covered, and matches the upstream Python client startup/help surface.
+- `syncplay-gui` now has a real configuration/main-window shell with semantic smoke coverage, Windows native smoke coverage, and live Python interop scenarios for room, readiness, chat, playlist, reconnect, and controlled-room flows.
+- `syncplay-cli` integrates with `mpv` (managed launch and explicit JSON IPC attach); complete `mpv` parity is the active client goal, and non-`mpv` player support is deferred until that is done.
 - `crates/syncplay-server` contains a substantial server runtime library (room/state sync, TLS paths, persistent/permanent room behavior) backed by tests.
-- The `syncplay-server` executable now has a real alpha CLI/help surface and listener startup over the Rust server runtime, but Python server CLI parity is still partial.
-- GUI parity is not implemented yet; this is currently a CLI/headless project.
+- Full client parity is still in progress; the highest-priority remaining gaps are complete `mpv` parity, detached GUI runtime flows, and remaining GUI/background parity work.
 
 Audit verification run in this session:
 
 - `cargo test --workspace` passed
 - `cargo clippy --workspace --all-targets -- -D warnings` passed
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`7/7`)
+- `cargo build -p syncplay-gui --bin syncplay-gui` passed
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000` passed
 
 Manual/local validations (real `mpv`, release packaging) are tracked separately in `PROJECT_STATUS.md` and `ALPHA_CLI_PREVIEW.md`.
-
-Workspace-level parity and planning docs (one directory up):
-
-- `../PROJECT_STATUS.md`
-- `../PARITY_CHECKLIST.md`
-- `../GUI_CONFIG_PARITY_BACKLOG.md`
 
 ## Canonical docs (keep these in this repo)
 
 - `README.md`: repo overview and quick commands
-- `PROJECT_STATUS.md`: repo-local audit summary + completed/pending checklist
+- `PROJECT_STATUS.md`: repo-local audit summary + current priorities
+- `docs/CLIENT_PARITY_AUDIT.md`: current parity audit and remaining work list
+- `docs/AGENT_IMPLEMENTATION_GUIDE.md`: implementation workflow and required test matrix for agents
 - `ALPHA_CLI_PREVIEW.md`: Windows/`mpv` CLI alpha packaging and run guide
+
+Archived workspace planning/handoff docs now live one directory up in `../old-docs/`.
 
 ## Workspace layout
 

@@ -30,7 +30,8 @@ use syncplay_client_app::app_boundary::{
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
     state::{
-        StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
+        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        autoplay_threshold_override_legacy_value_compatible,
         parse_autoplay_min_users_override_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
         parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
@@ -4012,19 +4013,135 @@ impl GuiPersistedConfigRuntimeOwner {
         "Chat sending requires a session runtime connection; the message was not sent.".to_owned()
     }
 
-    fn connect_public_server_unavailable_message(&self) -> String {
-        "Public server connect requires a session runtime connection; the selected server was not contacted."
-            .to_owned()
+    fn detached_runtime_settings_for_state(
+        state: &SyncplayGuiShellAppState,
+    ) -> StoredClientSettingsRuntimeSnapshot {
+        stored_client_settings_runtime_snapshot_legacy_compatible(
+            &state.configuration.to_stored_settings(),
+        )
     }
 
-    fn refresh_public_servers_unavailable_message(&self) -> String {
-        "Public server refresh requires a session runtime connection; the server list was not refreshed."
-            .to_owned()
+    fn ensure_detached_client_core_chat_session(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Result<(), String> {
+        if self.session.is_none() {
+            let runtime_settings = Self::detached_runtime_settings_for_state(state);
+            self.session = Some(Box::new(
+                GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+                    runtime_settings.settings.username.unwrap_or_default(),
+                    runtime_settings.settings.room.unwrap_or_default(),
+                    runtime_settings.controlled_room_password_override,
+                )?,
+            ));
+        }
+        if self.session_transport.is_none() {
+            self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
+        }
+        Ok(())
     }
 
-    fn search_missing_media_unavailable_message(&self) -> String {
-        "Missing-media search requires a session runtime connection; no search was performed."
-            .to_owned()
+    fn refresh_public_servers_without_session(
+        current_servers: Vec<(String, String)>,
+    ) -> Result<Vec<(String, String)>, String> {
+        if let Some(refreshed_servers) =
+            GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_env()?
+        {
+            return Ok(refreshed_servers);
+        }
+        Ok(GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(current_servers))
+    }
+
+    fn detached_missing_media_target(&self, state: &SyncplayGuiShellAppState) -> Option<String> {
+        if let Some(local_file) = self.player_local_file.as_ref() {
+            if let Some(path) = local_file
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            {
+                return Some(path.to_owned());
+            }
+            let name = local_file.name.trim();
+            if !name.is_empty() {
+                return Some(name.to_owned());
+            }
+        }
+
+        if let Some(index) = state.selection.selected_main_window_playlist
+            && let Some(row) = state.main_window.playlist.get(index)
+        {
+            let label = row.label.trim();
+            if !label.is_empty() {
+                return Some(label.to_owned());
+            }
+        }
+
+        state
+            .main_window
+            .playlist
+            .first()
+            .map(|row| row.label.trim())
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn detached_missing_media_target_file_name(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Result<String, String> {
+        let Some(target) = self.detached_missing_media_target(state) else {
+            return Err(
+                "Detached GUI missing-media search could not determine a target file from the current player or playlist state."
+                    .to_owned(),
+            );
+        };
+        if target.contains("://") {
+            return Err(
+                "Detached GUI missing-media search does not support URL-based media targets."
+                    .to_owned(),
+            );
+        }
+        let Some(file_name) = Path::new(&target)
+            .file_name()
+            .and_then(|name| name.to_str())
+        else {
+            return Err(
+                "Detached GUI missing-media search could not derive a file name from the current player or playlist state."
+                    .to_owned(),
+            );
+        };
+        let file_name = file_name.trim();
+        if file_name.is_empty() {
+            return Err(
+                "Detached GUI missing-media search could not derive a non-empty file name from the current player or playlist state."
+                    .to_owned(),
+            );
+        }
+        Ok(file_name.to_owned())
+    }
+
+    fn search_missing_media_without_session(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        directories: Vec<String>,
+    ) -> Result<Option<String>, String> {
+        let target_file_name = self.detached_missing_media_target_file_name(state)?;
+        for directory in directories {
+            let trimmed = directory.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(found_path) =
+                GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
+                    &target_file_name,
+                    Path::new(trimmed),
+                )?
+            {
+                return Ok(Some(found_path));
+            }
+        }
+        Ok(None)
     }
 
     fn push_actions_and_project(
@@ -4556,149 +4673,147 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::ConnectPublicServer,
                 ) => {
-                    if let Some(session) = self.session.as_mut() {
-                        let selected_server = projected_state
-                            .selected_public_server_index()
-                            .and_then(|index| projected_state.public_servers.servers.get(index))
-                            .map(|row| (row.label.clone(), row.address.clone()));
-                        let replacement_transport_driver = if self.session_transport.is_some()
-                            && self.session_transport_driver.is_some()
-                        {
-                            selected_server
-                                .as_ref()
-                                .map(|(_label, address)| {
-                                    GuiTcpSessionTransportDriver::connect_from_host_arg(address)
-                                        .map(|driver| {
-                                            Box::new(driver) as Box<dyn GuiSessionTransportDriver>
-                                        })
-                                })
-                                .transpose()
-                        } else {
-                            Ok(None)
-                        };
-                        let replacement_transport_driver = match replacement_transport_driver {
-                            Ok(driver) => driver,
-                            Err(error) => {
-                                self.clear_pending_operation_with_runtime_error(
-                                    handle,
-                                    &mut projected_state,
-                                    format!(
-                                        "Public server connect through the attached session runtime failed: {error}"
-                                    ),
-                                );
-                                continue;
-                            }
-                        };
-                        match session.connect_public_server(selected_server) {
-                            Ok(()) => {
-                                if let Some(driver) = replacement_transport_driver {
-                                    if let Some(session_transport) = self.session_transport.as_ref() {
-                                        session_transport.clear_protocol_lines();
-                                    }
-                                    self.session_transport_driver = Some(driver);
-                                }
-                                Self::push_actions_and_project(
-                                    handle,
-                                    &mut projected_state,
-                                    vec![GuiShellAction::CompleteSelectedPublicServerConnect],
-                                )
-                            }
-                            Err(error) => self.clear_pending_operation_with_runtime_error(
+                    let selected_server = projected_state
+                        .selected_public_server_index()
+                        .and_then(|index| projected_state.public_servers.servers.get(index))
+                        .map(|row| (row.label.clone(), row.address.clone()));
+                    let replacement_transport_driver = selected_server
+                        .as_ref()
+                        .map(|(_label, address)| {
+                            GuiTcpSessionTransportDriver::connect_from_host_arg(address).map(
+                                |driver| Box::new(driver) as Box<dyn GuiSessionTransportDriver>,
+                            )
+                        })
+                        .transpose();
+                    let replacement_transport_driver = match replacement_transport_driver {
+                        Ok(driver) => driver,
+                        Err(error) => {
+                            self.clear_pending_operation_with_runtime_error(
                                 handle,
                                 &mut projected_state,
                                 format!(
                                     "Public server connect through the attached session runtime failed: {error}"
                                 ),
-                            ),
+                            );
+                            continue;
                         }
-                    } else {
+                    };
+                    if let Err(error) =
+                        self.ensure_detached_client_core_chat_session(&projected_state)
+                    {
                         self.clear_pending_operation_with_runtime_error(
                             handle,
                             &mut projected_state,
-                            self.connect_public_server_unavailable_message(),
+                            format!(
+                                "Public server connect through the attached session runtime failed: {error}"
+                            ),
                         );
+                        continue;
+                    }
+                    let Some(session) = self.session.as_mut() else {
+                        self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            "Public server connect could not bootstrap a detached client-core session runtime."
+                                .to_owned(),
+                        );
+                        continue;
+                    };
+                    match session.connect_public_server(selected_server) {
+                        Ok(()) => {
+                            if let Some(driver) = replacement_transport_driver {
+                                if let Some(session_transport) = self.session_transport.as_ref() {
+                                    session_transport.clear_protocol_lines();
+                                }
+                                self.session_transport_driver = Some(driver);
+                            }
+                            Self::push_actions_and_project(
+                                handle,
+                                &mut projected_state,
+                                vec![GuiShellAction::CompleteSelectedPublicServerConnect],
+                            )
+                        }
+                        Err(error) => self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            format!(
+                                "Public server connect through the attached session runtime failed: {error}"
+                            ),
+                        ),
                     }
                 }
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::RefreshPublicServers(_servers),
                 ) => {
-                    if let Some(session) = self.session.as_mut() {
-                        let current_servers = projected_state
-                            .public_servers
-                            .servers
-                            .iter()
-                            .map(|row| (row.label.clone(), row.address.clone()))
-                            .collect();
-                        match session.refresh_public_servers(current_servers) {
-                            Ok(servers) => Self::push_actions_and_project(
-                                handle,
-                                &mut projected_state,
-                                vec![GuiShellAction::CompletePublicServerRefresh(servers)],
-                            ),
-                            Err(error) => self.clear_pending_operation_with_runtime_error(
-                                handle,
-                                &mut projected_state,
-                                format!(
-                                    "Public server refresh through the attached session runtime failed: {error}"
-                                ),
-                            ),
-                        }
+                    let current_servers = projected_state
+                        .public_servers
+                        .servers
+                        .iter()
+                        .map(|row| (row.label.clone(), row.address.clone()))
+                        .collect();
+                    let refresh_result = if let Some(session) = self.session.as_mut() {
+                        session.refresh_public_servers(current_servers)
                     } else {
-                        self.clear_pending_operation_with_runtime_error(
+                        Self::refresh_public_servers_without_session(current_servers)
+                    };
+                    match refresh_result {
+                        Ok(servers) => Self::push_actions_and_project(
                             handle,
                             &mut projected_state,
-                            self.refresh_public_servers_unavailable_message(),
-                        );
+                            vec![GuiShellAction::CompletePublicServerRefresh(servers)],
+                        ),
+                        Err(error) => self.clear_pending_operation_with_runtime_error(
+                            handle,
+                            &mut projected_state,
+                            format!(
+                                "Public server refresh through the attached session runtime failed: {error}"
+                            ),
+                        ),
                     }
                 }
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::SearchMissingMedia,
                 ) => {
-                    if let Some(session) = self.session.as_mut() {
-                        let directories = projected_state
-                            .media_search
-                            .directories
-                            .iter()
-                            .map(|row| row.path.clone())
-                            .collect();
-                        match session.search_missing_media(directories) {
-                            Ok(found_path) => {
-                                let found_path =
-                                    found_path.and_then(|path| normalized_editable_text(&path));
-                                match found_path {
-                                    Some(path) if self.player.is_some() => {
-                                        self.clear_pending_operation_runtime_state(
-                                            handle,
-                                            &mut projected_state,
-                                        );
-                                        self.open_media_files_through_attached_player(
-                                            handle,
-                                            vec![path],
-                                        );
-                                    }
-                                    found_path => Self::push_actions_and_project(
+                    let directories = projected_state
+                        .media_search
+                        .directories
+                        .iter()
+                        .map(|row| row.path.clone())
+                        .collect();
+                    let search_result = if let Some(session) = self.session.as_mut() {
+                        session.search_missing_media(directories)
+                    } else {
+                        self.search_missing_media_without_session(&projected_state, directories)
+                    };
+                    match search_result {
+                        Ok(found_path) => {
+                            let found_path =
+                                found_path.and_then(|path| normalized_editable_text(&path));
+                            match found_path {
+                                Some(path) if self.player.is_some() => {
+                                    self.clear_pending_operation_runtime_state(
                                         handle,
                                         &mut projected_state,
-                                        vec![GuiShellAction::CompleteMissingMediaSearch(
-                                            found_path,
-                                        )],
-                                    ),
+                                    );
+                                    self.open_media_files_through_attached_player(
+                                        handle,
+                                        vec![path],
+                                    );
                                 }
-                            }
-                            Err(error) => self.clear_pending_operation_with_runtime_error(
-                                handle,
-                                &mut projected_state,
-                                format!(
-                                    "Missing-media search through the attached session runtime failed: {error}"
+                                found_path => Self::push_actions_and_project(
+                                    handle,
+                                    &mut projected_state,
+                                    vec![GuiShellAction::CompleteMissingMediaSearch(found_path)],
                                 ),
-                            ),
+                            }
                         }
-                    } else {
-                        self.clear_pending_operation_with_runtime_error(
+                        Err(error) => self.clear_pending_operation_with_runtime_error(
                             handle,
                             &mut projected_state,
-                            self.search_missing_media_unavailable_message(),
-                        );
+                            format!(
+                                "Missing-media search through the attached session runtime failed: {error}"
+                            ),
+                        ),
                     }
                 }
                 GuiRuntimeRequest::CompletePendingOperation(
@@ -20289,16 +20404,6 @@ mod tests {
         assert_eq!(driver.active_view_label(), "main-window");
         assert_eq!(driver.active_modal_label(), "none");
         assert_eq!(driver.pending_operation_label(), "none");
-        assert_eq!(
-            driver
-                .widget("shell:notification:1")
-                .expect("missing-media runtime error notification should exist")
-                .value
-                .as_deref(),
-            Some(
-                "Missing-media search requires a session runtime connection; no search was performed."
-            )
-        );
     }
 
     #[test]
@@ -20311,6 +20416,7 @@ mod tests {
                 "runtime-chat-flow",
                 "runtime-transport-churn-flow",
                 "persistence-reset-flow",
+                "detached-runtime-ownership-flow",
                 "live-python-peer-connect-flow",
                 "live-python-peer-controlled-room-flow",
             ]
@@ -20341,6 +20447,11 @@ mod tests {
                 .contains("PersistenceRoom")
         );
         assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("detached-runtime-ownership-flow")
+                .expect("detached runtime ownership scenario should expose a script description")
+                .contains("semantic-user")
+        );
+        assert!(
             super::semantic_smoke::gui_semantic_scenario_script("live-python-peer-connect-flow")
                 .expect("live Python interop scenario should expose a script description")
                 .contains("interop-py-peer")
@@ -20357,7 +20468,7 @@ mod tests {
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 7);
+        assert_eq!(descriptors.len(), 8);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -20378,12 +20489,19 @@ mod tests {
         assert_eq!(descriptors[4].name, "persistence-reset-flow");
         assert!(descriptors[4].description.contains("clear-GUI-data"));
         assert!(descriptors[4].script.contains("PersistenceRoom"));
-        assert_eq!(descriptors[5].name, "live-python-peer-connect-flow");
-        assert!(descriptors[5].description.contains("Python reference peer"));
-        assert!(descriptors[5].script.contains("interop-room"));
-        assert_eq!(descriptors[6].name, "live-python-peer-controlled-room-flow");
-        assert!(descriptors[6].description.contains("controlled room"));
-        assert!(descriptors[6].script.contains("+interop-room:447CE7E3548D"));
+        assert_eq!(descriptors[5].name, "detached-runtime-ownership-flow");
+        assert!(
+            descriptors[5]
+                .description
+                .contains("detached public-server connect")
+        );
+        assert!(descriptors[5].script.contains("semantic-user"));
+        assert_eq!(descriptors[6].name, "live-python-peer-connect-flow");
+        assert!(descriptors[6].description.contains("Python reference peer"));
+        assert!(descriptors[6].script.contains("interop-room"));
+        assert_eq!(descriptors[7].name, "live-python-peer-controlled-room-flow");
+        assert!(descriptors[7].description.contains("controlled room"));
+        assert!(descriptors[7].script.contains("+interop-room:447CE7E3548D"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -20560,7 +20678,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, persistence-reset-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
                 )
         );
     }
@@ -20599,6 +20717,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         assert!(listed.contains("core-shell-smoke-flow"));
         assert!(listed.contains("runtime-chat-flow"));
         assert!(listed.contains("runtime-transport-churn-flow"));
+        assert!(listed.contains("detached-runtime-ownership-flow"));
         assert!(listed.contains("live-python-peer-connect-flow"));
         assert!(listed.contains("live-python-peer-controlled-room-flow"));
 
@@ -20658,7 +20777,7 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
         assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
         assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));
-        assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the non-transport path in scripts/gui-smoke.ps1\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
+        assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the legacy non-transport Windows smoke path\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
         assert!(described.contains("\"name\":\"runtime-transport-churn-flow\""));
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
@@ -21312,126 +21431,6 @@ assert-pending\tnone\n"
             ]
         );
 
-        let mut connect_state =
-            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
-                ..StoredClientSettingsMvp::default()
-            });
-        assert!(connect_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
-        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::ConnectPublicServer,
-        ));
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &connect_state);
-        let connect_actions = handle.drain_actions();
-        assert_eq!(
-            connect_actions,
-            vec![
-                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                    command_availability: GuiCommandAvailabilityState {
-                        can_save_configuration: true,
-                        can_reset_configuration: true,
-                        can_reload_configuration: true,
-                        can_connect_public_server: true,
-                        can_refresh_public_servers: true,
-                        can_search_missing_media: false,
-                        can_toggle_pause: false,
-                        can_send_chat_message: false,
-                    },
-                    pending_operation: None,
-                }),
-                GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: "Public server connect requires a session runtime connection; the selected server was not contacted."
-                        .to_owned(),
-                },
-            ]
-        );
-        for action in connect_actions {
-            assert!(connect_state.apply(action));
-        }
-        assert!(connect_state.pending_operation.is_none());
-
-        let mut refresh_state =
-            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
-                ..StoredClientSettingsMvp::default()
-            });
-        assert!(refresh_state.apply(GuiShellAction::BeginPublicServerRefresh));
-        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::RefreshPublicServers(vec![(
-                "Primary".to_owned(),
-                "syncplay.pl:8999".to_owned(),
-            )]),
-        ));
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &refresh_state);
-        let refresh_actions = handle.drain_actions();
-        assert_eq!(
-            refresh_actions,
-            vec![
-                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                    command_availability: GuiCommandAvailabilityState {
-                        can_save_configuration: true,
-                        can_reset_configuration: false,
-                        can_reload_configuration: true,
-                        can_connect_public_server: true,
-                        can_refresh_public_servers: true,
-                        can_search_missing_media: false,
-                        can_toggle_pause: false,
-                        can_send_chat_message: false,
-                    },
-                    pending_operation: None,
-                }),
-                GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: "Public server refresh requires a session runtime connection; the server list was not refreshed."
-                        .to_owned(),
-                },
-            ]
-        );
-        for action in refresh_actions {
-            assert!(refresh_state.apply(action));
-        }
-        assert!(refresh_state.pending_operation.is_none());
-
-        let mut missing_media_state =
-            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                media_search_directories: Some(vec!["C:/Media".to_owned()]),
-                ..StoredClientSettingsMvp::default()
-            });
-        assert!(missing_media_state.apply(GuiShellAction::BeginMissingMediaSearch));
-        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::SearchMissingMedia,
-        ));
-        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &missing_media_state);
-        let missing_media_actions = handle.drain_actions();
-        assert_eq!(
-            missing_media_actions,
-            vec![
-                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                    command_availability: GuiCommandAvailabilityState {
-                        can_save_configuration: true,
-                        can_reset_configuration: false,
-                        can_reload_configuration: true,
-                        can_connect_public_server: false,
-                        can_refresh_public_servers: true,
-                        can_search_missing_media: true,
-                        can_toggle_pause: false,
-                        can_send_chat_message: false,
-                    },
-                    pending_operation: None,
-                }),
-                GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: "Missing-media search requires a session runtime connection; no search was performed."
-                        .to_owned(),
-                },
-            ]
-        );
-        for action in missing_media_actions {
-            assert!(missing_media_state.apply(action));
-        }
-        assert!(missing_media_state.pending_operation.is_none());
-
         let mut cancel_chat_state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
                 chat_input_enabled: Some(true),
@@ -21610,6 +21609,241 @@ assert-pending\tnone\n"
         assert!(
             super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
         );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            thread,
+            time::Duration,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .expect("detached public-server connect test should bind a TCP listener");
+        let address = listener
+            .local_addr()
+            .expect("detached public-server connect test listener should expose an address");
+        let (hello_tx, hello_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("detached public-server connect test should accept a GUI connection");
+            let mut reader = BufReader::new(
+                stream
+                    .try_clone()
+                    .expect("detached public-server connect test stream should clone"),
+            );
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("detached public-server connect test should read the GUI hello");
+            hello_tx
+                .send(hello_line)
+                .expect("detached public-server connect test should report the hello");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+                )
+                .expect("detached public-server connect test should write the server hello");
+            stream
+                .write_all(b"\r\n")
+                .expect("detached public-server connect test should terminate the server hello");
+            stream
+                .flush()
+                .expect("detached public-server connect test should flush the server hello");
+            release_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("detached public-server connect test should release the server");
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::SelectPublicServer(0)));
+        assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::ConnectPublicServer,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let connect_actions = handle.drain_actions();
+        let projected_hello_in_connect_actions = connect_actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if snapshot.room_name == "room1"
+                        && snapshot
+                            .users
+                            .iter()
+                            .any(|user| user.username == "alice" && user.is_self)
+            )
+        });
+        assert!(
+            connect_actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompleteSelectedPublicServerConnect
+            )),
+            "detached public-server connect should complete through a bootstrapped client-core session runtime"
+        );
+        for action in connect_actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert!(
+            state.notifications.iter().any(|notification| {
+                notification.message == "Connected to public server: Primary."
+            }),
+            "detached public-server connect should report the selected server connection"
+        );
+
+        let hello_line = hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached public-server connect should emit a GUI hello");
+        assert!(hello_line.contains("\"Hello\""));
+        assert!(hello_line.contains("\"alice\""));
+        assert!(hello_line.contains("\"room1\""));
+
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let hello_actions = handle.drain_actions();
+        let projected_hello_in_followup_actions = hello_actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if snapshot.room_name == "room1"
+                        && snapshot
+                            .users
+                            .iter()
+                            .any(|user| user.username == "alice" && user.is_self)
+            )
+        });
+        assert!(
+            projected_hello_in_connect_actions || projected_hello_in_followup_actions,
+            "detached public-server connect should leave an attached session runtime that projects server hello state"
+        );
+        for action in hello_actions {
+            assert!(state.apply(action));
+        }
+
+        release_tx
+            .send(())
+            .expect("detached public-server connect test should release the server");
+        server_thread
+            .join()
+            .expect("detached public-server connect server thread should complete");
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_refreshes_public_servers_without_session() {
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            public_servers: Some(vec![
+                (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
+                ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
+                ("Invalid".to_owned(), " :9000 ".to_owned()),
+                ("Backup".to_owned(), "backup.example:9000".to_owned()),
+            ]),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::RefreshPublicServers(vec![]),
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let actions = handle.drain_actions();
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::CompletePublicServerRefresh(servers)
+                    if servers
+                        == &vec![
+                            ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
+                            ("Backup".to_owned(), "backup.example:9000".to_owned()),
+                        ]
+            )),
+            "detached public-server refresh should normalize and complete without a preexisting session runtime"
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .notifications
+                .last()
+                .map(|notification| notification.message.as_str()),
+            Some("Public servers refreshed: 2 entries.")
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "syncplay-gui-detached-missing-media-search-{}-{unique_suffix}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        let found_path = nested.join("missing-target.mkv");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&nested)
+            .expect("detached missing-media search test should create a directory tree");
+        std::fs::write(&found_path, b"detached-missing-media-target")
+            .expect("detached missing-media search test should create the target file");
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "missing-target.mkv".to_owned(),
+            ]))
+        );
+        assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let actions = handle.drain_actions();
+        let found_path_text = found_path.to_string_lossy().into_owned();
+        let expected_message = format!("Missing media found: {found_path_text}.");
+        assert_eq!(
+            actions,
+            vec![GuiShellAction::CompleteMissingMediaSearch(Some(
+                found_path_text.clone(),
+            ))]
+        );
+        for action in actions {
+            assert!(state.apply(action));
+        }
+        assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state
+                .notifications
+                .last()
+                .map(|notification| notification.message.as_str()),
+            Some(expected_message.as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -23929,6 +24163,39 @@ assert-pending\tnone\n"
     }
 
     #[test]
+    fn gui_persisted_config_runtime_owner_projects_live_python_peer_detached_connect_interop() {
+        let result = match super::live_python_interop::run_live_python_peer_detached_public_server_connect_flow()
+        {
+            Ok(result) => result,
+            Err(error)
+                if super::live_python_interop::live_python_interop_prerequisites_missing(
+                    &error,
+                ) =>
+            {
+                eprintln!(
+                    "live Python GUI detached-connect test skipped due to missing local prerequisites"
+                );
+                return;
+            }
+            Err(error) => {
+                panic!(
+                    "live Python GUI detached public-server connect flow should succeed, got: {error}"
+                )
+            }
+        };
+
+        assert_eq!(
+            result.room_name,
+            super::live_python_interop::LIVE_PYTHON_INTEROP_ROOM
+        );
+        assert!(result.local_user_present);
+        assert!(result.peer_user_present);
+        assert!(!result.local_user_ready);
+        assert!(!result.peer_user_ready);
+        assert!(result.widget_count > 0);
+    }
+
+    #[test]
     fn gui_persisted_config_runtime_owner_projects_live_python_peer_controlled_room_interop() {
         let result = match super::live_python_interop::run_live_python_peer_controlled_room_flow() {
             Ok(result) => result,
@@ -24499,8 +24766,8 @@ assert-pending\tnone\n"
 
         assert!(no_runtime_state.apply(GuiShellAction::SelectPublicServer(0)));
         assert!(no_runtime_state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
-        no_runtime_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::ConnectPublicServer,
+        no_runtime_handle.push_request(GuiRuntimeRequest::CancelPendingOperation(
+            GuiPendingOperationKind::ConnectPublicServer,
         ));
         super::GuiQueuedRuntimeOwner::pump(
             &mut no_runtime_owner,
@@ -24516,9 +24783,7 @@ assert-pending\tnone\n"
                 .notifications
                 .last()
                 .map(|notification| notification.message.as_str()),
-            Some(
-                "Public server connect requires a session runtime connection; the selected server was not contacted.",
-            )
+            Some("Public server connect canceled.")
         );
 
         assert!(no_runtime_state.apply(GuiShellAction::BeginPublicServerRefresh));
@@ -24542,9 +24807,7 @@ assert-pending\tnone\n"
                 .notifications
                 .last()
                 .map(|notification| notification.message.as_str()),
-            Some(
-                "Public server refresh requires a session runtime connection; the server list was not refreshed.",
-            )
+            Some("Public servers refreshed: 2 entries.")
         );
 
         assert!(
@@ -24578,9 +24841,7 @@ assert-pending\tnone\n"
                 .notifications
                 .last()
                 .map(|notification| notification.message.as_str()),
-            Some(
-                "Missing-media search requires a session runtime connection; no search was performed."
-            )
+            Some("Missing media search completed: no match found.")
         );
 
         let preview_open_actions = super::GuiPreviewRuntimeBridge::preview_media_file_actions(

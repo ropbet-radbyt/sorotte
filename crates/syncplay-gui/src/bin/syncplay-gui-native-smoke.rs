@@ -173,10 +173,6 @@ const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 const SMOKE_WINDOW_WIDTH: i32 = 1700;
 #[cfg(target_os = "windows")]
 const SMOKE_WINDOW_HEIGHT: i32 = 1100;
-const CONNECT_NO_SESSION_ERROR: &str = "error: Public server connect requires a session runtime connection; the selected server was not contacted.";
-const REFRESH_NO_SESSION_ERROR: &str = "error: Public server refresh requires a session runtime connection; the server list was not refreshed.";
-const SEARCH_NO_SESSION_ERROR: &str =
-    "error: Missing-media search requires a session runtime connection; no search was performed.";
 
 trait NativeGuiDriver {
     type WindowHandle: Copy;
@@ -2916,12 +2912,19 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Complete",
+        "Cancel",
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, CONNECT_NO_SESSION_ERROR, step_timeout)?;
-    steps.push("public-server-connect-error".to_owned());
+    wait_for_named_control_count(
+        driver,
+        window,
+        "pending: connect-public-server",
+        NativeControlKind::Any,
+        0,
+        step_timeout,
+    )?;
+    steps.push("public-server-connect-cancelled".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -2943,8 +2946,21 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, REFRESH_NO_SESSION_ERROR, step_timeout)?;
-    steps.push("public-server-refresh-error".to_owned());
+    wait_for_named_control_count(
+        driver,
+        window,
+        "pending: refresh-public-servers",
+        NativeControlKind::Any,
+        0,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(
+        driver,
+        window,
+        "success: Public servers refreshed: 2 entries.",
+        step_timeout,
+    )?;
+    steps.push("public-server-refresh-complete".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -3011,12 +3027,19 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Complete",
+        "Cancel",
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, CONNECT_NO_SESSION_ERROR, step_timeout)?;
-    steps.push("public-server-connect-custom-pending".to_owned());
+    wait_for_named_control_count(
+        driver,
+        window,
+        "pending: connect-public-server",
+        NativeControlKind::Any,
+        0,
+        step_timeout,
+    )?;
+    steps.push("public-server-connect-custom-cancelled".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -3133,12 +3156,19 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
-        "Complete",
+        "Cancel",
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, SEARCH_NO_SESSION_ERROR, step_timeout)?;
-    steps.push("media-search-error".to_owned());
+    wait_for_named_control_count(
+        driver,
+        window,
+        "pending: search-missing-media",
+        NativeControlKind::Any,
+        0,
+        step_timeout,
+    )?;
+    steps.push("media-search-cancelled".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -4648,6 +4678,206 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
     }
 }
 
+fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
+    driver: &D,
+    binary_path: &Path,
+    temp_root: &Path,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let detached_search_path = temp_root.join("detached-missing-media-search");
+    let _ = fs::remove_dir_all(&detached_search_path);
+    fs::create_dir_all(&detached_search_path).map_err(|error| {
+        format!(
+            "failed to create detached missing-media search directory {}: {error}",
+            detached_search_path.display()
+        )
+    })?;
+    let search_target_path = detached_search_path.join("search-target.mkv");
+    fs::write(&search_target_path, b"detached-search-target").map_err(|error| {
+        format!(
+            "failed to create detached missing-media target {}: {error}",
+            search_target_path.display()
+        )
+    })?;
+
+    let config_path = temp_root.join("syncplay-native-smoke-detached-missing-media.ini");
+    let _ = fs::remove_file(&config_path);
+    seed_native_smoke_config(&config_path)?;
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &config_path,
+        &StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            media_search_directories: Some(vec![detached_search_path.display().to_string()]),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to prepare detached missing-media config {}: {error}",
+            config_path.display()
+        )
+    })?;
+
+    let launch = GuiLaunchConfig {
+        config_path: &config_path,
+        media_search_browse_path: &detached_search_path,
+        open_media_file_path: &search_target_path,
+        public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+        tcp_session: None,
+        loopback_session: None,
+        attach_test_player: true,
+    };
+    let (mut child, window) = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout)?;
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let step_timeout = timeout.min(Duration::from_millis(6_000));
+        let mut steps = Vec::new();
+
+        let initial_state = wait_for_any_accessible_name(
+            driver,
+            window,
+            &[
+                "modal: update-notice",
+                "modal: tls-certificate-prompt",
+                "view: configuration",
+                "view: main-window",
+                "view: media-search",
+            ],
+            step_timeout,
+        )?;
+        if initial_state == "modal: update-notice" {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Dismiss Notice",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "modal: tls-certificate-prompt",
+            step_timeout.min(Duration::from_millis(800)),
+        )
+        .is_ok()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Trust Certificate",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
+
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "view: main-window",
+            Duration::from_millis(800),
+        )
+        .is_err()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Main Window",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        }
+
+        wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
+        wait_for_named_control_enabled_state(
+            driver,
+            window,
+            "New Entry",
+            NativeControlKind::Any,
+            true,
+            step_timeout,
+        )?;
+        let search_target_value = search_target_path.display().to_string();
+        driver.set_named_edit_value(window, "New Entry", &search_target_value, false)?;
+        wait_for_named_control_enabled_state(
+            driver,
+            window,
+            "Add Entry",
+            NativeControlKind::Button,
+            true,
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Add Entry",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, &search_target_value, step_timeout)?;
+        steps.push("detached-missing-media-target-staged".to_owned());
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Media Search",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            &detached_search_path.display().to_string(),
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Search Missing Media",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            "pending: search-missing-media",
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Complete",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_named_control_count(
+            driver,
+            window,
+            "pending: search-missing-media",
+            NativeControlKind::Any,
+            0,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        steps.push("detached-missing-media-search-success".to_owned());
+
+        driver.close_window(window)?;
+        wait_for_process_exit(&mut child, timeout)?;
+        Ok(steps)
+    })();
+
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    outcome
+}
+
 fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -4816,7 +5046,8 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         send_chat_message_and_complete(driver, window, "helloaftersearch", step_timeout)?;
-        let post_search_chat = session_server.recv_chat(step_timeout, "missing-media continuation")?;
+        let post_search_chat =
+            session_server.recv_chat(step_timeout, "missing-media continuation")?;
         assert_mock_chat_line(
             &post_search_chat,
             "helloaftersearch",
@@ -5302,6 +5533,14 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
             options.timeout,
         )?;
         interaction_steps.extend(live_python_controlled_room_steps);
+
+        let detached_missing_media_steps = verify_detached_missing_media_contract(
+            &driver,
+            &binary_path,
+            &temp_root,
+            options.timeout,
+        )?;
+        interaction_steps.extend(detached_missing_media_steps);
 
         let missing_media_continue_steps = verify_missing_media_continue_session_contract(
             &driver,

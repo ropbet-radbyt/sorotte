@@ -64,6 +64,16 @@ pub(crate) struct LivePythonPeerControlledRoomInteropResult {
     pub widget_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LivePythonPeerDetachedConnectInteropResult {
+    pub room_name: String,
+    pub local_user_present: bool,
+    pub peer_user_present: bool,
+    pub local_user_ready: bool,
+    pub peer_user_ready: bool,
+    pub widget_count: usize,
+}
+
 #[derive(Debug)]
 pub(crate) enum LivePythonPeerInteropError {
     Interop(InteropError),
@@ -120,6 +130,23 @@ pub(crate) fn run_live_python_peer_controlled_room_flow()
         LIVE_PYTHON_INTEROP_CONTROLLED_ROOM,
     )?;
     let outcome = run_live_python_peer_controlled_room_flow_with_harness(&mut harness);
+    let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
+    match (outcome, shutdown_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(_shutdown_error)) => Err(error),
+    }
+}
+
+pub(crate) fn run_live_python_peer_detached_public_server_connect_flow()
+-> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
+    let mut harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_ROOM,
+    )?;
+    let outcome =
+        run_live_python_peer_detached_public_server_connect_flow_with_harness(&mut harness);
     let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
     match (outcome, shutdown_result) {
         (Ok(result), Ok(())) => Ok(result),
@@ -444,6 +471,58 @@ fn run_live_python_peer_controlled_room_flow_with_harness(
             .unwrap_or(false),
         peer_local_controller: peer_snapshot.local_controller.unwrap_or(false),
         can_manage_playlist: state.main_window.playback.can_manage_playlist,
+        widget_count: state.shell_widget_tree().node_count(),
+    })
+}
+
+fn run_live_python_peer_detached_public_server_connect_flow_with_harness(
+    harness: &mut LegacyServerPythonPeerHarness,
+) -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
+        room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
+        public_servers: Some(vec![("Primary".to_owned(), harness.address().to_owned())]),
+        shared_playlist_enabled: Some(true),
+        chat_input_enabled: Some(true),
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    if !state.apply(GuiShellAction::SelectPublicServer(0))
+        || !state.apply(GuiShellAction::BeginSelectedPublicServerConnect)
+    {
+        return Err(LivePythonPeerInteropError::Gui(
+            "failed to stage detached public-server connect".to_owned(),
+        ));
+    }
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ConnectPublicServer,
+    ));
+    pump_and_apply(&mut owner, &handle, &mut state);
+    wait_for_projected_room_projection(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_ROOM,
+        false,
+    )?;
+    harness.start_peer_connected()?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
+
+    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    Ok(LivePythonPeerDetachedConnectInteropResult {
+        room_name: state.main_window.room_name.clone(),
+        local_user_present: local_user_ready(&state).is_some(),
+        peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
+        local_user_ready: local_user_ready(&state).unwrap_or(false),
+        peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
         widget_count: state.shell_widget_tree().node_count(),
     })
 }
