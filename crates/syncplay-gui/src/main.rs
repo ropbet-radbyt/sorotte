@@ -2192,6 +2192,72 @@ impl PlayerAdapter for GuiNoopClientRuntimePlayer {
     }
 }
 
+#[derive(Default)]
+struct GuiTestPlayerAdapter {
+    local_file_updates: VecDeque<LocalFileUpdate>,
+    playback_updates: VecDeque<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+}
+
+impl GuiTestPlayerAdapter {
+    fn local_file_update_for_path(path: &str) -> LocalFileUpdate {
+        let name = if path.contains("://") {
+            path.to_owned()
+        } else {
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned()
+        };
+        LocalFileUpdate::new(name).with_path(path.to_owned())
+    }
+}
+
+impl PlayerAdapter for GuiTestPlayerAdapter {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+
+    fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+        self.local_file_updates
+            .push_back(Self::local_file_update_for_path(path));
+        self.playback_updates.push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(0.0),
+        );
+        Ok(())
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+        self.playback_updates.push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(paused),
+        );
+        Ok(())
+    }
+
+    fn set_position(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<(), syncplay_player_api::PlayerError> {
+        self.playback_updates.push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(position_seconds),
+        );
+        Ok(())
+    }
+
+    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+        self.local_file_updates.pop_front()
+    }
+
+    fn take_playback_telemetry_update(
+        &mut self,
+    ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+        self.playback_updates.pop_front()
+    }
+}
+
 trait GuiSessionRuntimeAdapter {
     fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         Vec::new()
@@ -3997,6 +4063,28 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
+    fn clear_pending_operation_runtime_state(
+        &self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let mut cleared_state = projected_state.clone();
+        cleared_state.pending_operation = None;
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+                GuiCommandRuntimeSnapshot {
+                    command_availability: self.command_availability_for_runtime_state(
+                        &cleared_state,
+                        self.player.is_some(),
+                    ),
+                    pending_operation: None,
+                },
+            )],
+        );
+    }
+
     fn push_player_success(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
         handle.push_actions([
             GuiShellAction::SwitchView(GuiShellView::MainWindow),
@@ -4016,6 +4104,47 @@ impl GuiPersistedConfigRuntimeOwner {
             },
             GuiShellAction::AnnounceSystemChatEvent(message),
         ]);
+    }
+
+    fn open_media_files_through_attached_player(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        paths: Vec<String>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+
+        let selected_path = paths[0].clone();
+        let (player_name, open_result) = {
+            let player = self.player.as_mut().expect("player should exist");
+            (player.name(), player.open_file(&selected_path))
+        };
+        match open_result {
+            Ok(()) => {
+                self.player_local_file =
+                    Some(Self::placeholder_local_file_for_path(&selected_path));
+                self.player_position_seconds = Some(0.0);
+                self.refresh_player_state();
+                let message = if paths.len() == 1 {
+                    format!(
+                        "Opened media file through the attached {player_name} player: {selected_path}."
+                    )
+                } else {
+                    format!(
+                        "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
+                        paths.len() - 1
+                    )
+                };
+                Self::push_player_success(handle, message);
+            }
+            Err(error) => {
+                let message = format!(
+                    "Opening media through the attached {player_name} player failed: {error}"
+                );
+                Self::push_player_error(handle, message);
+            }
+        }
     }
 
     fn refresh_player_state(&mut self) {
@@ -4211,6 +4340,19 @@ impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
         let mut owner =
             Self::with_config_path(resolve_syncplay_gui_config_path_legacy_compatible());
+        match env_flag_enabled_lookup(&env_trimmed, "SYNCPLAY_GUI_ENABLE_TEST_PLAYER") {
+            Ok(true) => {
+                owner.player = Some(Box::<GuiTestPlayerAdapter>::default());
+                return owner;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                owner.player_unavailability_reason = Some(format!(
+                    "SYNCPLAY_GUI_ENABLE_TEST_PLAYER could not be parsed: {error}"
+                ));
+                return owner;
+            }
+        }
         if let Some(ipc_path) = explicit_mpv_ipc_path_from_env() {
             match MpvAdapter::with_json_ipc(&ipc_path) {
                 Ok(adapter) => {
@@ -4263,49 +4405,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         continue;
                     }
                     if self.player.is_some() {
-                        let selected_path = paths[0].clone();
-                        let (player_name, open_result) = {
-                            let player = self.player.as_mut().expect("player should exist");
-                            (player.name(), player.open_file(&selected_path))
-                        };
-                        match open_result {
-                            Ok(()) => {
-                                self.player_local_file =
-                                    Some(Self::placeholder_local_file_for_path(&selected_path));
-                                self.player_position_seconds = Some(0.0);
-                                self.refresh_player_state();
-                                let message = if paths.len() == 1 {
-                                    format!(
-                                        "Opened media file through the attached {player_name} player: {selected_path}."
-                                    )
-                                } else {
-                                    format!(
-                                        "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
-                                        paths.len() - 1
-                                    )
-                                };
-                                handle.push_actions([
-                                    GuiShellAction::SwitchView(GuiShellView::MainWindow),
-                                    GuiShellAction::PushTransientNotification {
-                                        level: GuiTransientNotificationLevel::Success,
-                                        message: message.clone(),
-                                    },
-                                    GuiShellAction::AnnounceSystemChatEvent(message),
-                                ]);
-                            }
-                            Err(error) => {
-                                let message = format!(
-                                    "Opening media through the attached {player_name} player failed: {error}"
-                                );
-                                handle.push_actions([
-                                    GuiShellAction::PushTransientNotification {
-                                        level: GuiTransientNotificationLevel::Error,
-                                        message: message.clone(),
-                                    },
-                                    GuiShellAction::AnnounceSystemChatEvent(message),
-                                ]);
-                            }
-                        }
+                        self.open_media_files_through_attached_player(handle, paths);
                     } else {
                         Self::push_runtime_unavailable(
                             handle,
@@ -4562,11 +4662,29 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             .map(|row| row.path.clone())
                             .collect();
                         match session.search_missing_media(directories) {
-                            Ok(found_path) => Self::push_actions_and_project(
-                                handle,
-                                &mut projected_state,
-                                vec![GuiShellAction::CompleteMissingMediaSearch(found_path)],
-                            ),
+                            Ok(found_path) => {
+                                let found_path =
+                                    found_path.and_then(|path| normalized_editable_text(&path));
+                                match found_path {
+                                    Some(path) if self.player.is_some() => {
+                                        self.clear_pending_operation_runtime_state(
+                                            handle,
+                                            &mut projected_state,
+                                        );
+                                        self.open_media_files_through_attached_player(
+                                            handle,
+                                            vec![path],
+                                        );
+                                    }
+                                    found_path => Self::push_actions_and_project(
+                                        handle,
+                                        &mut projected_state,
+                                        vec![GuiShellAction::CompleteMissingMediaSearch(
+                                            found_path,
+                                        )],
+                                    ),
+                                }
+                            }
                             Err(error) => self.clear_pending_operation_with_runtime_error(
                                 handle,
                                 &mut projected_state,
@@ -22584,6 +22702,30 @@ assert-pending\tnone\n"
     #[test]
     fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client_core_session()
     {
+        #[derive(Debug, Default)]
+        struct RecordingPlayerState {
+            opened_paths: Vec<String>,
+        }
+
+        struct RecordingPlayerAdapter {
+            state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+        }
+
+        impl super::PlayerAdapter for RecordingPlayerAdapter {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+
+            fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .opened_paths
+                    .push(path.to_owned());
+                Ok(())
+            }
+        }
+
         let unique_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after unix epoch")
@@ -22599,11 +22741,16 @@ assert-pending\tnone\n"
             .expect("test missing-media search directory tree should be created");
         std::fs::write(&found_path, b"test")
             .expect("test missing-media search file should be written");
+        let player_state =
+            std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
 
         let (mut owner, session_transport) =
             super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
                 .with_client_core_chat_session_runtime("alice", "room1")
                 .expect("client-core chat runtime owner should bootstrap");
+        owner.player = Some(Box::new(RecordingPlayerAdapter {
+            state: player_state.clone(),
+        }));
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             username: Some("alice".to_owned()),
@@ -22629,15 +22776,6 @@ assert-pending\tnone\n"
         for action in handle.drain_actions() {
             assert!(state.apply(action));
         }
-        assert_eq!(
-            state
-                .main_window
-                .playlist
-                .iter()
-                .map(|row| row.label.clone())
-                .collect::<Vec<_>>(),
-            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
-        );
 
         assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
@@ -22645,18 +22783,53 @@ assert-pending\tnone\n"
         ));
         super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
         let actions = handle.drain_actions();
+        let found_path_text = found_path.to_string_lossy().into_owned();
+        let expected_message =
+            format!("Opened media file through the attached recording player: {found_path_text}.");
         assert!(
             actions.iter().any(|action| matches!(
                 action,
-                GuiShellAction::CompleteMissingMediaSearch(Some(path))
-                    if path == &found_path.to_string_lossy().into_owned()
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    pending_operation: None,
+                    ..
+                })
             )),
-            "queued owner should route missing-media search through the client-core session runtime"
+            "queued owner should clear the pending search before continuing the session"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message
+                            == &format!(
+                                "Opened media file through the attached recording player: {found_path_text}."
+                            )
+            )),
+            "queued owner should continue the session with the located file through the attached player"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteMissingMediaSearch(_))),
+            "queued owner should continue through the player path instead of stopping at a found-path completion"
         );
         for action in actions {
             assert!(state.apply(action));
         }
         assert!(state.pending_operation.is_none());
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some(expected_message.as_str())
+        );
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(
+            player_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths,
+            vec![found_path_text]
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

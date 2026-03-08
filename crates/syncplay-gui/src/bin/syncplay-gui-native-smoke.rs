@@ -64,6 +64,7 @@ struct GuiLaunchConfig<'a> {
     public_servers_spec: &'a str,
     tcp_session: Option<TcpSessionBootstrap<'a>>,
     loopback_session: Option<(&'a str, &'a str)>,
+    attach_test_player: bool,
 }
 
 struct MockSessionServer {
@@ -1683,10 +1684,13 @@ fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Resul
     for name in [
         "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP",
         "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK",
+        "SYNCPLAY_GUI_ENABLE_TEST_PLAYER",
         "SYNCPLAY_CLIENT_HOST",
         "SYNCPLAY_CLIENT_PORT",
         "SYNCPLAY_CLIENT_USERNAME",
         "SYNCPLAY_CLIENT_ROOM",
+        "SYNCPLAY_CLIENT_MPV_IPC_PATH",
+        "SYNCPLAY_MPV_IPC_PATH",
     ] {
         command.env_remove(name);
     }
@@ -1713,6 +1717,9 @@ fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Resul
         command.env("SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK", "true");
         command.env("SYNCPLAY_CLIENT_USERNAME", username);
         command.env("SYNCPLAY_CLIENT_ROOM", room);
+    }
+    if launch.attach_test_player {
+        command.env("SYNCPLAY_GUI_ENABLE_TEST_PLAYER", "true");
     }
     command
         .spawn()
@@ -3488,6 +3495,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
         tcp_session: None,
         loopback_session: None,
+        attach_test_player: false,
     };
     let (mut child, window) = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout)?;
 
@@ -3673,6 +3681,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
             tcp_session: None,
             loopback_session: None,
+            attach_test_player: false,
         };
         let (mut first_run_child, first_run_window) =
             launch_syncplay_gui_with_retry(driver, binary_path, first_run_launch, timeout)?;
@@ -3794,6 +3803,7 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
             tcp_session: None,
             loopback_session: None,
+            attach_test_player: false,
         };
         let (mut migration_child, migration_window) =
             launch_syncplay_gui_with_retry(driver, binary_path, migration_launch, timeout)?;
@@ -3926,6 +3936,7 @@ fn verify_loopback_chat_contract<D: NativeGuiDriver>(
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
         tcp_session: None,
         loopback_session: Some((TRANSPORT_SESSION_USERNAME, TRANSPORT_SESSION_ROOM)),
+        attach_test_player: false,
     };
     let (mut child, window) = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout)?;
 
@@ -4004,6 +4015,7 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             room: LIVE_PYTHON_INTEROP_ROOM,
         }),
         loopback_session: None,
+        attach_test_player: false,
     };
 
     let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
@@ -4532,6 +4544,7 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
             room: LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
         }),
         loopback_session: None,
+        attach_test_player: false,
     };
 
     let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
@@ -4635,6 +4648,217 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
     }
 }
 
+fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
+    driver: &D,
+    binary_path: &Path,
+    temp_root: &Path,
+    _media_search_browse_path: &Path,
+    open_media_file_path: &Path,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let session_server = start_mock_session_server(
+        &[
+            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Set":{"playlistChange":{"files":["missing-source-a.mkv","missing-target.mkv"],"user":"smoke-user"}}}"#,
+            r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
+            r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
+            r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
+        ],
+        &[
+            r#"{"Set":{"ready":{"isReady":false,"username":"smoke-user"}}}"#,
+            r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob-post.mp4"},"isReady":false,"controller":false}}}}"#,
+        ],
+        &[],
+    )?;
+    let continue_media_search_path = temp_root.join("missing-media-continue-session-search");
+    let _ = fs::remove_dir_all(&continue_media_search_path);
+    fs::create_dir_all(&continue_media_search_path).map_err(|error| {
+        format!(
+            "failed to create missing-media continuation search directory {}: {error}",
+            continue_media_search_path.display()
+        )
+    })?;
+    let located_media_path = continue_media_search_path.join("missing-target.mkv");
+    fs::write(&located_media_path, b"missing-media-continuation-target").map_err(|error| {
+        format!(
+            "failed to create missing-media continuation target {}: {error}",
+            located_media_path.display()
+        )
+    })?;
+
+    let continue_config_path = temp_root.join("syncplay-native-smoke-missing-media.ini");
+    let _ = fs::remove_file(&continue_config_path);
+    seed_native_smoke_config(&continue_config_path)?;
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &continue_config_path,
+        &StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(false),
+            media_search_directories: Some(vec![continue_media_search_path.display().to_string()]),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "failed to prepare missing-media continuation config {}: {error}",
+            continue_config_path.display()
+        )
+    })?;
+
+    let launch = GuiLaunchConfig {
+        config_path: &continue_config_path,
+        media_search_browse_path: &continue_media_search_path,
+        open_media_file_path,
+        public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
+        tcp_session: Some(TcpSessionBootstrap {
+            host: "127.0.0.1",
+            port: session_server.port,
+            username: TRANSPORT_SESSION_USERNAME,
+            room: TRANSPORT_SESSION_ROOM,
+        }),
+        loopback_session: None,
+        attach_test_player: true,
+    };
+    let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
+    let (mut child, window) = match launch_result {
+        Ok(pair) => pair,
+        Err(error) => {
+            let release_error = session_server.release("missing-media continuation");
+            return match release_error {
+                Ok(()) => Err(format!(
+                    "failed to launch missing-media continuation segment for native smoke: {error}"
+                )),
+                Err(release_error) => Err(format!(
+                    "failed to launch missing-media continuation segment for native smoke: {error}; {release_error}"
+                )),
+            };
+        }
+    };
+
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let step_timeout = timeout.min(Duration::from_millis(8_000));
+        let mut steps = Vec::new();
+
+        wait_for_any_accessible_name(
+            driver,
+            window,
+            &["view: configuration", "view: main-window"],
+            step_timeout,
+        )?;
+        let _ = invoke_named_control_with_wait(
+            driver,
+            window,
+            "Main Window",
+            NativeControlKind::Button,
+            step_timeout,
+        );
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+
+        let hello = session_server.recv_hello(step_timeout, "missing-media continuation")?;
+        if !hello.contains("\"Hello\"") {
+            return Err(format!(
+                "missing-media continuation mock TCP server did not receive an expected startup hello payload: {hello:?}"
+            ));
+        }
+        wait_for_accessible_name(
+            driver,
+            window,
+            "bob: self=no, ready=yes, controller=yes",
+            step_timeout,
+        )?;
+
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Media Search",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            &continue_media_search_path.display().to_string(),
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Search Missing Media",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            "pending: search-missing-media",
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Complete",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        wait_for_named_control_count(
+            driver,
+            window,
+            "pending: search-missing-media",
+            NativeControlKind::Any,
+            0,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            "bob: self=no, ready=yes, controller=yes",
+            step_timeout,
+        )?;
+        send_chat_message_and_complete(driver, window, "helloaftersearch", step_timeout)?;
+        let post_search_chat = session_server.recv_chat(step_timeout, "missing-media continuation")?;
+        assert_mock_chat_line(
+            &post_search_chat,
+            "helloaftersearch",
+            "missing-media continuation",
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            "bob: self=no, ready=no, controller=no",
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            "smoke-user: self=yes, ready=no, controller=no",
+            step_timeout,
+        )?;
+        steps.push("main-window-missing-media-continue-session".to_owned());
+
+        driver.close_window(window)?;
+        wait_for_process_exit(&mut child, timeout)?;
+        Ok(steps)
+    })();
+
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    let release_error = session_server.release("missing-media continuation");
+    match outcome {
+        Ok(steps) => match release_error {
+            Ok(()) => Ok(steps),
+            Err(release_error) => Err(release_error),
+        },
+        Err(error) => match release_error {
+            Ok(()) => Err(error),
+            Err(release_error) => Err(format!("{error}; {release_error}")),
+        },
+    }
+}
+
 fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -4690,6 +4914,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
 
     let transport_config_path = temp_root.join("syncplay-native-smoke-transport.ini");
     let _ = fs::remove_file(&transport_config_path);
+    seed_native_smoke_config(&transport_config_path)?;
     let public_servers_spec = format!(
         "[['Primary', '{}'], ['Reconnect', '{}']]",
         primary_server.address, reconnect_server.address
@@ -4706,6 +4931,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             room: TRANSPORT_SESSION_ROOM,
         }),
         loopback_session: None,
+        attach_test_player: false,
     };
 
     let launch_result = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout);
@@ -4941,6 +5167,7 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
         tcp_session: None,
         loopback_session: None,
+        attach_test_player: false,
     };
     let (mut child, window) =
         launch_syncplay_gui_with_retry(&driver, &binary_path, launch, options.timeout)?;
@@ -5075,6 +5302,16 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
             options.timeout,
         )?;
         interaction_steps.extend(live_python_controlled_room_steps);
+
+        let missing_media_continue_steps = verify_missing_media_continue_session_contract(
+            &driver,
+            &binary_path,
+            &temp_root,
+            &media_search_browse_path,
+            &open_media_file_path,
+            options.timeout,
+        )?;
+        interaction_steps.extend(missing_media_continue_steps);
 
         let transport_steps = verify_transport_reconnect_contract(
             &driver,
