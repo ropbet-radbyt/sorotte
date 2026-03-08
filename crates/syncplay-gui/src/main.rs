@@ -2073,6 +2073,14 @@ trait GuiNativeRuntimeBridge {
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
 
+    fn actions_for_room_join(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _room: String,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_local_readiness_change(
         &mut self,
         _state: &SyncplayGuiShellAppState,
@@ -2210,6 +2218,10 @@ trait GuiSessionRuntimeAdapter {
             "Attached session runtime does not accept inbound protocol transport messages."
                 .to_owned(),
         )
+    }
+
+    fn set_room(&mut self, _room: String) -> Result<(), String> {
+        Err("Attached session runtime does not support room changes.".to_owned())
     }
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
@@ -3137,6 +3149,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
         GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
+    }
+
+    fn set_room(&mut self, room: String) -> Result<(), String> {
+        match self.runtime.run_set_room(room) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if self.runtime.session().server_chat_supported().is_none() {
+                    Err(
+                        "Client-core session runtime cannot change rooms until the server Hello completes."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound room change."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime room change dispatch failed: {error}"
+            )),
+        }
     }
 
     fn send_chat_message(&mut self, message: String) -> Result<(), String> {
@@ -4315,6 +4349,16 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         );
                     }
                 }
+                GuiRuntimeRequest::SetRoom(room) => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_room(room)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
                 GuiRuntimeRequest::SetLocalReady(ready) => {
                     if let Some(session) = self.session.as_mut()
                         && let Err(error) = session.set_local_ready(ready)
@@ -4853,6 +4897,7 @@ enum GuiRuntimeRequest {
         paths: Vec<String>,
         load_into_shared_playlist: bool,
     },
+    SetRoom(String),
     SetLocalReady(bool),
     QueuePlaylistEntry {
         entry: String,
@@ -4901,7 +4946,8 @@ impl GuiRuntimeRequest {
             Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
-            | Self::ReplacePlaylist { .. } => Vec::new(),
+            | Self::ReplacePlaylist { .. }
+            | Self::SetRoom(_) => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");
                 vec![
@@ -5035,6 +5081,15 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::SeekOffset(offset_seconds));
+        Vec::new()
+    }
+
+    fn actions_for_room_join(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        room: String,
+    ) -> Vec<GuiShellAction> {
+        self.handle.push_request(GuiRuntimeRequest::SetRoom(room));
         Vec::new()
     }
 
@@ -5260,6 +5315,7 @@ impl eframe::App for GuiNativeApp {
         let selected_media_files = renderer.take_selected_media_files();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
+        let mut room_join_requests = Vec::new();
         let mut requested_local_ready = None;
         let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
@@ -5269,6 +5325,9 @@ impl eframe::App for GuiNativeApp {
         let mut playlist_reorder_requested = false;
         for action in &actions {
             match action {
+                GuiShellAction::JoinMainWindowRoom(room) => {
+                    room_join_requests.push(room.clone());
+                }
                 GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
                 GuiShellAction::AnnounceLocalUserNotReady => requested_local_ready = Some(false),
                 GuiShellAction::UpdateNewPlaylistEntryDraft(buffer) => {
@@ -5302,6 +5361,11 @@ impl eframe::App for GuiNativeApp {
         let mut state_changed = false;
         for action in actions {
             state_changed |= self.state.apply(action);
+        }
+        for room in room_join_requests {
+            for action in self.runtime.actions_for_room_join(&self.state, room) {
+                state_changed |= self.state.apply(action);
+            }
         }
         if let Some(ready) = requested_local_ready {
             for action in self
@@ -20481,7 +20545,7 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
         assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
         assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
         assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
+        assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, switches the GUI between rooms and back, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
         assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
         assert!(described.contains("\"name\":\"live-python-peer-controlled-room-flow\""));
         assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
@@ -20804,6 +20868,15 @@ assert-pending\tnone\n"
                 },
                 GuiShellAction::AnnounceSystemChatEvent("Seek requested: 3.5 seconds.".to_owned(),),
             ]
+        );
+        assert!(
+            runtime
+                .actions_for_room_join(&state, "joined-room".to_owned())
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::SetRoom("joined-room".to_owned())]
         );
 
         handle.push_action(GuiShellAction::PushTransientNotification {
@@ -23296,6 +23369,95 @@ assert-pending\tnone\n"
     }
 
     #[test]
+    fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test session transport listener should expose a local address");
+        let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test session transport server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("test session transport server should clone the accepted stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("test session transport server should read one startup hello line");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+                )
+                .expect("test session transport server should write one inbound hello line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound hello line");
+            hello_ready_tx
+                .send(())
+                .expect("test session transport server should signal hello readiness");
+            let mut room_line = String::new();
+            reader
+                .read_line(&mut room_line)
+                .expect("test session transport server should read one outbound room-change line");
+            stream
+                .write_all(br#"{"Set":{"room":{"name":"room2"}}}"#)
+                .expect("test session transport server should write one inbound room line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound room line");
+            room_line
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        hello_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should send its hello promptly");
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        let room_line = server_thread
+            .join()
+            .expect("test session transport server thread should complete");
+        assert!(room_line.contains("\"Set\""));
+        assert!(room_line.contains("\"room\""));
+        assert!(room_line.contains("\"room2\""));
+
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| state.main_window.room_name == "room2",
+            "room change over TCP transport",
+        );
+        assert_eq!(state.main_window.room_name, "room2");
+    }
+
+    #[test]
     fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_public_server_connect()
      {
         use std::{
@@ -23530,6 +23692,8 @@ assert-pending\tnone\n"
         );
         assert!(result.local_user_present);
         assert!(result.peer_user_present);
+        assert!(result.room_switch_observed);
+        assert!(result.room_rejoin_observed);
         assert!(result.peer_disconnect_observed);
         assert!(result.peer_reconnect_observed);
         assert_eq!(
@@ -24842,6 +25006,7 @@ assert-pending\tnone\n"
         #[derive(Debug, Default)]
         struct RecordingSessionState {
             queued_gui_actions: Vec<GuiShellAction>,
+            room_requests: Vec<String>,
             local_ready_requests: Vec<bool>,
             sent_chat_messages: Vec<String>,
             connect_requests: Vec<Option<(String, String)>>,
@@ -24865,6 +25030,15 @@ assert-pending\tnone\n"
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .queued_gui_actions,
                 )
+            }
+
+            fn set_room(&mut self, room: String) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .room_requests
+                    .push(room);
+                Ok(())
             }
 
             fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
@@ -24989,6 +25163,10 @@ assert-pending\tnone\n"
             Some("Welcome.")
         );
 
+        handle.push_request(GuiRuntimeRequest::SetRoom("runtime-room".to_owned()));
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(handle.drain_actions().is_empty());
+
         assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SendChatMessage("hello".to_owned()),
@@ -25082,6 +25260,7 @@ assert-pending\tnone\n"
         let session_state = session_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(session_state.room_requests, vec!["runtime-room".to_owned()]);
         assert_eq!(session_state.local_ready_requests, vec![true]);
         assert_eq!(session_state.sent_chat_messages, vec!["hello".to_owned()]);
         assert_eq!(

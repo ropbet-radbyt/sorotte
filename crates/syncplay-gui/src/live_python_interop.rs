@@ -17,6 +17,7 @@ use super::{
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 pub(crate) const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+pub(crate) const LIVE_PYTHON_INTEROP_ALT_ROOM: &str = "interop-room-b";
 pub(crate) const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
 pub(crate) const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str =
     "+interop-room:447CE7E3548D:AB-123-456";
@@ -38,6 +39,8 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub peer_user_present: bool,
     pub local_user_ready: bool,
     pub peer_user_ready: bool,
+    pub room_switch_observed: bool,
+    pub room_rejoin_observed: bool,
     pub peer_disconnect_observed: bool,
     pub peer_reconnect_observed: bool,
     pub gui_playlist: Vec<String>,
@@ -158,6 +161,25 @@ fn run_live_python_peer_connect_flow_with_harness(
         LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
         Duration::from_secs(3),
     )?;
+    request_local_room_join(&handle, &mut state, LIVE_PYTHON_INTEROP_ALT_ROOM)?;
+    wait_for_projected_room_projection(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_ALT_ROOM,
+        false,
+    )?;
+    let room_switch_observed = true;
+
+    request_local_room_join(&handle, &mut state, LIVE_PYTHON_INTEROP_ROOM)?;
+    wait_for_projected_room_projection(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_ROOM,
+        true,
+    )?;
+    let room_rejoin_observed = true;
 
     request_local_ready(&handle, &mut state, true)?;
     wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
@@ -350,6 +372,8 @@ fn run_live_python_peer_connect_flow_with_harness(
         peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
         local_user_ready: local_user_ready(&state).unwrap_or(false),
         peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        room_switch_observed,
+        room_rejoin_observed,
         peer_disconnect_observed,
         peer_reconnect_observed,
         gui_playlist: gui_playlist(&state),
@@ -452,6 +476,21 @@ fn request_local_ready(
         )));
     }
     handle.push_request(GuiRuntimeRequest::SetLocalReady(ready));
+    Ok(())
+}
+
+fn request_local_room_join(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    room: &str,
+) -> Result<(), LivePythonPeerInteropError> {
+    if !state.apply(GuiShellAction::JoinMainWindowRoom(room.to_owned())) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to apply local room join {room:?}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::SetRoom(room.to_owned()));
     Ok(())
 }
 
@@ -596,6 +635,45 @@ fn wait_for_peer_observed_user_presence(
             return Err(LivePythonPeerInteropError::Gui(format!(
                 "timed out waiting for Python reference peer to observe GUI user {username:?}; users={:?}",
                 snapshot.observed_users
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_projected_room_projection(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    expected_room: &str,
+    expected_peer_visible: bool,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+        let peer_visible = peer_user_ready(state, LIVE_PYTHON_INTEROP_PEER_USERNAME).is_some();
+        if state.main_window.room_name == expected_room
+            && local_user_ready(state).is_some()
+            && peer_visible == expected_peer_visible
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let projected_users = state
+                .main_window
+                .users
+                .iter()
+                .map(|user| {
+                    format!(
+                        "{}(self={}, ready={}, controller={})",
+                        user.username, user.is_self, user.is_ready, user.is_controller
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python room projection; expected_room={expected_room:?}, expected_peer_visible={expected_peer_visible}, actual_room={:?}, users=[{}]",
+                state.main_window.room_name, projected_users
             )));
         }
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);

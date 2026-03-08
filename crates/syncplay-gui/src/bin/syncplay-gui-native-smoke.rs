@@ -117,6 +117,7 @@ const TRANSPORT_SESSION_ROOM: &str = "smoke-room";
 const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
+const LIVE_PYTHON_INTEROP_ALT_ROOM: &str = "interop-room-b";
 const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
 const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str = "+interop-room:447CE7E3548D:AB-123-456";
 const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
@@ -2721,6 +2722,34 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     invoke_named_control_with_wait(
         driver,
         window,
+        "Main Window",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Toggle Pause",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    steps.push("main-window-playback-controls-detached".to_owned());
+    wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Add Entry",
+        NativeControlKind::Button,
+        false,
+        step_timeout,
+    )?;
+    steps.push("main-window-playlist-controls-gated".to_owned());
+
+    invoke_named_control_with_wait(
+        driver,
+        window,
         "Configuration",
         NativeControlKind::Button,
         step_timeout,
@@ -4058,6 +4087,47 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         steps.push("transport-python-peer-connect".to_owned());
+        driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ALT_ROOM)?;
+        wait_for_edit_value_by_index(
+            driver,
+            window,
+            0,
+            LIVE_PYTHON_INTEROP_ALT_ROOM,
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Join Draft Room",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_named_control_count(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            NativeControlKind::Any,
+            0,
+            step_timeout,
+        )?;
+        steps.push("main-window-room-joined".to_owned());
+
+        driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ROOM)?;
+        wait_for_edit_value_by_index(driver, window, 0, LIVE_PYTHON_INTEROP_ROOM, step_timeout)?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Join Draft Room",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(
+            driver,
+            window,
+            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            step_timeout,
+        )?;
+        steps.push("main-window-room-switched".to_owned());
 
         invoke_named_control_with_wait(
             driver,
@@ -4536,12 +4606,12 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
             })?;
         steps.push("transport-python-peer-controlled-room-auth".to_owned());
 
-        wait_for_named_control_count(
+        wait_for_named_control_enabled_state(
             driver,
             window,
             "New Entry",
             NativeControlKind::Any,
-            1,
+            true,
             step_timeout,
         )?;
         steps.push("transport-python-peer-controlled-room-playlist-enabled".to_owned());
