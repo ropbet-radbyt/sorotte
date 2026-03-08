@@ -2811,10 +2811,10 @@ fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) 
         return false;
     }
 
-    let file_name = Path::new(trimmed)
+    let file_name = Path::new(&normalized)
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or(trimmed)
+        .unwrap_or(normalized.as_str())
         .trim()
         .to_ascii_lowercase();
     if matches!(file_name.as_str(), "mpv" | "mpv.exe" | "mpv.com") {
