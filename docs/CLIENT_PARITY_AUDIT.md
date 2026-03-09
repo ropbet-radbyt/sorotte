@@ -23,17 +23,20 @@
 
 - Protocol/session core is no longer the main blocker. The GUI can now start and stop a real client-core TCP session from saved host/port settings, including startup auto-connect from persisted configuration and explicit connect/disconnect controls on both the configuration and main-window surfaces.
 - Shared-playlist file opening/import no longer stops at shell projection. The queued runtime owner now routes those requests through the real session/player runtime path, including playlist-file import and player dispatch when an attached playback runtime exists.
-- The main parity blockers are now the remaining default desktop workflow gaps after connection exists: drag-and-drop ingest and tightening affordances that still over-promise beyond the runtime-backed paths.
+- Desktop drag-and-drop ingest is now implemented for both detached media-open and shared-playlist import flows, with semantic coverage and Windows native smoke coverage.
+- The main parity blocker is now tightening affordances that still over-promise beyond the runtime-backed paths.
+
+## Recently Completed
+
+### Desktop Drag-And-Drop For Media And Playlist Ingest
+
+- The native `egui` host now accepts dropped files and routes them either to detached media-open or shared-playlist ingest based on the drop target.
+- Playlist-surface drops import media entries and playlist files; window-target drops open media through the detached/player-backed path.
+- Semantic coverage now includes a dedicated drag-and-drop scenario, and the Windows native smoke suite validates both window-target and playlist-target ingest.
 
 ## Highest-Priority Remaining Work
 
-### 1. Implement Desktop Drag-And-Drop For Media And Playlist Ingest
-
-- The current GUI uses `rfd::FileDialog` for manual file selection, but there is no `egui` dropped-file handling or alternate native drop hook in the app code.
-- The semantic and native smoke paths do not cover drag-and-drop.
-- Result: drag-and-drop parity is still absent rather than partially implemented.
-
-### 2. Tighten Command Availability So The UI Stops Advertising Non-Working Paths
+### 1. Tighten Command Availability So The UI Stops Advertising Non-Working Paths
 
 - `Open Media File` becomes enabled whenever shared playlists are enabled, even if there is no attached session or player runtime.
 - Room join controls are now gated on an active session runtime, but some other affordances still remain preview-oriented.
@@ -58,6 +61,5 @@
 
 ## Practical Priority Order
 
-1. Add drag-and-drop and cover it in native and semantic smoke tests.
-2. Tighten command availability so non-working paths stop looking production-ready.
-3. Resume broader parity and maintainability work after the default user flow is reliable.
+1. Tighten command availability so non-working paths stop looking production-ready.
+2. Resume broader parity and maintainability work after the default user flow is reliable.

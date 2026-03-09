@@ -20,7 +20,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because the default GUI workflow still has major gaps after connection: drag-and-drop ingest is still missing, and some affordances still need tightening around non-working paths. Shared-playlist file opening/import is now routed through the real GUI runtime path instead of stopping at preview-only shell projection. Non-`mpv` players are currently deferred until `mpv` parity is complete.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because some GUI affordances still need tightening around non-working paths, and broader packaging/cross-platform work remains. Shared-playlist file opening/import now routes through the real GUI runtime path, and desktop drag-and-drop ingest now covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage. Non-`mpv` players are currently deferred until `mpv` parity is complete.
 
 ## Documentation set (current)
 
@@ -48,6 +48,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] GUI configuration/main-window shell with semantic smoke coverage and Windows native accessibility smoke coverage.
 - [x] First-class GUI saved-config connect/disconnect flow, including startup auto-connect from persisted host/port settings and explicit session lifecycle controls on the configuration and main-window surfaces.
 - [x] Runtime-backed shared-playlist file opening/import from the GUI, including session playlist replacement and playlist-file import.
+- [x] Desktop drag-and-drop ingest for detached media-open and shared-playlist import, with semantic and Windows native smoke coverage.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
 - [x] Compatibility/interop test infrastructure comparing Rust runtime behavior to captured Python Syncplay traces/scenarios.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
@@ -58,7 +59,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 
 - [x] Make main-window room join/leave runtime-authoritative so disconnected or pre-Hello states cannot fake a successful room change.
 - [x] Replace preview-only shared-playlist file-open behavior with real player/session/playlist dispatch.
-- [ ] Add desktop drag-and-drop for media/playlist ingest plus semantic/native smoke coverage.
+- [x] Add desktop drag-and-drop for media/playlist ingest plus semantic/native smoke coverage.
 - [ ] Tighten GUI command availability so non-working room/media paths stop looking production-ready.
 - [x] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
 - [ ] End-to-end release packaging process (artifacts, versioning, changelog, signing strategy if needed).

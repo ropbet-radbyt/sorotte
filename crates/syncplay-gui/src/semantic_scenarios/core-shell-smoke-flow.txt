@@ -92,4 +92,4 @@ assert-pending	none
 open-media-files	C:/SmokeMedia/open-target.mkv
 assert-selected	main-window-root	true
 assert-value	shell:active-view	main-window
-assert-label	main-window:playlist:0	C:/SmokeMedia/open-target.mkv
+assert-label	main-window:playlist:0	open-target.mkv

@@ -1161,8 +1161,39 @@ struct GuiWidgetEguiRenderer {
     close_requested: bool,
     seek_prompt_requested: bool,
     selected_media_files: Option<Vec<String>>,
+    dropped_files_request: Option<GuiDroppedFilesRequest>,
+    playlist_drop_target_rect: Option<egui::Rect>,
+    playlist_drop_target_hovered: bool,
     pending_completion_requested: bool,
     pending_cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiDroppedFilesTarget {
+    Window,
+    Playlist,
+}
+
+impl GuiDroppedFilesTarget {
+    fn parse(token: &str) -> Result<Self, String> {
+        match token.trim() {
+            "window" => Ok(Self::Window),
+            "playlist" => Ok(Self::Playlist),
+            other => Err(format!(
+                "unknown dropped-files target {other:?}; expected 'window' or 'playlist'"
+            )),
+        }
+    }
+
+    fn load_into_shared_playlist(self, state: &SyncplayGuiShellAppState) -> bool {
+        matches!(self, Self::Playlist) && state.shared_playlist_events_enabled()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiDroppedFilesRequest {
+    target: GuiDroppedFilesTarget,
+    paths: Vec<String>,
 }
 
 impl GuiWidgetEguiRenderer {
@@ -1182,6 +1213,10 @@ impl GuiWidgetEguiRenderer {
         self.selected_media_files.take()
     }
 
+    fn take_dropped_files_request(&mut self) -> Option<GuiDroppedFilesRequest> {
+        self.dropped_files_request.take()
+    }
+
     fn take_pending_completion_requested(&mut self) -> bool {
         std::mem::take(&mut self.pending_completion_requested)
     }
@@ -1196,6 +1231,9 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         show_manual_pending_controls: bool,
     ) -> Vec<GuiShellAction> {
+        self.playlist_drop_target_rect = None;
+        self.playlist_drop_target_hovered = false;
+        self.dropped_files_request = None;
         if let Some(root) = self.root().cloned() {
             self.show_menu_bar(ctx, &root, state);
             self.show_modal_window(ctx, state);
@@ -1208,7 +1246,50 @@ impl GuiWidgetEguiRenderer {
                 ui.label("No widget tree is currently available.");
             });
         }
+        let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
+        self.dropped_files_request = Self::dropped_files_request_for_input(
+            state,
+            self.playlist_drop_target_hovered,
+            self.playlist_drop_target_rect,
+            ctx.input(|input| input.pointer.hover_pos()),
+            dropped_files,
+        );
         std::mem::take(&mut self.actions)
+    }
+
+    fn dropped_files_request_for_input(
+        state: &SyncplayGuiShellAppState,
+        playlist_drop_target_hovered: bool,
+        playlist_drop_target_rect: Option<egui::Rect>,
+        pointer_hover_pos: Option<egui::Pos2>,
+        dropped_files: Vec<egui::DroppedFile>,
+    ) -> Option<GuiDroppedFilesRequest> {
+        let paths = dropped_files
+            .iter()
+            .filter_map(Self::dropped_file_path)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return None;
+        }
+        let hovered_playlist_target = playlist_drop_target_hovered
+            || playlist_drop_target_rect
+                .zip(pointer_hover_pos)
+                .is_some_and(|(rect, pointer)| rect.contains(pointer));
+        let target = if hovered_playlist_target
+            && GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(state)
+        {
+            GuiDroppedFilesTarget::Playlist
+        } else {
+            GuiDroppedFilesTarget::Window
+        };
+        Some(GuiDroppedFilesRequest { target, paths })
+    }
+
+    fn dropped_file_path(file: &egui::DroppedFile) -> Option<String> {
+        if let Some(path) = file.path.as_ref() {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        normalized_editable_text(&file.name)
     }
 
     fn show_menu_bar(
@@ -1460,7 +1541,7 @@ impl GuiWidgetEguiRenderer {
                 });
             }
             GuiWidgetKind::List => {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
+                let response = egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.strong(&node.label);
                     if node.children.is_empty() {
                         ui.label("No items.");
@@ -1470,6 +1551,10 @@ impl GuiWidgetEguiRenderer {
                         }
                     }
                 });
+                if node.id == "main-window:playlist" {
+                    self.playlist_drop_target_rect = Some(response.response.rect);
+                    self.playlist_drop_target_hovered = response.response.hovered();
+                }
             }
             _ => self.render_leaf(ui, node, state),
         }
@@ -2215,11 +2300,32 @@ trait GuiNativeRuntimeBridge {
         Vec::new()
     }
 
+    fn actions_for_open_media_files(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        paths: Vec<String>,
+        load_into_shared_playlist: bool,
+    ) -> Vec<GuiShellAction>;
+
     fn actions_for_selected_media_files(
         &mut self,
         state: &SyncplayGuiShellAppState,
         paths: Vec<String>,
-    ) -> Vec<GuiShellAction>;
+    ) -> Vec<GuiShellAction> {
+        self.actions_for_open_media_files(state, paths, state.shared_playlist_events_enabled())
+    }
+
+    fn actions_for_dropped_files(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        request: GuiDroppedFilesRequest,
+    ) -> Vec<GuiShellAction> {
+        self.actions_for_open_media_files(
+            state,
+            request.paths,
+            request.target.load_into_shared_playlist(state),
+        )
+    }
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
 
@@ -3950,6 +4056,60 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn with_config_path_and_startup_player(config_path: Option<PathBuf>) -> Self {
+        Self::with_config_path_and_startup_player_lookup(config_path, &env_trimmed)
+    }
+
+    fn with_config_path_and_startup_player_lookup<F>(
+        config_path: Option<PathBuf>,
+        lookup: &F,
+    ) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let mut owner = Self::with_config_path(config_path);
+        owner.attach_startup_player_from_lookup(lookup);
+        owner
+    }
+
+    fn attach_startup_player_from_lookup<F>(&mut self, lookup: &F)
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        match env_flag_enabled_lookup(lookup, "SYNCPLAY_GUI_ENABLE_TEST_PLAYER") {
+            Ok(true) => {
+                self.player = Some(Box::<GuiTestPlayerAdapter>::default());
+                self.player_unavailability_reason = None;
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.player = None;
+                self.player_unavailability_reason = Some(format!(
+                    "SYNCPLAY_GUI_ENABLE_TEST_PLAYER could not be parsed: {error}"
+                ));
+                return;
+            }
+        }
+
+        let Some(ipc_path) = explicit_mpv_ipc_path_from_lookup(lookup) else {
+            return;
+        };
+
+        match MpvAdapter::with_json_ipc(&ipc_path) {
+            Ok(adapter) => {
+                self.player = Some(Box::new(adapter));
+                self.player_unavailability_reason = None;
+            }
+            Err(error) => {
+                self.player = None;
+                self.player_unavailability_reason = Some(format!(
+                    "mpv JSON IPC attach failed at '{ipc_path}': {error}"
+                ));
+            }
+        }
+    }
+
     fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
         self.config_path
             .as_ref()
@@ -5250,33 +5410,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
 impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
-        let mut owner =
-            Self::with_config_path(resolve_syncplay_gui_config_path_legacy_compatible());
-        match env_flag_enabled_lookup(&env_trimmed, "SYNCPLAY_GUI_ENABLE_TEST_PLAYER") {
-            Ok(true) => {
-                owner.player = Some(Box::<GuiTestPlayerAdapter>::default());
-                return owner;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                owner.player_unavailability_reason = Some(format!(
-                    "SYNCPLAY_GUI_ENABLE_TEST_PLAYER could not be parsed: {error}"
-                ));
-                return owner;
-            }
-        }
-        if let Some(ipc_path) = explicit_mpv_ipc_path_from_env() {
-            match MpvAdapter::with_json_ipc(&ipc_path) {
-                Ok(adapter) => {
-                    owner.player = Some(Box::new(adapter));
-                }
-                Err(error) => {
-                    owner.player_unavailability_reason = Some(format!(
-                        "mpv JSON IPC attach failed at '{ipc_path}': {error}"
-                    ));
-                }
-            }
-        } else {
+        let mut owner = Self::with_config_path_and_startup_player(
+            resolve_syncplay_gui_config_path_legacy_compatible(),
+        );
+        if owner.player.is_none() && owner.player_unavailability_reason.is_none() {
             owner.player_unavailability_reason = Some(
                 "Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
                     .to_owned(),
@@ -5783,17 +5920,30 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
 struct GuiPreviewRuntimeBridge;
 
 impl GuiPreviewRuntimeBridge {
-    fn preview_media_file_actions(
-        state: &SyncplayGuiShellAppState,
+    pub(crate) fn preview_open_media_file_actions(
         paths: Vec<String>,
+        load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
         if paths.is_empty() {
             return Vec::new();
         }
 
         let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::MainWindow)];
-        if state.shared_playlist_events_enabled() {
-            actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(paths));
+        if load_into_shared_playlist {
+            match GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(paths) {
+                Ok(dispatch) => {
+                    actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(
+                        dispatch.playlist_entries,
+                    ));
+                }
+                Err(error) => {
+                    actions.push(GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error.clone(),
+                    });
+                    actions.push(GuiShellAction::AnnounceSystemChatEvent(error));
+                }
+            }
             return actions;
         }
 
@@ -5843,12 +5993,13 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         true
     }
 
-    fn actions_for_selected_media_files(
+    fn actions_for_open_media_files(
         &mut self,
-        state: &SyncplayGuiShellAppState,
+        _state: &SyncplayGuiShellAppState,
         paths: Vec<String>,
+        load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
-        Self::preview_media_file_actions(state, paths)
+        Self::preview_open_media_file_actions(paths, load_into_shared_playlist)
     }
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
@@ -5989,29 +6140,10 @@ impl GuiRuntimeRequest {
             Self::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,
-            } => {
-                if paths.is_empty() {
-                    return Vec::new();
-                }
-
-                let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::MainWindow)];
-                if *load_into_shared_playlist {
-                    actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(paths.clone()));
-                    return actions;
-                }
-
-                let message = if paths.len() == 1 {
-                    format!("Media file selected: {}.", paths[0])
-                } else {
-                    format!("Media files selected: {} entries.", paths.len())
-                };
-                actions.push(GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Info,
-                    message: message.clone(),
-                });
-                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-                actions
-            }
+            } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                paths.clone(),
+                *load_into_shared_playlist,
+            ),
             Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
@@ -6134,15 +6266,16 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         self.handle.drain_actions()
     }
 
-    fn actions_for_selected_media_files(
+    fn actions_for_open_media_files(
         &mut self,
-        state: &SyncplayGuiShellAppState,
+        _state: &SyncplayGuiShellAppState,
         paths: Vec<String>,
+        load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
         if !paths.is_empty() {
             self.handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
                 paths,
-                load_into_shared_playlist: state.shared_playlist_events_enabled(),
+                load_into_shared_playlist,
             });
         }
         Vec::new()
@@ -6277,6 +6410,7 @@ struct GuiNativeApp {
     runtime: Box<dyn GuiNativeRuntimeBridge>,
     runtime_pump: Box<dyn GuiNativeRuntimePump>,
     gui_state_root: Option<PathBuf>,
+    test_drop_request: Option<GuiDroppedFilesRequest>,
     seek_prompt_open: bool,
     seek_prompt_buffer: String,
     seek_prompt_error: Option<String>,
@@ -6291,11 +6425,19 @@ impl GuiNativeApp {
         runtime: Box<dyn GuiNativeRuntimeBridge>,
         runtime_pump: Box<dyn GuiNativeRuntimePump>,
     ) -> Self {
+        let test_drop_request = match Self::test_drop_request_from_lookup(&env_trimmed) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("syncplay-gui ignored invalid drag-and-drop test injection: {error}");
+                None
+            }
+        };
         Self {
             state,
             runtime,
             runtime_pump,
             gui_state_root: syncplay_gui_qsettings_root_from_env(),
+            test_drop_request,
             seek_prompt_open: false,
             seek_prompt_buffer: String::new(),
             seek_prompt_error: None,
@@ -6305,6 +6447,95 @@ impl GuiNativeApp {
     fn parse_seek_offset_seconds(value: &str) -> Option<f64> {
         let offset = value.trim().parse::<f64>().ok()?;
         offset.is_finite().then_some(offset)
+    }
+
+    fn test_drop_request_from_lookup<F>(
+        lookup: &F,
+    ) -> Result<Option<GuiDroppedFilesRequest>, String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let Some(raw_paths) = lookup("SYNCPLAY_GUI_TEST_DROP_FILE_PATHS") else {
+            return Ok(None);
+        };
+        let paths = raw_paths
+            .split('|')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let target = lookup("SYNCPLAY_GUI_TEST_DROP_TARGET")
+            .as_deref()
+            .map(GuiDroppedFilesTarget::parse)
+            .transpose()?
+            .unwrap_or(GuiDroppedFilesTarget::Window);
+        Ok(Some(GuiDroppedFilesRequest { target, paths }))
+    }
+
+    fn normalize_dropped_files_request(
+        request: GuiDroppedFilesRequest,
+    ) -> (Option<GuiDroppedFilesRequest>, Vec<GuiShellAction>) {
+        let mut ignored_directories = Vec::new();
+        let mut kept_paths = Vec::new();
+        for path in request.paths {
+            let Some(path) = normalized_editable_text(&path) else {
+                continue;
+            };
+            if !path.contains("://") && Path::new(&path).is_dir() {
+                ignored_directories.push(path);
+            } else {
+                kept_paths.push(path);
+            }
+        }
+
+        let warnings = if ignored_directories.is_empty() {
+            Vec::new()
+        } else {
+            let message = if ignored_directories.len() == 1 {
+                format!(
+                    "Dropped folder '{}' was ignored. Desktop drag-and-drop ingest currently supports files only.",
+                    ignored_directories[0]
+                )
+            } else {
+                format!(
+                    "{} dropped folders were ignored. Desktop drag-and-drop ingest currently supports files only.",
+                    ignored_directories.len()
+                )
+            };
+            vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message: message.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(message),
+            ]
+        };
+
+        let request = (!kept_paths.is_empty()).then_some(GuiDroppedFilesRequest {
+            target: request.target,
+            paths: kept_paths,
+        });
+        (request, warnings)
+    }
+
+    fn apply_dropped_files_request(&mut self, request: GuiDroppedFilesRequest) -> bool {
+        let (request, warning_actions) = Self::normalize_dropped_files_request(request);
+        let mut state_changed = false;
+        if let Some(request) = request {
+            if let Some(path) = request.paths.first() {
+                self.state.remember_media_dialog_directory(path);
+            }
+            for action in self.runtime.actions_for_dropped_files(&self.state, request) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for action in warning_actions {
+            state_changed |= self.state.apply(action);
+        }
+        state_changed
     }
 
     fn close_seek_prompt(&mut self) {
@@ -6391,6 +6622,7 @@ impl eframe::App for GuiNativeApp {
         let close_requested = renderer.take_close_requested();
         let seek_prompt_requested = renderer.take_seek_prompt_requested();
         let selected_media_files = renderer.take_selected_media_files();
+        let dropped_files_request = renderer.take_dropped_files_request();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
         let mut room_change_requests = Vec::new();
@@ -6521,6 +6753,12 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
+        if let Some(request) = self.test_drop_request.take() {
+            state_changed |= self.apply_dropped_files_request(request);
+        }
+        if let Some(request) = dropped_files_request {
+            state_changed |= self.apply_dropped_files_request(request);
+        }
         if pending_completion_requested {
             for action in self.runtime.actions_for_pending_completion(&self.state) {
                 state_changed |= self.state.apply(action);
@@ -6577,7 +6815,8 @@ impl GuiEframeNativeHost {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Syncplay GUI")
                 .with_inner_size([1280.0, 820.0])
-                .with_min_inner_size([960.0, 640.0]),
+                .with_min_inner_size([960.0, 640.0])
+                .with_drag_and_drop(true),
             ..Default::default()
         }
     }
@@ -6611,7 +6850,7 @@ impl GuiEframeNativeHost {
     fn with_queued_preview_runtime_for_config_path(config_path: Option<PathBuf>) -> Self {
         Self::with_queued_runtime_owner(
             true,
-            GuiPersistedConfigRuntimeOwner::with_config_path(config_path),
+            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path),
         )
     }
 
@@ -6625,7 +6864,7 @@ impl GuiEframeNativeHost {
         config_path: Option<PathBuf>,
     ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
         let (owner, session_transport) =
-            GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
+            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_session_runtime(username, room)?;
         Ok((
             Self::with_queued_runtime_owner(true, owner),
@@ -6646,8 +6885,9 @@ impl GuiEframeNativeHost {
         room: impl Into<String>,
         config_path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let owner = GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
-            .with_client_core_chat_loopback_session_runtime(username, room)?;
+        let owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
+                .with_client_core_chat_loopback_session_runtime(username, room)?;
         Ok(Self::with_queued_runtime_owner(true, owner))
     }
 
@@ -6665,8 +6905,9 @@ impl GuiEframeNativeHost {
         host_arg: impl AsRef<str>,
         config_path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        let owner = GuiPersistedConfigRuntimeOwner::with_config_path(config_path)
-            .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
+        let owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
+                .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
         Ok(Self::with_queued_runtime_owner(true, owner))
     }
 
@@ -14813,6 +15054,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use syncplay_client_app::app_boundary::state::AutoplayThresholdOverride;
     use syncplay_client_core::{PrivacyMode, UnpauseActionMode};
 
@@ -14820,11 +15062,11 @@ mod tests {
         FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiAppHost,
         GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
         GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot,
-        GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiEframeNativeHost,
-        GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
-        GuiFocusedConfigurationControlRuntimeSnapshot, GuiInteractionRuntimeSnapshot,
-        GuiLaunchMode, GuiMainWindowUserEditSessionRuntimeSnapshot, GuiNativeApp,
-        GuiNativeRuntimeBridge, GuiPendingCompletionRequest, GuiPendingOperationKind,
+        GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiDroppedFilesRequest,
+        GuiDroppedFilesTarget, GuiEframeNativeHost, GuiErrorRuntimeSnapshot,
+        GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
+        GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiMainWindowUserEditSessionRuntimeSnapshot,
+        GuiNativeApp, GuiNativeRuntimeBridge, GuiPendingCompletionRequest, GuiPendingOperationKind,
         GuiPreviewRuntimeBridge, GuiPublicServerEditSessionRuntimeSnapshot, GuiQueuedRuntimeBridge,
         GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction,
         GuiShellModal, GuiShellView, GuiTextEditSessionRuntimeSnapshot, GuiTextPreviewHost,
@@ -21845,6 +22087,108 @@ mod tests {
     }
 
     #[test]
+    fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_drops() {
+        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
+            &state,
+            true,
+            None,
+            None,
+            vec![egui::DroppedFile {
+                path: Some(PathBuf::from("C:/Media/episode1.mkv")),
+                ..Default::default()
+            }],
+        )
+        .expect("dropped-file request should be derived");
+
+        assert_eq!(
+            request,
+            GuiDroppedFilesRequest {
+                target: GuiDroppedFilesTarget::Playlist,
+                paths: vec!["C:/Media/episode1.mkv".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn gui_widget_egui_renderer_falls_back_to_window_target_when_shared_playlist_drop_is_unavailable()
+     {
+        let state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
+            &state,
+            true,
+            None,
+            None,
+            vec![egui::DroppedFile {
+                path: Some(PathBuf::from("C:/Media/movie.mkv")),
+                ..Default::default()
+            }],
+        )
+        .expect("dropped-file request should be derived");
+
+        assert_eq!(
+            request.target,
+            GuiDroppedFilesTarget::Window,
+            "non-shared-playlist drops should fall back to the generic window open path"
+        );
+    }
+
+    #[test]
+    fn gui_native_app_reads_drag_and_drop_test_override_from_lookup() {
+        assert_eq!(
+            GuiNativeApp::test_drop_request_from_lookup(&|name| match name {
+                "SYNCPLAY_GUI_TEST_DROP_FILE_PATHS" => {
+                    Some("  C:/Drops/episode1.mkv | D:/Alt/episode2.mp4 ".to_owned())
+                }
+                "SYNCPLAY_GUI_TEST_DROP_TARGET" => Some(" playlist ".to_owned()),
+                _ => None,
+            })
+            .expect("drop override should parse"),
+            Some(GuiDroppedFilesRequest {
+                target: GuiDroppedFilesTarget::Playlist,
+                paths: vec![
+                    "C:/Drops/episode1.mkv".to_owned(),
+                    "D:/Alt/episode2.mp4".to_owned(),
+                ],
+            })
+        );
+        assert_eq!(
+            GuiNativeApp::test_drop_request_from_lookup(&|_name| None)
+                .expect("missing drop override should not fail"),
+            None
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_startup_player_lookup_honors_test_player_env() {
+        let owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+                Some(PathBuf::from("C:/Config/syncplay.ini")),
+                &|name| match name {
+                    "SYNCPLAY_GUI_ENABLE_TEST_PLAYER" => Some("true".to_owned()),
+                    _ => None,
+                },
+            );
+        assert_eq!(
+            owner.player.as_ref().map(|player| player.name()),
+            Some("test")
+        );
+        assert_eq!(owner.player_unavailability_reason, None);
+
+        let detached_owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+                Some(PathBuf::from("C:/Config/syncplay.ini")),
+                &|_name| None,
+            );
+        assert!(detached_owner.player.is_none());
+        assert_eq!(detached_owner.player_unavailability_reason, None);
+    }
+
+    #[test]
     fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             room_list: Some(vec!["beta".to_owned(), "alpha".to_owned()]),
@@ -21928,8 +22272,8 @@ mod tests {
             vec![
                 GuiShellAction::SwitchView(GuiShellView::MainWindow),
                 GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                    "C:/Media/Episode 1.mkv".to_owned(),
-                    "C:/Media/Episode 2.mkv".to_owned(),
+                    "Episode 1.mkv".to_owned(),
+                    "Episode 2.mkv".to_owned(),
                 ]),
             ]
         );
@@ -21949,6 +22293,30 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest() {
+        let root = test_temp_root("preview-shared-playlist-drop");
+        let playlist_path = root.join("drop-list.m3u");
+        std::fs::write(&playlist_path, "episode1.mkv\nhttps://example.com/live\n")
+            .expect("preview playlist import fixture should be written");
+
+        assert_eq!(
+            GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                vec![playlist_path.to_string_lossy().into_owned()],
+                true,
+            ),
+            vec![
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                    "episode1.mkv".to_owned(),
+                    "https://example.com/live".to_owned(),
+                ]),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -22227,6 +22595,7 @@ mod tests {
                 "core-shell-smoke-flow",
                 "runtime-chat-flow",
                 "runtime-transport-churn-flow",
+                "drag-and-drop-ingest-flow",
                 "persistence-reset-flow",
                 "detached-runtime-ownership-flow",
                 "live-python-peer-connect-flow",
@@ -22252,6 +22621,11 @@ mod tests {
             super::semantic_smoke::gui_semantic_scenario_script("runtime-transport-churn-flow")
                 .expect("built-in runtime churn scenario should expose a script")
                 .contains("apply-main-window-runtime\tsmoke-room\ttrue\ttrue\tfalse")
+        );
+        assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("drag-and-drop-ingest-flow")
+                .expect("drag-and-drop scenario should expose a script")
+                .contains("drop-media-files\tplaylist")
         );
         assert!(
             super::semantic_smoke::gui_semantic_scenario_script("persistence-reset-flow")
@@ -22280,7 +22654,7 @@ mod tests {
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 8);
+        assert_eq!(descriptors.len(), 9);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -22298,22 +22672,29 @@ mod tests {
                 .contains("startup/post-chat/reconnect")
         );
         assert!(descriptors[3].script.contains("reconnect-post2.mkv"));
-        assert_eq!(descriptors[4].name, "persistence-reset-flow");
-        assert!(descriptors[4].description.contains("clear-GUI-data"));
-        assert!(descriptors[4].script.contains("PersistenceRoom"));
-        assert_eq!(descriptors[5].name, "detached-runtime-ownership-flow");
+        assert_eq!(descriptors[4].name, "drag-and-drop-ingest-flow");
         assert!(
-            descriptors[5]
+            descriptors[4]
+                .description
+                .contains("window drops open media")
+        );
+        assert!(descriptors[4].script.contains("drop-media-files\twindow"));
+        assert_eq!(descriptors[5].name, "persistence-reset-flow");
+        assert!(descriptors[5].description.contains("clear-GUI-data"));
+        assert!(descriptors[5].script.contains("PersistenceRoom"));
+        assert_eq!(descriptors[6].name, "detached-runtime-ownership-flow");
+        assert!(
+            descriptors[6]
                 .description
                 .contains("detached public-server connect")
         );
-        assert!(descriptors[5].script.contains("semantic-user"));
-        assert_eq!(descriptors[6].name, "live-python-peer-connect-flow");
-        assert!(descriptors[6].description.contains("Python reference peer"));
-        assert!(descriptors[6].script.contains("interop-room"));
-        assert_eq!(descriptors[7].name, "live-python-peer-controlled-room-flow");
-        assert!(descriptors[7].description.contains("controlled room"));
-        assert!(descriptors[7].script.contains("+interop-room:447CE7E3548D"));
+        assert!(descriptors[6].script.contains("semantic-user"));
+        assert_eq!(descriptors[7].name, "live-python-peer-connect-flow");
+        assert!(descriptors[7].description.contains("Python reference peer"));
+        assert!(descriptors[7].script.contains("interop-room"));
+        assert_eq!(descriptors[8].name, "live-python-peer-controlled-room-flow");
+        assert!(descriptors[8].description.contains("controlled room"));
+        assert!(descriptors[8].script.contains("+interop-room:447CE7E3548D"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -22329,6 +22710,7 @@ assert-pending\tnone\n\
 complete-pending\n\
 complete-pending-runtime\n\
 open-media-files\tC:/Media/open-target.mkv\n\
+drop-media-files\tplaylist\tC:/Media/episode1.mkv|C:/Media/episode2.mkv\n\
 close-modal\n\
 clear-notifications\n",
         )
@@ -22345,6 +22727,13 @@ clear-notifications\n",
                 super::GuiSemanticStep::OpenMediaFiles(
                     vec!["C:/Media/open-target.mkv".to_owned(),]
                 ),
+                super::GuiSemanticStep::DropMediaFiles {
+                    target: super::GuiDroppedFilesTarget::Playlist,
+                    paths: vec![
+                        "C:/Media/episode1.mkv".to_owned(),
+                        "C:/Media/episode2.mkv".to_owned(),
+                    ],
+                },
                 super::GuiSemanticStep::CloseModal,
                 super::GuiSemanticStep::ClearNotifications,
             ]
@@ -22490,7 +22879,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
                 )
         );
     }
@@ -23036,8 +23425,8 @@ assert-pending\tnone\n"
             vec![
                 GuiShellAction::SwitchView(GuiShellView::MainWindow),
                 GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                    "C:/Media/episode1.mkv".to_owned(),
-                    "C:/Media/episode2.mkv".to_owned(),
+                    "episode1.mkv".to_owned(),
+                    "episode2.mkv".to_owned(),
                 ]),
             ]
         );
@@ -26992,17 +27381,15 @@ assert-pending\tnone\n"
             Some("Missing media search completed: no match found.")
         );
 
-        let preview_open_actions = super::GuiPreviewRuntimeBridge::preview_media_file_actions(
-            &no_runtime_state,
+        let preview_open_actions = super::GuiPreviewRuntimeBridge::preview_open_media_file_actions(
             vec!["C:/SmokeMedia/open-target.mkv".to_owned()],
+            true,
         );
         assert_eq!(
             preview_open_actions,
             vec![
                 GuiShellAction::SwitchView(GuiShellView::MainWindow),
-                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                    "C:/SmokeMedia/open-target.mkv".to_owned(),
-                ]),
+                GuiShellAction::AnnounceSharedPlaylistLoaded(vec!["open-target.mkv".to_owned(),]),
             ],
         );
         for action in preview_open_actions {
@@ -27016,7 +27403,7 @@ assert-pending\tnone\n"
                 .iter()
                 .map(|row| row.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["C:/SmokeMedia/open-target.mkv"]
+            vec!["open-target.mkv"]
         );
 
         let _ = std::fs::remove_file(&path);
