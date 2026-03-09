@@ -2230,6 +2230,10 @@ trait GuiNativeRuntimeBridge {
         Vec::new()
     }
 
+    fn actions_for_room_leave(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_local_readiness_change(
         &mut self,
         _state: &SyncplayGuiShellAppState,
@@ -2437,6 +2441,10 @@ trait GuiSessionRuntimeAdapter {
 
     fn set_room(&mut self, _room: String) -> Result<(), String> {
         Err("Attached session runtime does not support room changes.".to_owned())
+    }
+
+    fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
+        self.set_room(default_room)
     }
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
@@ -3388,6 +3396,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
+        match self.runtime.run_set_room_with_legacy_fallback(default_room) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if self.runtime.session().server_chat_supported().is_none() {
+                    Err(
+                        "Client-core session runtime cannot change rooms until the server Hello completes."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound room change."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime room change dispatch failed: {error}"
+            )),
+        }
+    }
+
     fn send_chat_message(&mut self, message: String) -> Result<(), String> {
         match self.runtime.run_send_chat_message(message) {
             Ok(true) => Ok(()),
@@ -3891,6 +3921,8 @@ struct GuiPersistedConfigRuntimeOwner {
     session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
     session_transport: Option<GuiQueuedSessionTransportHandle>,
     session_transport_driver: Option<Box<dyn GuiSessionTransportDriver>>,
+    session_default_room: Option<String>,
+    pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     startup_saved_connect_attempted: bool,
     player: Option<Box<dyn PlayerAdapter>>,
     player_unavailability_reason: Option<String>,
@@ -3906,6 +3938,8 @@ impl GuiPersistedConfigRuntimeOwner {
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            session_default_room: None,
+            pending_room_change_request: None,
             startup_saved_connect_attempted: false,
             player: None,
             player_unavailability_reason: None,
@@ -3945,6 +3979,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self
     }
 
+    fn with_session_default_room(mut self, room: impl Into<String>) -> Self {
+        self.session_default_room = Some(room.into());
+        self
+    }
+
     #[allow(dead_code)]
     fn with_session_transport(
         mut self,
@@ -3969,10 +4008,11 @@ impl GuiPersistedConfigRuntimeOwner {
         username: impl Into<String>,
         room: impl Into<String>,
     ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
+        let room = room.into();
         let runtime_settings =
             stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
                 username: Some(username.into()),
-                room: Some(room.into()),
+                room: Some(room.clone()),
                 ..StoredClientSettingsMvp::default()
             });
         let session = Box::new(
@@ -3985,6 +4025,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let session_transport = GuiQueuedSessionTransportHandle::default();
         Ok((
             self.with_session_runtime(session)
+                .with_session_default_room(room)
                 .with_session_transport(session_transport.clone()),
             session_transport,
         ))
@@ -4078,13 +4119,16 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) {
-        let Some(session) = self.session.as_mut() else {
-            return;
+        let actions = {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            session.drain_gui_actions(projected_state)
         };
         Self::push_actions_and_project(
             handle,
             projected_state,
-            session.drain_gui_actions(projected_state),
+            self.augment_runtime_actions_for_room_transitions(projected_state, actions),
         );
     }
 
@@ -4126,6 +4170,145 @@ impl GuiPersistedConfigRuntimeOwner {
             },
             GuiShellAction::AnnounceSystemChatEvent(message),
         ]);
+    }
+
+    fn default_room_for_legacy_fallback(
+        &self,
+        projected_state: &SyncplayGuiShellAppState,
+    ) -> String {
+        self.session_default_room
+            .clone()
+            .or_else(|| {
+                projected_state
+                    .saved_session_connect_target()
+                    .map(|target| target.room)
+            })
+            .unwrap_or_else(|| {
+                Self::detached_runtime_settings_for_state(projected_state)
+                    .settings
+                    .room
+                    .unwrap_or_default()
+            })
+    }
+
+    fn augment_runtime_actions_for_room_transitions(
+        &mut self,
+        projected_state: &SyncplayGuiShellAppState,
+        actions: Vec<GuiShellAction>,
+    ) -> Vec<GuiShellAction> {
+        let mut current_room = projected_state.main_window.room_name.clone();
+        let mut augmented_actions = Vec::with_capacity(actions.len());
+        for action in actions {
+            match action {
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => {
+                    let next_room = snapshot.room_name.clone();
+                    let room_transition_actions =
+                        self.room_transition_confirmation_actions(&current_room, &next_room);
+                    current_room = next_room;
+                    augmented_actions
+                        .push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
+                    augmented_actions.extend(room_transition_actions);
+                }
+                other => augmented_actions.push(other),
+            }
+        }
+        augmented_actions
+    }
+
+    fn room_transition_confirmation_actions(
+        &mut self,
+        previous_room: &str,
+        next_room: &str,
+    ) -> Vec<GuiShellAction> {
+        if previous_room == next_room {
+            return Vec::new();
+        }
+
+        let Some(request) = self.pending_room_change_request.take() else {
+            return Vec::new();
+        };
+
+        let (level, message) = match request {
+            GuiPendingRoomChangeRequest::Join { .. } => (
+                GuiTransientNotificationLevel::Success,
+                format!("Room joined: {next_room}."),
+            ),
+            GuiPendingRoomChangeRequest::ReturnToDefault { .. } => (
+                GuiTransientNotificationLevel::Info,
+                format!("Returned to default room: {next_room}."),
+            ),
+        };
+
+        vec![
+            GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Room",
+                value: next_room.to_owned(),
+            },
+            GuiShellAction::PushTransientNotification {
+                level,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
+    fn request_room_join_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        room: String,
+    ) {
+        let Some(session) = self.session.as_mut() else {
+            self.pending_room_change_request = None;
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                "Changing rooms requires an active session runtime.".to_owned(),
+            );
+            return;
+        };
+
+        match session.set_room(room.clone()) {
+            Ok(()) => {
+                self.pending_room_change_request = Some(GuiPendingRoomChangeRequest::Join {
+                    requested_room: room,
+                });
+            }
+            Err(error) => {
+                self.pending_room_change_request = None;
+                Self::push_runtime_error_notification(handle, projected_state, error);
+            }
+        }
+    }
+
+    fn request_room_leave_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let previous_room = projected_state.main_window.room_name.clone();
+        let default_room = self.default_room_for_legacy_fallback(projected_state);
+        let Some(session) = self.session.as_mut() else {
+            self.pending_room_change_request = None;
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                "Returning to the default room requires an active session runtime.".to_owned(),
+            );
+            return;
+        };
+
+        match session.set_room_with_legacy_fallback(default_room) {
+            Ok(()) => {
+                self.pending_room_change_request =
+                    Some(GuiPendingRoomChangeRequest::ReturnToDefault { previous_room });
+            }
+            Err(error) => {
+                self.pending_room_change_request = None;
+                Self::push_runtime_error_notification(handle, projected_state, error);
+            }
+        }
     }
 
     fn open_media_unavailable_message(&self, selected_paths: &[String]) -> String {
@@ -4185,6 +4368,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<(), String> {
         if self.session.is_none() {
             let runtime_settings = Self::detached_runtime_settings_for_state(state);
+            self.session_default_room = runtime_settings.settings.room.clone();
             self.session = Some(Box::new(
                 GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
                     runtime_settings.settings.username.unwrap_or_default(),
@@ -4456,6 +4640,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         };
+        let default_room = target.room.clone();
         let session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,
             target.room,
@@ -4480,6 +4665,8 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         self.session = Some(Box::new(session));
+        self.session_default_room = Some(default_room);
+        self.pending_room_change_request = None;
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
         }
@@ -4506,6 +4693,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session = None;
         self.session_transport = None;
         self.session_transport_driver = None;
+        self.session_default_room = None;
+        self.pending_room_change_request = None;
 
         let mut actions = self.sessionless_projection_actions(projected_state);
         actions.push(GuiShellAction::CompleteSessionDisconnect);
@@ -4950,14 +5139,10 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     }
                 }
                 GuiRuntimeRequest::SetRoom(room) => {
-                    if let Some(session) = self.session.as_mut()
-                        && let Err(error) = session.set_room(room)
-                    {
-                        handle.push_action(GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Error,
-                            message: error,
-                        });
-                    }
+                    self.request_room_join_runtime(handle, &mut projected_state, room);
+                }
+                GuiRuntimeRequest::ReturnToDefaultRoom => {
+                    self.request_room_leave_runtime(handle, &mut projected_state);
                 }
                 GuiRuntimeRequest::SetLocalReady(ready) => {
                     if let Some(session) = self.session.as_mut()
@@ -5527,6 +5712,12 @@ impl GuiPendingCompletionRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiPendingRoomChangeRequest {
+    Join { requested_room: String },
+    ReturnToDefault { previous_room: String },
+}
+
 #[allow(clippy::large_enum_variant)]
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
@@ -5536,6 +5727,7 @@ enum GuiRuntimeRequest {
         load_into_shared_playlist: bool,
     },
     SetRoom(String),
+    ReturnToDefaultRoom,
     SetLocalReady(bool),
     QueuePlaylistEntry {
         entry: String,
@@ -5585,7 +5777,8 @@ impl GuiRuntimeRequest {
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
             | Self::ReplacePlaylist { .. }
-            | Self::SetRoom(_) => Vec::new(),
+            | Self::SetRoom(_)
+            | Self::ReturnToDefaultRoom => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");
                 vec![
@@ -5727,7 +5920,15 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         _state: &SyncplayGuiShellAppState,
         room: String,
     ) -> Vec<GuiShellAction> {
-        self.handle.push_request(GuiRuntimeRequest::SetRoom(room));
+        if let Some(room) = normalized_editable_text(&room) {
+            self.handle.push_request(GuiRuntimeRequest::SetRoom(room));
+        }
+        Vec::new()
+    }
+
+    fn actions_for_room_leave(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
         Vec::new()
     }
 
@@ -5953,7 +6154,7 @@ impl eframe::App for GuiNativeApp {
         let selected_media_files = renderer.take_selected_media_files();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
-        let mut room_join_requests = Vec::new();
+        let mut room_change_requests = Vec::new();
         let mut requested_local_ready = None;
         let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
@@ -5964,7 +6165,16 @@ impl eframe::App for GuiNativeApp {
         for action in &actions {
             match action {
                 GuiShellAction::JoinMainWindowRoom(room) => {
-                    room_join_requests.push(room.clone());
+                    if let Some(room) = normalized_editable_text(room) {
+                        room_change_requests.push(GuiPendingRoomChangeRequest::Join {
+                            requested_room: room.to_owned(),
+                        });
+                    }
+                }
+                GuiShellAction::LeaveMainWindowRoom => {
+                    room_change_requests.push(GuiPendingRoomChangeRequest::ReturnToDefault {
+                        previous_room: self.state.main_window.room_name.clone(),
+                    })
                 }
                 GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
                 GuiShellAction::AnnounceLocalUserNotReady => requested_local_ready = Some(false),
@@ -6000,8 +6210,16 @@ impl eframe::App for GuiNativeApp {
         for action in actions {
             state_changed |= self.state.apply(action);
         }
-        for room in room_join_requests {
-            for action in self.runtime.actions_for_room_join(&self.state, room) {
+        for request in room_change_requests {
+            let runtime_actions = match request {
+                GuiPendingRoomChangeRequest::Join { requested_room } => self
+                    .runtime
+                    .actions_for_room_join(&self.state, requested_room),
+                GuiPendingRoomChangeRequest::ReturnToDefault { .. } => {
+                    self.runtime.actions_for_room_leave(&self.state)
+                }
+            };
+            for action in runtime_actions {
                 state_changed |= self.state.apply(action);
             }
         }
@@ -9021,6 +9239,8 @@ impl SyncplayGuiShellAppState {
 
     fn main_window_widget_tree(&self) -> GuiWidgetNode {
         let can_edit_room = self.pending_operation.is_none();
+        let can_set_local_room = can_edit_room && !self.commands.can_disconnect_session;
+        let can_request_runtime_room_change = can_edit_room && self.commands.can_disconnect_session;
         let room_draft = self
             .configuration
             .control_value("Connection", "Room")
@@ -9130,7 +9350,7 @@ impl SyncplayGuiShellAppState {
                         "Set Current Room",
                         GuiWidgetKind::Button,
                         None,
-                        can_edit_room && has_room_draft,
+                        can_set_local_room && has_room_draft,
                         false,
                     ),
                     GuiWidgetNode::leaf(
@@ -9138,7 +9358,7 @@ impl SyncplayGuiShellAppState {
                         "Join Draft Room",
                         GuiWidgetKind::Button,
                         None,
-                        can_edit_room && has_room_draft,
+                        can_request_runtime_room_change && has_room_draft,
                         false,
                     ),
                     GuiWidgetNode::leaf(
@@ -9146,7 +9366,7 @@ impl SyncplayGuiShellAppState {
                         "Leave Room",
                         GuiWidgetKind::Button,
                         None,
-                        can_edit_room && has_joined_room,
+                        can_request_runtime_room_change && has_joined_room,
                         false,
                     ),
                 ],
@@ -10048,17 +10268,22 @@ impl SyncplayGuiShellAppState {
         let previous_baseline = MainWindowRuntimeSnapshot::from_shell_state(
             &MainWindowShellState::from_stored_settings(previous_settings),
         );
+        let preserve_connected_room_surface = self.commands.can_disconnect_session;
 
-        if current_snapshot.room_name != previous_baseline.room_name {
+        if preserve_connected_room_surface
+            || current_snapshot.room_name != previous_baseline.room_name
+        {
             self.main_window.room_name = current_snapshot.room_name.clone();
         }
         if current_snapshot.shared_playlist_enabled != previous_baseline.shared_playlist_enabled {
             self.main_window.shared_playlist_enabled = current_snapshot.shared_playlist_enabled;
         }
-        if current_snapshot.controlled_room_active != previous_baseline.controlled_room_active {
+        if preserve_connected_room_surface
+            || current_snapshot.controlled_room_active != previous_baseline.controlled_room_active
+        {
             self.main_window.controlled_room_active = current_snapshot.controlled_room_active;
         }
-        if current_snapshot.users != previous_baseline.users {
+        if preserve_connected_room_surface || current_snapshot.users != previous_baseline.users {
             self.main_window.users = current_snapshot
                 .users
                 .iter()
@@ -12584,15 +12809,9 @@ impl SyncplayGuiShellAppState {
     }
 
     fn join_main_window_room(&mut self, room: String) -> bool {
-        let Some(room) = normalized_editable_text(&room) else {
+        if normalized_editable_text(&room).is_none() {
             return self.record_action_error("Room name cannot be empty.");
-        };
-        self.set_main_window_room_state(Some(room.clone()));
-        self.push_system_chat_message(format!("Joined room: {room}."));
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            format!("Room joined: {room}."),
-        );
+        }
         self.clear_action_error_and_refresh();
         true
     }
@@ -12602,13 +12821,6 @@ impl SyncplayGuiShellAppState {
         if current_room.is_empty() || current_room == "(no room joined)" {
             return self.record_action_error("No joined room is currently active.");
         }
-        let previous_room = current_room.to_owned();
-        self.set_main_window_room_state(None);
-        self.push_system_chat_message(format!("Left room: {previous_room}."));
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Warning,
-            format!("Room left: {previous_room}."),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -15042,6 +15254,73 @@ mod tests {
         }));
 
         assert_eq!(state.main_window.room_name, "MergedRoom");
+        assert_eq!(state.main_window.users.len(), 2);
+        assert_eq!(state.main_window.users[1].username, "bob");
+    }
+
+    #[test]
+    fn gui_shell_app_state_preserves_connected_room_surface_across_configuration_room_edits() {
+        let mut state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "RuntimeRoom".to_owned(),
+                shared_playlist_enabled: false,
+                controlled_room_active: false,
+                users: vec![
+                    MainWindowRuntimeUserSnapshot {
+                        username: "You".to_owned(),
+                        is_self: true,
+                        is_ready: false,
+                        is_controller: false,
+                    },
+                    MainWindowRuntimeUserSnapshot {
+                        username: "bob".to_owned(),
+                        is_self: false,
+                        is_ready: true,
+                        is_controller: false,
+                    },
+                ],
+                playlist: Vec::new(),
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: true,
+                can_manage_playlist: false,
+                playback_paused: false,
+                autoplay_active: false,
+            },
+        )));
+        assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
+            GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: true,
+                    can_connect_public_server: false,
+                    can_connect_saved_server: false,
+                    can_refresh_public_servers: true,
+                    can_disconnect_session: true,
+                    can_search_missing_media: false,
+                    can_toggle_pause: false,
+                    can_send_chat_message: false,
+                },
+                pending_operation: None,
+            },
+        )));
+
+        assert!(state.apply(GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Room",
+            value: "DraftRoom".to_owned(),
+        }));
+
+        assert_eq!(state.main_window.room_name, "RuntimeRoom");
+        assert_eq!(
+            state.configuration.to_stored_settings().room.as_deref(),
+            Some("DraftRoom")
+        );
         assert_eq!(state.main_window.users.len(), 2);
         assert_eq!(state.main_window.users[1].username, "bob");
     }
@@ -18154,50 +18433,37 @@ mod tests {
     }
 
     #[test]
-    fn gui_shell_app_state_tracks_room_join_and_leave_actions() {
-        let mut state =
-            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room: Some("+room:ABCDEF123456".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let baseline_chat_len = state.main_window.chat.len();
+        let baseline_notification_len = state.notifications.len();
 
         assert!(state.apply(GuiShellAction::JoinMainWindowRoom(
-            "+room:ABCDEF123456".to_owned(),
+            "+room:NEEDS_RUNTIME".to_owned(),
         )));
         assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
         assert!(state.main_window.controlled_room_active);
         assert!(state.main_window.users[0].is_controller);
         assert_eq!(
-            state
-                .main_window
-                .chat
-                .last()
-                .map(|row| row.message.as_str()),
-            Some("Joined room: +room:ABCDEF123456.")
+            state.configuration.to_stored_settings().room.as_deref(),
+            Some("+room:ABCDEF123456")
         );
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("Room joined: +room:ABCDEF123456.")
-        );
+        assert_eq!(state.main_window.chat.len(), baseline_chat_len);
+        assert_eq!(state.notifications.len(), baseline_notification_len);
+
+        assert!(state.apply(GuiShellAction::LeaveMainWindowRoom));
+        assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+        assert!(state.main_window.controlled_room_active);
+        assert!(state.main_window.users[0].is_controller);
         assert_eq!(
             state.configuration.to_stored_settings().room.as_deref(),
             Some("+room:ABCDEF123456")
         );
-
-        assert!(state.apply(GuiShellAction::LeaveMainWindowRoom));
-        assert_eq!(state.main_window.room_name, "(no room joined)");
-        assert!(!state.main_window.controlled_room_active);
-        assert!(!state.main_window.users[0].is_controller);
-        assert_eq!(
-            state
-                .main_window
-                .chat
-                .last()
-                .map(|row| row.message.as_str()),
-            Some("Left room: +room:ABCDEF123456.")
-        );
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("Room left: +room:ABCDEF123456.")
-        );
-        assert_eq!(state.configuration.to_stored_settings().room, None);
+        assert_eq!(state.main_window.chat.len(), baseline_chat_len);
+        assert_eq!(state.notifications.len(), baseline_notification_len);
     }
 
     #[test]
@@ -22422,6 +22688,11 @@ assert-pending\tnone\n"
             handle.drain_requests(),
             vec![GuiRuntimeRequest::SetRoom("joined-room".to_owned())]
         );
+        assert!(runtime.actions_for_room_leave(&state).is_empty());
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::ReturnToDefaultRoom]
+        );
 
         handle.push_action(GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Info,
@@ -25185,6 +25456,174 @@ assert-pending\tnone\n"
     }
 
     #[test]
+    fn gui_persisted_config_runtime_owner_rejects_room_changes_before_server_hello_without_optimistic_room_updates()
+     {
+        let (mut owner, _session_transport) =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_client_core_chat_session_runtime("alice", "room1")
+                .expect("client-core chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
+        let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        assert_eq!(state.main_window.room_name, "room1");
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level: GuiTransientNotificationLevel::Error, message }
+                    if message.contains("server Hello completes")
+            )),
+            "pre-Hello room requests should surface the runtime error without changing the joined room",
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::Duration,
+        };
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test session transport listener should expose a local address");
+        let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+        let (release_leave_tx, release_leave_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test session transport server should accept one client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("test session transport server should clone the accepted stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("test session transport server should read one startup hello line");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+                )
+                .expect("test session transport server should write one inbound hello line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound hello line");
+            hello_ready_tx
+                .send(())
+                .expect("test session transport server should signal hello readiness");
+
+            let mut join_line = String::new();
+            reader
+                .read_line(&mut join_line)
+                .expect("test session transport server should read one outbound room-change line");
+            stream
+                .write_all(br#"{"Set":{"room":{"name":"room2"}}}"#)
+                .expect("test session transport server should write one inbound room line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound room line");
+
+            let mut leave_line = String::new();
+            reader
+                .read_line(&mut leave_line)
+                .expect("test session transport server should read one outbound default-room line");
+            release_leave_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("test session transport server should be released for the default-room response");
+            stream
+                .write_all(br#"{"Set":{"room":{"name":"room1"}}}"#)
+                .expect("test session transport server should write one inbound default-room line");
+            stream.write_all(b"\n").expect(
+                "test session transport server should terminate the inbound default-room line",
+            );
+
+            (join_line, leave_line)
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        hello_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should send its hello promptly");
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| state.main_window.room_name == "room2",
+            "room join before default-room return",
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Room joined: room2.")
+        );
+
+        handle.push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
+        let leave_request_actions =
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        assert_eq!(state.main_window.room_name, "room2");
+        assert!(
+            leave_request_actions.iter().all(|action| !matches!(
+                action,
+                GuiShellAction::PushTransientNotification { message, .. }
+                    if message == "Returned to default room: room1."
+            )),
+            "the room should not be reported as left before the runtime confirms the fallback room",
+        );
+
+        release_leave_tx.send(()).expect(
+            "test session transport server should be releasable for the default-room response",
+        );
+        pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            Duration::from_secs(1),
+            |state| state.main_window.room_name == "room1",
+            "default-room return over TCP transport",
+        );
+
+        let (join_line, leave_line) = server_thread
+            .join()
+            .expect("test session transport server thread should complete");
+        assert!(join_line.contains("\"room2\""));
+        assert!(leave_line.contains("\"room1\""));
+        assert_eq!(state.main_window.room_name, "room1");
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some("Returned to default room: room1.")
+        );
+        assert_eq!(
+            state.configuration.to_stored_settings().room.as_deref(),
+            Some("room1")
+        );
+    }
+
+    #[test]
     fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_public_server_connect()
      {
         use std::{
@@ -27104,6 +27543,8 @@ assert-pending\tnone\n"
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            session_default_room: None,
+            pending_room_change_request: None,
             startup_saved_connect_attempted: false,
             player: Some(Box::new(TelemetryPlayerAdapter {
                 state: player_state.clone(),
@@ -27336,6 +27777,8 @@ assert-pending\tnone\n"
             session: None,
             session_transport: None,
             session_transport_driver: None,
+            session_default_room: None,
+            pending_room_change_request: None,
             startup_saved_connect_attempted: false,
             player: Some(Box::new(RecordingPlayerAdapter {
                 state: player_state.clone(),

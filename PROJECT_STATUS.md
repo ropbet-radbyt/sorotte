@@ -4,7 +4,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Audit date
 
-- 2026-03-08
+- 2026-03-09
 
 ## What was verified in this audit
 
@@ -20,7 +20,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because the default GUI workflow still has major gaps after connection: room join/leave can still be optimistic shell state, shared-playlist file opening is not a real runtime operation yet, and drag-and-drop ingest is still missing. Non-`mpv` players are currently deferred until `mpv` parity is complete.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because the default GUI workflow still has major gaps after connection: shared-playlist file opening is not a real runtime operation yet, drag-and-drop ingest is still missing, and some affordances still need tightening around non-working paths. Non-`mpv` players are currently deferred until `mpv` parity is complete.
 
 ## Documentation set (current)
 
@@ -55,7 +55,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 
 ## Remaining work (priority checklist)
 
-- [ ] Make main-window room join/leave runtime-authoritative so disconnected or pre-Hello states cannot fake a successful room change.
+- [x] Make main-window room join/leave runtime-authoritative so disconnected or pre-Hello states cannot fake a successful room change.
 - [ ] Replace preview-only shared-playlist file-open behavior with real player/session/playlist dispatch.
 - [ ] Add desktop drag-and-drop for media/playlist ingest plus semantic/native smoke coverage.
 - [ ] Tighten GUI command availability so non-working room/media paths stop looking production-ready.
@@ -78,7 +78,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 ## Notes on scope
 
 - Current evidence supports "substantially implemented client/server rewrite with a verified GUI shell," not "full replacement" parity.
-- The GUI is real and test-covered, and saved-config connection is now runtime-backed, but some user-facing actions still stop at shell-state projection even after a real session exists.
+- The GUI is real and test-covered, and saved-config connection plus room-switching is now runtime-backed, but some user-facing actions still stop at shell-state projection even after a real session exists.
 - The server runtime library remains further along than the user-facing `syncplay-server` CLI parity surface, even though a real alpha executable entrypoint now exists.
 - Real `mpv` integration exists, but some validation remains environment-specific and intentionally excluded from default test runs.
 - Non-`mpv` player integration is not represented as a first-class implemented runtime adapter in this workspace today, and that work is intentionally deferred behind `mpv` parity.
