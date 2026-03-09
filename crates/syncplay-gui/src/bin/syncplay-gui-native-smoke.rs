@@ -2433,6 +2433,89 @@ fn wait_for_named_control_count<D: NativeGuiDriver>(
     }
 }
 
+fn invoke_menu_command_with_fallback<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    menu_name: &str,
+    command_name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if let Err(primary_error) = invoke_menu_command_with_wait(
+        driver,
+        window,
+        menu_name,
+        command_name,
+        NativeControlKind::MenuItem,
+        timeout,
+    ) {
+        invoke_menu_command_with_wait(
+            driver,
+            window,
+            menu_name,
+            command_name,
+            NativeControlKind::Any,
+            timeout,
+        )
+        .map_err(|fallback_error| {
+            format!(
+                "failed to invoke {menu_name} -> {command_name} through menu item ({primary_error}); fallback also failed: {fallback_error}"
+            )
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn navigate_to_view_with_fallback<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    button_name: &str,
+    view_name: &str,
+    fallback_menu_name: &str,
+    fallback_command_name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if let Ok(accessible_names) = driver.accessible_names(window)
+        && contains_accessible_name(&accessible_names, view_name)
+    {
+        return Ok(());
+    }
+
+    let sidebar_timeout = timeout.min(Duration::from_millis(800));
+    let sidebar_result = invoke_named_control_with_wait(
+        driver,
+        window,
+        button_name,
+        NativeControlKind::Button,
+        timeout,
+    )
+    .and_then(|_| wait_for_accessible_name(driver, window, view_name, sidebar_timeout));
+    if sidebar_result.is_ok() {
+        return Ok(());
+    }
+
+    let sidebar_error = sidebar_result.err().unwrap_or_else(|| {
+        format!("sidebar navigation to {view_name:?} did not complete successfully")
+    });
+    invoke_menu_command_with_fallback(
+        driver,
+        window,
+        fallback_menu_name,
+        fallback_command_name,
+        timeout,
+    )
+    .map_err(|menu_error| {
+        format!(
+            "failed to navigate to {view_name:?}; sidebar attempt failed: {sidebar_error}; menu fallback failed: {menu_error}"
+        )
+    })?;
+    wait_for_accessible_name(driver, window, view_name, timeout).map_err(|wait_error| {
+        format!(
+            "menu fallback reached {fallback_menu_name} -> {fallback_command_name}, but {view_name:?} never appeared after sidebar failure ({sidebar_error}): {wait_error}"
+        )
+    })
+}
+
 fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -2692,14 +2775,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     if initial_view == "view: main-window" {
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            NativeControlKind::Button,
+            "view: configuration",
+            "Advanced",
+            "Trusted Domains",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     }
     let editable_count = driver.editable_text_input_count(window)?;
     if editable_count < 6 {
@@ -2765,28 +2849,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("menu-enable-state-visible".to_owned());
 
-    if let Err(primary_error) = invoke_menu_command_with_wait(
-        driver,
-        window,
-        "Help",
-        "Check for Updates",
-        NativeControlKind::MenuItem,
-        step_timeout,
-    ) {
-        invoke_menu_command_with_wait(
-            driver,
-            window,
-            "Help",
-            "Check for Updates",
-            NativeControlKind::Any,
-            step_timeout,
-        )
-        .map_err(|fallback_error| {
-            format!(
-                "failed to invoke Check for Updates through menu item ({primary_error}); fallback also failed: {fallback_error}"
-            )
-        })?;
-    }
+    invoke_menu_command_with_fallback(driver, window, "Help", "Check for Updates", step_timeout)?;
     wait_for_accessible_name(driver, window, "Update Notice", step_timeout)?;
     wait_for_accessible_name(driver, window, "modal: update-notice", step_timeout)?;
     invoke_named_control_with_wait(
@@ -2799,28 +2862,13 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
     steps.push("update-notice-dismissible".to_owned());
 
-    if let Err(primary_error) = invoke_menu_command_with_wait(
+    invoke_menu_command_with_fallback(
         driver,
         window,
         "Advanced",
         "TLS Certificates",
-        NativeControlKind::MenuItem,
         step_timeout,
-    ) {
-        invoke_menu_command_with_wait(
-            driver,
-            window,
-            "Advanced",
-            "TLS Certificates",
-            NativeControlKind::Any,
-            step_timeout,
-        )
-        .map_err(|fallback_error| {
-            format!(
-                "failed to invoke TLS Certificates through menu item ({primary_error}); fallback also failed: {fallback_error}"
-            )
-        })?;
-    }
+    )?;
     wait_for_accessible_name(driver, window, "TLS Certificate Prompt", step_timeout)?;
     wait_for_accessible_name(
         driver,
@@ -2844,14 +2892,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("tls-certificate-prompt-completed".to_owned());
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Main Window",
-        NativeControlKind::Button,
+        "view: main-window",
+        "Window",
+        "Show Users",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
     wait_for_named_control_enabled_state(
         driver,
         window,
@@ -2872,14 +2921,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("main-window-playlist-controls-gated".to_owned());
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Configuration",
-        NativeControlKind::Button,
+        "view: configuration",
+        "Advanced",
+        "Trusted Domains",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     for (edit_index, expected_value) in [
         (0usize, CONFIG_HOST_VALUE),
         (1usize, CONFIG_PORT_VALUE),
@@ -3001,14 +3051,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_accessible_name(driver, window, "Public Servers", step_timeout)?;
     wait_for_accessible_name(driver, window, "2", step_timeout)?;
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Public Servers",
-        NativeControlKind::Button,
+        "view: public-servers",
+        "File",
+        "Open Public Server Browser",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: public-servers", step_timeout)?;
     steps.push("surface-public-servers".to_owned());
 
     invoke_named_control_with_wait(
@@ -3163,14 +3214,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("public-server-connect-custom-cancelled".to_owned());
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Configuration",
-        NativeControlKind::Button,
+        "view: configuration",
+        "Advanced",
+        "Trusted Domains",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     for (index, expected_value) in [(0usize, CUSTOM_SERVER_HOST), (1usize, CUSTOM_SERVER_PORT)] {
         let actual = driver.get_edit_value_by_index(window, index)?;
         if actual != expected_value {
@@ -3181,14 +3233,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     }
     steps.push("public-server-custom-applied".to_owned());
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Media Search",
-        NativeControlKind::Button,
+        "view: media-search",
+        "File",
+        "Open Media Search",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
     steps.push("surface-media-search".to_owned());
     wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
     wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
@@ -3292,14 +3345,15 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("media-search-cancelled".to_owned());
 
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Configuration",
-        NativeControlKind::Button,
+        "view: configuration",
+        "Advanced",
+        "Trusted Domains",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
     steps.push("surface-configuration".to_owned());
 
     upsert_syncplay_ini_stored_client_settings_mvp_at_path(
@@ -3412,7 +3466,7 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
             Err(fallback_error) => match invoke_named_control_with_wait(
                 driver,
                 window,
-                "Open Media File",
+                "Quick Open Media File",
                 NativeControlKind::Button,
                 step_timeout,
             ) {
@@ -3433,23 +3487,65 @@ fn verify_interaction_contract<D: NativeGuiDriver>(
         true
     };
     if open_media_invoked {
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
-        wait_for_accessible_name(
+        let open_media_switched_to_main_window = wait_for_accessible_name(
             driver,
             window,
-            &open_media_file_path.display().to_string(),
-            step_timeout,
-        )?;
-        steps.push("open-media-file".to_owned());
+            "view: main-window",
+            Duration::from_millis(800),
+        )
+        .is_ok();
+        if open_media_switched_to_main_window {
+            wait_for_accessible_name(
+                driver,
+                window,
+                &open_media_file_path.display().to_string(),
+                step_timeout,
+            )?;
+            steps.push("open-media-file".to_owned());
+        } else {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Quick Open Media File",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            if wait_for_accessible_name(
+                driver,
+                window,
+                "view: main-window",
+                Duration::from_millis(800),
+            )
+            .is_ok()
+            {
+                wait_for_accessible_name(
+                    driver,
+                    window,
+                    &open_media_file_path.display().to_string(),
+                    step_timeout,
+                )?;
+                steps.push("open-media-file".to_owned());
+            } else {
+                wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+                wait_for_accessible_name_fragment(
+                    driver,
+                    window,
+                    "requires a session or playback runtime connection",
+                    step_timeout,
+                )?;
+                steps.push("open-media-file-detached-runtime-unavailable".to_owned());
+            }
+        }
     }
-    invoke_named_control_with_wait(
+    navigate_to_view_with_fallback(
         driver,
         window,
         "Media Search",
-        NativeControlKind::Button,
+        "view: media-search",
+        "File",
+        "Open Media Search",
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
     wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
     steps.push("persistence-state-prepared".to_owned());
 
@@ -3752,14 +3848,15 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
         wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
         steps.push("gui-state-restored".to_owned());
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            NativeControlKind::Button,
+            "view: configuration",
+            "Advanced",
+            "Trusted Domains",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
         let editable_count = driver.editable_text_input_count(window)?;
         if editable_count < 6 {
             return Err(format!(
@@ -3801,14 +3898,15 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         }
         steps.push("trusted-domains-persisted".to_owned());
 
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            NativeControlKind::Button,
+            "view: configuration",
+            "Advanced",
+            "Trusted Domains",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
         invoke_named_control_with_wait(
             driver,
             window,
@@ -4069,17 +4167,13 @@ fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 0,
                 step_timeout,
             )?;
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 migration_window,
                 "Configuration",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(
-                driver,
-                migration_window,
                 "view: configuration",
+                "Advanced",
+                "Trusted Domains",
                 step_timeout,
             )?;
             wait_for_edit_value_by_index(
@@ -4140,14 +4234,15 @@ fn verify_loopback_chat_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        let _ = invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
-        );
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        )?;
 
         send_chat_message_and_complete(driver, window, "helloloopback", step_timeout)?;
         steps.push("loopback-chat-send".to_owned());
@@ -4233,30 +4328,33 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        let _ = invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
-        );
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
-        invoke_named_control_with_wait(
+        )?;
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            NativeControlKind::Button,
+            "view: configuration",
+            "Advanced",
+            "Trusted Domains",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -4266,22 +4364,24 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         python_harness
             .start_peer_connected()
             .map_err(|error| format!("failed to connect live Python reference peer: {error}"))?;
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            NativeControlKind::Button,
+            "view: configuration",
+            "Advanced",
+            "Trusted Domains",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -4460,14 +4560,15 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         )
         .is_err()
         {
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Configuration",
-                NativeControlKind::Button,
+                "view: configuration",
+                "Advanced",
+                "Trusted Domains",
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
             invoke_named_control_with_wait(
                 driver,
                 window,
@@ -4475,14 +4576,15 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 NativeControlKind::Any,
                 step_timeout,
             )?;
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                NativeControlKind::Button,
+                "view: main-window",
+                "Window",
+                "Show Users",
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
             wait_for_named_control_count(
                 driver,
                 window,
@@ -4763,14 +4865,15 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        let _ = invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
-        );
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        )?;
         wait_for_accessible_name(
             driver,
             window,
@@ -4941,14 +5044,15 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         )
         .is_err()
         {
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                NativeControlKind::Button,
+                "view: main-window",
+                "Window",
+                "Show Users",
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         }
 
         wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
@@ -4965,14 +5069,15 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         wait_for_accessible_name_fragment(driver, window, &search_target_value, step_timeout)?;
         steps.push("detached-missing-media-target-staged".to_owned());
 
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Media Search",
-            NativeControlKind::Button,
+            "view: media-search",
+            "File",
+            "Open Media Search",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -5016,14 +5121,15 @@ fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         .is_err()
         {
             wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                NativeControlKind::Button,
+                "view: main-window",
+                "Window",
+                "Show Users",
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         }
         steps.push("detached-missing-media-search-success".to_owned());
 
@@ -5136,14 +5242,15 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        let _ = invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
-        );
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        )?;
 
         let hello = session_server.recv_hello(step_timeout, "missing-media continuation")?;
         if !hello.contains("\"Hello\"") {
@@ -5158,14 +5265,15 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
 
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Media Search",
-            NativeControlKind::Button,
+            "view: media-search",
+            "File",
+            "Open Media Search",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -5209,14 +5317,15 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
         .is_err()
         {
             wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
-            invoke_named_control_with_wait(
+            navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                NativeControlKind::Button,
+                "view: main-window",
+                "Window",
+                "Show Users",
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         }
         wait_for_accessible_name(
             driver,
@@ -5391,14 +5500,15 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
-        let _ = invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
-        );
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
+        )?;
 
         let first_hello = primary_server.recv_hello(step_timeout, "primary")?;
         if !first_hello.contains("\"Hello\"") {
@@ -5452,14 +5562,15 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         )?;
         steps.push("transport-primary-user-left".to_owned());
 
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Public Servers",
-            NativeControlKind::Button,
+            "view: public-servers",
+            "File",
+            "Open Public Server Browser",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: public-servers", step_timeout)?;
         invoke_named_control_with_wait(
             driver,
             window,
@@ -5494,14 +5605,15 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
                 "reconnect mock TCP server did not receive an expected reconnect hello payload: {second_hello:?}"
             ));
         }
-        invoke_named_control_with_wait(
+        navigate_to_view_with_fallback(
             driver,
             window,
             "Main Window",
-            NativeControlKind::Button,
+            "view: main-window",
+            "Window",
+            "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: main-window", step_timeout)?;
         wait_for_accessible_name(driver, window, "reconnect2.mkv", step_timeout)?;
         wait_for_accessible_name(
             driver,

@@ -1332,7 +1332,8 @@ impl GuiWidgetEguiRenderer {
                 ui.separator();
                 for child in &root.children {
                     if Self::is_surface_node(child) {
-                        let response = ui.selectable_label(child.selected, &child.label);
+                        let response =
+                            ui.add(egui::Button::new(&child.label).selected(child.selected));
                         if response.clicked()
                             && let Some(action) = Self::action_for_surface_node(child)
                         {
@@ -4328,6 +4329,118 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn shared_playlist_open_unavailable_message(&self, selected_paths: &[String]) -> String {
+        let base = if selected_paths.len() == 1 {
+            "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+                .to_owned()
+        } else {
+            format!(
+                "Opening media into the shared playlist requires a session or playback runtime connection; {} selected files were not opened or queued.",
+                selected_paths.len()
+            )
+        };
+        if let Some(reason) = self.player_unavailability_reason.as_deref() {
+            format!("{base} {reason}")
+        } else {
+            base
+        }
+    }
+
+    fn shared_playlist_session_unavailable_message(&self) -> String {
+        "Shared playlist updates require a session runtime connection; the selected media was not added to the room playlist."
+            .to_owned()
+    }
+
+    fn shared_playlist_entry_for_media_path(path: &str) -> Option<String> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.contains("://") {
+            return Some(trimmed.to_owned());
+        }
+        Some(
+            Path::new(trimmed)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(trimmed)
+                .to_owned(),
+        )
+    }
+
+    fn shared_playlist_import_entries_from_path(path: &str) -> Result<Option<Vec<String>>, String> {
+        if path.contains("://") {
+            return Ok(None);
+        }
+        let lower_path = path.to_ascii_lowercase();
+        if !(lower_path.ends_with(".txt")
+            || lower_path.ends_with(".m3u")
+            || lower_path.ends_with(".m3u8"))
+        {
+            return Ok(None);
+        }
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| format!("Shared playlist import failed reading '{path}': {error}"))?;
+        let playlist_entries = contents
+            .lines()
+            .filter_map(normalized_editable_text)
+            .collect::<Vec<_>>();
+        if playlist_entries.is_empty() {
+            return Err(format!(
+                "Shared playlist import file '{path}' did not contain any playlist entries."
+            ));
+        }
+        Ok(Some(playlist_entries))
+    }
+
+    fn shared_playlist_open_dispatch_for_paths(
+        paths: Vec<String>,
+    ) -> Result<GuiSharedPlaylistOpenDispatch, String> {
+        if paths.len() == 1
+            && let Some(playlist_entries) =
+                Self::shared_playlist_import_entries_from_path(&paths[0])?
+        {
+            return Ok(GuiSharedPlaylistOpenDispatch {
+                playlist_entries,
+                player_paths: None,
+                imported_from_file: true,
+            });
+        }
+
+        let playlist_entries = paths
+            .iter()
+            .filter_map(|path| Self::shared_playlist_entry_for_media_path(path))
+            .collect::<Vec<_>>();
+        if playlist_entries.is_empty() {
+            return Err(
+                "Shared playlist open could not derive any playlist entries from the selected files."
+                    .to_owned(),
+            );
+        }
+        Ok(GuiSharedPlaylistOpenDispatch {
+            playlist_entries,
+            player_paths: Some(paths),
+            imported_from_file: false,
+        })
+    }
+
+    fn shared_playlist_open_success_message(dispatch: &GuiSharedPlaylistOpenDispatch) -> String {
+        let entry_count = dispatch.playlist_entries.len();
+        if dispatch.imported_from_file {
+            if entry_count == 1 {
+                "Imported 1 entry into the shared playlist.".to_owned()
+            } else {
+                format!("Imported {entry_count} entries into the shared playlist.")
+            }
+        } else if entry_count == 1 {
+            "Loaded 1 selected media entry into the shared playlist.".to_owned()
+        } else {
+            format!("Loaded {entry_count} selected media entries into the shared playlist.")
+        }
+    }
+
     fn seek_unavailable_message(&self, offset_seconds: f64) -> String {
         let base = format!(
             "Playback seek requires a playback runtime connection; the {offset_seconds} second request was not applied."
@@ -4780,13 +4893,12 @@ impl GuiPersistedConfigRuntimeOwner {
         ]);
     }
 
-    fn open_media_files_through_attached_player(
+    fn open_media_files_through_attached_player_result(
         &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        paths: Vec<String>,
-    ) {
-        if paths.is_empty() {
-            return;
+        paths: &[String],
+    ) -> Option<Result<String, String>> {
+        if paths.is_empty() || self.player.is_none() {
+            return None;
         }
 
         let selected_path = paths[0].clone();
@@ -4794,31 +4906,155 @@ impl GuiPersistedConfigRuntimeOwner {
             let player = self.player.as_mut().expect("player should exist");
             (player.name(), player.open_file(&selected_path))
         };
-        match open_result {
+        Some(match open_result {
             Ok(()) => {
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
                 self.player_position_seconds = Some(0.0);
                 self.refresh_player_state();
-                let message = if paths.len() == 1 {
-                    format!(
+                if paths.len() == 1 {
+                    Ok(format!(
                         "Opened media file through the attached {player_name} player: {selected_path}."
-                    )
+                    ))
                 } else {
-                    format!(
+                    Ok(format!(
                         "Opened the first selected media file through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
                         paths.len() - 1
-                    )
-                };
-                Self::push_player_success(handle, message);
+                    ))
+                }
             }
-            Err(error) => {
-                let message = format!(
-                    "Opening media through the attached {player_name} player failed: {error}"
-                );
-                Self::push_player_error(handle, message);
-            }
+            Err(error) => Err(format!(
+                "Opening media through the attached {player_name} player failed: {error}"
+            )),
+        })
+    }
+
+    fn open_media_files_through_attached_player(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        paths: Vec<String>,
+    ) {
+        match self.open_media_files_through_attached_player_result(&paths) {
+            Some(Ok(message)) => Self::push_player_success(handle, message),
+            Some(Err(message)) => Self::push_player_error(handle, message),
+            None => {}
         }
+    }
+
+    fn open_media_files_through_shared_playlist_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        paths: Vec<String>,
+    ) {
+        let selected_paths = paths
+            .into_iter()
+            .filter_map(|path| normalized_editable_text(&path))
+            .collect::<Vec<_>>();
+        if selected_paths.is_empty() {
+            return;
+        }
+
+        let dispatch = match Self::shared_playlist_open_dispatch_for_paths(selected_paths.clone()) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                Self::push_runtime_unavailable(handle, error);
+                return;
+            }
+        };
+
+        let player_result = dispatch.player_paths.as_ref().and_then(|player_paths| {
+            self.open_media_files_through_attached_player_result(player_paths)
+        });
+
+        if self.session.is_none() {
+            match player_result {
+                Some(Ok(message)) => {
+                    let warning = self.shared_playlist_session_unavailable_message();
+                    handle.push_actions([
+                        GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                        GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Success,
+                            message: message.clone(),
+                        },
+                        GuiShellAction::AnnounceSystemChatEvent(message),
+                        GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Warning,
+                            message: warning.clone(),
+                        },
+                        GuiShellAction::AnnounceSystemChatEvent(warning),
+                    ]);
+                }
+                Some(Err(message)) => {
+                    let warning = self.shared_playlist_session_unavailable_message();
+                    handle.push_actions([
+                        GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Warning,
+                            message: warning.clone(),
+                        },
+                        GuiShellAction::AnnounceSystemChatEvent(warning),
+                        GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: message.clone(),
+                        },
+                        GuiShellAction::AnnounceSystemChatEvent(message),
+                    ]);
+                }
+                None => Self::push_runtime_unavailable(
+                    handle,
+                    self.shared_playlist_open_unavailable_message(&selected_paths),
+                ),
+            }
+            return;
+        }
+
+        let session_result = self
+            .session
+            .as_mut()
+            .expect("session should exist")
+            .replace_playlist(
+                dispatch.playlist_entries.clone(),
+                (!dispatch.playlist_entries.is_empty()).then_some(0),
+            );
+        let session_success = session_result.is_ok();
+        let player_success = player_result.as_ref().is_some_and(Result::is_ok);
+
+        let mut actions = Vec::new();
+        if session_success || player_success {
+            actions.push(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+        }
+        if session_success && !player_success {
+            let message = Self::shared_playlist_open_success_message(&dispatch);
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: message.clone(),
+            });
+            actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+        }
+        match player_result {
+            Some(Ok(message)) => {
+                actions.push(GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: message.clone(),
+                });
+                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+            }
+            Some(Err(message)) => {
+                actions.push(GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: message.clone(),
+                });
+                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+            }
+            None => {}
+        }
+        if let Err(error) = session_result {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: error.clone(),
+            });
+            actions.push(GuiShellAction::AnnounceSystemChatEvent(error));
+        }
+        handle.push_actions(actions);
     }
 
     fn refresh_player_state(&mut self) {
@@ -5076,15 +5312,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
         }
         for request in handle.drain_requests() {
             match request {
-                request @ GuiRuntimeRequest::OpenMediaFiles {
+                GuiRuntimeRequest::OpenMediaFiles {
+                    paths,
                     load_into_shared_playlist: true,
-                    ..
                 } => {
-                    Self::push_actions_and_project(
-                        handle,
-                        &mut projected_state,
-                        request.preview_actions(),
-                    );
+                    self.open_media_files_through_shared_playlist_runtime(handle, paths);
                 }
                 GuiRuntimeRequest::OpenMediaFiles {
                     paths,
@@ -5716,6 +5948,13 @@ impl GuiPendingCompletionRequest {
 enum GuiPendingRoomChangeRequest {
     Join { requested_room: String },
     ReturnToDefault { previous_room: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiSharedPlaylistOpenDispatch {
+    playlist_entries: Vec<String>,
+    player_paths: Option<Vec<String>>,
+    imported_from_file: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -10157,7 +10396,7 @@ impl SyncplayGuiShellAppState {
             GuiWidgetKind::Panel,
             vec![GuiWidgetNode::leaf(
                 "shell:quick:open-media-file",
-                "Open Media File",
+                "Quick Open Media File",
                 GuiWidgetKind::Button,
                 None,
                 can_open_media_file,
@@ -22952,7 +23191,7 @@ assert-pending\tnone\n"
     }
 
     #[test]
-    fn gui_persisted_config_runtime_owner_reports_player_runtime_gaps_explicitly() {
+    fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let state =
@@ -22966,10 +23205,15 @@ assert-pending\tnone\n"
         assert_eq!(
             handle.drain_actions(),
             vec![
-                GuiShellAction::SwitchView(GuiShellView::MainWindow),
-                GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-                    "C:/Media/episode1.mkv".to_owned()
-                ]),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+                        .to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(
+                    "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+                        .to_owned(),
+                ),
             ]
         );
 
@@ -23126,6 +23370,139 @@ assert-pending\tnone\n"
         }
         assert_eq!(chat_state.outgoing_chat_message.as_deref(), Some("hello"));
         assert!(chat_state.pending_operation.is_none());
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client_core_session_and_player()
+     {
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback runtime owner should bootstrap");
+        owner.player = Some(Box::<super::GuiTestPlayerAdapter>::default());
+
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec![
+                "C:/Media/episode1.mkv".to_owned(),
+                "C:/Media/episode2.mkv".to_owned(),
+            ],
+            load_into_shared_playlist: true,
+        });
+        let actions = pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            std::time::Duration::from_secs(1),
+            |state| state.main_window.playlist.len() == 2,
+            "shared-playlist open through loopback session and player",
+        );
+
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message
+                            == "Opened the first selected media file through the attached test player: C:/Media/episode1.mkv. Ignored 1 additional selections."
+            )),
+            "shared-playlist open should still drive the attached player"
+        );
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>(),
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert_eq!(
+            owner
+                .player_local_file
+                .as_ref()
+                .map(|file| file.name.as_str()),
+            Some("episode1.mkv")
+        );
+        assert_eq!(
+            owner
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref()),
+            Some("C:/Media/episode1.mkv")
+        );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_imports_playlist_files_through_client_core_session() {
+        let root = test_temp_root("shared-playlist-import");
+        let playlist_path = root.join("room-playlist.txt");
+        std::fs::write(&playlist_path, "episode1.mkv\nhttps://example.com/live\n")
+            .expect("shared playlist import fixture should be written");
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec![playlist_path.to_string_lossy().into_owned()],
+            load_into_shared_playlist: true,
+        });
+        let actions = pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            std::time::Duration::from_secs(1),
+            |state| state.main_window.playlist.len() == 2,
+            "shared-playlist import through loopback session",
+        );
+
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message == "Imported 2 entries into the shared playlist."
+            )),
+            "shared-playlist imports should report a runtime-backed success"
+        );
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "episode1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+        assert!(owner.player_local_file.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
