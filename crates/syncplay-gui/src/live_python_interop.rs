@@ -31,6 +31,7 @@ pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-pla
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_TIMEOUT: Duration = Duration::from_secs(6);
 const LIVE_PYTHON_INTEROP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION: Duration = Duration::from_secs(13);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LivePythonPeerInteropResult {
@@ -515,6 +516,14 @@ fn run_live_python_peer_detached_public_server_connect_flow_with_harness(
         LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
         Duration::from_secs(3),
     )?;
+    wait_for_sustained_connection_presence(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION,
+    )?;
 
     state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
     Ok(LivePythonPeerDetachedConnectInteropResult {
@@ -715,6 +724,33 @@ fn wait_for_peer_observed_user_presence(
                 "timed out waiting for Python reference peer to observe GUI user {username:?}; users={:?}",
                 snapshot.observed_users
             )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_sustained_connection_presence(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    duration: Duration,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + duration;
+    loop {
+        pump_and_apply(owner, handle, state);
+        let peer_snapshot = harness.peer_snapshot()?;
+        let local_present = local_user_ready(state).is_some();
+        let peer_observes_local = peer_snapshot.observed_users.contains_key(username);
+        if !local_present || !peer_observes_local {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "live Python detached-connect keepalive dropped before {duration:?}; room={:?}, projected_local_present={}, peer_users={:?}",
+                state.main_window.room_name, local_present, peer_snapshot.observed_users
+            )));
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
         }
         thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
     }

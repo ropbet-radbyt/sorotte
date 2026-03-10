@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use eframe::egui;
@@ -3017,11 +3017,14 @@ struct GuiClientCoreChatSessionRuntimeAdapter {
     baseline_room: String,
     runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
+    next_state_sync_heartbeat_at: Option<Instant>,
     tracked_remote_usernames: BTreeSet<String>,
 }
 
 #[allow(dead_code)]
 impl GuiClientCoreChatSessionRuntimeAdapter {
+    const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
     fn new(username: impl Into<String>, room: impl Into<String>) -> Result<Self, String> {
         Self::new_with_control_password(username, room, None)
     }
@@ -3048,6 +3051,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 QueuedRuntimeControl::default(),
             ),
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
+            next_state_sync_heartbeat_at: None,
             tracked_remote_usernames: BTreeSet::new(),
         })
     }
@@ -3075,7 +3079,29 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&self.username, &room));
+        self.next_state_sync_heartbeat_at = None;
         self.tracked_remote_usernames.clear();
+    }
+
+    fn queue_periodic_state_sync_heartbeat_if_due(&mut self) {
+        if self.runtime.session().server_chat_supported().is_none() {
+            self.next_state_sync_heartbeat_at = None;
+            return;
+        }
+
+        let now = Instant::now();
+        let Some(next_heartbeat_at) = self.next_state_sync_heartbeat_at else {
+            self.next_state_sync_heartbeat_at = Some(now + Self::STATE_SYNC_HEARTBEAT_INTERVAL);
+            return;
+        };
+        if now < next_heartbeat_at {
+            return;
+        }
+
+        let _ = self
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible();
+        self.next_state_sync_heartbeat_at = Some(now + Self::STATE_SYNC_HEARTBEAT_INTERVAL);
     }
 
     fn session_media_search_target(&self) -> Option<String> {
@@ -3882,6 +3908,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 message: format!("Client-core chat notification dispatch failed: {error}"),
             });
         }
+        self.queue_periodic_state_sync_heartbeat_if_due();
 
         let main_window_runtime_snapshot = self.main_window_runtime_snapshot(state);
         let interaction_runtime_snapshot = self.interaction_runtime_snapshot(
@@ -28080,6 +28107,101 @@ assert-pending\tnone\n"
             )),
             "pre-Hello room requests should surface the runtime error without changing the joined room",
         );
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_transport() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test session transport listener should expose a local address");
+        let (hello_tx, hello_rx) = mpsc::channel();
+        let (heartbeat_tx, heartbeat_rx) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test session transport server should accept one client");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(4)))
+                .expect("test session transport server should set a read timeout");
+            let reader_stream = stream
+                .try_clone()
+                .expect("test session transport server should clone the accepted stream");
+            let mut reader = BufReader::new(reader_stream);
+            let mut hello_line = String::new();
+            reader
+                .read_line(&mut hello_line)
+                .expect("test session transport server should read one startup hello line");
+            hello_tx
+                .send(hello_line)
+                .expect("test session transport server should report the startup hello");
+            stream
+                .write_all(
+                    br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+                )
+                .expect("test session transport server should write one inbound hello line");
+            stream
+                .write_all(b"\n")
+                .expect("test session transport server should terminate the inbound hello line");
+
+            let mut heartbeat_line = String::new();
+            reader
+                .read_line(&mut heartbeat_line)
+                .expect("test session transport server should read one outbound heartbeat line");
+            heartbeat_tx
+                .send(heartbeat_line)
+                .expect("test session transport server should report the heartbeat line");
+        });
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+            .expect("client-core tcp chat runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        let hello_line = hello_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should receive the startup hello");
+        assert!(hello_line.contains("\"Hello\""));
+        assert!(hello_line.contains("\"alice\""));
+        assert!(hello_line.contains("\"room1\""));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let heartbeat_line = loop {
+            pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+            if let Ok(line) = heartbeat_rx.try_recv() {
+                break line;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for a GUI heartbeat line over TCP transport"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        assert!(heartbeat_line.contains("\"State\""));
+        assert!(heartbeat_line.contains("\"ping\""));
+        assert!(
+            heartbeat_line.contains("\"clientLatencyCalculation\""),
+            "heartbeat should include client ping metrics"
+        );
+
+        server_thread
+            .join()
+            .expect("test session transport server thread should complete");
     }
 
     #[test]

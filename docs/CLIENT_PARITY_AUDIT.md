@@ -47,6 +47,7 @@
 - GUI-owned `mpv` lifecycle is managed across startup, save/reload/reset, on-demand reopen, and unexpected process exit reporting.
 - Saved host/port settings can drive a real GUI connect/disconnect flow, including startup auto-connect.
 - Room join and return-to-default flows are runtime-backed over a real session.
+- Detached GUI sessions now keep legacy-server connections alive with periodic `State.ping` heartbeats, so a successful join no longer drops after the initial timeout window.
 - Shared-playlist import/open now routes through the real runtime owner instead of stopping at shell projection.
 - Detached media-open and shared-playlist drag-and-drop ingest are covered by semantic and Windows native smoke flows.
 - Public-server browsing, refresh, custom-entry editing, and runtime-backed connect flows exist.

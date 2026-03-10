@@ -1416,6 +1416,42 @@ where
         true
     }
 
+    pub fn run_state_sync_heartbeat_legacy_ping_compatible(&mut self) -> bool {
+        if self.session.server_chat_supported().is_none() {
+            return false;
+        }
+
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+
+        let client_latency_calculation = self
+            .ping_metrics_legacy_compatible
+            .client_latency_calculation_now();
+        let client_rtt = self.ping_metrics_legacy_compatible.client_rtt_seconds();
+
+        let outbound_state = if let (Some(local_position), Some(local_paused)) =
+            (self.session.local_position, self.session.local_paused)
+        {
+            self.session.reconcile_state_and_build_response(
+                StatePayload::new(),
+                local_position,
+                local_paused,
+                client_latency_calculation,
+                client_rtt,
+            )
+        } else {
+            StatePayload::new().with_ping(
+                PingPayload::new()
+                    .with_client_latency_calculation(client_latency_calculation)
+                    .with_client_rtt(client_rtt),
+            )
+        };
+
+        self.control
+            .outbound_messages
+            .push(ProtocolMessage::state(outbound_state));
+        true
+    }
+
     pub fn flush_queued_protocol_messages(&mut self) -> Vec<ProtocolMessage> {
         self.control.drain_outbound_messages()
     }
@@ -10234,6 +10270,51 @@ mod tests {
         assert_eq!(
             ping.server_rtt, None,
             "client outbound ping should not echo serverRtt from inbound state"
+        );
+    }
+
+    #[test]
+    fn client_runtime_state_sync_heartbeat_emits_ping_only_without_local_playback_state() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime.run_state_sync_heartbeat_legacy_ping_compatible(),
+            "heartbeat should queue a ping-only state after hello even without local playback telemetry"
+        );
+        assert_eq!(
+            runtime.control().outbound_messages().len(),
+            1,
+            "heartbeat should queue one outbound state message"
+        );
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0]
+        else {
+            panic!("queued heartbeat should be State");
+        };
+        assert_eq!(
+            state_message.state.playstate, None,
+            "heartbeat without local playback telemetry should omit playstate"
+        );
+        let ping = state_message
+            .state
+            .ping
+            .as_ref()
+            .expect("heartbeat should include ping metadata");
+        assert!(
+            ping.client_latency_calculation.unwrap_or(0.0) > 0.0,
+            "heartbeat should include non-zero clientLatencyCalculation"
+        );
+        assert!(
+            ping.client_rtt.is_some(),
+            "heartbeat should include clientRtt even without local playback telemetry"
         );
     }
 
