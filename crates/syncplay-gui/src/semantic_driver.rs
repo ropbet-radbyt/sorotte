@@ -307,6 +307,7 @@ impl GuiSemanticStep {
             can_manage_playlist,
             playback_paused,
             autoplay_active,
+            ..Default::default()
         })
     }
 

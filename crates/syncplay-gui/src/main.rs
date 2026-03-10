@@ -18,6 +18,11 @@ use eframe::egui;
 use rfd::FileDialog;
 use serde_json::Value;
 use syncplay_client_app::app_boundary::{
+    commands::{
+        LocalInputCommand, LocalOffsetCommand, PlannedLocalRuntimeAction,
+        localized_current_offset_message_legacy_compatible, parse_local_input_command,
+        plan_local_offset_runtime_dispatch_legacy_compatible,
+    },
     compatibility::{
         LegacyConfigurationGetterCompatibilityStatus,
         legacy_configuration_getter_startup_compat_entries,
@@ -35,7 +40,7 @@ use syncplay_client_app::app_boundary::{
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
     state::{
-        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        AutoplayThresholdOverride, StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
         autoplay_threshold_override_legacy_value_compatible,
         parse_autoplay_min_users_override_legacy_compatible,
         parse_host_and_optional_port_from_host_arg_legacy_compatible,
@@ -45,11 +50,11 @@ use syncplay_client_app::app_boundary::{
     },
 };
 use syncplay_client_core::{
-    AutoplayCountdownNotification, ChatNotification, ClientRuntime, ClientSession,
-    ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
+    ClientSession, ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
     ReconnectTransitionNotification, UserChangeNotification,
 };
-use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
 
 use self::mpv_launch::{
@@ -79,6 +84,7 @@ const LEGACY_GUI_QSETTINGS_STORE_NAMES: [&str; 5] = [
     "Interface",
     "MoreSettings",
 ];
+const DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiConnectionSettingsSection {
@@ -275,6 +281,10 @@ struct MainWindowChatRow {
 struct MainWindowPlaybackControls {
     can_toggle_pause: bool,
     can_seek: bool,
+    can_undo_seek: bool,
+    can_set_offset: bool,
+    can_toggle_autoplay: bool,
+    can_adjust_autoplay_threshold: bool,
     can_set_ready: bool,
     can_manage_playlist: bool,
 }
@@ -292,6 +302,11 @@ struct MainWindowShellState {
     playback: MainWindowPlaybackControls,
     playback_paused: bool,
     autoplay_active: bool,
+    autoplay_threshold: usize,
+    autoplay_countdown_seconds: Option<u32>,
+    user_offset_seconds: f64,
+    show_playback_buttons: bool,
+    show_autoplay_controls: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -325,7 +340,7 @@ struct MainWindowRuntimeChatSnapshot {
     message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 struct MainWindowRuntimeSnapshot {
     room_name: String,
     shared_playlist_enabled: bool,
@@ -337,10 +352,49 @@ struct MainWindowRuntimeSnapshot {
     chat: Vec<MainWindowRuntimeChatSnapshot>,
     can_toggle_pause: bool,
     can_seek: bool,
+    can_undo_seek: bool,
+    can_set_offset: bool,
+    can_toggle_autoplay: bool,
+    can_adjust_autoplay_threshold: bool,
     can_set_ready: bool,
     can_manage_playlist: bool,
     playback_paused: bool,
     autoplay_active: bool,
+    autoplay_threshold: usize,
+    autoplay_countdown_seconds: Option<u32>,
+    user_offset_seconds: f64,
+    show_playback_buttons: bool,
+    show_autoplay_controls: bool,
+}
+
+impl Default for MainWindowRuntimeSnapshot {
+    fn default() -> Self {
+        Self {
+            room_name: String::new(),
+            shared_playlist_enabled: false,
+            controlled_room_active: false,
+            hide_empty_rooms: false,
+            rooms: Vec::new(),
+            users: Vec::new(),
+            playlist: Vec::new(),
+            chat: Vec::new(),
+            can_toggle_pause: false,
+            can_seek: false,
+            can_undo_seek: false,
+            can_set_offset: false,
+            can_toggle_autoplay: true,
+            can_adjust_autoplay_threshold: true,
+            can_set_ready: false,
+            can_manage_playlist: false,
+            playback_paused: false,
+            autoplay_active: false,
+            autoplay_threshold: DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD,
+            autoplay_countdown_seconds: None,
+            user_offset_seconds: 0.0,
+            show_playback_buttons: true,
+            show_autoplay_controls: true,
+        }
+    }
 }
 
 impl MainWindowRuntimeSnapshot {
@@ -390,10 +444,19 @@ impl MainWindowRuntimeSnapshot {
                 .collect(),
             can_toggle_pause: state.playback.can_toggle_pause,
             can_seek: state.playback.can_seek,
+            can_undo_seek: state.playback.can_undo_seek,
+            can_set_offset: state.playback.can_set_offset,
+            can_toggle_autoplay: state.playback.can_toggle_autoplay,
+            can_adjust_autoplay_threshold: state.playback.can_adjust_autoplay_threshold,
             can_set_ready: state.playback.can_set_ready,
             can_manage_playlist: state.playback.can_manage_playlist,
             playback_paused: state.playback_paused,
             autoplay_active: state.autoplay_active,
+            autoplay_threshold: state.autoplay_threshold,
+            autoplay_countdown_seconds: state.autoplay_countdown_seconds,
+            user_offset_seconds: state.user_offset_seconds,
+            show_playback_buttons: state.show_playback_buttons,
+            show_autoplay_controls: state.show_autoplay_controls,
         }
     }
 }
@@ -546,6 +609,10 @@ struct GuiPersistedUiState {
     selected_public_server_address: Option<String>,
     selected_media_search_directory: Option<String>,
     hide_empty_rooms: bool,
+    show_playback_buttons: Option<bool>,
+    show_autoplay_controls: Option<bool>,
+    autoplay_checked: Option<bool>,
+    autoplay_min_users: Option<usize>,
     last_media_dialog_directory: Option<String>,
     last_checked_for_updates: Option<String>,
     public_servers: Vec<(String, String)>,
@@ -623,6 +690,20 @@ impl GuiPersistedUiState {
                 .and_then(|index| state.media_search.directories.get(index))
                 .map(|row| row.path.clone()),
             hide_empty_rooms: state.main_window.hide_empty_rooms,
+            show_playback_buttons: (!state.main_window.show_playback_buttons)
+                .then_some(state.main_window.show_playback_buttons),
+            show_autoplay_controls: (!state.main_window.show_autoplay_controls)
+                .then_some(state.main_window.show_autoplay_controls),
+            autoplay_checked: Some(state.main_window.autoplay_active).filter(|value| {
+                Some(*value)
+                    != state
+                        .saved_configuration
+                        .autoplay_initial_state
+                        .or(Some(false))
+            }),
+            autoplay_min_users: Some(state.main_window.autoplay_threshold).filter(|value| {
+                *value != autoplay_threshold_from_settings(&state.saved_configuration)
+            }),
             last_media_dialog_directory: state.last_media_dialog_directory.clone(),
             last_checked_for_updates: (current_settings.last_checked_for_updates
                 != state.saved_configuration.last_checked_for_updates)
@@ -641,6 +722,10 @@ impl GuiPersistedUiState {
             && self.selected_public_server_address.is_none()
             && self.selected_media_search_directory.is_none()
             && !self.hide_empty_rooms
+            && self.show_playback_buttons.is_none()
+            && self.show_autoplay_controls.is_none()
+            && self.autoplay_checked.is_none()
+            && self.autoplay_min_users.is_none()
             && self.last_media_dialog_directory.is_none()
             && self.last_checked_for_updates.is_none()
             && self.public_servers.is_empty()
@@ -681,6 +766,20 @@ impl GuiPersistedUiState {
         if self.hide_empty_rooms {
             state.main_window.hide_empty_rooms = true;
             state.set_menu_action_selected("Window", "Hide Empty Rooms", true);
+        }
+        if let Some(show_playback_buttons) = self.show_playback_buttons {
+            state.main_window.show_playback_buttons = show_playback_buttons;
+            state.set_menu_action_selected("Window", "Playback Buttons", show_playback_buttons);
+        }
+        if let Some(show_autoplay_controls) = self.show_autoplay_controls {
+            state.main_window.show_autoplay_controls = show_autoplay_controls;
+            state.set_menu_action_selected("Window", "Autoplay", show_autoplay_controls);
+        }
+        if let Some(autoplay_checked) = self.autoplay_checked {
+            state.main_window.autoplay_active = autoplay_checked;
+        }
+        if let Some(autoplay_min_users) = self.autoplay_min_users {
+            state.main_window.autoplay_threshold = autoplay_min_users;
         }
         state.normalize_selection();
         state.apply_selection_to_surfaces();
@@ -801,6 +900,18 @@ fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Res
                     .hide_empty_rooms
                     .then(|| ("hideEmptyRooms", "true".to_owned())),
                 state
+                    .show_playback_buttons
+                    .map(|value| ("showPlaybackButtons", value.to_string())),
+                state
+                    .show_autoplay_controls
+                    .map(|value| ("showAutoPlayButton", value.to_string())),
+                state
+                    .autoplay_checked
+                    .map(|value| ("autoplayChecked", value.to_string())),
+                state
+                    .autoplay_min_users
+                    .map(|value| ("autoplayMinUsers", value.to_string())),
+                state
                     .selected_public_server_address
                     .as_ref()
                     .map(|value| ("selectedPublicServerAddress", value.clone())),
@@ -883,6 +994,37 @@ fn load_gui_ui_state_from_root(root: &Path) -> Result<Option<GuiPersistedUiState
         state.hide_empty_rooms = parsed
             .get(&(String::from("MainWindow"), String::from("hideEmptyRooms")))
             .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        state.show_playback_buttons = parsed
+            .get(&(
+                String::from("MainWindow"),
+                String::from("showPlaybackButtons"),
+            ))
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            });
+        state.show_autoplay_controls = parsed
+            .get(&(
+                String::from("MainWindow"),
+                String::from("showAutoPlayButton"),
+            ))
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            });
+        state.autoplay_checked = parsed
+            .get(&(String::from("MainWindow"), String::from("autoplayChecked")))
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            });
+        state.autoplay_min_users = parsed
+            .get(&(String::from("MainWindow"), String::from("autoplayMinUsers")))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value >= 2);
         state.selected_media_search_directory = parsed
             .get(&(
                 String::from("MainWindow"),
@@ -1394,13 +1536,19 @@ struct GuiWidgetEguiRenderer {
     root: Option<GuiWidgetNode>,
     actions: Vec<GuiShellAction>,
     close_requested: bool,
-    seek_prompt_requested: bool,
+    playback_prompt_requested: Option<GuiPlaybackPromptKind>,
     selected_media_files: Option<Vec<String>>,
     dropped_files_request: Option<GuiDroppedFilesRequest>,
     playlist_drop_target_rect: Option<egui::Rect>,
     playlist_drop_target_hovered: bool,
     pending_completion_requested: bool,
     pending_cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiPlaybackPromptKind {
+    Seek,
+    Offset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1440,8 +1588,8 @@ impl GuiWidgetEguiRenderer {
         std::mem::take(&mut self.close_requested)
     }
 
-    fn take_seek_prompt_requested(&mut self) -> bool {
-        std::mem::take(&mut self.seek_prompt_requested)
+    fn take_playback_prompt_requested(&mut self) -> Option<GuiPlaybackPromptKind> {
+        self.playback_prompt_requested.take()
     }
 
     fn take_selected_media_files(&mut self) -> Option<Vec<String>> {
@@ -1834,8 +1982,8 @@ impl GuiWidgetEguiRenderer {
                         self.selected_media_files = Self::pick_media_files(state);
                     } else if Self::is_exit_menu_action(state, node) {
                         self.close_requested = true;
-                    } else if Self::is_seek_menu_action(state, node) {
-                        self.seek_prompt_requested = true;
+                    } else if let Some(actions) = Self::direct_menu_actions(state, node) {
+                        self.actions.extend(actions);
                     } else {
                         self.actions
                             .extend(Self::actions_for_clicked_button(state, node));
@@ -2105,7 +2253,29 @@ impl GuiWidgetEguiRenderer {
             "main-window:connection:disconnect" => {
                 vec![GuiShellAction::BeginSessionDisconnect]
             }
+            "main-window:control:play" => vec![GuiShellAction::BeginPlaybackResume],
+            "main-window:control:pause" => vec![GuiShellAction::BeginPlaybackPause],
             "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
+            "main-window:control:seek" => vec![GuiShellAction::RequestSeekPrompt],
+            "main-window:control:undo-seek" => vec![GuiShellAction::RequestPlaybackUndoSeek],
+            "main-window:control:set-offset" => vec![GuiShellAction::RequestOffsetPrompt],
+            "main-window:control:autoplay-threshold-down" => state
+                .main_window
+                .autoplay_threshold
+                .checked_sub(1)
+                .filter(|threshold| *threshold >= 2)
+                .map(GuiShellAction::AnnounceAutoplayThreshold)
+                .into_iter()
+                .collect(),
+            "main-window:control:autoplay-threshold-up" => {
+                vec![GuiShellAction::AnnounceAutoplayThreshold(
+                    state
+                        .main_window
+                        .autoplay_threshold
+                        .saturating_add(1)
+                        .min(99),
+                )]
+            }
             "main-window:room:set" => {
                 vec![GuiShellAction::SetMainWindowRoom(
                     Self::main_window_room_draft(state),
@@ -2224,6 +2394,22 @@ impl GuiWidgetEguiRenderer {
         Self::matches_menu_action(state, node, "File", "Exit")
     }
 
+    fn direct_menu_actions(
+        state: &SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Option<Vec<GuiShellAction>> {
+        let actions = if Self::matches_menu_action(state, node, "Playback", "Seek") {
+            vec![GuiShellAction::RequestSeekPrompt]
+        } else if Self::matches_menu_action(state, node, "Playback", "Undo Seek") {
+            vec![GuiShellAction::RequestPlaybackUndoSeek]
+        } else if Self::matches_menu_action(state, node, "Advanced", "Set Offset") {
+            vec![GuiShellAction::RequestOffsetPrompt]
+        } else {
+            return None;
+        };
+        Some(actions)
+    }
+
     fn is_seek_menu_action(state: &SyncplayGuiShellAppState, node: &GuiWidgetNode) -> bool {
         Self::matches_menu_action(state, node, "Playback", "Seek")
     }
@@ -2334,6 +2520,9 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         value: bool,
     ) -> Option<GuiShellAction> {
+        if node.id == "main-window:control:autoplay-toggle" {
+            return Some(GuiShellAction::AnnounceAutoplayState(value));
+        }
         let (section, label, kind) = Self::configuration_control_identity(state, node)?;
         if kind != GuiDialogControlKind::Checkbox {
             return None;
@@ -2616,6 +2805,22 @@ trait GuiNativeRuntimeBridge {
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
 
+    fn actions_for_undo_seek(&mut self) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_set_offset(&mut self, _command: LocalOffsetCommand) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_autoplay_enabled_change(&mut self, _enabled: bool) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_autoplay_threshold_change(&mut self, _threshold: usize) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_main_window_user_media_open(
         &mut self,
         _state: &SyncplayGuiShellAppState,
@@ -2752,6 +2957,21 @@ struct GuiNoopClientRuntimePlayer;
 impl PlayerAdapter for GuiNoopClientRuntimePlayer {
     fn name(&self) -> &'static str {
         "gui-client-runtime-noop"
+    }
+
+    fn set_paused(&mut self, _paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+        Ok(())
+    }
+
+    fn set_position(
+        &mut self,
+        _position_seconds: f64,
+    ) -> Result<(), syncplay_player_api::PlayerError> {
+        Ok(())
+    }
+
+    fn set_playback_rate(&mut self, _rate: f64) -> Result<(), syncplay_player_api::PlayerError> {
+        Ok(())
     }
 }
 
@@ -2996,6 +3216,38 @@ trait GuiSessionRuntimeAdapter {
         )
     }
 
+    fn sync_local_playback_telemetry(
+        &mut self,
+        _paused: Option<bool>,
+        _position_seconds: Option<f64>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {
+        Err("Attached session runtime does not support playback pause changes.".to_owned())
+    }
+
+    fn record_manual_seek_to_position(&mut self, _position_seconds: f64) -> Result<bool, String> {
+        Err("Attached session runtime does not support local seek history.".to_owned())
+    }
+
+    fn undo_seek(&mut self) -> Result<bool, String> {
+        Err("Attached session runtime does not support local seek undo.".to_owned())
+    }
+
+    fn local_position_seconds(&self) -> Option<f64> {
+        None
+    }
+
+    fn set_autoplay_enabled(&mut self, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_autoplay_threshold(&mut self, _threshold: usize) -> Result<(), String> {
+        Ok(())
+    }
+
     fn send_chat_message(&mut self, message: String) -> Result<(), String>;
 
     fn connect_public_server(
@@ -3018,6 +3270,7 @@ struct GuiClientCoreChatSessionRuntimeAdapter {
     runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
     next_state_sync_heartbeat_at: Option<Instant>,
+    next_autoplay_tick_at: Option<Instant>,
     tracked_remote_usernames: BTreeSet<String>,
 }
 
@@ -3052,6 +3305,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             ),
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
             next_state_sync_heartbeat_at: None,
+            next_autoplay_tick_at: None,
             tracked_remote_usernames: BTreeSet::new(),
         })
     }
@@ -3080,6 +3334,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_startup_protocol_lines
             .push_back(Self::hello_json(&self.username, &room));
         self.next_state_sync_heartbeat_at = None;
+        self.next_autoplay_tick_at = None;
         self.tracked_remote_usernames.clear();
     }
 
@@ -3102,6 +3357,67 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .runtime
             .run_state_sync_heartbeat_legacy_ping_compatible();
         self.next_state_sync_heartbeat_at = Some(now + Self::STATE_SYNC_HEARTBEAT_INTERVAL);
+    }
+
+    fn autoplay_runtime_flags(&self) -> (bool, bool, bool, bool) {
+        let session = self.runtime.session();
+        let readiness_supported = session.server_readiness_supported().unwrap_or(false);
+        let local_can_control = session.local_can_control().unwrap_or(false);
+        let is_playing_music = session.is_playing_music();
+        let recently_advanced = session.recently_advanced(system_time_seconds());
+        (
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        )
+    }
+
+    fn sync_autoplay_runtime(&mut self, actions: &mut Vec<GuiShellAction>) {
+        let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
+            self.autoplay_runtime_flags();
+        self.runtime.update_autoplay_check(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        );
+
+        if !self.runtime.session().autoplay_timer_is_running() {
+            self.next_autoplay_tick_at = None;
+            return;
+        }
+
+        let tick_interval =
+            Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS.max(f64::EPSILON));
+        let now = Instant::now();
+        let Some(next_autoplay_tick_at) = self.next_autoplay_tick_at else {
+            self.next_autoplay_tick_at = Some(now + tick_interval);
+            return;
+        };
+        if now < next_autoplay_tick_at {
+            return;
+        }
+
+        if let Err(error) = self.runtime.tick_autoplay(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        ) {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core autoplay dispatch failed: {error}"),
+            });
+            self.next_autoplay_tick_at = None;
+            return;
+        }
+
+        self.next_autoplay_tick_at = if self.runtime.session().autoplay_timer_is_running() {
+            Some(now + tick_interval)
+        } else {
+            None
+        };
     }
 
     fn session_media_search_target(&self) -> Option<String> {
@@ -3664,7 +3980,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .collect();
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
         snapshot.playback_paused = baseline_main_window.playback_paused;
-        snapshot.autoplay_active = baseline_main_window.autoplay_active;
+        snapshot.autoplay_active = state.main_window.autoplay_active;
+        snapshot.autoplay_threshold = state.main_window.autoplay_threshold;
+        snapshot.autoplay_countdown_seconds = state.main_window.autoplay_countdown_seconds;
+        snapshot.user_offset_seconds = state.main_window.user_offset_seconds;
+        snapshot.show_playback_buttons = state.main_window.show_playback_buttons;
+        snapshot.show_autoplay_controls = state.main_window.show_autoplay_controls;
         if let Some(room_name) = session
             .room
             .as_deref()
@@ -3683,9 +4004,23 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         snapshot.can_manage_playlist =
             snapshot.shared_playlist_enabled && self.shared_playlist_control_available();
+        snapshot.can_undo_seek = session.last_seek_position_before_manual_seek().is_some();
+        snapshot.can_toggle_autoplay = true;
+        snapshot.can_adjust_autoplay_threshold = true;
+        snapshot.autoplay_active = session.autoplay_enabled();
+        snapshot.autoplay_threshold = session
+            .readiness_autoplay_config()
+            .auto_play_threshold
+            .unwrap_or(DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD);
+        snapshot.autoplay_countdown_seconds = session
+            .autoplay_timer_is_running()
+            .then(|| session.autoplay_time_left_seconds().max(0.0).floor() as u32);
         if let Some(playstate) = session.current_room_playstate()
             && let Some(paused) = playstate.paused
         {
+            snapshot.playback_paused = paused;
+        }
+        if let Some(paused) = session.local_paused() {
             snapshot.playback_paused = paused;
         }
         if session.server_chat_supported().is_none() {
@@ -3896,6 +4231,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     .flat_map(Self::controller_auth_transition_action),
             );
         }
+        self.sync_autoplay_runtime(&mut actions);
         trailing_actions.extend(
             self.runtime
                 .drain_autoplay_notifications()
@@ -4170,6 +4506,81 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime playlist reorder dispatch failed: {error}"
             )),
         }
+    }
+
+    fn sync_local_playback_telemetry(
+        &mut self,
+        paused: Option<bool>,
+        position_seconds: Option<f64>,
+    ) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+                paused,
+                position_seconds,
+                playback_rate: None,
+            });
+        Ok(())
+    }
+
+    fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
+        match self.runtime.run_set_paused(paused) {
+            Ok(sent) => Ok(sent),
+            Err(error) => Err(format!(
+                "Client-core session runtime playback pause dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn record_manual_seek_to_position(&mut self, position_seconds: f64) -> Result<bool, String> {
+        match self.runtime.run_seek_to_position(position_seconds) {
+            Ok(sent) => Ok(sent),
+            Err(error) => Err(format!(
+                "Client-core session runtime seek dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn undo_seek(&mut self) -> Result<bool, String> {
+        match self.runtime.run_undo_seek() {
+            Ok(sent) => Ok(sent),
+            Err(error) => Err(format!(
+                "Client-core session runtime undo-seek dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn local_position_seconds(&self) -> Option<f64> {
+        self.runtime.session().local_position_seconds()
+    }
+
+    fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.runtime.session_mut().set_autoplay_enabled(enabled);
+        let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
+            self.autoplay_runtime_flags();
+        self.runtime.update_autoplay_check(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        );
+        Ok(())
+    }
+
+    fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .readiness_autoplay_config_mut()
+            .auto_play_threshold = Some(threshold);
+        let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
+            self.autoplay_runtime_flags();
+        self.runtime.update_autoplay_check(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        );
+        Ok(())
     }
 
     fn connect_public_server(
@@ -4576,6 +4987,7 @@ impl GuiPlayerLaunchRuntimeState {
 struct GuiPersistedConfigRuntimeOwner {
     config_path: Option<PathBuf>,
     session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
+    session_projects_to_shell: bool,
     session_transport: Option<GuiQueuedSessionTransportHandle>,
     session_transport_driver: Option<Box<dyn GuiSessionTransportDriver>>,
     session_default_room: Option<String>,
@@ -4588,6 +5000,7 @@ struct GuiPersistedConfigRuntimeOwner {
     player_local_file: Option<LocalFileUpdate>,
     player_position_seconds: Option<f64>,
     player_paused: Option<bool>,
+    user_offset_seconds: f64,
 }
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -4595,6 +5008,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self {
             config_path,
             session: None,
+            session_projects_to_shell: false,
             session_transport: None,
             session_transport_driver: None,
             session_default_room: None,
@@ -4607,6 +5021,7 @@ impl GuiPersistedConfigRuntimeOwner {
             player_local_file: None,
             player_position_seconds: None,
             player_paused: None,
+            user_offset_seconds: 0.0,
         }
     }
 
@@ -4870,6 +5285,7 @@ impl GuiPersistedConfigRuntimeOwner {
             clear_legacy_gui_qsettings_files_at_root(&root)?;
         }
         self.session = None;
+        self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;
         Ok(())
@@ -4878,6 +5294,7 @@ impl GuiPersistedConfigRuntimeOwner {
     #[allow(dead_code)]
     fn with_session_runtime(mut self, session: Box<dyn GuiSessionRuntimeAdapter>) -> Self {
         self.session = Some(session);
+        self.session_projects_to_shell = true;
         self
     }
 
@@ -5021,6 +5438,12 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) {
+        if !self.session_projects_to_shell {
+            if let Some(session) = self.session.as_mut() {
+                let _ = session.drain_gui_actions(projected_state);
+            }
+            return;
+        }
         let actions = {
             let Some(session) = self.session.as_mut() else {
                 return;
@@ -5388,10 +5811,25 @@ impl GuiPersistedConfigRuntimeOwner {
                     runtime_settings.controlled_room_password_override,
                 )?,
             ));
+            self.session_projects_to_shell = false;
         }
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
         }
+        self.sync_detached_session_preferences_and_player_state(state)?;
+        Ok(())
+    }
+
+    fn sync_detached_session_preferences_and_player_state(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Result<(), String> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
+        session.set_autoplay_enabled(state.main_window.autoplay_active)?;
+        session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
         Ok(())
     }
 
@@ -5515,19 +5953,21 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn session_active(&self) -> bool {
-        self.session.is_some() || self.session_transport_driver.is_some()
+        self.session_projects_to_shell
     }
 
     fn sessionless_main_window_snapshot(
         &self,
         state: &SyncplayGuiShellAppState,
     ) -> MainWindowRuntimeSnapshot {
-        let baseline_main_window =
-            MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
-        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&baseline_main_window);
+        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         let player_attached = self.player.is_some();
         snapshot.can_toggle_pause = player_attached;
         snapshot.can_seek = player_attached;
+        snapshot.can_undo_seek = false;
+        snapshot.can_set_offset = player_attached;
+        snapshot.can_toggle_autoplay = true;
+        snapshot.can_adjust_autoplay_threshold = true;
         snapshot.can_manage_playlist = player_attached && snapshot.shared_playlist_enabled;
         if !snapshot.shared_playlist_enabled {
             snapshot.playlist = self.player_local_file_playlist_entries();
@@ -5535,6 +5975,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if player_attached && let Some(paused) = self.player_paused {
             snapshot.playback_paused = paused;
         }
+        snapshot.autoplay_countdown_seconds = None;
+        snapshot.user_offset_seconds = self.user_offset_seconds;
         snapshot
     }
 
@@ -5677,6 +6119,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         self.session = Some(Box::new(session));
+        self.session_projects_to_shell = true;
         self.session_default_room = Some(default_room);
         self.pending_room_change_request = None;
         if self.session_transport.is_none() {
@@ -5703,6 +6146,7 @@ impl GuiPersistedConfigRuntimeOwner {
             session_transport.clear_protocol_lines();
         }
         self.session = None;
+        self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;
         self.session_default_room = None;
@@ -6254,6 +6698,57 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn sync_manual_seek_into_detached_session(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        previous_position_seconds: f64,
+        target_position_seconds: f64,
+    ) -> Result<(), String> {
+        self.ensure_detached_client_core_chat_session(state)?;
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        session
+            .sync_local_playback_telemetry(self.player_paused, Some(previous_position_seconds))?;
+        let _ = session.record_manual_seek_to_position(target_position_seconds)?;
+        session.sync_local_playback_telemetry(self.player_paused, Some(target_position_seconds))?;
+        Ok(())
+    }
+
+    fn sync_playback_pause_into_detached_session(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        previous_paused: bool,
+        target_paused: bool,
+    ) -> Result<(), String> {
+        self.ensure_detached_client_core_chat_session(state)?;
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        session
+            .sync_local_playback_telemetry(Some(previous_paused), self.player_position_seconds)?;
+        let _ = session.set_playback_paused(target_paused)?;
+        session.sync_local_playback_telemetry(Some(target_paused), self.player_position_seconds)?;
+        Ok(())
+    }
+
+    fn undo_seek_target_position_from_detached_session(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Result<Option<f64>, String> {
+        self.ensure_detached_client_core_chat_session(state)?;
+        let Some(session) = self.session.as_mut() else {
+            return Ok(None);
+        };
+        session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
+        if !session.undo_seek()? {
+            return Ok(None);
+        }
+        let target = session.local_position_seconds();
+        session.sync_local_playback_telemetry(self.player_paused, target)?;
+        Ok(target)
+    }
+
     fn format_local_file_playlist_entry(local_file: &LocalFileUpdate) -> String {
         let mut details = Vec::new();
         if let Some(duration_seconds) = local_file.duration_seconds {
@@ -6335,6 +6830,10 @@ impl GuiPersistedConfigRuntimeOwner {
             desired_main_window.can_seek = player_attached;
             main_window_changed = true;
         }
+        if desired_main_window.can_set_offset != player_attached {
+            desired_main_window.can_set_offset = player_attached;
+            main_window_changed = true;
+        }
         let can_manage_playlist = self
             .session
             .as_ref()
@@ -6360,6 +6859,11 @@ impl GuiPersistedConfigRuntimeOwner {
             desired_main_window.playback_paused = paused;
             main_window_changed = true;
         }
+        if (desired_main_window.user_offset_seconds - self.user_offset_seconds).abs() > f64::EPSILON
+        {
+            desired_main_window.user_offset_seconds = self.user_offset_seconds;
+            main_window_changed = true;
+        }
         if main_window_changed {
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 desired_main_window,
@@ -6368,8 +6872,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let mut action_overrides = Vec::new();
         for (action_label, enabled) in [
+            ("Play", player_attached),
+            ("Pause", player_attached),
             ("Toggle Pause", player_attached),
             ("Seek", player_attached),
+            (
+                "Undo Seek",
+                state.pending_operation.is_none() && state.main_window.playback.can_undo_seek,
+            ),
             (
                 "Playlist Actions",
                 self.session
@@ -6400,6 +6910,28 @@ impl GuiPersistedConfigRuntimeOwner {
                     enabled,
                 });
             }
+        }
+        let current_offset_enabled = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Advanced")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Set Offset")
+            })
+            .map(|action| action.enabled);
+        let desired_offset_enabled = state.pending_operation.is_none() && player_attached;
+        if current_offset_enabled
+            .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
+        {
+            action_overrides.push(MenuActionRuntimeOverride {
+                section_title: "Advanced",
+                action_label: "Set Offset",
+                enabled: desired_offset_enabled,
+            });
         }
         if !action_overrides.is_empty() {
             handle.push_action(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
@@ -6445,6 +6977,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
         self.poll_managed_mpv_process();
         self.refresh_player_state();
         let mut projected_state = state.clone();
+        if let Err(error) =
+            self.sync_detached_session_preferences_and_player_state(&projected_state)
+        {
+            Self::push_runtime_unavailable(handle, error);
+        }
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
@@ -6503,12 +7040,142 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         target,
                     );
                 }
+                GuiRuntimeRequest::UndoSeek => {
+                    self.refresh_player_state();
+                    self.ensure_configured_player_attached();
+                    if self.player.is_none() {
+                        Self::push_runtime_unavailable(
+                            handle,
+                            "Playback undo seek requires a playback runtime connection.".to_owned(),
+                        );
+                        continue;
+                    }
+                    match self.undo_seek_target_position_from_detached_session(&projected_state) {
+                        Ok(Some(target_position_seconds)) => {
+                            let (player_name, undo_result) = {
+                                let player = self.player.as_mut().expect("player should exist");
+                                (player.name(), player.set_position(target_position_seconds))
+                            };
+                            match undo_result {
+                                Ok(()) => {
+                                    self.player_position_seconds = Some(target_position_seconds);
+                                    self.refresh_player_state();
+                                    Self::push_player_success(
+                                        handle,
+                                        format!(
+                                            "Undo seek applied via the attached {player_name} player (target {target_position_seconds:.3} seconds)."
+                                        ),
+                                    );
+                                }
+                                Err(error) => Self::push_player_error(
+                                    handle,
+                                    format!(
+                                        "Playback undo seek through the attached {player_name} player failed: {error}"
+                                    ),
+                                ),
+                            }
+                        }
+                        Ok(None) => Self::push_player_error(
+                            handle,
+                            "Playback undo seek is unavailable because no earlier seek target is recorded."
+                                .to_owned(),
+                        ),
+                        Err(error) => Self::push_player_error(handle, error),
+                    }
+                }
+                GuiRuntimeRequest::SetOffset(command) => {
+                    self.refresh_player_state();
+                    self.ensure_configured_player_attached();
+                    if self.player.is_none() {
+                        Self::push_runtime_unavailable(
+                            handle,
+                            "Playback offset changes require a playback runtime connection."
+                                .to_owned(),
+                        );
+                        continue;
+                    }
+                    let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
+                    let dispatch = plan_local_offset_runtime_dispatch_legacy_compatible(
+                        self.user_offset_seconds,
+                        previous_position_seconds,
+                        &command,
+                        None,
+                    );
+                    let Some(PlannedLocalRuntimeAction::SeekToPosition(target_position_seconds)) =
+                        dispatch.action
+                    else {
+                        continue;
+                    };
+                    let (player_name, offset_result) = {
+                        let player = self.player.as_mut().expect("player should exist");
+                        (player.name(), player.set_position(target_position_seconds))
+                    };
+                    match offset_result {
+                        Ok(()) => {
+                            self.player_position_seconds = Some(target_position_seconds);
+                            self.user_offset_seconds = dispatch
+                                .updated_user_offset_seconds
+                                .unwrap_or(self.user_offset_seconds);
+                            self.refresh_player_state();
+                            if let Err(error) = self.sync_manual_seek_into_detached_session(
+                                &projected_state,
+                                previous_position_seconds,
+                                target_position_seconds,
+                            ) {
+                                Self::push_player_error(handle, error);
+                            }
+                            let message = dispatch.line_to_emit.unwrap_or_else(|| {
+                                localized_current_offset_message_legacy_compatible(
+                                    self.user_offset_seconds,
+                                    None,
+                                )
+                            });
+                            Self::push_player_success(
+                                handle,
+                                format!("{message} Applied via the attached {player_name} player."),
+                            );
+                        }
+                        Err(error) => Self::push_player_error(
+                            handle,
+                            format!(
+                                "Playback offset change through the attached {player_name} player failed: {error}"
+                            ),
+                        ),
+                    }
+                }
+                GuiRuntimeRequest::SetAutoplayEnabled(enabled) => {
+                    if let Err(error) =
+                        self.ensure_detached_client_core_chat_session(&projected_state)
+                    {
+                        Self::push_player_error(handle, error);
+                        continue;
+                    }
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_autoplay_enabled(enabled)
+                    {
+                        Self::push_player_error(handle, error);
+                    }
+                }
+                GuiRuntimeRequest::SetAutoplayThreshold(threshold) => {
+                    if let Err(error) =
+                        self.ensure_detached_client_core_chat_session(&projected_state)
+                    {
+                        Self::push_player_error(handle, error);
+                        continue;
+                    }
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_autoplay_threshold(threshold)
+                    {
+                        Self::push_player_error(handle, error);
+                    }
+                }
                 GuiRuntimeRequest::SeekOffset(offset_seconds) => {
                     self.refresh_player_state();
                     self.ensure_configured_player_attached();
                     if self.player.is_some() {
+                        let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                         let target_position_seconds =
-                            (self.player_position_seconds.unwrap_or(0.0) + offset_seconds).max(0.0);
+                            (previous_position_seconds + offset_seconds).max(0.0);
                         let (player_name, seek_result) = {
                             let player = self.player.as_mut().expect("player should exist");
                             (player.name(), player.set_position(target_position_seconds))
@@ -6517,6 +7184,13 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             Ok(()) => {
                                 self.player_position_seconds = Some(target_position_seconds);
                                 self.refresh_player_state();
+                                if let Err(error) = self.sync_manual_seek_into_detached_session(
+                                    &projected_state,
+                                    previous_position_seconds,
+                                    target_position_seconds,
+                                ) {
+                                    Self::push_player_error(handle, error);
+                                }
                                 Self::push_player_success(
                                     handle,
                                     format!(
@@ -6609,6 +7283,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     self.ensure_configured_player_attached();
                     if self.player.is_some() {
                         let target_paused = !projected_state.main_window.playback_paused;
+                        let previous_paused = projected_state.main_window.playback_paused;
                         let (player_name, toggle_result) = {
                             let player = self.player.as_mut().expect("player should exist");
                             (player.name(), player.set_paused(target_paused))
@@ -6617,6 +7292,13 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             Ok(()) => {
                                 self.player_paused = Some(target_paused);
                                 self.refresh_player_state();
+                                if let Err(error) = self.sync_playback_pause_into_detached_session(
+                                    &projected_state,
+                                    previous_paused,
+                                    target_paused,
+                                ) {
+                                    Self::push_player_error(handle, error);
+                                }
                                 vec![GuiShellAction::CompletePlaybackPauseToggle]
                             }
                             Err(error) => vec![
@@ -6702,6 +7384,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     };
                     match session.connect_public_server(selected_server) {
                         Ok(()) => {
+                            self.session_projects_to_shell = true;
                             if let Some(driver) = replacement_transport_driver {
                                 if let Some(session_transport) = self.session_transport.as_ref() {
                                     session_transport.clear_protocol_lines();
@@ -7030,6 +7713,17 @@ impl GuiPreviewRuntimeBridge {
         ]
     }
 
+    fn preview_offset_actions(command: &LocalOffsetCommand) -> Vec<GuiShellAction> {
+        let message = format!("Offset requested: {}.", format_offset_command(command));
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
     fn preview_pending_completion_actions(state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         GuiPendingCompletionRequest::from_state(state)
             .map(GuiPendingCompletionRequest::into_action)
@@ -7063,6 +7757,20 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
         Self::preview_seek_actions(offset_seconds)
+    }
+
+    fn actions_for_undo_seek(&mut self) -> Vec<GuiShellAction> {
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Undo seek requested.".to_owned(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent("Undo seek requested.".to_owned()),
+        ]
+    }
+
+    fn actions_for_set_offset(&mut self, command: LocalOffsetCommand) -> Vec<GuiShellAction> {
+        Self::preview_offset_actions(&command)
     }
 
     fn actions_for_main_window_user_media_open(
@@ -7200,6 +7908,10 @@ enum GuiRuntimeRequest {
     },
     OpenMainWindowUserMedia(String),
     OpenMainWindowUserContainingFolder(String),
+    UndoSeek,
+    SetOffset(LocalOffsetCommand),
+    SetAutoplayEnabled(bool),
+    SetAutoplayThreshold(usize),
     SetRoom(String),
     ReturnToDefaultRoom,
     SetLocalReady(bool),
@@ -7244,7 +7956,26 @@ impl GuiRuntimeRequest {
                     GuiShellAction::AnnounceSystemChatEvent(message),
                 ]
             }
-            Self::QueuePlaylistEntry { .. }
+            Self::UndoSeek => vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Undo seek requested.".to_owned(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent("Undo seek requested.".to_owned()),
+            ],
+            Self::SetOffset(command) => {
+                let message = format!("Offset requested: {}.", format_offset_command(command));
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            }
+            Self::SetAutoplayEnabled(_)
+            | Self::SetAutoplayThreshold(_)
+            | Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
             | Self::ReplacePlaylist { .. }
@@ -7384,6 +8115,29 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::SeekOffset(offset_seconds));
+        Vec::new()
+    }
+
+    fn actions_for_undo_seek(&mut self) -> Vec<GuiShellAction> {
+        self.handle.push_request(GuiRuntimeRequest::UndoSeek);
+        Vec::new()
+    }
+
+    fn actions_for_set_offset(&mut self, command: LocalOffsetCommand) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SetOffset(command));
+        Vec::new()
+    }
+
+    fn actions_for_autoplay_enabled_change(&mut self, enabled: bool) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SetAutoplayEnabled(enabled));
+        Vec::new()
+    }
+
+    fn actions_for_autoplay_threshold_change(&mut self, threshold: usize) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::SetAutoplayThreshold(threshold));
         Vec::new()
     }
 
@@ -7537,9 +8291,9 @@ struct GuiNativeApp {
     runtime_pump: Box<dyn GuiNativeRuntimePump>,
     gui_state_root: Option<PathBuf>,
     test_drop_request: Option<GuiDroppedFilesRequest>,
-    seek_prompt_open: bool,
-    seek_prompt_buffer: String,
-    seek_prompt_error: Option<String>,
+    playback_prompt: Option<GuiPlaybackPromptKind>,
+    playback_prompt_buffer: String,
+    playback_prompt_error: Option<String>,
 }
 
 const GUI_NATIVE_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -7564,15 +8318,23 @@ impl GuiNativeApp {
             runtime_pump,
             gui_state_root: syncplay_gui_qsettings_root_from_env(),
             test_drop_request,
-            seek_prompt_open: false,
-            seek_prompt_buffer: String::new(),
-            seek_prompt_error: None,
+            playback_prompt: None,
+            playback_prompt_buffer: String::new(),
+            playback_prompt_error: None,
         }
     }
 
     fn parse_seek_offset_seconds(value: &str) -> Option<f64> {
         let offset = value.trim().parse::<f64>().ok()?;
         offset.is_finite().then_some(offset)
+    }
+
+    fn parse_offset_command(value: &str) -> Option<LocalOffsetCommand> {
+        let command = parse_local_input_command(&format!("offset {}", value.trim()))?;
+        match command {
+            LocalInputCommand::SetUserOffset(command) => Some(command),
+            _ => None,
+        }
     }
 
     fn test_drop_request_from_lookup<F>(
@@ -7687,41 +8449,72 @@ impl GuiNativeApp {
         state_changed
     }
 
-    fn close_seek_prompt(&mut self) {
-        self.seek_prompt_open = false;
-        self.seek_prompt_buffer.clear();
-        self.seek_prompt_error = None;
+    fn open_playback_prompt(&mut self, prompt: GuiPlaybackPromptKind) {
+        self.playback_prompt = Some(prompt);
+        self.playback_prompt_error = None;
     }
 
-    fn show_seek_prompt(&mut self, ctx: &egui::Context) -> (Vec<GuiShellAction>, bool) {
-        if !self.seek_prompt_open {
-            return (Vec::new(), false);
-        }
+    fn close_playback_prompt(&mut self) {
+        self.playback_prompt = None;
+        self.playback_prompt_buffer.clear();
+        self.playback_prompt_error = None;
+    }
 
-        let mut open = self.seek_prompt_open;
-        let mut buffer = self.seek_prompt_buffer.clone();
+    fn show_playback_prompt(&mut self, ctx: &egui::Context) -> (Vec<GuiShellAction>, bool) {
+        let Some(prompt) = self.playback_prompt else {
+            return (Vec::new(), false);
+        };
+
+        let (
+            window_title,
+            prompt_body,
+            button_label,
+            hint_text,
+            submit_action,
+            parse_error_message,
+        ) = match prompt {
+            GuiPlaybackPromptKind::Seek => (
+                "Playback Seek",
+                "Enter a seek offset in seconds. Negative values rewind.",
+                "Seek",
+                "e.g. 12.5 or -5",
+                GuiPlaybackPromptKind::Seek,
+                "Seek offset must be a finite number of seconds.",
+            ),
+            GuiPlaybackPromptKind::Offset => (
+                "Set Playback Offset",
+                "Enter an offset value like 5, +5, -5, or /90.",
+                "Set Offset",
+                "e.g. +5, -3.5, /90, 12",
+                GuiPlaybackPromptKind::Offset,
+                "Offset must be a supported Syncplay offset value.",
+            ),
+        };
+
+        let mut open = true;
+        let mut buffer = self.playback_prompt_buffer.clone();
         let mut submit_requested = false;
         let mut cancel_requested = false;
 
-        egui::Window::new("Playback Seek")
+        egui::Window::new(window_title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("Enter a seek offset in seconds. Negative values rewind.");
+                ui.label(prompt_body);
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut buffer)
                         .desired_width(200.0)
-                        .hint_text("e.g. 12.5 or -5"),
+                        .hint_text(hint_text),
                 );
                 let submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if let Some(error) = self.seek_prompt_error.as_deref() {
+                if let Some(error) = self.playback_prompt_error.as_deref() {
                     ui.colored_label(ui.visuals().warn_fg_color, error);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Seek").clicked() {
+                    if ui.button(button_label).clicked() {
                         submit_requested = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -7734,27 +8527,34 @@ impl GuiNativeApp {
             });
 
         let mut local_state_changed = false;
-        if buffer != self.seek_prompt_buffer {
-            self.seek_prompt_buffer = buffer;
-            if self.seek_prompt_error.take().is_some() {
+        if buffer != self.playback_prompt_buffer {
+            self.playback_prompt_buffer = buffer;
+            if self.playback_prompt_error.take().is_some() {
                 local_state_changed = true;
             }
         }
 
         if submit_requested {
-            if let Some(offset_seconds) = Self::parse_seek_offset_seconds(&self.seek_prompt_buffer)
-            {
-                let actions = self.runtime.actions_for_seek_offset(offset_seconds);
-                self.close_seek_prompt();
+            let actions = match submit_action {
+                GuiPlaybackPromptKind::Seek => {
+                    Self::parse_seek_offset_seconds(&self.playback_prompt_buffer)
+                        .map(|offset_seconds| self.runtime.actions_for_seek_offset(offset_seconds))
+                }
+                GuiPlaybackPromptKind::Offset => {
+                    Self::parse_offset_command(&self.playback_prompt_buffer)
+                        .map(|command| self.runtime.actions_for_set_offset(command))
+                }
+            };
+            if let Some(actions) = actions {
+                self.close_playback_prompt();
                 return (actions, true);
             }
-            self.seek_prompt_error =
-                Some("Seek offset must be a finite number of seconds.".to_owned());
+            self.playback_prompt_error = Some(parse_error_message.to_owned());
             return (Vec::new(), true);
         }
 
         if !open || cancel_requested {
-            self.close_seek_prompt();
+            self.close_playback_prompt();
             return (Vec::new(), true);
         }
 
@@ -7769,7 +8569,6 @@ impl eframe::App for GuiNativeApp {
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
         let actions = renderer.show(ctx, &self.state, show_manual_pending_controls);
         let close_requested = renderer.take_close_requested();
-        let seek_prompt_requested = renderer.take_seek_prompt_requested();
         let selected_media_files = renderer.take_selected_media_files();
         let dropped_files_request = renderer.take_dropped_files_request();
         let pending_completion_requested = renderer.take_pending_completion_requested();
@@ -7784,6 +8583,10 @@ impl eframe::App for GuiNativeApp {
         let mut playlist_selection_changes = Vec::new();
         let mut playlist_deletions = Vec::new();
         let mut playlist_reorder_requested = false;
+        let mut requested_playback_prompt = None;
+        let mut requested_undo_seek = false;
+        let mut requested_autoplay_state = None;
+        let mut requested_autoplay_threshold = None;
         for action in &actions {
             match action {
                 GuiShellAction::JoinMainWindowRoom(room) => {
@@ -7831,12 +8634,26 @@ impl eframe::App for GuiNativeApp {
                 | GuiShellAction::MoveSelectedMainWindowPlaylistDown => {
                     playlist_reorder_requested = true;
                 }
+                GuiShellAction::RequestSeekPrompt => {
+                    requested_playback_prompt = Some(GuiPlaybackPromptKind::Seek);
+                }
+                GuiShellAction::RequestOffsetPrompt => {
+                    requested_playback_prompt = Some(GuiPlaybackPromptKind::Offset);
+                }
+                GuiShellAction::RequestPlaybackUndoSeek => {
+                    requested_undo_seek = true;
+                }
+                GuiShellAction::AnnounceAutoplayState(active) => {
+                    requested_autoplay_state = Some(*active);
+                }
+                GuiShellAction::AnnounceAutoplayThreshold(threshold) => {
+                    requested_autoplay_threshold = Some(*threshold);
+                }
                 _ => {}
             }
         }
-        if seek_prompt_requested {
-            self.seek_prompt_open = true;
-            self.seek_prompt_error = None;
+        if let Some(prompt) = requested_playback_prompt {
+            self.open_playback_prompt(prompt);
         }
         let mut state_changed = false;
         for action in actions {
@@ -7919,6 +8736,27 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
+        if requested_undo_seek {
+            for action in self.runtime.actions_for_undo_seek() {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if let Some(autoplay_state) = requested_autoplay_state {
+            for action in self
+                .runtime
+                .actions_for_autoplay_enabled_change(autoplay_state)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if let Some(autoplay_threshold) = requested_autoplay_threshold {
+            for action in self
+                .runtime
+                .actions_for_autoplay_threshold_change(autoplay_threshold)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
         for action in self.runtime.drain_runtime_actions() {
             state_changed |= self.state.apply(action);
         }
@@ -7949,8 +8787,9 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
-        let (seek_actions, seek_prompt_state_changed) = self.show_seek_prompt(ctx);
-        for action in seek_actions {
+        let (playback_prompt_actions, playback_prompt_state_changed) =
+            self.show_playback_prompt(ctx);
+        for action in playback_prompt_actions {
             state_changed |= self.state.apply(action);
         }
         self.runtime_pump.pump(&self.state);
@@ -7962,8 +8801,8 @@ impl eframe::App for GuiNativeApp {
         }
         ctx.request_repaint_after(GUI_NATIVE_RUNTIME_POLL_INTERVAL);
         if state_changed
-            || seek_prompt_requested
-            || seek_prompt_state_changed
+            || requested_playback_prompt.is_some()
+            || playback_prompt_state_changed
             || pending_completion_requested
             || pending_cancel_requested
         {
@@ -8423,14 +9262,20 @@ enum GuiShellAction {
     AnnounceMainWindowUserJoined(String),
     AnnounceSelectedMainWindowUserRenamed(String),
     AnnounceSelectedMainWindowUserLeft,
+    BeginPlaybackPause,
+    BeginPlaybackResume,
     BeginPlaybackPauseToggle,
     CompletePlaybackPauseToggle,
     CancelPlaybackPauseToggle,
     AnnouncePlaybackPaused,
     AnnouncePlaybackResumed,
+    RequestSeekPrompt,
+    RequestOffsetPrompt,
+    RequestPlaybackUndoSeek,
     AnnounceLocalUserReady,
     AnnounceLocalUserNotReady,
     AnnounceAutoplayState(bool),
+    AnnounceAutoplayThreshold(usize),
     AnnounceSharedPlaylistLoaded(Vec<String>),
     AnnounceSharedPlaylistEntryAdded(String),
     AnnounceSharedPlaylistSelectionChanged(usize),
@@ -8489,6 +9334,8 @@ enum GuiShellAction {
     AnnounceMediaSearchDirectoryBrowsed(String),
     BeginMissingMediaSearch,
     CompleteMissingMediaSearch(Option<String>),
+    ToggleMainWindowPlaybackButtons,
+    ToggleMainWindowAutoplayControls,
     ToggleMainWindowHideEmptyRooms,
     RequestMainWindowUserMediaOpen(String),
     RequestMainWindowUserContainingFolderOpen(String),
@@ -9561,11 +10408,20 @@ impl MainWindowShellState {
             playback: MainWindowPlaybackControls {
                 can_toggle_pause: false,
                 can_seek: false,
+                can_undo_seek: false,
+                can_set_offset: false,
+                can_toggle_autoplay: true,
+                can_adjust_autoplay_threshold: true,
                 can_set_ready: true,
                 can_manage_playlist: false,
             },
             playback_paused: false,
             autoplay_active: settings.autoplay_initial_state.unwrap_or(false),
+            autoplay_threshold: autoplay_threshold_from_settings(settings),
+            autoplay_countdown_seconds: None,
+            user_offset_seconds: 0.0,
+            show_playback_buttons: true,
+            show_autoplay_controls: true,
         }
     }
 
@@ -9584,16 +10440,27 @@ impl MainWindowShellState {
                 self.rooms.len(),
             ),
             format!(
-                "Playback Controls: pause={}, seek={}, ready={}, playlist={}",
+                "Playback Controls: pause={}, seek={}, undo_seek={}, offset={}, autoplay={}, autoplay_threshold={}, ready={}, playlist={}, show_buttons={}, show_autoplay={}",
                 bool_label(self.playback.can_toggle_pause),
                 bool_label(self.playback.can_seek),
+                bool_label(self.playback.can_undo_seek),
+                bool_label(self.playback.can_set_offset),
+                bool_label(self.playback.can_toggle_autoplay),
+                bool_label(self.playback.can_adjust_autoplay_threshold),
                 bool_label(self.playback.can_set_ready),
                 bool_label(self.playback.can_manage_playlist),
+                bool_label(self.show_playback_buttons),
+                bool_label(self.show_autoplay_controls),
             ),
             format!(
-                "Playback State: paused={}, autoplay={}",
+                "Playback State: paused={}, autoplay={}, autoplay_threshold={}, autoplay_countdown={}, offset={}",
                 bool_label(self.playback_paused),
                 bool_label(self.autoplay_active),
+                self.autoplay_threshold,
+                self.autoplay_countdown_seconds
+                    .map(|seconds| seconds.to_string())
+                    .unwrap_or_else(|| "(none)".to_owned()),
+                self.user_offset_seconds,
             ),
             format!("Rooms ({}):", self.rooms.len()),
         ];
@@ -9698,12 +10565,27 @@ impl MenuDialogShellState {
                     title: "Playback",
                     actions: vec![
                         MenuActionShellItem {
+                            label: "Play",
+                            enabled: false,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Pause",
+                            enabled: false,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
                             label: "Toggle Pause",
                             enabled: false,
                             is_selected: false,
                         },
                         MenuActionShellItem {
                             label: "Seek",
+                            enabled: false,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Undo Seek",
                             enabled: false,
                             is_selected: false,
                         },
@@ -9720,6 +10602,11 @@ impl MenuDialogShellState {
                         MenuActionShellItem {
                             label: "Trusted Domains",
                             enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Set Offset",
+                            enabled: false,
                             is_selected: false,
                         },
                         MenuActionShellItem {
@@ -9751,6 +10638,16 @@ impl MenuDialogShellState {
                             label: "Show Users",
                             enabled: true,
                             is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Playback Buttons",
+                            enabled: true,
+                            is_selected: true,
+                        },
+                        MenuActionShellItem {
+                            label: "Autoplay",
+                            enabled: true,
+                            is_selected: true,
                         },
                         MenuActionShellItem {
                             label: "Hide Empty Rooms",
@@ -10521,16 +11418,27 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::AnnounceSelectedMainWindowUserLeft => {
                 self.announce_selected_main_window_user_left()
             }
+            GuiShellAction::BeginPlaybackPause => self.begin_playback_pause_state(true),
+            GuiShellAction::BeginPlaybackResume => self.begin_playback_pause_state(false),
             GuiShellAction::BeginPlaybackPauseToggle => self.begin_playback_pause_toggle(),
             GuiShellAction::CompletePlaybackPauseToggle => self.complete_playback_pause_toggle(),
             GuiShellAction::CancelPlaybackPauseToggle => self.cancel_playback_pause_toggle(),
             GuiShellAction::AnnouncePlaybackPaused => self.announce_playback_pause_state(true),
             GuiShellAction::AnnouncePlaybackResumed => self.announce_playback_pause_state(false),
+            GuiShellAction::RequestSeekPrompt
+            | GuiShellAction::RequestOffsetPrompt
+            | GuiShellAction::RequestPlaybackUndoSeek => {
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::AnnounceLocalUserReady => self.announce_local_user_ready_state(true),
             GuiShellAction::AnnounceLocalUserNotReady => {
                 self.announce_local_user_ready_state(false)
             }
             GuiShellAction::AnnounceAutoplayState(active) => self.announce_autoplay_state(active),
+            GuiShellAction::AnnounceAutoplayThreshold(threshold) => {
+                self.announce_autoplay_threshold(threshold)
+            }
             GuiShellAction::AnnounceSharedPlaylistLoaded(entries) => {
                 self.announce_shared_playlist_loaded(entries)
             }
@@ -10693,6 +11601,12 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::BeginMissingMediaSearch => self.begin_missing_media_search(),
             GuiShellAction::CompleteMissingMediaSearch(found_path) => {
                 self.complete_missing_media_search(found_path)
+            }
+            GuiShellAction::ToggleMainWindowPlaybackButtons => {
+                self.toggle_main_window_playback_buttons()
+            }
+            GuiShellAction::ToggleMainWindowAutoplayControls => {
+                self.toggle_main_window_autoplay_controls()
             }
             GuiShellAction::ToggleMainWindowHideEmptyRooms => {
                 self.toggle_main_window_hide_empty_rooms()
@@ -11095,6 +12009,35 @@ impl SyncplayGuiShellAppState {
                 true,
                 false,
             ),
+            GuiWidgetNode::leaf(
+                "main-window:autoplay-threshold",
+                "Autoplay Min Users",
+                GuiWidgetKind::Status,
+                Some(self.main_window.autoplay_threshold.to_string()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:autoplay-countdown",
+                "Autoplay Countdown",
+                GuiWidgetKind::Status,
+                Some(
+                    self.main_window
+                        .autoplay_countdown_seconds
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "(none)".to_owned()),
+                ),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:user-offset",
+                "Playback Offset",
+                GuiWidgetKind::Status,
+                Some(format!("{:.3}", self.main_window.user_offset_seconds)),
+                true,
+                false,
+            ),
         ];
 
         children.push(self.main_window_browser_widget_node());
@@ -11198,11 +12141,25 @@ impl SyncplayGuiShellAppState {
             false,
         ));
 
-        children.push(GuiWidgetNode::branch(
-            "main-window:controls",
-            "Controls",
-            GuiWidgetKind::Panel,
-            vec![
+        let mut control_children = Vec::new();
+        if self.main_window.show_playback_buttons {
+            control_children.extend([
+                GuiWidgetNode::leaf(
+                    "main-window:control:play",
+                    "Play",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.main_window.playback.can_toggle_pause && self.pending_operation.is_none(),
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:control:pause",
+                    "Pause",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.main_window.playback.can_toggle_pause && self.pending_operation.is_none(),
+                    false,
+                ),
                 GuiWidgetNode::leaf(
                     "main-window:control:toggle-pause",
                     "Toggle Pause",
@@ -11212,15 +12169,84 @@ impl SyncplayGuiShellAppState {
                     false,
                 ),
                 GuiWidgetNode::leaf(
-                    "main-window:control:set-ready",
-                    "Set Ready",
+                    "main-window:control:seek",
+                    "Seek",
                     GuiWidgetKind::Button,
                     None,
-                    self.main_window.playback.can_set_ready && self.pending_operation.is_none(),
+                    self.main_window.playback.can_seek && self.pending_operation.is_none(),
                     false,
                 ),
-            ],
+                GuiWidgetNode::leaf(
+                    "main-window:control:undo-seek",
+                    "Undo Seek",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.main_window.playback.can_undo_seek && self.pending_operation.is_none(),
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:control:set-offset",
+                    "Set Offset",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.main_window.playback.can_set_offset && self.pending_operation.is_none(),
+                    false,
+                ),
+            ]);
+        }
+        control_children.push(GuiWidgetNode::leaf(
+            "main-window:control:set-ready",
+            "Set Ready",
+            GuiWidgetKind::Button,
+            None,
+            self.main_window.playback.can_set_ready && self.pending_operation.is_none(),
+            false,
         ));
+        children.push(GuiWidgetNode::branch(
+            "main-window:controls",
+            "Controls",
+            GuiWidgetKind::Panel,
+            control_children,
+        ));
+
+        if self.main_window.show_autoplay_controls {
+            children.push(GuiWidgetNode::branch(
+                "main-window:autoplay-controls",
+                "Autoplay Controls",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-toggle",
+                        "Autoplay",
+                        GuiWidgetKind::Checkbox,
+                        Some(self.main_window.autoplay_active.to_string()),
+                        self.main_window.playback.can_toggle_autoplay
+                            && self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-threshold-down",
+                        "Autoplay -",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.main_window.playback.can_adjust_autoplay_threshold
+                            && self.pending_operation.is_none()
+                            && self.main_window.autoplay_threshold > 2,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:control:autoplay-threshold-up",
+                        "Autoplay +",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.main_window.playback.can_adjust_autoplay_threshold
+                            && self.pending_operation.is_none()
+                            && self.main_window.autoplay_threshold < 99,
+                        false,
+                    ),
+                ],
+            ));
+        }
 
         GuiWidgetNode::branch(
             "main-window-root",
@@ -12147,6 +13173,21 @@ impl SyncplayGuiShellAppState {
         if current_snapshot.can_seek != previous_baseline.can_seek {
             self.main_window.playback.can_seek = current_snapshot.can_seek;
         }
+        if current_snapshot.can_undo_seek != previous_baseline.can_undo_seek {
+            self.main_window.playback.can_undo_seek = current_snapshot.can_undo_seek;
+        }
+        if current_snapshot.can_set_offset != previous_baseline.can_set_offset {
+            self.main_window.playback.can_set_offset = current_snapshot.can_set_offset;
+        }
+        if current_snapshot.can_toggle_autoplay != previous_baseline.can_toggle_autoplay {
+            self.main_window.playback.can_toggle_autoplay = current_snapshot.can_toggle_autoplay;
+        }
+        if current_snapshot.can_adjust_autoplay_threshold
+            != previous_baseline.can_adjust_autoplay_threshold
+        {
+            self.main_window.playback.can_adjust_autoplay_threshold =
+                current_snapshot.can_adjust_autoplay_threshold;
+        }
         if current_snapshot.can_set_ready != previous_baseline.can_set_ready {
             self.main_window.playback.can_set_ready = current_snapshot.can_set_ready;
         }
@@ -12158,6 +13199,36 @@ impl SyncplayGuiShellAppState {
         }
         if current_snapshot.autoplay_active != previous_baseline.autoplay_active {
             self.main_window.autoplay_active = current_snapshot.autoplay_active;
+        }
+        if current_snapshot.autoplay_threshold != previous_baseline.autoplay_threshold {
+            self.main_window.autoplay_threshold = current_snapshot.autoplay_threshold;
+        }
+        if current_snapshot.autoplay_countdown_seconds
+            != previous_baseline.autoplay_countdown_seconds
+        {
+            self.main_window.autoplay_countdown_seconds =
+                current_snapshot.autoplay_countdown_seconds;
+        }
+        if (current_snapshot.user_offset_seconds - previous_baseline.user_offset_seconds).abs()
+            > f64::EPSILON
+        {
+            self.main_window.user_offset_seconds = current_snapshot.user_offset_seconds;
+        }
+        if current_snapshot.show_playback_buttons != previous_baseline.show_playback_buttons {
+            self.main_window.show_playback_buttons = current_snapshot.show_playback_buttons;
+            self.set_menu_action_selected(
+                "Window",
+                "Playback Buttons",
+                current_snapshot.show_playback_buttons,
+            );
+        }
+        if current_snapshot.show_autoplay_controls != previous_baseline.show_autoplay_controls {
+            self.main_window.show_autoplay_controls = current_snapshot.show_autoplay_controls;
+            self.set_menu_action_selected(
+                "Window",
+                "Autoplay",
+                current_snapshot.show_autoplay_controls,
+            );
         }
     }
 
@@ -12718,6 +13789,8 @@ impl SyncplayGuiShellAppState {
         let busy = self.pending_operation.is_some();
         let can_open_media_file = !busy && self.media_open_runtime_available();
         self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
+        self.set_menu_action_enabled("Playback", "Play", can_toggle_pause);
+        self.set_menu_action_enabled("Playback", "Pause", can_toggle_pause);
         self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
         self.set_menu_action_enabled(
             "Playback",
@@ -12726,8 +13799,18 @@ impl SyncplayGuiShellAppState {
         );
         self.set_menu_action_enabled(
             "Playback",
+            "Undo Seek",
+            !busy && self.main_window.playback.can_undo_seek,
+        );
+        self.set_menu_action_enabled(
+            "Playback",
             "Playlist Actions",
             !busy && self.main_window.playback.can_manage_playlist,
+        );
+        self.set_menu_action_enabled(
+            "Advanced",
+            "Set Offset",
+            !busy && self.main_window.playback.can_set_offset,
         );
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
@@ -13002,6 +14085,17 @@ impl SyncplayGuiShellAppState {
         self.main_window.users.iter().position(|user| user.is_self)
     }
 
+    fn begin_playback_pause_state(&mut self, paused: bool) -> bool {
+        if self.main_window.playback_paused == paused {
+            return self.record_action_error(if paused {
+                "Playback is already paused."
+            } else {
+                "Playback is already running."
+            });
+        }
+        self.begin_playback_pause_toggle()
+    }
+
     fn begin_playback_pause_toggle(&mut self) -> bool {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
@@ -13150,6 +14244,50 @@ impl SyncplayGuiShellAppState {
             } else {
                 "Autoplay disabled.".to_owned()
             },
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_autoplay_threshold(&mut self, threshold: usize) -> bool {
+        if !(2..=99).contains(&threshold) {
+            return self.record_action_error(
+                "Autoplay minimum users must stay within the supported 2-99 range.",
+            );
+        }
+        if self.main_window.autoplay_threshold == threshold {
+            return self.record_action_error(
+                "Autoplay minimum users is already set to the requested value.",
+            );
+        }
+
+        self.main_window.autoplay_threshold = threshold;
+        self.push_system_chat_message(format!("Autoplay minimum users set to {threshold}."));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!("Autoplay minimum users set to {threshold}."),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn toggle_main_window_playback_buttons(&mut self) -> bool {
+        self.main_window.show_playback_buttons = !self.main_window.show_playback_buttons;
+        self.set_menu_action_selected(
+            "Window",
+            "Playback Buttons",
+            self.main_window.show_playback_buttons,
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn toggle_main_window_autoplay_controls(&mut self) -> bool {
+        self.main_window.show_autoplay_controls = !self.main_window.show_autoplay_controls;
+        self.set_menu_action_selected(
+            "Window",
+            "Autoplay",
+            self.main_window.show_autoplay_controls,
         );
         self.clear_action_error_and_refresh();
         true
@@ -13612,10 +14750,6 @@ impl SyncplayGuiShellAppState {
         self.open_newly_expected_modal_if_needed(
             previous_tls_prompt_expected,
             previous_update_notice_expected,
-        );
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Menu/dialog runtime snapshot applied.".to_owned(),
         );
         self.clear_action_error_and_refresh();
         true
@@ -14329,13 +15463,14 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            ("Playback", "Play") => self.begin_playback_pause_state(false),
+            ("Playback", "Pause") => self.begin_playback_pause_state(true),
             ("Playback", "Toggle Pause") => self.begin_playback_pause_toggle(),
             ("Playback", "Seek") => {
-                self.push_transient_notification(
-                    GuiTransientNotificationLevel::Info,
-                    "Seek requested.".to_owned(),
-                );
-                self.push_system_chat_message("Seek requested.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Playback", "Undo Seek") => {
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -14351,6 +15486,10 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            ("Advanced", "Set Offset") => {
+                self.clear_action_error_and_refresh();
+                true
+            }
             ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
             ("Advanced", "Update Check") => self.begin_update_check(true),
             ("Window", "Show Chat") | ("Window", "Show Playlist") | ("Window", "Show Users") => {
@@ -14362,6 +15501,8 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            ("Window", "Playback Buttons") => self.toggle_main_window_playback_buttons(),
+            ("Window", "Autoplay") => self.toggle_main_window_autoplay_controls(),
             ("Window", "Hide Empty Rooms") => self.toggle_main_window_hide_empty_rooms(),
             ("Help", "About") => self.announce_about_dialog_requested(),
             ("Help", "Manual / Command Help") => self.announce_help_requested(),
@@ -14668,12 +15809,36 @@ impl SyncplayGuiShellAppState {
             playback: MainWindowPlaybackControls {
                 can_toggle_pause: snapshot.can_toggle_pause,
                 can_seek: snapshot.can_seek,
+                can_undo_seek: snapshot.can_undo_seek,
+                can_set_offset: snapshot.can_set_offset,
+                can_toggle_autoplay: snapshot.can_toggle_autoplay,
+                can_adjust_autoplay_threshold: snapshot.can_adjust_autoplay_threshold,
                 can_set_ready: snapshot.can_set_ready,
                 can_manage_playlist: snapshot.can_manage_playlist,
             },
             playback_paused: snapshot.playback_paused,
             autoplay_active: snapshot.autoplay_active,
+            autoplay_threshold: snapshot.autoplay_threshold,
+            autoplay_countdown_seconds: snapshot.autoplay_countdown_seconds,
+            user_offset_seconds: snapshot.user_offset_seconds,
+            show_playback_buttons: snapshot.show_playback_buttons,
+            show_autoplay_controls: snapshot.show_autoplay_controls,
         };
+        self.set_menu_action_selected(
+            "Window",
+            "Playback Buttons",
+            self.main_window.show_playback_buttons,
+        );
+        self.set_menu_action_selected(
+            "Window",
+            "Autoplay",
+            self.main_window.show_autoplay_controls,
+        );
+        self.set_menu_action_selected(
+            "Window",
+            "Hide Empty Rooms",
+            self.main_window.hide_empty_rooms,
+        );
 
         self.selection.selected_main_window_user = previously_selected_username
             .as_deref()
@@ -14704,10 +15869,6 @@ impl SyncplayGuiShellAppState {
         if !self.replace_main_window_runtime_snapshot(snapshot) {
             return false;
         }
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Main window runtime snapshot applied.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
         true
@@ -16549,6 +17710,29 @@ fn bool_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+fn autoplay_threshold_from_settings(settings: &StoredClientSettingsMvp) -> usize {
+    match settings.autoplay_min_users.as_ref() {
+        Some(AutoplayThresholdOverride::Set(count)) => (*count).clamp(2, 99),
+        Some(AutoplayThresholdOverride::Disable) | None => DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD,
+    }
+}
+
+fn format_offset_command(command: &LocalOffsetCommand) -> String {
+    match command {
+        LocalOffsetCommand::Absolute(seconds) => seconds.to_string(),
+        LocalOffsetCommand::Relative(seconds) if *seconds >= 0.0 => format!("+{seconds}"),
+        LocalOffsetCommand::Relative(seconds) => seconds.to_string(),
+        LocalOffsetCommand::RelativeFromCurrentPositionMinus(seconds) => format!("/{seconds}"),
+    }
+}
+
+fn system_time_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 fn normalized_editable_text(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() || trimmed == "(unset)" {
@@ -17051,6 +18235,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             }
         )));
 
@@ -17293,6 +18478,7 @@ mod tests {
                 autoplay_active: true,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -17374,6 +18560,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
 
@@ -17424,6 +18611,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -17496,6 +18684,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
 
@@ -17796,10 +18985,7 @@ mod tests {
                 .find(|action| action.label == "About")
                 .is_some_and(|action| !action.enabled)
         );
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("Menu/dialog runtime snapshot applied.")
-        );
+        assert!(state.notifications.is_empty());
     }
 
     #[test]
@@ -18161,6 +19347,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -18721,6 +19908,7 @@ mod tests {
                 autoplay_active: true,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -20006,14 +21194,14 @@ mod tests {
 
         assert!(state.apply(GuiShellAction::SelectMenuAction {
             section_index: 2,
-            action_index: 1,
+            action_index: 2,
         }));
         assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
         assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
         assert!(state.apply(GuiShellAction::SelectMenuAction {
             section_index: 1,
-            action_index: 0,
+            action_index: 1,
         }));
         assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
         assert_eq!(
@@ -20027,7 +21215,7 @@ mod tests {
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
         assert!(disabled_state.apply(GuiShellAction::SelectMenuAction {
             section_index: 1,
-            action_index: 0,
+            action_index: 1,
         }));
         assert!(!disabled_state.apply(GuiShellAction::TriggerSelectedMenuAction));
         assert_eq!(
@@ -20672,15 +21860,13 @@ mod tests {
                 autoplay_active: true,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert_eq!(state.main_window.room_name, "RuntimeRoom");
         assert_eq!(state.main_window.users.len(), 2);
         assert_eq!(state.main_window.playlist.len(), 2);
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("Main window runtime snapshot applied.")
-        );
+        assert!(state.notifications.is_empty());
         assert_eq!(state.selection.selected_main_window_user, Some(0));
         assert_eq!(state.selection.selected_main_window_playlist, Some(0));
 
@@ -20734,6 +21920,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert_eq!(state.main_window.room_name, "+RuntimeRoom");
@@ -20789,6 +21976,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
 
@@ -20855,6 +22043,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert_eq!(
@@ -20893,6 +22082,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert_eq!(
@@ -20943,6 +22133,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
         assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
@@ -20986,6 +22177,7 @@ mod tests {
                     autoplay_active: true,
                     hide_empty_rooms: false,
                     rooms: Vec::new(),
+                    ..Default::default()
                 },
                 public_servers: PublicServerBrowserShellState {
                     servers: vec![
@@ -21123,6 +22315,7 @@ mod tests {
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: Vec::new(),
+                    ..Default::default()
                 },
                 public_servers: PublicServerBrowserShellState {
                     servers: Vec::new(),
@@ -21506,6 +22699,7 @@ mod tests {
                 autoplay_active: false,
                 hide_empty_rooms: false,
                 rooms: Vec::new(),
+                ..Default::default()
             },
         )));
 
@@ -23229,6 +24423,7 @@ mod tests {
             last_checked_for_updates: None,
             hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            ..Default::default()
         };
 
         super::persist_gui_ui_state_at_root(&root, &expected)
@@ -23270,6 +24465,7 @@ mod tests {
             last_checked_for_updates: None,
             hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            ..Default::default()
         };
 
         let mut host = RecordingHost;
@@ -23337,6 +24533,7 @@ mod tests {
             last_checked_for_updates: None,
             hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            ..Default::default()
         };
 
         let mut host = RecordingHost;
@@ -24178,7 +25375,7 @@ mod tests {
         let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
         let menu_action = shell_tree.find("menus:action:0:0").unwrap();
         let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
-        let seek_menu_action = shell_tree.find("menus:action:1:1").unwrap();
+        let seek_menu_action = shell_tree.find("menus:action:1:3").unwrap();
         let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
         let playlist_row = shell_tree.find("main-window:playlist:0").unwrap();
         let browser_join_button = shell_tree.find("main-window:room-group:1:join").unwrap();
@@ -25364,6 +26561,7 @@ assert-pending\tnone\n"
                 last_checked_for_updates: None,
                 hide_empty_rooms: false,
                 public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+                ..Default::default()
             },
         )
         .expect("GUI state should be written");
@@ -25527,6 +26725,7 @@ assert-pending\tnone\n"
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("(no room joined)", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                     command_availability: GuiCommandAvailabilityState {
@@ -26992,6 +28191,7 @@ assert-pending\tnone\n"
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("room1", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -27065,6 +28265,7 @@ assert-pending\tnone\n"
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("room1", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -27381,6 +28582,7 @@ assert-pending\tnone\n"
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("room1", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -27452,6 +28654,7 @@ assert-pending\tnone\n"
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("room1", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -30260,6 +31463,7 @@ assert-pending\tnone\n"
         let mut owner = super::GuiPersistedConfigRuntimeOwner {
             config_path: None,
             session: None,
+            session_projects_to_shell: false,
             session_transport: None,
             session_transport_driver: None,
             session_default_room: None,
@@ -30276,6 +31480,7 @@ assert-pending\tnone\n"
             player_local_file: None,
             player_position_seconds: None,
             player_paused: None,
+            user_offset_seconds: 0.0,
         };
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let mut state =
@@ -30301,15 +31506,27 @@ assert-pending\tnone\n"
                     chat: Vec::new(),
                     can_toggle_pause: true,
                     can_seek: true,
+                    can_set_offset: true,
                     can_set_ready: true,
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("(no room joined)", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Play",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Pause",
+                            enabled: true,
+                        },
                         MenuActionRuntimeOverride {
                             section_title: "Playback",
                             action_label: "Toggle Pause",
@@ -30318,6 +31535,11 @@ assert-pending\tnone\n"
                         MenuActionRuntimeOverride {
                             section_title: "Playback",
                             action_label: "Seek",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Advanced",
+                            action_label: "Set Offset",
                             enabled: true,
                         },
                     ],
@@ -30396,12 +31618,14 @@ assert-pending\tnone\n"
                     chat: Vec::new(),
                     can_toggle_pause: true,
                     can_seek: true,
+                    can_set_offset: true,
                     can_set_ready: true,
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("(no room joined)", false, true),
+                    ..Default::default()
                 },
             )]
         );
@@ -30442,12 +31666,14 @@ assert-pending\tnone\n"
                     chat: Vec::new(),
                     can_toggle_pause: true,
                     can_seek: true,
+                    can_set_offset: true,
                     can_set_ready: true,
                     can_manage_playlist: false,
                     playback_paused: true,
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("(no room joined)", false, true),
+                    ..Default::default()
                 },
             )]
         );
@@ -30507,6 +31733,7 @@ assert-pending\tnone\n"
         let mut owner = super::GuiPersistedConfigRuntimeOwner {
             config_path: None,
             session: None,
+            session_projects_to_shell: false,
             session_transport: None,
             session_transport_driver: None,
             session_default_room: None,
@@ -30523,6 +31750,7 @@ assert-pending\tnone\n"
             player_local_file: None,
             player_position_seconds: None,
             player_paused: None,
+            user_offset_seconds: 0.0,
         };
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -30567,15 +31795,27 @@ assert-pending\tnone\n"
                     chat: Vec::new(),
                     can_toggle_pause: true,
                     can_seek: true,
+                    can_set_offset: true,
                     can_set_ready: true,
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
                     hide_empty_rooms: false,
                     rooms: browser_runtime_rooms("(no room joined)", false, true),
+                    ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Play",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Pause",
+                            enabled: true,
+                        },
                         MenuActionRuntimeOverride {
                             section_title: "Playback",
                             action_label: "Toggle Pause",
@@ -30584,6 +31824,11 @@ assert-pending\tnone\n"
                         MenuActionRuntimeOverride {
                             section_title: "Playback",
                             action_label: "Seek",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Advanced",
+                            action_label: "Set Offset",
                             enabled: true,
                         },
                     ],

@@ -2,7 +2,7 @@
 
 ## Audit Date
 
-- 2026-03-10
+- 2026-03-11
 
 ## Verification Performed For This Refresh
 
@@ -31,10 +31,10 @@
 
 ## Current Read On Parity
 
-- The Rust client-core is still materially ahead of the Rust GUI. A meaningful slice of Python behavior already exists in `syncplay-client-core` and `syncplay-client-app`, but the GUI still exposes only a subset of it.
+- The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers the main-window playback/autoplay/offset slice that had been one of the most obvious P1 gaps.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The biggest remaining parity blockers are now:
-  - many Python playlist/controller/offset/undo workflows are still missing or only exist as shell-only mutations,
+  - Python playlist workflows, controller-auth UX, and GUI slash-command handling still trail the Python client,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
 
@@ -53,22 +53,12 @@
 - Public-server browsing, refresh, custom-entry editing, and runtime-backed connect flows exist.
 - Missing-media search exists as a real GUI flow.
 - The main window now projects a Python-style room/user/file browser, including room grouping, per-user file metadata and difference cues, runtime-backed room/file/folder/trusted-domain actions, and hide-empty-room behavior.
+- Main-window playback parity now includes explicit play/pause actions, undo seek, set-offset prompts, autoplay toggle/threshold controls, countdown/status feedback, and persisted playback/autoplay control visibility.
+- The matching Playback/Advanced/Window menu affordances are runtime-backed, and detached local player/session synchronization no longer leaks hidden session state into the visible shell.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
-- The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, undo-seek, playlist undo, and playlist shuffle operations.
+- The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, playlist undo, and playlist shuffle operations.
 
 ## Remaining Python Client Parity Tasks
-
-### P1. Port main-window playback, autoplay, and offset workflows
-
-Current status: the Rust GUI exposes pause toggle, ready toggle, and seek-by-offset. The Python GUI also exposes play/pause buttons, undo seek, autoplay controls, and set-offset workflows.
-
-Work to assign:
-
-- Add explicit play and pause actions instead of only a toggle.
-- Wire undo-seek through the existing client-core capability.
-- Reuse the existing offset-command/runtime logic for a real GUI `Set Offset` flow.
-- Add Python-style autoplay controls and feedback in the main window, not just a passive status field.
-- Add the corresponding File/Playback/Window menu entries and toolbar/button affordances that Python exposes.
 
 ### P1. Port Python playlist workflows instead of only the minimal shared-playlist slice
 
@@ -138,13 +128,12 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Playback/autoplay/offset/undo parity in the GUI.
-2. Playlist workflows and context menus.
-3. Controlled-room/controller-auth UX and set-others-readiness.
-4. GUI slash-command handling.
-5. Configuration dialog completion.
-6. Localization and language-sensitive service calls.
-7. Additional player backends.
+1. Playlist workflows and context menus.
+2. Controlled-room/controller-auth UX and set-others-readiness.
+3. GUI slash-command handling.
+4. Configuration dialog completion.
+5. Localization and language-sensitive service calls.
+6. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 

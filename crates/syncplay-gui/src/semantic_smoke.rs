@@ -1048,6 +1048,7 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
             last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            ..Default::default()
         };
         super::persist_gui_ui_state_at_root(&root, &persisted_ui_state).map_err(|error| {
             format!(

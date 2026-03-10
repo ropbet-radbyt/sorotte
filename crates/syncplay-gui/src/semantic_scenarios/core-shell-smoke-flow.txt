@@ -22,7 +22,7 @@ assert-value	shell:modal:kind	update-notice
 activate	shell:modal:update:dismiss
 assert-value	shell:open-modal	(none)
 assert-value	menus:dialog:update	no
-activate	menus:action:2:1
+activate	menus:action:2:2
 assert-value	shell:open-modal	tls-certificate-prompt
 assert-value	shell:modal:kind	tls-certificate-prompt
 activate	shell:modal:tls:trust

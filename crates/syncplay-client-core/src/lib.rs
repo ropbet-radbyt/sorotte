@@ -1195,6 +1195,14 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_set_paused(&mut self, paused: bool) -> Result<bool, PlayerError> {
+        self.sync_player_playback_telemetry_into_session_and_buffer();
+        let actions = self.session.runtime_actions_for_local_pause_set(paused);
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_request_user_list(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_user_list_request();
         let sent = !actions.is_empty();
@@ -2586,6 +2594,18 @@ impl ClientSession {
         self.autoplay_enabled
     }
 
+    pub fn local_paused(&self) -> Option<bool> {
+        self.local_paused
+    }
+
+    pub fn local_position_seconds(&self) -> Option<f64> {
+        self.local_position
+    }
+
+    pub fn last_seek_position_before_manual_seek(&self) -> Option<f64> {
+        self.last_seek_position_before_manual_seek
+    }
+
     pub fn set_autoplay_enabled(&mut self, enabled: bool) {
         self.autoplay_enabled = enabled;
     }
@@ -3265,6 +3285,24 @@ impl ClientSession {
         let target_paused = !self.local_paused.unwrap_or(false);
         self.local_paused = Some(target_paused);
         vec![ClientRuntimeAction::SetPaused(target_paused)]
+    }
+
+    pub fn runtime_actions_for_local_pause_set(
+        &mut self,
+        paused: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        let effective_paused = self
+            .local_paused
+            .or_else(|| {
+                self.current_room_playstate()
+                    .and_then(|playstate| playstate.paused)
+            })
+            .unwrap_or(false);
+        if effective_paused == paused {
+            return Vec::new();
+        }
+        self.local_paused = Some(paused);
+        vec![ClientRuntimeAction::SetPaused(paused)]
     }
 
     pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
@@ -14500,6 +14538,41 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_paused_dispatches_only_when_state_changes() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_paused(true)
+                .expect("set paused should not fail"),
+            "setting paused should emit a local SetPaused action"
+        );
+        assert_eq!(runtime.player().paused, Some(true));
+        assert_eq!(runtime.session().local_paused(), Some(true));
+        assert!(
+            !runtime
+                .run_set_paused(true)
+                .expect("setting the same paused state should not fail"),
+            "setting the same paused state should be suppressed"
+        );
+        assert_eq!(runtime.player().paused, Some(true));
+        assert!(
+            runtime
+                .run_set_paused(false)
+                .expect("resuming should not fail"),
+            "clearing paused should emit a local SetPaused action"
+        );
+        assert_eq!(runtime.player().paused, Some(false));
+        assert_eq!(runtime.session().local_paused(), Some(false));
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "local pause changes should not directly emit protocol lines"
+        );
+    }
+
+    #[test]
     fn client_runtime_request_user_list_dispatches_protocol_message() {
         let mut session = ClientSession::default();
         session
@@ -15454,6 +15527,11 @@ mod tests {
             "seek-to should emit a local SetPosition action"
         );
         assert_eq!(runtime.player().position, Some(42.5));
+        assert_eq!(runtime.session().local_position_seconds(), Some(42.5));
+        assert_eq!(
+            runtime.session().last_seek_position_before_manual_seek(),
+            Some(0.0)
+        );
         assert!(
             runtime.control().outbound_messages().is_empty(),
             "local seek should not directly emit protocol lines"
