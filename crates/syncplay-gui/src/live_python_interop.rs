@@ -995,7 +995,11 @@ fn peer_user_ready(state: &SyncplayGuiShellAppState, username: &str) -> Option<b
         .main_window
         .users
         .iter()
-        .find(|user| user.username == username && !user.is_self)
+        .find(|user| {
+            user.username == username
+                && !user.is_self
+                && user.room_name == state.main_window.room_name
+        })
         .map(|user| user.is_ready)
 }
 
@@ -1004,7 +1008,11 @@ fn peer_user_controller(state: &SyncplayGuiShellAppState, username: &str) -> Opt
         .main_window
         .users
         .iter()
-        .find(|user| user.username == username && !user.is_self)
+        .find(|user| {
+            user.username == username
+                && !user.is_self
+                && user.room_name == state.main_window.room_name
+        })
         .map(|user| user.is_controller)
 }
 

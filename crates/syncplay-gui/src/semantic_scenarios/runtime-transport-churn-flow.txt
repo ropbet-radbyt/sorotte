@@ -12,7 +12,7 @@ assert-value	main-window:playback-paused	yes
 assert-selected	main-window:playlist:1	true
 assert-label	main-window:playlist:1	episode2.mkv
 assert-label	main-window:user:1	bob
-assert-value	main-window:user:1	self=no, ready=yes, controller=yes
+assert-value	main-window:user:1:state	self=no, ready=yes, controller=yes
 enter-text	main-window:chat-input	true	hellotcp
 assert-pending	send-chat-message
 complete-pending
@@ -23,7 +23,7 @@ apply-main-window-playlist-selection	1
 assert-value	main-window:playback-paused	no
 assert-label	main-window:playlist:1	postchat2.mkv
 assert-label	main-window:user:1	bob
-assert-value	main-window:user:1	self=no, ready=no, controller=no
+assert-value	main-window:user:1:state	self=no, ready=no, controller=no
 enter-text	main-window:chat-input	true	goodbyeprimary
 assert-pending	send-chat-message
 complete-pending
@@ -31,12 +31,12 @@ assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	false	false	true	true	true	true	smoke-user,true,false,false	postchat1.mkv|postchat2.mkv	system>connected|smoke-user>goodbyeprimary|system>bob left
 assert-label	main-window:user:0	smoke-user
-assert-value	main-window:user:0	self=yes, ready=no, controller=no
+assert-value	main-window:user:0:state	self=yes, ready=no, controller=no
 apply-main-window-runtime	smoke-room	true	false	false	true	true	true	true	smoke-user,true,false,false|carol,false,false,false	reconnect1.mkv|reconnect2.mkv	system>reconnected
 apply-main-window-playlist-selection	1
 assert-label	main-window:playlist:1	reconnect2.mkv
 assert-label	main-window:user:1	carol
-assert-value	main-window:user:1	self=no, ready=no, controller=no
+assert-value	main-window:user:1:state	self=no, ready=no, controller=no
 enter-text	main-window:chat-input	true	helloreconnect
 assert-pending	send-chat-message
 complete-pending
@@ -47,7 +47,7 @@ apply-main-window-playlist-selection	1
 assert-value	main-window:playback-paused	yes
 assert-label	main-window:playlist:1	reconnect-post2.mkv
 assert-label	main-window:user:1	carol
-assert-value	main-window:user:1	self=no, ready=yes, controller=yes
+assert-value	main-window:user:1:state	self=no, ready=yes, controller=yes
 enter-text	main-window:chat-input	true	goodbyereconnect
 assert-pending	send-chat-message
 complete-pending
@@ -55,4 +55,4 @@ assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	true	false	true	true	true	true	smoke-user,true,true,false	reconnect-post1.mkv|reconnect-post2.mkv	system>reconnected|smoke-user>goodbyereconnect|system>carol left
 assert-label	main-window:user:0	smoke-user
-assert-value	main-window:user:0	self=yes, ready=yes, controller=no
+assert-value	main-window:user:0:state	self=yes, ready=yes, controller=no

@@ -34,7 +34,6 @@
 - The Rust client-core is still materially ahead of the Rust GUI. A meaningful slice of Python behavior already exists in `syncplay-client-core` and `syncplay-client-app`, but the GUI still exposes only a subset of it.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The biggest remaining parity blockers are now:
-  - the main window does not project Python's room/user/file browser,
   - many Python playlist/controller/offset/undo workflows are still missing or only exist as shell-only mutations,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
@@ -52,23 +51,11 @@
 - Detached media-open and shared-playlist drag-and-drop ingest are covered by semantic and Windows native smoke flows.
 - Public-server browsing, refresh, custom-entry editing, and runtime-backed connect flows exist.
 - Missing-media search exists as a real GUI flow.
+- The main window now projects a Python-style room/user/file browser, including room grouping, per-user file metadata and difference cues, runtime-backed room/file/folder/trusted-domain actions, and hide-empty-room behavior.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
 - The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, undo-seek, playlist undo, and playlist shuffle operations.
 
 ## Remaining Python Client Parity Tasks
-
-### P0. Replace the shell-style main window with Python's room/user/file browser
-
-Current status: the Rust main window only tracks `username`, `is_ready`, and `is_controller` per user. The Python GUI shows room grouping, controlled-room icons, filesize/duration/filename columns, file-difference highlighting, URL trust cues, and hide-empty-room behavior.
-
-Work to assign:
-
-- Project room-grouped runtime state into the GUI instead of a flat in-room username list.
-- Show per-user file metadata and controlled-room state.
-- Port file-difference highlighting and "no file" states.
-- Port row actions that Python exposes from the room/user browser: join room, open/switch to another user's file or stream, open containing folder, and add trusted domain from a URL.
-- Add hide-empty-rooms behavior once room grouping exists.
-- Remove or replace the current shell-only add/edit/remove-user controls, which are not Python-client parity behavior.
 
 ### P1. Port main-window playback, autoplay, and offset workflows
 
@@ -150,14 +137,13 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Python-style room/user/file browser in the main window.
-2. Playback/autoplay/offset/undo parity in the GUI.
-3. Playlist workflows and context menus.
-4. Controlled-room/controller-auth UX and set-others-readiness.
-5. GUI slash-command handling.
-6. Configuration dialog completion.
-7. Localization and language-sensitive service calls.
-8. Additional player backends.
+1. Playback/autoplay/offset/undo parity in the GUI.
+2. Playlist workflows and context menus.
+3. Controlled-room/controller-auth UX and set-others-readiness.
+4. GUI slash-command handling.
+5. Configuration dialog completion.
+6. Localization and language-sensitive service calls.
+7. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 

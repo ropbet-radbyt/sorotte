@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
@@ -1601,6 +1601,7 @@ pub struct ClientSession {
     last_paused_on_leave_at_seconds: Option<f64>,
     last_advanced_at_seconds: Option<f64>,
     user_views: BTreeMap<String, ClientUserView>,
+    known_rooms: BTreeSet<String>,
     room_playlists: BTreeMap<String, RoomPlaylistView>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
     pending_playlist: Option<RoomPlaylistView>,
@@ -1664,6 +1665,7 @@ impl Default for ClientSession {
             last_paused_on_leave_at_seconds: None,
             last_advanced_at_seconds: None,
             user_views: BTreeMap::new(),
+            known_rooms: BTreeSet::new(),
             room_playlists: BTreeMap::new(),
             room_playstates: BTreeMap::new(),
             pending_playlist: None,
@@ -2096,6 +2098,31 @@ impl ClientSession {
         self.user_views
             .get(username)
             .and_then(|user| user.room.as_deref())
+    }
+
+    pub fn room_names(&self) -> Vec<String> {
+        let mut rooms = self.known_rooms.iter().cloned().collect::<Vec<_>>();
+        if let Some(current_room) = self
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            && !rooms.iter().any(|room| room == current_room)
+        {
+            rooms.push(current_room.to_owned());
+            rooms.sort();
+        }
+        rooms
+    }
+
+    pub fn usernames_in_room(&self, room_name: &str) -> Vec<String> {
+        self.user_views
+            .iter()
+            .filter_map(|(username, user)| {
+                (!username.trim().is_empty() && user.room.as_deref() == Some(room_name))
+                    .then_some(username.clone())
+            })
+            .collect()
     }
 
     pub fn user_ready(&self, username: &str) -> Option<bool> {
@@ -4015,6 +4042,7 @@ impl ClientSession {
         self.controlled_room_switch_intent = None;
         self.controller_reidentify_intent = None;
         self.user_views.clear();
+        self.known_rooms.clear();
         self.domain = SyncDomain::default();
         self.room_playlists.clear();
         self.room_playstates.clear();
@@ -4391,13 +4419,18 @@ impl ClientSession {
         };
 
         self.user_views.clear();
+        self.known_rooms.clear();
         self.domain = SyncDomain::default();
 
         let mut resolved_self_room = None;
         let current_username = self.username.clone();
 
         for (room_name, room_users) in rooms {
+            self.known_rooms.insert(room_name.clone());
             for (username, user_entry) in room_users {
+                if username.trim().is_empty() {
+                    continue;
+                }
                 self.set_user_room(&username, Some(room_name.clone()));
                 let (has_file, file_name, file_size, file_duration) =
                     Self::list_payload_file_info(user_entry.file.as_ref());
@@ -5101,6 +5134,7 @@ impl ClientSession {
         }
 
         if let Some(new_room_name) = room_name.as_deref() {
+            self.known_rooms.insert(new_room_name.to_owned());
             self.domain.join_room(username, new_room_name);
             let _ = self
                 .domain

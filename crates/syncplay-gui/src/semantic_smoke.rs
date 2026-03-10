@@ -1044,6 +1044,7 @@ fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticScenarioReport
             active_view: Some(super::GuiShellView::PublicServers),
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: Some("C:/Media".to_owned()),
+            hide_empty_rooms: false,
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
             last_checked_for_updates: None,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],

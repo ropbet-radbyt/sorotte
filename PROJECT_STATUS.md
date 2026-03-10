@@ -22,7 +22,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and config-only state no longer advertises those paths as working runtimes. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. The main window now exposes a Python-style room/user/file browser with room grouping, per-user metadata/difference cues, hide-empty-room behavior, and runtime-backed room/file/folder/trusted-domain actions. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and config-only state no longer advertises those paths as working runtimes. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
 
 ## Documentation set (current)
 
@@ -49,6 +49,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Managed `mpv` launch and explicit-IPC attach flows (with additional real-`mpv` smokes available as ignored tests).
 - [x] GUI-owned `mpv` startup from saved `playerPath` plus `perPlayerArguments`, including legacy Syncplay `mpv` UI/chat settings, chat/OSD forwarding, and managed relaunch/failure handling.
 - [x] GUI configuration/main-window shell with semantic smoke coverage and Windows native accessibility smoke coverage.
+- [x] Python-style main-window room/user/file browser parity, including room grouping, file metadata/difference cues, hide-empty-room behavior, and runtime-backed room/file/folder/trusted-domain actions.
 - [x] First-class GUI saved-config connect/disconnect flow, including startup auto-connect from persisted host/port settings and explicit session lifecycle controls on the configuration and main-window surfaces.
 - [x] Runtime-backed shared-playlist file opening/import from the GUI, including session playlist replacement and playlist-file import.
 - [x] Desktop drag-and-drop ingest for detached media-open and shared-playlist import, with semantic and Windows native smoke coverage.
@@ -65,6 +66,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Replace preview-only shared-playlist file-open behavior with real player/session/playlist dispatch.
 - [x] Add desktop drag-and-drop for media/playlist ingest plus semantic/native smoke coverage.
 - [x] Tighten GUI command availability so non-working room/media paths stop looking production-ready.
+- [x] Replace the shell-style main window with the Python room/user/file browser.
 - [x] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
 - [ ] End-to-end release packaging process (artifacts, versioning, changelog, signing strategy if needed).
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
@@ -84,7 +86,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 ## Notes on scope
 
 - Current evidence supports "substantially implemented client/server rewrite with a verified GUI shell," not "full replacement" parity.
-- The GUI is real and test-covered, and saved-config connection plus room-switching plus shared-playlist file opening/import are now runtime-backed; the major room/media/playback affordances no longer advertise config-only projections as working paths.
+- The GUI is real and test-covered, and saved-config connection plus the Python-style room/user/file browser plus shared-playlist file opening/import are now runtime-backed; the major room/media/playback affordances no longer advertise config-only projections as working paths.
 - The server runtime library remains further along than the user-facing `syncplay-server` CLI parity surface, even though a real alpha executable entrypoint now exists.
 - Real `mpv` integration exists, including saved-config GUI-owned startup, but some validation remains environment-specific and intentionally excluded from default test runs.
 - Non-`mpv` player integration is not represented as a first-class implemented runtime adapter in this workspace today, and that work is intentionally deferred behind `mpv` parity.

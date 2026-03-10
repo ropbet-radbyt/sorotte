@@ -3,8 +3,8 @@ use super::{
     GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
     GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction,
     GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeChatSnapshot,
-    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, StoredClientSettingsMvp,
-    SyncplayGuiShellAppState,
+    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    StoredClientSettingsMvp, SyncplayGuiShellAppState,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,9 +181,19 @@ impl GuiSemanticStep {
                 })?)?;
                 Ok(MainWindowRuntimeUserSnapshot {
                     username: username.to_owned(),
+                    room_name: String::new(),
                     is_self,
                     is_ready,
                     is_controller,
+                    has_file: false,
+                    file_name: None,
+                    file_size_label: String::new(),
+                    file_duration_label: String::new(),
+                    file_is_url: false,
+                    file_is_trusted: true,
+                    filename_differs: false,
+                    filesize_differs: false,
+                    fileduration_differs: false,
                 })
             })
             .collect()
@@ -252,7 +262,15 @@ impl GuiSemanticStep {
             fields
                 .next()
                 .ok_or_else(|| "apply-main-window-runtime requires users".to_owned())?,
-        )?;
+        )?
+        .into_iter()
+        .map(|mut user| {
+            if user.room_name.is_empty() {
+                user.room_name = room_name.clone();
+            }
+            user
+        })
+        .collect::<Vec<_>>();
         let playlist = Self::split_list_token(
             fields
                 .next()
@@ -269,10 +287,17 @@ impl GuiSemanticStep {
         if fields.next().is_some() {
             return Err("apply-main-window-runtime accepts exactly eleven arguments".to_owned());
         }
+        let room_row_name = room_name.clone();
         Ok(MainWindowRuntimeSnapshot {
             room_name,
             shared_playlist_enabled,
             controlled_room_active: false,
+            hide_empty_rooms: false,
+            rooms: vec![MainWindowRuntimeRoomSnapshot {
+                room_name: room_row_name,
+                is_controlled: false,
+                has_named_users: !users.is_empty(),
+            }],
             users,
             playlist,
             chat,

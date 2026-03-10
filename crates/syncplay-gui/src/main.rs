@@ -9,12 +9,14 @@ use std::{
     io::{self, Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
 use eframe::egui;
 use rfd::FileDialog;
+use serde_json::Value;
 use syncplay_client_app::app_boundary::{
     compatibility::{
         LegacyConfigurationGetterCompatibilityStatus,
@@ -231,11 +233,29 @@ struct FirstRunConfigurationDialogDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MainWindowRoomRow {
+    room_name: String,
+    is_controlled: bool,
+    has_named_users: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MainWindowUserRow {
     username: String,
+    room_name: String,
     is_self: bool,
     is_ready: bool,
     is_controller: bool,
+    has_file: bool,
+    file_name: Option<String>,
+    file_name_label: String,
+    file_size_label: String,
+    file_duration_label: String,
+    file_is_url: bool,
+    file_is_trusted: bool,
+    filename_differs: bool,
+    filesize_differs: bool,
+    fileduration_differs: bool,
     is_selected: bool,
 }
 
@@ -264,6 +284,8 @@ struct MainWindowShellState {
     room_name: String,
     shared_playlist_enabled: bool,
     controlled_room_active: bool,
+    hide_empty_rooms: bool,
+    rooms: Vec<MainWindowRoomRow>,
     users: Vec<MainWindowUserRow>,
     playlist: Vec<MainWindowPlaylistRow>,
     chat: Vec<MainWindowChatRow>,
@@ -272,25 +294,44 @@ struct MainWindowShellState {
     autoplay_active: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct MainWindowRuntimeUserSnapshot {
     username: String,
+    room_name: String,
     is_self: bool,
     is_ready: bool,
     is_controller: bool,
+    has_file: bool,
+    file_name: Option<String>,
+    file_size_label: String,
+    file_duration_label: String,
+    file_is_url: bool,
+    file_is_trusted: bool,
+    filename_differs: bool,
+    filesize_differs: bool,
+    fileduration_differs: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct MainWindowRuntimeRoomSnapshot {
+    room_name: String,
+    is_controlled: bool,
+    has_named_users: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct MainWindowRuntimeChatSnapshot {
     sender: String,
     message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct MainWindowRuntimeSnapshot {
     room_name: String,
     shared_playlist_enabled: bool,
     controlled_room_active: bool,
+    hide_empty_rooms: bool,
+    rooms: Vec<MainWindowRuntimeRoomSnapshot>,
     users: Vec<MainWindowRuntimeUserSnapshot>,
     playlist: Vec<String>,
     chat: Vec<MainWindowRuntimeChatSnapshot>,
@@ -308,14 +349,34 @@ impl MainWindowRuntimeSnapshot {
             room_name: state.room_name.clone(),
             shared_playlist_enabled: state.shared_playlist_enabled,
             controlled_room_active: state.controlled_room_active,
+            hide_empty_rooms: state.hide_empty_rooms,
+            rooms: state
+                .rooms
+                .iter()
+                .map(|room| MainWindowRuntimeRoomSnapshot {
+                    room_name: room.room_name.clone(),
+                    is_controlled: room.is_controlled,
+                    has_named_users: room.has_named_users,
+                })
+                .collect(),
             users: state
                 .users
                 .iter()
                 .map(|user| MainWindowRuntimeUserSnapshot {
                     username: user.username.clone(),
+                    room_name: user.room_name.clone(),
                     is_self: user.is_self,
                     is_ready: user.is_ready,
                     is_controller: user.is_controller,
+                    has_file: user.has_file,
+                    file_name: user.file_name.clone(),
+                    file_size_label: user.file_size_label.clone(),
+                    file_duration_label: user.file_duration_label.clone(),
+                    file_is_url: user.file_is_url,
+                    file_is_trusted: user.file_is_trusted,
+                    filename_differs: user.filename_differs,
+                    filesize_differs: user.filesize_differs,
+                    fileduration_differs: user.fileduration_differs,
                 })
                 .collect(),
             playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
@@ -484,6 +545,7 @@ struct GuiPersistedUiState {
     active_view: Option<GuiShellView>,
     selected_public_server_address: Option<String>,
     selected_media_search_directory: Option<String>,
+    hide_empty_rooms: bool,
     last_media_dialog_directory: Option<String>,
     last_checked_for_updates: Option<String>,
     public_servers: Vec<(String, String)>,
@@ -560,6 +622,7 @@ impl GuiPersistedUiState {
                 .selected_media_search_directory
                 .and_then(|index| state.media_search.directories.get(index))
                 .map(|row| row.path.clone()),
+            hide_empty_rooms: state.main_window.hide_empty_rooms,
             last_media_dialog_directory: state.last_media_dialog_directory.clone(),
             last_checked_for_updates: (current_settings.last_checked_for_updates
                 != state.saved_configuration.last_checked_for_updates)
@@ -577,6 +640,7 @@ impl GuiPersistedUiState {
         self.active_view.is_none()
             && self.selected_public_server_address.is_none()
             && self.selected_media_search_directory.is_none()
+            && !self.hide_empty_rooms
             && self.last_media_dialog_directory.is_none()
             && self.last_checked_for_updates.is_none()
             && self.public_servers.is_empty()
@@ -613,6 +677,10 @@ impl GuiPersistedUiState {
                 .position(|row| row.path == selected_directory)
         {
             state.selection.selected_media_search_directory = Some(index);
+        }
+        if self.hide_empty_rooms {
+            state.main_window.hide_empty_rooms = true;
+            state.set_menu_action_selected("Window", "Hide Empty Rooms", true);
         }
         state.normalize_selection();
         state.apply_selection_to_surfaces();
@@ -730,6 +798,9 @@ fn persist_gui_ui_state_at_root(root: &Path, state: &GuiPersistedUiState) -> Res
                     .active_view
                     .map(|view| ("activeView", view.label().to_owned())),
                 state
+                    .hide_empty_rooms
+                    .then(|| ("hideEmptyRooms", "true".to_owned())),
+                state
                     .selected_public_server_address
                     .as_ref()
                     .map(|value| ("selectedPublicServerAddress", value.clone())),
@@ -809,6 +880,9 @@ fn load_gui_ui_state_from_root(root: &Path) -> Result<Option<GuiPersistedUiState
             ))
             .cloned()
             .filter(|value| !value.trim().is_empty());
+        state.hide_empty_rooms = parsed
+            .get(&(String::from("MainWindow"), String::from("hideEmptyRooms")))
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
         state.selected_media_search_directory = parsed
             .get(&(
                 String::from("MainWindow"),
@@ -860,6 +934,161 @@ fn load_gui_ui_state_from_root(root: &Path) -> Result<Option<GuiPersistedUiState
     } else {
         Ok(Some(state))
     }
+}
+
+fn browser_is_url(value: &str) -> bool {
+    value.contains("://")
+}
+
+fn browser_domain_from_url(value: &str) -> Option<String> {
+    reqwest::Url::parse(value).ok().and_then(|url| {
+        url.host_str()
+            .map(|host| host.strip_prefix("www.").unwrap_or(host).to_owned())
+    })
+}
+
+fn browser_parse_trustable_web_uri_host_and_path(value: &str) -> Option<(String, String)> {
+    let value = value.trim();
+    let authority_and_path = if let Some(rest) = value.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = value.strip_prefix("https://") {
+        rest
+    } else {
+        return None;
+    };
+    if authority_and_path.is_empty() {
+        return None;
+    }
+    let (authority, path_tail) = authority_and_path
+        .split_once('/')
+        .unwrap_or((authority_and_path, ""));
+    if authority.is_empty() {
+        return None;
+    }
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, trimmed)| trimmed);
+    if authority.is_empty() {
+        return None;
+    }
+    let host = authority
+        .split(':')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let path_with_query = if path_tail.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{path_tail}")
+    };
+    let path = path_with_query
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("/")
+        .to_owned();
+    Some((host, path))
+}
+
+fn browser_trusted_domain_matches_host(host: &str, trusted_domain: &str) -> bool {
+    if host == trusted_domain || host == format!("www.{trusted_domain}") {
+        return true;
+    }
+    if !trusted_domain.contains('*') {
+        return false;
+    }
+    let host_parts = host.split('.').collect::<Vec<_>>();
+    let pattern_parts = trusted_domain.split('.').collect::<Vec<_>>();
+    if host_parts.len() != pattern_parts.len() {
+        return false;
+    }
+    host_parts
+        .iter()
+        .zip(pattern_parts.iter())
+        .all(|(host_part, pattern_part)| {
+            if *pattern_part == "*" {
+                !host_part.is_empty()
+            } else {
+                host_part.eq_ignore_ascii_case(pattern_part)
+            }
+        })
+}
+
+fn browser_uri_is_trusted(
+    uri: &str,
+    only_switch_to_trusted_domains: bool,
+    trusted_domains: &[String],
+) -> bool {
+    if !browser_is_url(uri) {
+        return true;
+    }
+    let Some((host, path)) = browser_parse_trustable_web_uri_host_and_path(uri) else {
+        return false;
+    };
+    if !only_switch_to_trusted_domains {
+        return true;
+    }
+    trusted_domains.iter().any(|entry| {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return false;
+        }
+        let (trusted_domain, required_path_prefix) = entry.split_once('/').unwrap_or((entry, ""));
+        let trusted_domain = trusted_domain.trim().to_ascii_lowercase();
+        if trusted_domain.is_empty() || !browser_trusted_domain_matches_host(&host, &trusted_domain)
+        {
+            return false;
+        }
+        if required_path_prefix.is_empty() {
+            return true;
+        }
+        path.starts_with(&format!("/{required_path_prefix}"))
+    })
+}
+
+fn browser_format_time(seconds: f64) -> String {
+    let rounded = seconds.abs().round() as i64;
+    let sign = if seconds.is_sign_negative() { "-" } else { "" };
+    let days = rounded / 86_400;
+    let hours = (rounded % 86_400) / 3_600;
+    let minutes = (rounded % 3_600) / 60;
+    let seconds = rounded % 60;
+    if days > 0 {
+        format!("{sign}{days}d, {hours:02}:{minutes:02}:{seconds:02}")
+    } else if hours > 0 {
+        format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{sign}{minutes:02}:{seconds:02}")
+    }
+}
+
+fn browser_number_from_value(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|number| number as f64))
+        .or_else(|| value.as_u64().map(|number| number as f64))
+        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+}
+
+fn browser_format_duration_label(value: Option<&Value>) -> String {
+    let Some(seconds) = value.and_then(browser_number_from_value) else {
+        return String::new();
+    };
+    format!("({})", browser_format_time(seconds))
+}
+
+fn browser_format_size_label(value: Option<&Value>) -> String {
+    let Some(bytes) = value.and_then(browser_number_from_value) else {
+        return String::new();
+    };
+    if bytes <= 0.0 {
+        return "???".to_owned();
+    }
+    let megabytes = (bytes / 1_048_576.0).floor() as i64;
+    format!("{megabytes} MB")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1824,6 +2053,46 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         node: &GuiWidgetNode,
     ) -> Vec<GuiShellAction> {
+        if let Some(room_index) = Self::main_window_browser_room_action_index(&node.id, "join") {
+            return state
+                .main_window
+                .rooms
+                .get(room_index)
+                .map(|room| vec![GuiShellAction::JoinMainWindowRoom(room.room_name.clone())])
+                .unwrap_or_default();
+        }
+        if let Some(user_index) = Self::main_window_browser_user_action_index(&node.id, "open") {
+            return state
+                .main_window
+                .users
+                .get(user_index)
+                .and_then(|user| user.file_name.clone())
+                .map(|target| vec![GuiShellAction::RequestMainWindowUserMediaOpen(target)])
+                .unwrap_or_default();
+        }
+        if let Some(user_index) = Self::main_window_browser_user_action_index(&node.id, "folder") {
+            return state
+                .main_window
+                .users
+                .get(user_index)
+                .and_then(|user| user.file_name.clone())
+                .map(|target| {
+                    vec![GuiShellAction::RequestMainWindowUserContainingFolderOpen(
+                        target,
+                    )]
+                })
+                .unwrap_or_default();
+        }
+        if let Some(user_index) = Self::main_window_browser_user_action_index(&node.id, "trust") {
+            return state
+                .main_window
+                .users
+                .get(user_index)
+                .and_then(|user| user.file_name.as_deref())
+                .and_then(browser_domain_from_url)
+                .map(|domain| vec![GuiShellAction::AddTrustedDomain(domain)])
+                .unwrap_or_default();
+        }
         match node.id.as_str() {
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
             "config-command:connect" => vec![GuiShellAction::BeginSavedServerConnect],
@@ -2268,6 +2537,18 @@ impl GuiWidgetEguiRenderer {
         id.strip_prefix(prefix)?.parse().ok()
     }
 
+    fn main_window_browser_room_action_index(id: &str, action: &str) -> Option<usize> {
+        let identity = id.strip_prefix("main-window:room-group:")?;
+        let (index, suffix) = identity.split_once(':')?;
+        (suffix == action).then(|| index.parse().ok()).flatten()
+    }
+
+    fn main_window_browser_user_action_index(id: &str, action: &str) -> Option<usize> {
+        let identity = id.strip_prefix("main-window:user:")?;
+        let (index, suffix) = identity.split_once(':')?;
+        (suffix == action).then(|| index.parse().ok()).flatten()
+    }
+
     fn is_surface_node(node: &GuiWidgetNode) -> bool {
         matches!(
             node.id.as_str(),
@@ -2334,6 +2615,22 @@ trait GuiNativeRuntimeBridge {
     }
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction>;
+
+    fn actions_for_main_window_user_media_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _target: String,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_main_window_user_folder_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _target: String,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
 
     fn actions_for_room_join(
         &mut self,
@@ -3209,35 +3506,85 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().local_can_control().unwrap_or(false)
     }
 
-    fn session_runtime_users(
+    fn session_runtime_rooms(
         &self,
-        room_name: &str,
-        local_username: Option<&str>,
-        local_is_controller: bool,
-    ) -> Vec<MainWindowRuntimeUserSnapshot> {
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<MainWindowRuntimeRoomSnapshot> {
         let session = self.runtime.session();
-        let mut users = Vec::new();
-        if let Some(local_username) = local_username {
-            users.push(MainWindowRuntimeUserSnapshot {
-                username: local_username.to_owned(),
-                is_self: true,
-                is_ready: session.user_ready(local_username).unwrap_or(false),
-                is_controller: local_is_controller,
+        let mut rooms = session
+            .room_names()
+            .into_iter()
+            .filter_map(|room_name| {
+                normalized_editable_text(&room_name).map(|room_name| {
+                    MainWindowRuntimeRoomSnapshot {
+                        has_named_users: !session.usernames_in_room(&room_name).is_empty(),
+                        is_controlled: room_name.starts_with('+'),
+                        room_name,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if rooms.is_empty()
+            && let Some(room_name) = normalized_editable_text(&state.main_window.room_name)
+        {
+            rooms.push(MainWindowRuntimeRoomSnapshot {
+                has_named_users: false,
+                is_controlled: room_name.starts_with('+'),
+                room_name,
             });
         }
-        for username in &self.tracked_remote_usernames {
-            if Some(username.as_str()) == local_username {
-                continue;
+        rooms
+    }
+
+    fn session_runtime_users(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<MainWindowRuntimeUserSnapshot> {
+        let session = self.runtime.session();
+        let settings = state.configuration.to_stored_settings();
+        let trusted_domains = settings.trusted_domains.unwrap_or_default();
+        let only_switch_to_trusted_domains =
+            settings.only_switch_to_trusted_domains.unwrap_or(true);
+        let local_username = session.username.as_deref();
+        let mut users = Vec::new();
+        for room_name in session.room_names() {
+            for username in session.usernames_in_room(&room_name) {
+                let is_self = local_username == Some(username.as_str());
+                let file_name = session
+                    .user_file_name(&username)
+                    .and_then(normalized_editable_text);
+                let file_is_url = file_name.as_deref().is_some_and(browser_is_url);
+                let file_is_trusted = file_name.as_deref().is_none_or(|file_name| {
+                    browser_uri_is_trusted(
+                        file_name,
+                        only_switch_to_trusted_domains,
+                        &trusted_domains,
+                    )
+                });
+                let differences = session
+                    .file_differences_for_user(&username)
+                    .unwrap_or_default();
+                users.push(MainWindowRuntimeUserSnapshot {
+                    username: username.clone(),
+                    room_name: room_name.clone(),
+                    is_self,
+                    is_ready: session.user_ready(&username).unwrap_or(false),
+                    is_controller: session.user_controller(&username).unwrap_or(false),
+                    has_file: session
+                        .user_has_file(&username)
+                        .unwrap_or(file_name.is_some()),
+                    file_name,
+                    file_size_label: browser_format_size_label(session.user_file_size(&username)),
+                    file_duration_label: browser_format_duration_label(
+                        session.user_file_duration(&username),
+                    ),
+                    file_is_url,
+                    file_is_trusted,
+                    filename_differs: differences.filename,
+                    filesize_differs: differences.filesize,
+                    fileduration_differs: differences.fileduration,
+                });
             }
-            if session.user_room(username) != Some(room_name) {
-                continue;
-            }
-            users.push(MainWindowRuntimeUserSnapshot {
-                username: username.clone(),
-                is_self: false,
-                is_ready: session.user_ready(username).unwrap_or(false),
-                is_controller: session.user_controller(username).unwrap_or(false),
-            });
         }
         users
     }
@@ -3253,14 +3600,35 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.room_name = baseline_main_window.room_name.clone();
         snapshot.shared_playlist_enabled = baseline_main_window.shared_playlist_enabled;
         snapshot.controlled_room_active = baseline_main_window.controlled_room_active;
+        snapshot.hide_empty_rooms = state.main_window.hide_empty_rooms;
+        snapshot.rooms = baseline_main_window
+            .rooms
+            .clone()
+            .into_iter()
+            .map(|room| MainWindowRuntimeRoomSnapshot {
+                room_name: room.room_name,
+                is_controlled: room.is_controlled,
+                has_named_users: room.has_named_users,
+            })
+            .collect();
         snapshot.users = baseline_main_window
             .users
             .iter()
             .map(|user| MainWindowRuntimeUserSnapshot {
                 username: user.username.clone(),
+                room_name: user.room_name.clone(),
                 is_self: user.is_self,
                 is_ready: user.is_ready,
                 is_controller: user.is_controller,
+                has_file: user.has_file,
+                file_name: user.file_name.clone(),
+                file_size_label: user.file_size_label.clone(),
+                file_duration_label: user.file_duration_label.clone(),
+                file_is_url: user.file_is_url,
+                file_is_trusted: user.file_is_trusted,
+                filename_differs: user.filename_differs,
+                filesize_differs: user.filesize_differs,
+                fileduration_differs: user.fileduration_differs,
             })
             .collect();
         snapshot.playlist = baseline_main_window
@@ -3277,18 +3645,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            let local_username = session
-                .username
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
             let controlled_room_active = room_name.starts_with('+');
-            let local_is_controller =
-                controlled_room_active && session.local_can_control() == Some(true);
             snapshot.room_name = room_name.to_owned();
             snapshot.controlled_room_active = controlled_room_active;
-            snapshot.users =
-                self.session_runtime_users(room_name, local_username, local_is_controller);
+            snapshot.rooms = self.session_runtime_rooms(state);
+            snapshot.users = self.session_runtime_users(state);
         }
         if let Some(playlist) = session.current_room_playlist() {
             snapshot.shared_playlist_enabled = true;
@@ -5452,6 +5813,185 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn resolve_main_window_user_media_target(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> Result<Option<String>, String> {
+        let Some(target) = normalized_editable_text(target) else {
+            return Ok(None);
+        };
+        if browser_is_url(&target) {
+            return Ok(Some(target.to_owned()));
+        }
+
+        let target_path = Path::new(&target);
+        if target_path.is_file() {
+            return Ok(Some(target.to_owned()));
+        }
+
+        if let Some(local_path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+        {
+            let local_path = Path::new(local_path);
+            let matches_local_file = local_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(&target));
+            if matches_local_file && local_path.is_file() {
+                return Ok(Some(local_path.to_string_lossy().into_owned()));
+            }
+            if let Some(parent) = local_path.parent()
+                && let Some(found_path) =
+                    GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
+                        &target, parent,
+                    )?
+            {
+                return Ok(Some(found_path));
+            }
+        }
+
+        let settings = state.configuration.to_stored_settings();
+        for directory in settings.media_search_directories.unwrap_or_default() {
+            let trimmed = directory.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(found_path) =
+                GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
+                    &target,
+                    Path::new(trimmed),
+                )?
+            {
+                return Ok(Some(found_path));
+            }
+        }
+        Ok(None)
+    }
+
+    fn open_main_window_user_media_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        target: String,
+    ) {
+        let Some(target) = normalized_editable_text(&target) else {
+            return;
+        };
+        let resolved_target =
+            match self.resolve_main_window_user_media_target(projected_state, &target) {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!("Could not find a local path for user media: {target}."),
+                    );
+                    return;
+                }
+                Err(error) => {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!("Resolving user media '{target}' failed: {error}"),
+                    );
+                    return;
+                }
+            };
+
+        self.ensure_configured_player_attached();
+        if self.player.is_some() {
+            self.open_media_files_through_attached_player(handle, vec![resolved_target]);
+        } else {
+            Self::push_runtime_unavailable(
+                handle,
+                self.open_media_unavailable_message(&[resolved_target]),
+            );
+        }
+    }
+
+    fn open_system_file_browser_for_path(path: &Path) -> Result<(), String> {
+        let Some(parent) = path.parent() else {
+            return Err(format!(
+                "Could not open a containing folder for '{}': no parent directory exists.",
+                path.display()
+            ));
+        };
+
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut command = Command::new("explorer");
+            command.arg(parent);
+            command
+        };
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut command = Command::new("open");
+            command.arg(parent);
+            command
+        };
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        let mut command = {
+            let mut command = Command::new("xdg-open");
+            command.arg(parent);
+            command
+        };
+
+        command.spawn().map_err(|error| {
+            format!(
+                "Opening the containing folder for '{}' failed: {error}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    fn open_main_window_user_containing_folder_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        target: String,
+    ) {
+        let Some(target) = normalized_editable_text(&target) else {
+            return;
+        };
+        let resolved_target =
+            match self.resolve_main_window_user_media_target(projected_state, &target) {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!("Could not find a local path for user media: {target}."),
+                    );
+                    return;
+                }
+                Err(error) => {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!("Resolving user media '{target}' failed: {error}"),
+                    );
+                    return;
+                }
+            };
+
+        if browser_is_url(&resolved_target) {
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                format!("Cannot open a containing folder for the stream URL: {resolved_target}."),
+            );
+            return;
+        }
+
+        if let Err(error) = Self::open_system_file_browser_for_path(Path::new(&resolved_target)) {
+            Self::push_runtime_error_notification(handle, projected_state, error);
+        }
+    }
+
     fn open_media_files_through_shared_playlist_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -5925,6 +6465,16 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             self.open_media_unavailable_message(&paths),
                         );
                     }
+                }
+                GuiRuntimeRequest::OpenMainWindowUserMedia(target) => {
+                    self.open_main_window_user_media_runtime(handle, &mut projected_state, target);
+                }
+                GuiRuntimeRequest::OpenMainWindowUserContainingFolder(target) => {
+                    self.open_main_window_user_containing_folder_runtime(
+                        handle,
+                        &mut projected_state,
+                        target,
+                    );
                 }
                 GuiRuntimeRequest::SeekOffset(offset_seconds) => {
                     self.refresh_player_state();
@@ -6488,6 +7038,29 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         Self::preview_seek_actions(offset_seconds)
     }
 
+    fn actions_for_main_window_user_media_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        target: String,
+    ) -> Vec<GuiShellAction> {
+        Self::preview_open_media_file_actions(vec![target], false)
+    }
+
+    fn actions_for_main_window_user_folder_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        target: String,
+    ) -> Vec<GuiShellAction> {
+        let message = format!("Open containing folder requested: {target}.");
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
     fn actions_for_pending_completion(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -6598,6 +7171,8 @@ enum GuiRuntimeRequest {
         paths: Vec<String>,
         load_into_shared_playlist: bool,
     },
+    OpenMainWindowUserMedia(String),
+    OpenMainWindowUserContainingFolder(String),
     SetRoom(String),
     ReturnToDefaultRoom,
     SetLocalReady(bool),
@@ -6626,6 +7201,22 @@ impl GuiRuntimeRequest {
                 paths.clone(),
                 *load_into_shared_playlist,
             ),
+            Self::OpenMainWindowUserMedia(target) => {
+                GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                    vec![target.clone()],
+                    false,
+                )
+            }
+            Self::OpenMainWindowUserContainingFolder(target) => {
+                let message = format!("Open containing folder requested: {target}.");
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            }
             Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
@@ -6766,6 +7357,32 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::SeekOffset(offset_seconds));
+        Vec::new()
+    }
+
+    fn actions_for_main_window_user_media_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        target: String,
+    ) -> Vec<GuiShellAction> {
+        if normalized_editable_text(&target).is_some() {
+            self.handle
+                .push_request(GuiRuntimeRequest::OpenMainWindowUserMedia(target));
+        }
+        Vec::new()
+    }
+
+    fn actions_for_main_window_user_folder_open(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        target: String,
+    ) -> Vec<GuiShellAction> {
+        if normalized_editable_text(&target).is_some() {
+            self.handle
+                .push_request(GuiRuntimeRequest::OpenMainWindowUserContainingFolder(
+                    target,
+                ));
+        }
         Vec::new()
     }
 
@@ -7131,6 +7748,8 @@ impl eframe::App for GuiNativeApp {
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
         let mut room_change_requests = Vec::new();
+        let mut main_window_user_media_requests = Vec::new();
+        let mut main_window_user_folder_requests = Vec::new();
         let mut requested_local_ready = None;
         let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
@@ -7151,6 +7770,16 @@ impl eframe::App for GuiNativeApp {
                     room_change_requests.push(GuiPendingRoomChangeRequest::ReturnToDefault {
                         previous_room: self.state.main_window.room_name.clone(),
                     })
+                }
+                GuiShellAction::RequestMainWindowUserMediaOpen(target) => {
+                    if let Some(target) = normalized_editable_text(target) {
+                        main_window_user_media_requests.push(target.to_owned());
+                    }
+                }
+                GuiShellAction::RequestMainWindowUserContainingFolderOpen(target) => {
+                    if let Some(target) = normalized_editable_text(target) {
+                        main_window_user_folder_requests.push(target.to_owned());
+                    }
                 }
                 GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
                 GuiShellAction::AnnounceLocalUserNotReady => requested_local_ready = Some(false),
@@ -7196,6 +7825,22 @@ impl eframe::App for GuiNativeApp {
                 }
             };
             for action in runtime_actions {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for target in main_window_user_media_requests {
+            for action in self
+                .runtime
+                .actions_for_main_window_user_media_open(&self.state, target)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for target in main_window_user_folder_requests {
+            for action in self
+                .runtime
+                .actions_for_main_window_user_folder_open(&self.state, target)
+            {
                 state_changed |= self.state.apply(action);
             }
         }
@@ -7817,6 +8462,10 @@ enum GuiShellAction {
     AnnounceMediaSearchDirectoryBrowsed(String),
     BeginMissingMediaSearch,
     CompleteMissingMediaSearch(Option<String>),
+    ToggleMainWindowHideEmptyRooms,
+    RequestMainWindowUserMediaOpen(String),
+    RequestMainWindowUserContainingFolderOpen(String),
+    AddTrustedDomain(String),
     JoinMainWindowRoom(String),
     LeaveMainWindowRoom,
     SetMainWindowRoom(String),
@@ -8846,14 +9495,31 @@ impl MainWindowShellState {
         }
 
         Self {
-            room_name,
+            room_name: room_name.clone(),
             shared_playlist_enabled,
             controlled_room_active,
+            hide_empty_rooms: false,
+            rooms: vec![MainWindowRoomRow {
+                room_name: room_name.clone(),
+                is_controlled: controlled_room_active,
+                has_named_users: true,
+            }],
             users: vec![MainWindowUserRow {
                 username,
+                room_name,
                 is_self: true,
                 is_ready: settings.ready_at_start.unwrap_or(false),
                 is_controller: controlled_room_active,
+                has_file: false,
+                file_name: None,
+                file_name_label: "No file".to_owned(),
+                file_size_label: String::new(),
+                file_duration_label: String::new(),
+                file_is_url: false,
+                file_is_trusted: true,
+                filename_differs: false,
+                filesize_differs: false,
+                fileduration_differs: false,
                 is_selected: true,
             }],
             playlist,
@@ -8886,6 +9552,11 @@ impl MainWindowShellState {
                 bool_label(self.controlled_room_active),
             ),
             format!(
+                "Browser: hide_empty_rooms={}, rooms={}",
+                bool_label(self.hide_empty_rooms),
+                self.rooms.len(),
+            ),
+            format!(
                 "Playback Controls: pause={}, seek={}, ready={}, playlist={}",
                 bool_label(self.playback.can_toggle_pause),
                 bool_label(self.playback.can_seek),
@@ -8897,17 +9568,43 @@ impl MainWindowShellState {
                 bool_label(self.playback_paused),
                 bool_label(self.autoplay_active),
             ),
-            format!("Users ({}):", self.users.len()),
+            format!("Rooms ({}):", self.rooms.len()),
         ];
 
+        for room in &self.rooms {
+            lines.push(format!(
+                "- {} [controlled={}, named_users={}]",
+                room.room_name,
+                bool_label(room.is_controlled),
+                bool_label(room.has_named_users),
+            ));
+        }
+
+        lines.push(format!("Users ({}):", self.users.len()));
         for user in &self.users {
             lines.push(format!(
-                "- {} [self={}, ready={}, controller={}, selected={}]",
+                "- {} @ {} [self={}, ready={}, controller={}, selected={}, file={}, size={}, duration={}, diffs=name:{}/size:{}/duration:{}, trusted_url={}]",
                 user.username,
+                user.room_name,
                 bool_label(user.is_self),
                 bool_label(user.is_ready),
                 bool_label(user.is_controller),
                 bool_label(user.is_selected),
+                user.file_name_label,
+                if user.file_size_label.is_empty() {
+                    "(none)"
+                } else {
+                    &user.file_size_label
+                },
+                if user.file_duration_label.is_empty() {
+                    "(none)"
+                } else {
+                    &user.file_duration_label
+                },
+                bool_label(user.filename_differs),
+                bool_label(user.filesize_differs),
+                bool_label(user.fileduration_differs),
+                bool_label(user.file_is_trusted),
             ));
         }
 
@@ -9025,6 +9722,11 @@ impl MenuDialogShellState {
                         },
                         MenuActionShellItem {
                             label: "Show Users",
+                            enabled: true,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Hide Empty Rooms",
                             enabled: true,
                             is_selected: false,
                         },
@@ -9965,6 +10667,18 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::CompleteMissingMediaSearch(found_path) => {
                 self.complete_missing_media_search(found_path)
             }
+            GuiShellAction::ToggleMainWindowHideEmptyRooms => {
+                self.toggle_main_window_hide_empty_rooms()
+            }
+            GuiShellAction::RequestMainWindowUserMediaOpen(_) => {
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::RequestMainWindowUserContainingFolderOpen(_) => {
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::AddTrustedDomain(domain) => self.add_trusted_domain(domain),
             GuiShellAction::JoinMainWindowRoom(room) => self.join_main_window_room(room),
             GuiShellAction::LeaveMainWindowRoom => self.leave_main_window_room(),
             GuiShellAction::SetMainWindowRoom(room) => {
@@ -10239,16 +10953,6 @@ impl SyncplayGuiShellAppState {
         let can_remove_playlist = can_manage_playlist && selected_playlist_index.is_some();
         let can_add_playlist_entry =
             can_manage_playlist && !self.new_playlist_entry_draft.trim().is_empty();
-        let can_manage_users =
-            self.pending_operation.is_none() && self.main_window_user_edit_session.is_none();
-        let selected_user_index = self.selection.selected_main_window_user;
-        let selected_user = selected_user_index.and_then(|index| self.main_window.users.get(index));
-        let can_toggle_user_ready = can_manage_users && selected_user.is_some();
-        let can_toggle_user_controller =
-            can_manage_users && self.main_window.controlled_room_active && selected_user.is_some();
-        let can_edit_user = can_manage_users && selected_user.is_some();
-        let can_remove_user = can_manage_users && selected_user.is_some_and(|user| !user.is_self);
-        let can_add_user = can_manage_users && !self.new_main_window_user_draft.trim().is_empty();
         let saved_session_target = self.saved_session_connect_target();
         let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
             Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
@@ -10366,121 +11070,7 @@ impl SyncplayGuiShellAppState {
             ),
         ];
 
-        children.push(GuiWidgetNode::branch(
-            "main-window:users",
-            "Users",
-            GuiWidgetKind::List,
-            self.main_window
-                .users
-                .iter()
-                .enumerate()
-                .map(|(index, user)| {
-                    GuiWidgetNode::leaf(
-                        format!("main-window:user:{index}"),
-                        &user.username,
-                        GuiWidgetKind::ListItem,
-                        Some(format!(
-                            "self={}, ready={}, controller={}",
-                            bool_label(user.is_self),
-                            bool_label(user.is_ready),
-                            bool_label(user.is_controller),
-                        )),
-                        true,
-                        user.is_selected,
-                    )
-                })
-                .collect(),
-        ));
-
-        children.push(GuiWidgetNode::branch(
-            "main-window:user-actions",
-            "User Actions",
-            GuiWidgetKind::Panel,
-            vec![
-                GuiWidgetNode::leaf(
-                    "main-window:user:new",
-                    "New User",
-                    GuiWidgetKind::TextInput,
-                    Some(self.new_main_window_user_draft.clone()),
-                    can_manage_users,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:user:add",
-                    "Add User",
-                    GuiWidgetKind::Button,
-                    None,
-                    can_add_user,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:user:toggle-ready",
-                    "Toggle Selected Ready",
-                    GuiWidgetKind::Button,
-                    None,
-                    can_toggle_user_ready,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:user:toggle-controller",
-                    "Toggle Selected Controller",
-                    GuiWidgetKind::Button,
-                    None,
-                    can_toggle_user_controller,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:user:edit",
-                    "Edit Selected",
-                    GuiWidgetKind::Button,
-                    None,
-                    can_edit_user,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:user:remove",
-                    "Remove Selected",
-                    GuiWidgetKind::Button,
-                    None,
-                    can_remove_user,
-                    false,
-                ),
-            ],
-        ));
-
-        if let Some(session) = &self.main_window_user_edit_session {
-            children.push(GuiWidgetNode::branch(
-                "main-window:user-edit-session",
-                "User Edit",
-                GuiWidgetKind::Panel,
-                vec![
-                    GuiWidgetNode::leaf(
-                        "main-window:user-edit:username",
-                        "Username",
-                        GuiWidgetKind::TextInput,
-                        Some(session.username_buffer.clone()),
-                        true,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:user-edit:commit",
-                        "Save Changes",
-                        GuiWidgetKind::Button,
-                        None,
-                        session.is_dirty,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:user-edit:cancel",
-                        "Cancel Edit",
-                        GuiWidgetKind::Button,
-                        None,
-                        true,
-                        false,
-                    ),
-                ],
-            ));
-        }
+        children.push(self.main_window_browser_widget_node());
 
         children.push(GuiWidgetNode::branch(
             "main-window:playlist",
@@ -10610,6 +11200,204 @@ impl SyncplayGuiShellAppState {
             "Main Window",
             GuiWidgetKind::Panel,
             children,
+        )
+    }
+
+    fn main_window_browser_widget_node(&self) -> GuiWidgetNode {
+        let can_join_room =
+            self.pending_operation.is_none() && self.commands.can_disconnect_session;
+        let can_open_media =
+            self.pending_operation.is_none() && self.media_open_runtime_available();
+        let can_mutate_browser_settings = self.pending_operation.is_none();
+        let mut room_children = Vec::new();
+
+        for (room_index, room) in self.main_window.rooms.iter().enumerate() {
+            if self.main_window.hide_empty_rooms && !room.has_named_users {
+                continue;
+            }
+
+            let current_room = room.room_name == self.main_window.room_name;
+            let mut children = vec![
+                GuiWidgetNode::leaf(
+                    format!("main-window:room-group:{room_index}:state"),
+                    "State",
+                    GuiWidgetKind::Status,
+                    Some(format!(
+                        "current={}, controlled={}, named_users={}",
+                        bool_label(current_room),
+                        bool_label(room.is_controlled),
+                        bool_label(room.has_named_users),
+                    )),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    format!("main-window:room-group:{room_index}:join"),
+                    if current_room {
+                        "Current Room"
+                    } else {
+                        "Join Room"
+                    },
+                    GuiWidgetKind::Button,
+                    None,
+                    can_join_room && !current_room,
+                    false,
+                ),
+            ];
+
+            let mut has_visible_users = false;
+            for (user_index, user) in self.main_window.users.iter().enumerate() {
+                if user.room_name != room.room_name {
+                    continue;
+                }
+                has_visible_users = true;
+
+                let mut cue_parts = Vec::new();
+                if !user.has_file {
+                    cue_parts.push("no-file".to_owned());
+                }
+                if user.filename_differs {
+                    cue_parts.push("name-diff".to_owned());
+                }
+                if user.filesize_differs {
+                    cue_parts.push("size-diff".to_owned());
+                }
+                if user.fileduration_differs {
+                    cue_parts.push("duration-diff".to_owned());
+                }
+                if user.file_is_url && !user.file_is_trusted {
+                    cue_parts.push("untrusted-url".to_owned());
+                }
+                let cue_suffix = if cue_parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", cue_parts.join(", "))
+                };
+                let trusted_domain = user
+                    .file_name
+                    .as_deref()
+                    .filter(|file_name| browser_is_url(file_name) && !user.file_is_trusted)
+                    .and_then(browser_domain_from_url);
+                children.push(GuiWidgetNode::branch(
+                    format!("main-window:user:{user_index}"),
+                    &user.username,
+                    GuiWidgetKind::Panel,
+                    vec![
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:state"),
+                            "State",
+                            GuiWidgetKind::Status,
+                            Some(format!(
+                                "self={}, ready={}, controller={}",
+                                bool_label(user.is_self),
+                                bool_label(user.is_ready),
+                                bool_label(user.is_controller),
+                            )),
+                            true,
+                            user.is_selected,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:size"),
+                            "Size",
+                            GuiWidgetKind::Status,
+                            Some(if user.file_size_label.is_empty() {
+                                "(none)".to_owned()
+                            } else {
+                                user.file_size_label.clone()
+                            }),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:duration"),
+                            "Duration",
+                            GuiWidgetKind::Status,
+                            Some(if user.file_duration_label.is_empty() {
+                                "(none)".to_owned()
+                            } else {
+                                user.file_duration_label.clone()
+                            }),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:file"),
+                            "File",
+                            GuiWidgetKind::Status,
+                            Some(format!("{}{}", user.file_name_label, cue_suffix)),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:open"),
+                            if user.file_is_url {
+                                "Open Stream"
+                            } else {
+                                "Open User File"
+                            },
+                            GuiWidgetKind::Button,
+                            None,
+                            can_open_media && user.has_file && !user.is_self,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:folder"),
+                            "Open Containing Folder",
+                            GuiWidgetKind::Button,
+                            None,
+                            can_mutate_browser_settings && user.has_file && !user.file_is_url,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:trust"),
+                            trusted_domain
+                                .as_deref()
+                                .map(|domain| format!("Trust {domain}"))
+                                .unwrap_or_else(|| "Trust Domain".to_owned()),
+                            GuiWidgetKind::Button,
+                            None,
+                            can_mutate_browser_settings && trusted_domain.is_some(),
+                            false,
+                        ),
+                    ],
+                ));
+            }
+
+            if !has_visible_users {
+                children.push(GuiWidgetNode::leaf(
+                    format!("main-window:room-group:{room_index}:empty"),
+                    "Users",
+                    GuiWidgetKind::Status,
+                    Some("(empty room)".to_owned()),
+                    true,
+                    false,
+                ));
+            }
+
+            room_children.push(GuiWidgetNode::branch(
+                format!("main-window:room-group:{room_index}"),
+                &room.room_name,
+                GuiWidgetKind::Panel,
+                children,
+            ));
+        }
+
+        if room_children.is_empty() {
+            room_children.push(GuiWidgetNode::leaf(
+                "main-window:browser:empty",
+                "Room Browser",
+                GuiWidgetKind::Status,
+                Some("No visible rooms.".to_owned()),
+                true,
+                false,
+            ));
+        }
+
+        GuiWidgetNode::branch(
+            "main-window:browser",
+            "Room Browser",
+            GuiWidgetKind::Panel,
+            room_children,
         )
     }
 
@@ -11260,15 +12048,48 @@ impl SyncplayGuiShellAppState {
         {
             self.main_window.controlled_room_active = current_snapshot.controlled_room_active;
         }
+        if current_snapshot.hide_empty_rooms != previous_baseline.hide_empty_rooms {
+            self.main_window.hide_empty_rooms = current_snapshot.hide_empty_rooms;
+            self.set_menu_action_selected(
+                "Window",
+                "Hide Empty Rooms",
+                current_snapshot.hide_empty_rooms,
+            );
+        }
+        if preserve_connected_room_surface || current_snapshot.rooms != previous_baseline.rooms {
+            self.main_window.rooms = current_snapshot
+                .rooms
+                .iter()
+                .map(|room| MainWindowRoomRow {
+                    room_name: room.room_name.clone(),
+                    is_controlled: room.is_controlled,
+                    has_named_users: room.has_named_users,
+                })
+                .collect();
+        }
         if preserve_connected_room_surface || current_snapshot.users != previous_baseline.users {
             self.main_window.users = current_snapshot
                 .users
                 .iter()
                 .map(|user| MainWindowUserRow {
                     username: user.username.clone(),
+                    room_name: user.room_name.clone(),
                     is_self: user.is_self,
                     is_ready: user.is_ready,
                     is_controller: user.is_controller,
+                    has_file: user.has_file,
+                    file_name: user.file_name.clone(),
+                    file_name_label: user
+                        .file_name
+                        .clone()
+                        .unwrap_or_else(|| "No file".to_owned()),
+                    file_size_label: user.file_size_label.clone(),
+                    file_duration_label: user.file_duration_label.clone(),
+                    file_is_url: user.file_is_url,
+                    file_is_trusted: user.file_is_trusted,
+                    filename_differs: user.filename_differs,
+                    filesize_differs: user.filesize_differs,
+                    fileduration_differs: user.fileduration_differs,
                     is_selected: false,
                 })
                 .collect();
@@ -11743,6 +12564,29 @@ impl SyncplayGuiShellAppState {
         action.enabled = enabled;
     }
 
+    fn set_menu_action_selected(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+        selected: bool,
+    ) {
+        let Some(action) = self
+            .menus
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.label == action_label)
+            })
+        else {
+            return;
+        };
+        action.is_selected = selected;
+    }
+
     fn set_runtime_menu_action_override(&mut self, action_override: MenuActionRuntimeOverride) {
         if let Some(existing) = self
             .runtime_menu_action_overrides
@@ -11971,13 +12815,45 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("A main-window user with that name already exists.");
         }
 
+        let room_name = self.main_window.room_name.clone();
+        if !self
+            .main_window
+            .rooms
+            .iter()
+            .any(|room| room.room_name == room_name)
+        {
+            self.main_window.rooms.push(MainWindowRoomRow {
+                room_name: room_name.clone(),
+                is_controlled: room_name.starts_with('+'),
+                has_named_users: true,
+            });
+        }
         self.main_window.users.push(MainWindowUserRow {
             username: username.clone(),
+            room_name: room_name.clone(),
             is_self: false,
             is_ready: false,
             is_controller: false,
+            has_file: false,
+            file_name: None,
+            file_name_label: "No file".to_owned(),
+            file_size_label: String::new(),
+            file_duration_label: String::new(),
+            file_is_url: false,
+            file_is_trusted: true,
+            filename_differs: false,
+            filesize_differs: false,
+            fileduration_differs: false,
             is_selected: false,
         });
+        if let Some(room) = self
+            .main_window
+            .rooms
+            .iter_mut()
+            .find(|room| room.room_name == room_name)
+        {
+            room.has_named_users = true;
+        }
         self.selection.selected_main_window_user = Some(self.main_window.users.len() - 1);
         self.apply_selection_to_surfaces();
         self.push_transient_notification(
@@ -13459,6 +14335,7 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            ("Window", "Hide Empty Rooms") => self.toggle_main_window_hide_empty_rooms(),
             ("Help", "About") => self.announce_about_dialog_requested(),
             ("Help", "Manual / Command Help") => self.announce_help_requested(),
             ("Help", "Check for Updates") => self.begin_update_check(true),
@@ -13535,7 +14412,20 @@ impl SyncplayGuiShellAppState {
         }
 
         let username = user.username.clone();
+        let room_name = user.room_name.clone();
         self.main_window.users.remove(index);
+        if let Some(room) = self
+            .main_window
+            .rooms
+            .iter_mut()
+            .find(|room| room.room_name == room_name)
+        {
+            room.has_named_users = self
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.room_name == room_name);
+        }
         if let Some(session) = self.main_window_user_edit_session.as_mut() {
             if session.editing_index == index {
                 self.main_window_user_edit_session = None;
@@ -13570,12 +14460,35 @@ impl SyncplayGuiShellAppState {
         } else {
             room_value
         };
+        if !self
+            .main_window
+            .rooms
+            .iter()
+            .any(|room| room.room_name == self.main_window.room_name)
+        {
+            self.main_window.rooms.push(MainWindowRoomRow {
+                room_name: self.main_window.room_name.clone(),
+                is_controlled: controlled_room_active,
+                has_named_users: !self.main_window.users.is_empty(),
+            });
+        }
         self.main_window.controlled_room_active = controlled_room_active;
         for user in &mut self.main_window.users {
             user.is_controller = false;
+            if user.is_self {
+                user.room_name = self.main_window.room_name.clone();
+            }
         }
         if let Some(user) = self.main_window.users.first_mut() {
             user.is_controller = controlled_room_active;
+        }
+        for room in &mut self.main_window.rooms {
+            room.is_controlled = room.room_name.starts_with('+');
+            room.has_named_users = self
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.room_name == room.room_name);
         }
     }
 
@@ -13589,6 +14502,27 @@ impl SyncplayGuiShellAppState {
             );
         };
 
+        let mut normalized_rooms = Vec::with_capacity(snapshot.rooms.len());
+        for room in snapshot.rooms {
+            let Some(room_name) = normalized_editable_text(&room.room_name) else {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain empty room names.",
+                );
+            };
+            if normalized_rooms.iter().any(|existing: &MainWindowRoomRow| {
+                existing.room_name.eq_ignore_ascii_case(&room_name)
+            }) {
+                return self.record_action_error(
+                    "Main-window runtime snapshots cannot contain duplicate room names.",
+                );
+            }
+            normalized_rooms.push(MainWindowRoomRow {
+                room_name,
+                is_controlled: room.is_controlled,
+                has_named_users: room.has_named_users,
+            });
+        }
+
         let mut normalized_users = Vec::with_capacity(snapshot.users.len());
         for user in snapshot.users {
             let Some(username) = normalized_editable_text(&user.username) else {
@@ -13596,6 +14530,8 @@ impl SyncplayGuiShellAppState {
                     "Main-window runtime snapshots cannot contain empty user names.",
                 );
             };
+            let user_room_name =
+                normalized_editable_text(&user.room_name).unwrap_or_else(|| room_name.clone());
             if normalized_users.iter().any(|existing: &MainWindowUserRow| {
                 existing.username.eq_ignore_ascii_case(&username)
             }) {
@@ -13603,13 +14539,54 @@ impl SyncplayGuiShellAppState {
                     "Main-window runtime snapshots cannot contain duplicate user names.",
                 );
             }
+            if !normalized_rooms
+                .iter()
+                .any(|room| room.room_name == user_room_name)
+            {
+                normalized_rooms.push(MainWindowRoomRow {
+                    room_name: user_room_name.clone(),
+                    is_controlled: user_room_name.starts_with('+'),
+                    has_named_users: true,
+                });
+            }
             normalized_users.push(MainWindowUserRow {
                 username,
+                room_name: user_room_name,
                 is_self: user.is_self,
                 is_ready: user.is_ready,
                 is_controller: user.is_controller,
+                has_file: user.has_file,
+                file_name_label: user
+                    .file_name
+                    .clone()
+                    .unwrap_or_else(|| "No file".to_owned()),
+                file_name: user.file_name,
+                file_size_label: user.file_size_label,
+                file_duration_label: user.file_duration_label,
+                file_is_url: user.file_is_url,
+                file_is_trusted: user.file_is_trusted,
+                filename_differs: user.filename_differs,
+                filesize_differs: user.filesize_differs,
+                fileduration_differs: user.fileduration_differs,
                 is_selected: false,
             });
+        }
+        if !normalized_rooms
+            .iter()
+            .any(|room| room.room_name == room_name)
+        {
+            normalized_rooms.push(MainWindowRoomRow {
+                room_name: room_name.clone(),
+                is_controlled: snapshot.controlled_room_active || room_name.starts_with('+'),
+                has_named_users: normalized_users
+                    .iter()
+                    .any(|user| user.room_name == room_name),
+            });
+        }
+        for room in &mut normalized_rooms {
+            room.has_named_users = normalized_users
+                .iter()
+                .any(|user| user.room_name == room.room_name);
         }
 
         let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
@@ -13656,6 +14633,8 @@ impl SyncplayGuiShellAppState {
             room_name,
             shared_playlist_enabled: snapshot.shared_playlist_enabled,
             controlled_room_active: snapshot.controlled_room_active,
+            hide_empty_rooms: snapshot.hide_empty_rooms,
+            rooms: normalized_rooms,
             users: normalized_users,
             playlist: normalized_playlist,
             chat: normalized_chat,
@@ -14382,6 +15361,45 @@ impl SyncplayGuiShellAppState {
                 );
             }
         }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn toggle_main_window_hide_empty_rooms(&mut self) -> bool {
+        self.main_window.hide_empty_rooms = !self.main_window.hide_empty_rooms;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn add_trusted_domain(&mut self, domain: String) -> bool {
+        let Some(domain) = normalized_editable_text(&domain) else {
+            return self.record_action_error("Trusted domain cannot be empty.");
+        };
+
+        let mut settings = self.configuration.to_stored_settings();
+        let already_present = settings.trusted_domains.as_ref().is_some_and(|domains| {
+            domains
+                .iter()
+                .any(|entry| entry.eq_ignore_ascii_case(&domain))
+        });
+        if already_present {
+            self.push_transient_notification(
+                GuiTransientNotificationLevel::Info,
+                format!("Trusted domain already present: {domain}."),
+            );
+            self.clear_action_error_and_refresh();
+            return true;
+        }
+
+        let mut trusted_domains = settings.trusted_domains.take().unwrap_or_default();
+        trusted_domains.push(domain.clone());
+        settings.trusted_domains = Some(trusted_domains);
+        self.resync_from_settings(settings);
+        self.push_system_chat_message(format!("Trusted domain added: {domain}."));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Trusted domain added: {domain}."),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -15577,15 +16595,46 @@ mod tests {
         GuiTransientNotification, GuiTransientNotificationLevel, GuiValidationIssue,
         GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer,
         GuiWidgetTextPreviewRenderer, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
-        MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
-        MediaSearchDirectoryRow, MediaSearchWorkflowShellState, MenuActionRuntimeOverride,
-        MenuDialogRuntimeSnapshot, MenuDialogShellState, PublicServerBrowserRow,
-        PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
-        run_gui_host, shell_widget_preview, startup_notice, startup_preview,
+        MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+        MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
+        MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
+        PublicServerBrowserRow, PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot,
+        SyncplayGuiShellAppState, run_gui_host, shell_widget_preview, startup_notice,
+        startup_preview,
     };
     use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
     const TEST_USERNAME: &str = "test-user";
+
+    fn browser_runtime_user(
+        username: &str,
+        room_name: &str,
+        is_self: bool,
+        is_ready: bool,
+        is_controller: bool,
+    ) -> MainWindowRuntimeUserSnapshot {
+        MainWindowRuntimeUserSnapshot {
+            username: username.to_owned(),
+            room_name: room_name.to_owned(),
+            is_self,
+            is_ready,
+            is_controller,
+            file_is_trusted: true,
+            ..Default::default()
+        }
+    }
+
+    fn browser_runtime_rooms(
+        room_name: &str,
+        is_controlled: bool,
+        has_named_users: bool,
+    ) -> Vec<MainWindowRuntimeRoomSnapshot> {
+        vec![MainWindowRuntimeRoomSnapshot {
+            room_name: room_name.to_owned(),
+            is_controlled,
+            has_named_users,
+        }]
+    }
 
     fn test_default_syncplay_config_env_root() -> std::path::PathBuf {
         if cfg!(windows) {
@@ -15963,6 +17012,7 @@ mod tests {
                     is_self: true,
                     is_ready: false,
                     is_controller: false,
+                    ..Default::default()
                 }],
                 playlist: vec!["Episode 1".to_owned()],
                 chat: Vec::new(),
@@ -15972,6 +17022,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             }
         )));
 
@@ -16191,12 +17243,14 @@ mod tests {
                         is_self: true,
                         is_ready: true,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: vec!["Episode 1".to_owned()],
@@ -16210,6 +17264,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: true,
                 autoplay_active: true,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -16271,12 +17327,14 @@ mod tests {
                         is_self: true,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: Vec::new(),
@@ -16287,6 +17345,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
 
@@ -16317,12 +17377,14 @@ mod tests {
                         is_self: true,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: true,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: Vec::new(),
@@ -16333,6 +17395,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -16385,12 +17449,14 @@ mod tests {
                         is_self: true,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: Vec::new(),
@@ -16401,6 +17467,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
 
@@ -17054,6 +18122,7 @@ mod tests {
                     is_self: true,
                     is_ready: false,
                     is_controller: false,
+                    ..Default::default()
                 }],
                 playlist: vec!["One".to_owned()],
                 chat: Vec::new(),
@@ -17063,6 +18132,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -17600,12 +18671,14 @@ mod tests {
                         is_self: true,
                         is_ready: true,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: vec!["Episode 1".to_owned()],
@@ -17619,6 +18692,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: true,
                 autoplay_active: true,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -18498,16 +19573,24 @@ mod tests {
         )));
 
         let tree = state.main_window_widget_tree();
-        let user = tree
-            .find("main-window:user:1")
-            .expect("selected user should exist in widget tree");
-        assert_eq!(user.kind, GuiWidgetKind::ListItem);
-        assert!(user.selected);
-        let new_user = tree
-            .find("main-window:user:new")
-            .expect("new user input should exist in widget tree");
-        assert_eq!(new_user.kind, GuiWidgetKind::TextInput);
-        assert_eq!(new_user.value.as_deref(), Some(""));
+        let browser = tree
+            .find("main-window:browser")
+            .expect("room browser should exist in widget tree");
+        assert_eq!(browser.kind, GuiWidgetKind::Panel);
+        let room_group = tree
+            .find("main-window:room-group:0")
+            .expect("current room group should exist in widget tree");
+        assert_eq!(room_group.kind, GuiWidgetKind::Panel);
+        let room_group_state = tree
+            .find("main-window:room-group:0:state")
+            .expect("room-group state should exist in widget tree");
+        assert_eq!(room_group_state.kind, GuiWidgetKind::Status);
+        let user_state = tree
+            .find("main-window:user:1:state")
+            .expect("selected user state should exist in widget tree");
+        assert_eq!(user_state.kind, GuiWidgetKind::Status);
+        assert!(user_state.selected);
+        assert!(tree.find("main-window:user:new").is_none());
         let room_input = tree
             .find("main-window:room-input")
             .expect("room input should exist in widget tree");
@@ -18530,18 +19613,14 @@ mod tests {
             .expect("playlist add button should exist in widget tree");
         assert_eq!(playlist_add.kind, GuiWidgetKind::Button);
         assert!(!playlist_add.enabled);
-        let user_add = tree
-            .find("main-window:user:add")
-            .expect("user add button should exist in widget tree");
-        assert_eq!(user_add.kind, GuiWidgetKind::Button);
-        assert!(!user_add.enabled);
+        assert!(tree.find("main-window:user:add").is_none());
 
         let chat_input = tree
             .find("main-window:chat-input")
             .expect("chat input should exist in widget tree");
         assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
         assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
-        assert!(!chat_input.enabled);
+        assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
     }
 
     #[test]
@@ -19543,12 +20622,14 @@ mod tests {
                         is_self: true,
                         is_ready: true,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: vec!["One".to_owned(), "Two".to_owned()],
@@ -19562,6 +20643,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: false,
                 autoplay_active: true,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert_eq!(state.main_window.room_name, "RuntimeRoom");
@@ -19588,18 +20671,21 @@ mod tests {
                         is_self: false,
                         is_ready: true,
                         is_controller: true,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "carol".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "alice".to_owned(),
                         is_self: true,
                         is_ready: true,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: vec!["Two".to_owned(), "Three".to_owned()],
@@ -19619,6 +20705,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: true,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert_eq!(state.main_window.room_name, "+RuntimeRoom");
@@ -19662,6 +20750,7 @@ mod tests {
                     is_self: true,
                     is_ready: false,
                     is_controller: false,
+                    ..Default::default()
                 }],
                 playlist: vec!["One".to_owned()],
                 chat: Vec::new(),
@@ -19671,6 +20760,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: true,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
 
@@ -19735,6 +20826,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert_eq!(
@@ -19753,12 +20846,14 @@ mod tests {
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "Alice".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: Vec::new(),
@@ -19769,6 +20864,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert_eq!(
@@ -19796,12 +20893,14 @@ mod tests {
                         is_self: true,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "bob".to_owned(),
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: vec!["A".to_owned(), "B".to_owned()],
@@ -19815,6 +20914,8 @@ mod tests {
                 can_manage_playlist: true,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
         assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
@@ -19835,12 +20936,14 @@ mod tests {
                             is_self: false,
                             is_ready: true,
                             is_controller: true,
+                            ..Default::default()
                         },
                         MainWindowRuntimeUserSnapshot {
                             username: "carol".to_owned(),
                             is_self: false,
                             is_ready: false,
                             is_controller: false,
+                            ..Default::default()
                         },
                     ],
                     playlist: vec!["B".to_owned(), "C".to_owned()],
@@ -19854,6 +20957,8 @@ mod tests {
                     can_manage_playlist: true,
                     playback_paused: true,
                     autoplay_active: true,
+                    hide_empty_rooms: false,
+                    rooms: Vec::new(),
                 },
                 public_servers: PublicServerBrowserShellState {
                     servers: vec![
@@ -19989,6 +21094,8 @@ mod tests {
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: Vec::new(),
                 },
                 public_servers: PublicServerBrowserShellState {
                     servers: Vec::new(),
@@ -20352,12 +21459,14 @@ mod tests {
                         is_self: false,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                     MainWindowRuntimeUserSnapshot {
                         username: "You".to_owned(),
                         is_self: true,
                         is_ready: false,
                         is_controller: false,
+                        ..Default::default()
                     },
                 ],
                 playlist: Vec::new(),
@@ -20368,6 +21477,8 @@ mod tests {
                 can_manage_playlist: false,
                 playback_paused: false,
                 autoplay_active: false,
+                hide_empty_rooms: false,
+                rooms: Vec::new(),
             },
         )));
 
@@ -22089,6 +23200,7 @@ mod tests {
             selected_media_search_directory: Some("D:/Media".to_owned()),
             last_media_dialog_directory: Some("E:/Dialogs".to_owned()),
             last_checked_for_updates: None,
+            hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -22129,6 +23241,7 @@ mod tests {
             selected_media_search_directory: Some("C:/Media".to_owned()),
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
             last_checked_for_updates: None,
+            hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -22195,6 +23308,7 @@ mod tests {
             selected_media_search_directory: None,
             last_media_dialog_directory: None,
             last_checked_for_updates: None,
+            hide_empty_rooms: false,
             public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
         };
 
@@ -22992,7 +24106,7 @@ mod tests {
 
     #[test]
     fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
-        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
             media_search_directories: Some(vec!["C:/Media".to_owned()]),
             shared_playlist_enabled: Some(true),
@@ -23000,19 +24114,52 @@ mod tests {
             room: Some("Lounge".to_owned()),
             ..StoredClientSettingsMvp::default()
         });
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "Lounge".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                hide_empty_rooms: false,
+                rooms: vec![
+                    MainWindowRuntimeRoomSnapshot {
+                        room_name: "Lounge".to_owned(),
+                        is_controlled: false,
+                        has_named_users: true,
+                    },
+                    MainWindowRuntimeRoomSnapshot {
+                        room_name: "Cinema".to_owned(),
+                        is_controlled: false,
+                        has_named_users: true,
+                    },
+                ],
+                users: vec![
+                    browser_runtime_user(TEST_USERNAME, "Lounge", true, false, false),
+                    MainWindowRuntimeUserSnapshot {
+                        has_file: true,
+                        file_name: Some("https://example.com/live".to_owned()),
+                        file_is_url: true,
+                        file_is_trusted: false,
+                        ..browser_runtime_user("Bob", "Cinema", false, false, false)
+                    },
+                ],
+                playlist: vec!["Episode 1".to_owned()],
+                can_toggle_pause: true,
+                ..Default::default()
+            }
+        )));
         let shell_tree = state.shell_widget_tree();
         let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
         let menu_action = shell_tree.find("menus:action:0:0").unwrap();
         let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
         let seek_menu_action = shell_tree.find("menus:action:1:1").unwrap();
         let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
-        let user_row = shell_tree.find("main-window:user:0").unwrap();
+        let playlist_row = shell_tree.find("main-window:playlist:0").unwrap();
+        let browser_join_button = shell_tree.find("main-window:room-group:1:join").unwrap();
+        let user_open_button = shell_tree.find("main-window:user:1:open").unwrap();
+        let user_trust_button = shell_tree.find("main-window:user:1:trust").unwrap();
         let room_set_button = shell_tree.find("main-window:room:set").unwrap();
         let room_join_button = shell_tree.find("main-window:room:join").unwrap();
         let room_leave_button = shell_tree.find("main-window:room:leave").unwrap();
-        let user_add_input = shell_tree.find("main-window:user:new").unwrap();
-        let user_add_button = shell_tree.find("main-window:user:add").unwrap();
-        let user_edit_button = shell_tree.find("main-window:user:edit").unwrap();
         let pause_button = shell_tree.find("main-window:control:toggle-pause").unwrap();
         let playlist_add_input = shell_tree.find("main-window:playlist:new").unwrap();
         let playlist_add_button = shell_tree.find("main-window:playlist:add").unwrap();
@@ -23059,10 +24206,24 @@ mod tests {
             ]
         );
         assert_eq!(quick_open_media.kind, GuiWidgetKind::Button);
-        assert!(!quick_open_media.enabled);
+        assert!(quick_open_media.enabled);
         assert_eq!(
-            GuiWidgetEguiRenderer::action_for_list_item_node(user_row),
-            Some(GuiShellAction::SelectMainWindowUser(0))
+            GuiWidgetEguiRenderer::action_for_list_item_node(playlist_row),
+            Some(GuiShellAction::SelectMainWindowPlaylist(0))
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, browser_join_button),
+            vec![GuiShellAction::JoinMainWindowRoom("Cinema".to_owned())]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_open_button),
+            vec![GuiShellAction::RequestMainWindowUserMediaOpen(
+                "https://example.com/live".to_owned()
+            )]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_trust_button),
+            vec![GuiShellAction::AddTrustedDomain("example.com".to_owned())]
         );
         assert_eq!(
             GuiWidgetEguiRenderer::actions_for_button_node(&state, room_set_button),
@@ -23075,15 +24236,6 @@ mod tests {
         assert_eq!(
             GuiWidgetEguiRenderer::actions_for_button_node(&state, room_leave_button),
             vec![GuiShellAction::LeaveMainWindowRoom]
-        );
-        assert_eq!(user_add_input.kind, GuiWidgetKind::TextInput);
-        assert_eq!(
-            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_add_button),
-            vec![GuiShellAction::CommitNewMainWindowUser]
-        );
-        assert_eq!(
-            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_edit_button),
-            vec![GuiShellAction::BeginEditSelectedMainWindowUser]
         );
         assert_eq!(
             GuiWidgetEguiRenderer::actions_for_button_node(&state, pause_button),
@@ -23822,20 +24974,7 @@ assert-pending\tnone\n"
             ])
         );
 
-        let add_user_input = room_tree.find("main-window:user:new").unwrap();
-        assert_eq!(
-            GuiWidgetEguiRenderer::actions_for_text_input_node(
-                &room_state,
-                add_user_input,
-                "Alice",
-                true,
-                true,
-            ),
-            Some(vec![
-                GuiShellAction::UpdateNewMainWindowUserDraft("Alice".to_owned()),
-                GuiShellAction::CommitNewMainWindowUser,
-            ])
-        );
+        assert!(room_tree.find("main-window:user:new").is_none());
 
         let add_playlist_input = room_tree.find("main-window:playlist:new").unwrap();
         assert_eq!(
@@ -23858,21 +24997,7 @@ assert-pending\tnone\n"
         assert!(user_state.apply(GuiShellAction::SelectMainWindowUser(1)));
         assert!(user_state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
         let user_tree = user_state.main_window_widget_tree();
-        let user_input = user_tree.find("main-window:user-edit:username").unwrap();
-
-        assert_eq!(
-            GuiWidgetEguiRenderer::actions_for_text_input_node(
-                &user_state,
-                user_input,
-                "Robert",
-                true,
-                true,
-            ),
-            Some(vec![
-                GuiShellAction::UpdateMainWindowUserEdit("Robert".to_owned()),
-                GuiShellAction::CommitMainWindowUserEdit,
-            ])
-        );
+        assert!(user_tree.find("main-window:user-edit:username").is_none());
     }
 
     #[test]
@@ -24210,6 +25335,7 @@ assert-pending\tnone\n"
                 selected_media_search_directory: None,
                 last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
                 last_checked_for_updates: None,
+                hide_empty_rooms: false,
                 public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
             },
         )
@@ -24357,12 +25483,13 @@ assert-pending\tnone\n"
                     room_name: "(no room joined)".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "You".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user(
+                        "You",
+                        "(no room joined)",
+                        true,
+                        false,
+                        false,
+                    )],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: false,
@@ -24371,6 +25498,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("(no room joined)", false, true),
                 }),
                 GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
                     command_availability: GuiCommandAvailabilityState {
@@ -24981,12 +26110,7 @@ assert-pending\tnone\n"
         assert!(snapshot.shared_playlist_enabled);
         assert_eq!(
             snapshot.users,
-            vec![MainWindowRuntimeUserSnapshot {
-                username: "alice".to_owned(),
-                is_self: true,
-                is_ready: false,
-                is_controller: false,
-            }]
+            vec![browser_runtime_user("alice", "room1", true, false, false)]
         );
         assert_eq!(
             snapshot.playlist,
@@ -25090,18 +26214,8 @@ assert-pending\tnone\n"
         assert_eq!(
             snapshot.users,
             vec![
-                MainWindowRuntimeUserSnapshot {
-                    username: "alice".to_owned(),
-                    is_self: true,
-                    is_ready: false,
-                    is_controller: false,
-                },
-                MainWindowRuntimeUserSnapshot {
-                    username: "bob".to_owned(),
-                    is_self: false,
-                    is_ready: false,
-                    is_controller: true,
-                },
+                browser_runtime_user("alice", "room1", true, false, false),
+                browser_runtime_user("bob", "room1", false, false, true),
             ]
         );
         assert_eq!(
@@ -25277,12 +26391,14 @@ assert-pending\tnone\n"
                 is_self: true,
                 is_ready: true,
                 is_controller: true,
+                ..Default::default()
             },
             MainWindowRuntimeUserSnapshot {
                 username: "bob".to_owned(),
                 is_self: false,
                 is_ready: false,
                 is_controller: false,
+                ..Default::default()
             },
         ];
         stale_main_window.playlist = vec!["episode2.mkv".to_owned()];
@@ -25322,12 +26438,7 @@ assert-pending\tnone\n"
         assert!(!snapshot.controlled_room_active);
         assert_eq!(
             snapshot.users,
-            vec![MainWindowRuntimeUserSnapshot {
-                username: "alice".to_owned(),
-                is_self: true,
-                is_ready: false,
-                is_controller: false,
-            }]
+            vec![browser_runtime_user("alice", "room1", true, false, false)]
         );
         assert!(snapshot.playlist.is_empty());
         assert!(!snapshot.can_set_ready);
@@ -25843,12 +26954,7 @@ assert-pending\tnone\n"
                     room_name: "room1".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "alice".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user("alice", "room1", true, false, false)],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: false,
@@ -25857,6 +26963,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("room1", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -25919,12 +27027,7 @@ assert-pending\tnone\n"
                     room_name: "room1".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "alice".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user("alice", "room1", true, false, false)],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: false,
@@ -25933,6 +27036,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("room1", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -26238,12 +27343,7 @@ assert-pending\tnone\n"
                     room_name: "room1".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "alice".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user("alice", "room1", true, false, false)],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: false,
@@ -26252,6 +27352,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("room1", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -26312,12 +27414,7 @@ assert-pending\tnone\n"
                     room_name: "room1".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "alice".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user("alice", "room1", true, false, false)],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: false,
@@ -26326,6 +27423,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("room1", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![MenuActionRuntimeOverride {
@@ -29069,12 +30168,13 @@ assert-pending\tnone\n"
                     room_name: "(no room joined)".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "You".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user(
+                        "You",
+                        "(no room joined)",
+                        true,
+                        false,
+                        false,
+                    )],
                     playlist: Vec::new(),
                     chat: Vec::new(),
                     can_toggle_pause: true,
@@ -29083,6 +30183,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("(no room joined)", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![
@@ -29161,12 +30263,13 @@ assert-pending\tnone\n"
                     room_name: "(no room joined)".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "You".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user(
+                        "You",
+                        "(no room joined)",
+                        true,
+                        false,
+                        false,
+                    )],
                     playlist: vec!["episode1.mkv [93.500s, 734003200 bytes]".to_owned(),],
                     chat: Vec::new(),
                     can_toggle_pause: true,
@@ -29175,6 +30278,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("(no room joined)", false, true),
                 },
             )]
         );
@@ -29204,12 +30309,13 @@ assert-pending\tnone\n"
                     room_name: "(no room joined)".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "You".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user(
+                        "You",
+                        "(no room joined)",
+                        true,
+                        false,
+                        false,
+                    )],
                     playlist: vec!["episode1.mkv [93.500s, 734003200 bytes]".to_owned(),],
                     chat: Vec::new(),
                     can_toggle_pause: true,
@@ -29218,6 +30324,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: true,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("(no room joined)", false, true),
                 },
             )]
         );
@@ -29326,12 +30434,13 @@ assert-pending\tnone\n"
                     room_name: "(no room joined)".to_owned(),
                     shared_playlist_enabled: false,
                     controlled_room_active: false,
-                    users: vec![MainWindowRuntimeUserSnapshot {
-                        username: "You".to_owned(),
-                        is_self: true,
-                        is_ready: false,
-                        is_controller: false,
-                    }],
+                    users: vec![browser_runtime_user(
+                        "You",
+                        "(no room joined)",
+                        true,
+                        false,
+                        false,
+                    )],
                     playlist: vec!["episode1.mkv".to_owned()],
                     chat: Vec::new(),
                     can_toggle_pause: true,
@@ -29340,6 +30449,8 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                    hide_empty_rooms: false,
+                    rooms: browser_runtime_rooms("(no room joined)", false, true),
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                     action_overrides: vec![

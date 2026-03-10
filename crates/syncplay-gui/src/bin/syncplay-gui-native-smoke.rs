@@ -131,15 +131,11 @@ const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
-const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str =
-    "interop-gui-user: self=yes, ready=no, controller=no";
-const LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME: &str =
-    "interop-gui-user: self=yes, ready=no, controller=yes";
-const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str =
-    "interop-gui-user: self=yes, ready=yes, controller=no";
-const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "interop-py-peer: self=no, ready=no, controller=no";
-const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str =
-    "interop-py-peer: self=no, ready=yes, controller=no";
+const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str = "self=yes, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME: &str = "self=yes, ready=no, controller=yes";
+const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str = "self=yes, ready=yes, controller=no";
+const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "self=no, ready=no, controller=no";
+const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str = "self=no, ready=yes, controller=no";
 const CONFIG_HOST_VALUE: &str = "syncplay.example";
 const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
@@ -4424,12 +4420,11 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_named_control_count(
+        thread::sleep(Duration::from_millis(500));
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
-            NativeControlKind::Any,
-            0,
+            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
             step_timeout,
         )?;
         steps.push("main-window-room-joined".to_owned());
@@ -5287,7 +5282,7 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "bob: self=no, ready=yes, controller=yes",
+            "self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
 
@@ -5356,7 +5351,7 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "bob: self=no, ready=yes, controller=yes",
+            "self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
         invoke_named_control_with_wait(
@@ -5376,13 +5371,13 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "bob: self=no, ready=no, controller=no",
+            "self=no, ready=no, controller=no",
             step_timeout,
         )?;
         wait_for_accessible_name(
             driver,
             window,
-            "smoke-user: self=yes, ready=no, controller=no",
+            "self=yes, ready=no, controller=no",
             step_timeout,
         )?;
         steps.push("main-window-missing-media-continue-session".to_owned());
@@ -5548,7 +5543,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "bob: self=no, ready=yes, controller=yes",
+            "self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
         steps.push("transport-saved-config-startup".to_owned());
@@ -5566,7 +5561,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "bob: self=no, ready=no, controller=no",
+            "self=no, ready=no, controller=no",
             step_timeout,
         )?;
         steps.push("transport-primary-post-ready-churn".to_owned());
@@ -5583,7 +5578,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_named_control_count(
             driver,
             window,
-            "bob: self=no, ready=no, controller=no",
+            "self=no, ready=no, controller=no",
             NativeControlKind::Any,
             0,
             step_timeout,
@@ -5646,7 +5641,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "carol: self=no, ready=no, controller=no",
+            "self=no, ready=no, controller=no",
             step_timeout,
         )?;
         steps.push("transport-public-server-reconnect".to_owned());
@@ -5664,7 +5659,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(
             driver,
             window,
-            "carol: self=no, ready=yes, controller=yes",
+            "self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
         steps.push("transport-reconnect-post-ready-churn".to_owned());
@@ -5682,7 +5677,7 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_named_control_count(
             driver,
             window,
-            "carol: self=no, ready=yes, controller=yes",
+            "self=no, ready=yes, controller=yes",
             NativeControlKind::Any,
             0,
             step_timeout,
