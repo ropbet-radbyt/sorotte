@@ -9,6 +9,8 @@ assert-selected	configuration-root	true
 assert-value	config:Connection:Public Servers	2
 activate	menus-root
 assert-selected	menus-root	true
+assert-enabled	menus:action:0:0	false
+assert-enabled	shell:quick:open-media-file	false
 assert-enabled	menus:action:3:0	false
 activate	menus:action:4:0
 assert-value	shell:open-modal	about

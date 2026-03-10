@@ -2,13 +2,13 @@
 
 ## Audit Date
 
-- 2026-03-09
+- 2026-03-10
 
 ## Verification Performed
 
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`8/8` scenarios)
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`9/9` scenarios)
 - `cargo build -p syncplay-gui --bin syncplay-gui`
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
 - Static inspection of:
@@ -23,10 +23,18 @@
 
 - Protocol/session core is no longer the main blocker. The GUI can now start and stop a real client-core TCP session from saved host/port settings, including startup auto-connect from persisted configuration and explicit connect/disconnect controls on both the configuration and main-window surfaces.
 - Shared-playlist file opening/import no longer stops at shell projection. The queued runtime owner now routes those requests through the real session/player runtime path, including playlist-file import and player dispatch when an attached playback runtime exists.
-- Desktop drag-and-drop ingest is now implemented for both detached media-open and shared-playlist import flows, with semantic coverage and Windows native smoke coverage.
-- The main parity blocker is now tightening affordances that still over-promise beyond the runtime-backed paths.
+- GUI command availability is now aligned with runtime-backed capability instead of config-only projection. `Open Media File`, playback actions, quick-open, and playlist-target drag/drop stay disabled until a working playback or playlist runtime actually arrives.
+- Desktop drag-and-drop ingest still covers both detached media-open and shared-playlist import flows, with semantic coverage and Windows native smoke coverage.
+- The main remaining work is now broader release, cross-platform, and maintainability follow-through rather than default-flow honesty.
 
 ## Recently Completed
+
+### Tighten Command Availability So The UI Stops Advertising Non-Working Paths
+
+- Config-only shell state no longer treats a saved player path or shared-playlist checkbox as proof of a live playback/runtime connection.
+- `Open Media File`, playback menu items, and quick-open remain disabled until runtime snapshots expose working playback or playlist support.
+- Shared-playlist drop targeting now requires actual runtime playlist control instead of only a configuration toggle.
+- Semantic coverage now asserts both the disabled baseline and the runtime-enabled transition, and the Windows native smoke suite verifies the gated pre-runtime state plus runtime-backed drag/drop ingest.
 
 ### Desktop Drag-And-Drop For Media And Playlist Ingest
 
@@ -36,12 +44,10 @@
 
 ## Highest-Priority Remaining Work
 
-### 1. Tighten Command Availability So The UI Stops Advertising Non-Working Paths
-
-- `Open Media File` becomes enabled whenever shared playlists are enabled, even if there is no attached session or player runtime.
-- Room join controls are now gated on an active session runtime, but some other affordances still remain preview-oriented.
-- These affordances are useful for shell previews and tests, but they are misleading in the real app.
-- Result: the current UI still exposes actions that look production-ready even when they stop at local state projection.
+- Continue extracting the large GUI and client-core modules while parity work lands.
+- Keep expanding automated real-`mpv` coverage.
+- Validate the default GUI workflow cross-platform now that the Windows path is functionally honest.
+- Port non-`mpv` players only after the default `mpv` GUI workflow is no longer the blocker.
 
 ## What Is Already Solid Enough To Build On
 
@@ -61,5 +67,5 @@
 
 ## Practical Priority Order
 
-1. Tighten command availability so non-working paths stop looking production-ready.
-2. Resume broader parity and maintainability work after the default user flow is reliable.
+1. Resume broader parity and maintainability work now that the default GUI flow stops advertising non-working paths.
+2. Keep packaging, cross-platform validation, and real-`mpv` follow-through moving as the next user-facing reliability gates.

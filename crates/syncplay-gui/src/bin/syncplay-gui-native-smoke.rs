@@ -6048,7 +6048,7 @@ fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         public_servers_spec: DEFAULT_PUBLIC_SERVERS_SPEC,
         tcp_session: None,
         loopback_session: Some(("drag-drop-user", "drag-drop-room")),
-        attach_test_player: false,
+        attach_test_player: true,
         drop_file_paths_spec: Some(&playlist_drop_spec),
         drop_target: Some("playlist"),
     };

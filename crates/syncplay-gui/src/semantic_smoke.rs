@@ -1198,7 +1198,7 @@ fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScena
         net::TcpListener,
         sync::mpsc,
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1277,6 +1277,7 @@ fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScena
                 username: Some("semantic-user".to_owned()),
                 room: Some("semantic-room".to_owned()),
                 public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
+                shared_playlist_enabled: Some(true),
                 ..super::StoredClientSettingsMvp::default()
             },
         );
@@ -1324,30 +1325,38 @@ fn run_gui_semantic_detached_runtime_ownership_flow() -> Result<GuiSemanticScena
             ));
         }
 
-        super::GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
-        let hello_actions = connect_handle.drain_actions();
-        if !hello_actions.iter().any(|action| {
-            matches!(
-                action,
-                super::GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
-                    if snapshot.room_name == "semantic-room"
-                        && snapshot
-                            .playlist
-                            .iter()
-                            .any(|item| item == "missing-target.mkv")
-            )
-        }) {
-            return Err(
-                "detached semantic connect flow did not project the mock server playlist"
-                    .to_owned(),
-            );
-        }
-        for action in hello_actions {
-            if !connect_state.apply(action) {
+        let connect_deadline = Instant::now() + Duration::from_secs(1);
+        let mut projected_mock_playlist = false;
+        loop {
+            super::GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+            let hello_actions = connect_handle.drain_actions();
+            for action in hello_actions {
+                if let super::GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &action
+                    && snapshot.room_name == "semantic-room"
+                    && snapshot
+                        .playlist
+                        .iter()
+                        .any(|item| item == "missing-target.mkv")
+                {
+                    projected_mock_playlist = true;
+                }
+                if !connect_state.apply(action) {
+                    return Err(
+                        "detached semantic connect flow rejected a projected session action"
+                            .to_owned(),
+                    );
+                }
+            }
+            if projected_mock_playlist {
+                break;
+            }
+            if Instant::now() >= connect_deadline {
                 return Err(
-                    "detached semantic connect flow rejected a projected session action".to_owned(),
+                    "detached semantic connect flow did not project the mock server playlist"
+                        .to_owned(),
                 );
             }
+            thread::sleep(Duration::from_millis(10));
         }
 
         let mut refresh_owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None);

@@ -1186,7 +1186,7 @@ impl GuiDroppedFilesTarget {
     }
 
     fn load_into_shared_playlist(self, state: &SyncplayGuiShellAppState) -> bool {
-        matches!(self, Self::Playlist) && state.shared_playlist_events_enabled()
+        matches!(self, Self::Playlist) && state.shared_playlist_drop_target_available()
     }
 }
 
@@ -6538,6 +6538,29 @@ impl GuiNativeApp {
         state_changed
     }
 
+    fn apply_test_drop_request(&mut self, request: GuiDroppedFilesRequest) -> bool {
+        let (request, warning_actions) = Self::normalize_dropped_files_request(request);
+        let mut state_changed = false;
+        if let Some(request) = request {
+            if let Some(path) = request.paths.first() {
+                self.state.remember_media_dialog_directory(path);
+            }
+            let load_into_shared_playlist =
+                matches!(request.target, GuiDroppedFilesTarget::Playlist);
+            for action in self.runtime.actions_for_open_media_files(
+                &self.state,
+                request.paths,
+                load_into_shared_playlist,
+            ) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for action in warning_actions {
+            state_changed |= self.state.apply(action);
+        }
+        state_changed
+    }
+
     fn close_seek_prompt(&mut self) {
         self.seek_prompt_open = false;
         self.seek_prompt_buffer.clear();
@@ -6742,6 +6765,9 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
+        for action in self.runtime.drain_runtime_actions() {
+            state_changed |= self.state.apply(action);
+        }
         if let Some(paths) = selected_media_files {
             if let Some(path) = paths.first() {
                 self.state.remember_media_dialog_directory(path);
@@ -6754,7 +6780,7 @@ impl eframe::App for GuiNativeApp {
             }
         }
         if let Some(request) = self.test_drop_request.take() {
-            state_changed |= self.apply_dropped_files_request(request);
+            state_changed |= self.apply_test_drop_request(request);
         }
         if let Some(request) = dropped_files_request {
             state_changed |= self.apply_dropped_files_request(request);
@@ -8327,11 +8353,6 @@ impl MainWindowShellState {
             .unwrap_or("You")
             .to_owned();
         let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
-        let player_attached = settings
-            .player_path
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty());
         let controlled_room_active = room_name.starts_with('+');
 
         let mut playlist = Vec::new();
@@ -8363,10 +8384,10 @@ impl MainWindowShellState {
                 Vec::new()
             },
             playback: MainWindowPlaybackControls {
-                can_toggle_pause: player_attached,
-                can_seek: player_attached,
+                can_toggle_pause: false,
+                can_seek: false,
                 can_set_ready: true,
-                can_manage_playlist: player_attached && shared_playlist_enabled,
+                can_manage_playlist: false,
             },
             playback_paused: false,
             autoplay_active: settings.autoplay_initial_state.unwrap_or(false),
@@ -8436,13 +8457,7 @@ impl MainWindowShellState {
 
 impl MenuDialogShellState {
     fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let player_attached = settings
-            .player_path
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty());
         let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
-        let can_open_media_file = player_attached || shared_playlist_enabled;
         let chat_enabled = settings.chat_input_enabled.unwrap_or(false)
             || settings.chat_output_enabled.unwrap_or(false);
 
@@ -8453,7 +8468,7 @@ impl MenuDialogShellState {
                     actions: vec![
                         MenuActionShellItem {
                             label: "Open Media File",
-                            enabled: can_open_media_file,
+                            enabled: false,
                             is_selected: false,
                         },
                         MenuActionShellItem {
@@ -8478,17 +8493,17 @@ impl MenuDialogShellState {
                     actions: vec![
                         MenuActionShellItem {
                             label: "Toggle Pause",
-                            enabled: player_attached,
+                            enabled: false,
                             is_selected: false,
                         },
                         MenuActionShellItem {
                             label: "Seek",
-                            enabled: player_attached,
+                            enabled: false,
                             is_selected: false,
                         },
                         MenuActionShellItem {
                             label: "Playlist Actions",
-                            enabled: player_attached && shared_playlist_enabled,
+                            enabled: false,
                             is_selected: false,
                         },
                     ],
@@ -11348,10 +11363,7 @@ impl SyncplayGuiShellAppState {
 
     fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
         let busy = self.pending_operation.is_some();
-        let can_open_media_file = !busy
-            && (self.main_window.shared_playlist_enabled
-                || self.main_window.playback.can_toggle_pause
-                || self.main_window.playback.can_seek);
+        let can_open_media_file = !busy && self.media_open_runtime_available();
         self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
         self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
         self.set_menu_action_enabled(
@@ -11760,6 +11772,16 @@ impl SyncplayGuiShellAppState {
 
     fn shared_playlist_events_enabled(&self) -> bool {
         self.main_window.shared_playlist_enabled
+    }
+
+    fn media_open_runtime_available(&self) -> bool {
+        self.main_window.playback.can_toggle_pause
+            || self.main_window.playback.can_seek
+            || self.main_window.playback.can_manage_playlist
+    }
+
+    fn shared_playlist_drop_target_available(&self) -> bool {
+        self.shared_playlist_events_enabled() && self.main_window.playback.can_manage_playlist
     }
 
     fn ensure_shared_playlist_event_allowed(&mut self) -> bool {
@@ -15366,8 +15388,9 @@ mod tests {
         assert_eq!(state.users[0].username, TEST_USERNAME);
         assert!(state.users[0].is_ready);
         assert!(state.users[0].is_controller);
-        assert!(state.playback.can_toggle_pause);
-        assert!(state.playback.can_manage_playlist);
+        assert!(!state.playback.can_toggle_pause);
+        assert!(!state.playback.can_seek);
+        assert!(!state.playback.can_manage_playlist);
         assert_eq!(state.playlist.len(), 1);
         assert_eq!(state.chat.len(), 1);
     }
@@ -15392,7 +15415,7 @@ mod tests {
             file.actions
                 .iter()
                 .find(|item| item.label == "Open Media File")
-                .is_some_and(|item| item.enabled)
+                .is_some_and(|item| !item.enabled)
         );
 
         let playback = state
@@ -15400,7 +15423,7 @@ mod tests {
             .iter()
             .find(|section| section.title == "Playback")
             .expect("playback section should exist");
-        assert!(playback.actions.iter().all(|item| item.enabled));
+        assert!(playback.actions.iter().all(|item| !item.enabled));
 
         let window = state
             .sections
@@ -15425,6 +15448,63 @@ mod tests {
         assert!(state.tls_prompt_expected);
         assert!(!state.update_notice_expected);
         assert!(state.about_dialog_available);
+    }
+
+    #[test]
+    fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        let initial_tree = state.shell_widget_tree();
+        assert!(
+            initial_tree
+                .find("menus:action:0:0")
+                .is_some_and(|node| !node.enabled)
+        );
+        assert!(
+            initial_tree
+                .find("shell:quick:open-media-file")
+                .is_some_and(|node| !node.enabled)
+        );
+        assert!(!super::GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));
+
+        assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot {
+                room_name: "Room".to_owned(),
+                shared_playlist_enabled: true,
+                controlled_room_active: false,
+                users: vec![MainWindowRuntimeUserSnapshot {
+                    username: TEST_USERNAME.to_owned(),
+                    is_self: true,
+                    is_ready: false,
+                    is_controller: false,
+                }],
+                playlist: vec!["Episode 1".to_owned()],
+                chat: Vec::new(),
+                can_toggle_pause: false,
+                can_seek: false,
+                can_set_ready: false,
+                can_manage_playlist: true,
+                playback_paused: false,
+                autoplay_active: false,
+            }
+        )));
+
+        let runtime_tree = state.shell_widget_tree();
+        assert!(
+            runtime_tree
+                .find("menus:action:0:0")
+                .is_some_and(|node| node.enabled)
+        );
+        assert!(
+            runtime_tree
+                .find("shell:quick:open-media-file")
+                .is_some_and(|node| node.enabled)
+        );
+        assert!(super::GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));
     }
 
     #[test]
@@ -15556,7 +15636,7 @@ mod tests {
         }));
 
         assert!(state.main_window.shared_playlist_enabled);
-        assert!(state.main_window.playback.can_manage_playlist);
+        assert!(!state.main_window.playback.can_manage_playlist);
         let window = state
             .menus
             .sections
@@ -16103,13 +16183,13 @@ mod tests {
                 .find(|action| action.label == "Toggle Pause")
                 .is_some_and(|action| !action.enabled && !action.is_selected)
         );
-        assert_eq!(state.selection.selected_menu_action, Some((1, 1)));
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
         assert!(
             playback
                 .actions
                 .iter()
                 .find(|action| action.label == "Seek")
-                .is_some_and(|action| action.enabled && action.is_selected)
+                .is_some_and(|action| !action.enabled && !action.is_selected)
         );
         let window = state
             .menus
@@ -16636,8 +16716,8 @@ mod tests {
         assert!(state.main_window.users[1].is_selected);
         assert_eq!(state.selection.selected_main_window_playlist, Some(1));
         assert!(state.main_window.playlist[1].is_selected);
-        assert_eq!(state.selection.selected_menu_action, Some((1, 1)));
-        assert!(state.menus.sections[1].actions[1].is_selected);
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
+        assert!(state.menus.sections[0].actions[1].is_selected);
         assert_eq!(state.selection.selected_media_search_directory, Some(0));
         assert!(state.media_search.directories[0].is_selected);
         assert!(state.public_servers.servers[0].is_selected);
@@ -16720,20 +16800,13 @@ mod tests {
             ))
         );
 
-        assert_eq!(state.selection.selected_menu_action, Some((1, 0)));
+        assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
         assert!(
-            state.menus.sections[1]
+            state.menus.sections[0]
                 .actions
                 .iter()
-                .find(|action| action.label == "Toggle Pause")
+                .find(|action| action.label == "Open Media Search")
                 .is_some_and(|action| action.enabled && action.is_selected)
-        );
-        assert!(
-            state.menus.sections[1]
-                .actions
-                .iter()
-                .find(|action| action.label == "Seek")
-                .is_some_and(|action| !action.enabled && !action.is_selected)
         );
     }
 
@@ -17012,7 +17085,7 @@ mod tests {
         assert_eq!(state.active_view, GuiShellView::MainWindow);
         assert_eq!(state.main_window.room_name, "DraftRoom");
         assert!(state.commands.can_reset_configuration);
-        assert!(state.commands.can_toggle_pause);
+        assert!(!state.commands.can_toggle_pause);
         let playback = state
             .menus
             .sections
@@ -17024,7 +17097,7 @@ mod tests {
                 .actions
                 .iter()
                 .find(|action| action.label == "Toggle Pause")
-                .is_some_and(|action| action.enabled)
+                .is_some_and(|action| !action.enabled)
         );
     }
 
@@ -18009,7 +18082,7 @@ mod tests {
             .find("menus:action:1:0")
             .expect("playback toggle action should exist");
         assert_eq!(pause.kind, GuiWidgetKind::Button);
-        assert!(pause.enabled);
+        assert!(!pause.enabled);
         assert!(pause.selected);
 
         let about = tree
@@ -18332,6 +18405,9 @@ mod tests {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_toggle_pause = true;
+        state.refresh_validation();
+        state.sync_playback_menu_actions_from_runtime_state(state.commands.can_toggle_pause);
 
         assert!(state.apply(GuiShellAction::SelectMenuAction {
             section_index: 0,
@@ -19582,6 +19658,7 @@ mod tests {
             player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_toggle_pause = true;
 
         assert!(state.apply(GuiShellAction::AnnouncePlaybackPaused));
         assert!(state.main_window.playback_paused);
@@ -19646,6 +19723,7 @@ mod tests {
             autoplay_initial_state: Some(true),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_toggle_pause = true;
 
         assert!(!state.apply(GuiShellAction::AnnouncePlaybackResumed));
         assert_eq!(
@@ -19925,6 +20003,7 @@ mod tests {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_manage_playlist = true;
         state.main_window.playlist.push(MainWindowPlaylistRow {
             label: "Second".to_owned(),
             is_selected: false,
@@ -20243,6 +20322,8 @@ mod tests {
             player_path: Some("mpv".to_owned()),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_toggle_pause = true;
+        state.refresh_validation();
 
         assert!(state.apply(GuiShellAction::BeginConfigurationSave));
         assert_eq!(
@@ -20826,6 +20907,8 @@ mod tests {
             chat_input_enabled: Some(true),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_toggle_pause = true;
+        state.refresh_validation();
 
         assert!(state.commands.can_save_configuration);
         assert!(!state.commands.can_reset_configuration);
@@ -22088,10 +22171,11 @@ mod tests {
 
     #[test]
     fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_drops() {
-        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettingsMvp::default()
         });
+        state.main_window.playback.can_manage_playlist = true;
         let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
             &state,
             true,
@@ -22388,7 +22472,7 @@ mod tests {
             ]
         );
         assert_eq!(quick_open_media.kind, GuiWidgetKind::Button);
-        assert!(quick_open_media.enabled);
+        assert!(!quick_open_media.enabled);
         assert_eq!(
             GuiWidgetEguiRenderer::action_for_list_item_node(user_row),
             Some(GuiShellAction::SelectMainWindowUser(0))
@@ -23232,6 +23316,7 @@ assert-pending\tnone\n"
         }
         assert!(state.pending_operation.is_none());
 
+        state.main_window.playback.can_toggle_pause = true;
         assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
         assert_eq!(
             runtime.actions_for_pending_completion(&state),
@@ -23890,6 +23975,64 @@ assert-pending\tnone\n"
         );
         assert_eq!(state.selection.selected_main_window_playlist, Some(0));
         assert!(owner.player_local_file.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_imports_playlist_files_queued_before_startup_pump() {
+        let root = test_temp_root("shared-playlist-import-startup-queue");
+        let playlist_path = root.join("startup-room-playlist.txt");
+        std::fs::write(&playlist_path, "episode1.mkv\nhttps://example.com/live\n")
+            .expect("startup shared playlist import fixture should be written");
+
+        let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
+            .with_client_core_chat_loopback_session_runtime("alice", "room1")
+            .expect("client-core loopback runtime owner should bootstrap");
+        let handle = super::GuiQueuedRuntimeBridgeHandle::default();
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+        handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+            paths: vec![playlist_path.to_string_lossy().into_owned()],
+            load_into_shared_playlist: true,
+        });
+        let actions = pump_and_apply_runtime_owner_actions_until(
+            &mut owner,
+            &handle,
+            &mut state,
+            std::time::Duration::from_secs(1),
+            |state| state.main_window.playlist.len() == 2,
+            "shared-playlist import queued before startup runtime pump",
+        );
+
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message == "Imported 2 entries into the shared playlist."
+            )),
+            "startup-queued shared-playlist imports should still report a runtime-backed success"
+        );
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert_eq!(
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "episode1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -28598,6 +28741,38 @@ assert-pending\tnone\n"
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
+                }),
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Toggle Pause",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Playback",
+                            action_label: "Seek",
+                            enabled: true,
+                        },
+                    ],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+                GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                    command_availability: GuiCommandAvailabilityState {
+                        can_save_configuration: true,
+                        can_reset_configuration: false,
+                        can_reload_configuration: true,
+                        can_connect_saved_server: false,
+                        can_disconnect_session: false,
+                        can_connect_public_server: false,
+                        can_refresh_public_servers: true,
+                        can_search_missing_media: false,
+                        can_toggle_pause: true,
+                        can_send_chat_message: false,
+                    },
+                    pending_operation: None,
                 }),
             ]
         );
