@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod mpv_launch;
 mod remote_services;
 
 use std::{
@@ -47,7 +48,12 @@ use syncplay_client_core::{
     ReconnectTransitionNotification, UserChangeNotification,
 };
 use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
-use syncplay_player_mpv::MpvAdapter;
+use syncplay_player_mpv::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
+
+use self::mpv_launch::{
+    ManagedMpvLaunchConfig, ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
+    apply_legacy_syncplay_ui_settings_to_mpv_adapter, managed_mpv_settings_decision_from_settings,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuiLaunchMode {
@@ -2518,6 +2524,108 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
     }
 }
 
+enum GuiOwnedPlayer {
+    Test(GuiTestPlayerAdapter),
+    Mpv(Box<MpvAdapter>),
+    Custom(Box<dyn PlayerAdapter>),
+}
+
+impl GuiOwnedPlayer {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Test(player) => player.name(),
+            Self::Mpv(player) => player.name(),
+            Self::Custom(player) => player.name(),
+        }
+    }
+
+    fn as_mpv_mut(&mut self) -> Option<&mut MpvAdapter> {
+        match self {
+            Self::Mpv(player) => Some(player),
+            Self::Test(_) | Self::Custom(_) => None,
+        }
+    }
+}
+
+impl PlayerAdapter for GuiOwnedPlayer {
+    fn name(&self) -> &'static str {
+        self.name()
+    }
+
+    fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.open_file(path),
+            Self::Mpv(player) => player.open_file(path),
+            Self::Custom(player) => player.open_file(path),
+        }
+    }
+
+    fn set_option_string(
+        &mut self,
+        name: &str,
+        value: &str,
+    ) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.set_option_string(name, value),
+            Self::Mpv(player) => player.set_option_string(name, value),
+            Self::Custom(player) => player.set_option_string(name, value),
+        }
+    }
+
+    fn apply_profile(&mut self, profile: &str) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.apply_profile(profile),
+            Self::Mpv(player) => player.apply_profile(profile),
+            Self::Custom(player) => player.apply_profile(profile),
+        }
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.set_paused(paused),
+            Self::Mpv(player) => player.set_paused(paused),
+            Self::Custom(player) => player.set_paused(paused),
+        }
+    }
+
+    fn set_position(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.set_position(position_seconds),
+            Self::Mpv(player) => player.set_position(position_seconds),
+            Self::Custom(player) => player.set_position(position_seconds),
+        }
+    }
+
+    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
+        match self {
+            Self::Test(player) => player.take_local_file_update(),
+            Self::Mpv(player) => player.take_local_file_update(),
+            Self::Custom(player) => player.take_local_file_update(),
+        }
+    }
+
+    fn take_playback_telemetry_update(
+        &mut self,
+    ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+        match self {
+            Self::Test(player) => player.take_playback_telemetry_update(),
+            Self::Mpv(player) => player.take_playback_telemetry_update(),
+            Self::Custom(player) => player.take_playback_telemetry_update(),
+        }
+    }
+
+    fn take_pending_chat_request(&mut self) -> Option<String> {
+        match self {
+            Self::Test(player) => player.take_pending_chat_request(),
+            Self::Mpv(player) => player.take_pending_chat_request(),
+            Self::Custom(player) => player.take_pending_chat_request(),
+        }
+    }
+}
+
 trait GuiSessionRuntimeAdapter {
     fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         Vec::new()
@@ -4023,6 +4131,60 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuiPlayerLaunchRuntimeState {
+    None,
+    TestPlayer,
+    ExplicitMpvIpc {
+        ipc_path: String,
+        ui_settings: Box<LegacySyncplayUiSettings>,
+    },
+    ManagedMpv(Box<ManagedMpvLaunchConfig>),
+    UnsupportedConfiguredPlayer {
+        player_path: String,
+    },
+}
+
+impl GuiPlayerLaunchRuntimeState {
+    fn default_unavailability_reason(&self) -> Option<String> {
+        match self {
+            Self::UnsupportedConfiguredPlayer { player_path } => Some(format!(
+                "GUI-owned player launch currently supports mpv only; saved player path '{player_path}' was not started."
+            )),
+            Self::None | Self::TestPlayer | Self::ExplicitMpvIpc { .. } | Self::ManagedMpv(_) => {
+                None
+            }
+        }
+    }
+
+    fn can_apply_mpv_ui_settings_in_place(&self, next: &Self) -> bool {
+        match (self, next) {
+            (
+                Self::ExplicitMpvIpc {
+                    ipc_path: current_path,
+                    ..
+                },
+                Self::ExplicitMpvIpc {
+                    ipc_path: next_path,
+                    ..
+                },
+            ) => current_path == next_path,
+            (Self::ManagedMpv(current), Self::ManagedMpv(next)) => {
+                current.matches_process_target(next)
+            }
+            _ => false,
+        }
+    }
+
+    fn mpv_ui_settings(&self) -> Option<&LegacySyncplayUiSettings> {
+        match self {
+            Self::ExplicitMpvIpc { ui_settings, .. } => Some(ui_settings),
+            Self::ManagedMpv(config) => Some(&config.ui_settings),
+            Self::None | Self::TestPlayer | Self::UnsupportedConfiguredPlayer { .. } => None,
+        }
+    }
+}
+
 struct GuiPersistedConfigRuntimeOwner {
     config_path: Option<PathBuf>,
     session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
@@ -4031,7 +4193,9 @@ struct GuiPersistedConfigRuntimeOwner {
     session_default_room: Option<String>,
     pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     startup_saved_connect_attempted: bool,
-    player: Option<Box<dyn PlayerAdapter>>,
+    player: Option<GuiOwnedPlayer>,
+    player_launch_state: GuiPlayerLaunchRuntimeState,
+    managed_mpv_process: Option<ManagedMpvProcessGuard>,
     player_unavailability_reason: Option<String>,
     player_local_file: Option<LocalFileUpdate>,
     player_position_seconds: Option<f64>,
@@ -4049,6 +4213,8 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
             player: None,
+            player_launch_state: GuiPlayerLaunchRuntimeState::None,
+            managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
             player_position_seconds: None,
@@ -4068,46 +4234,233 @@ impl GuiPersistedConfigRuntimeOwner {
         F: Fn(&str) -> Option<String>,
     {
         let mut owner = Self::with_config_path(config_path);
-        owner.attach_startup_player_from_lookup(lookup);
+        let startup_settings = owner.load_startup_player_settings_from_config_path();
+        owner.sync_player_from_lookup_and_settings(lookup, startup_settings.as_ref(), false);
         owner
     }
 
-    fn attach_startup_player_from_lookup<F>(&mut self, lookup: &F)
+    fn load_startup_player_settings_from_config_path(&self) -> Option<StoredClientSettingsMvp> {
+        self.config_path.as_ref().and_then(|path| {
+            load_syncplay_ini_stored_client_settings_mvp_from_path(path)
+                .ok()
+                .flatten()
+        })
+    }
+
+    fn clear_player_runtime_cache(&mut self) {
+        self.player_local_file = None;
+        self.player_position_seconds = None;
+        self.player_paused = None;
+    }
+
+    fn detach_player(&mut self) {
+        self.player = None;
+        self.managed_mpv_process = None;
+        self.clear_player_runtime_cache();
+    }
+
+    fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
+        self.detach_player();
+        self.player_launch_state = launch_state.clone();
+        self.player_unavailability_reason = launch_state.default_unavailability_reason();
+        match launch_state {
+            GuiPlayerLaunchRuntimeState::None => {}
+            GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
+            GuiPlayerLaunchRuntimeState::TestPlayer => {
+                self.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+                self.player_unavailability_reason = None;
+            }
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+                ipc_path,
+                ui_settings,
+            } => match MpvAdapter::with_json_ipc(&ipc_path) {
+                Ok(mut adapter) => match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+                    &mut adapter,
+                    &ui_settings,
+                ) {
+                    Ok(()) => {
+                        self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                        self.player_unavailability_reason = None;
+                    }
+                    Err(error) => {
+                        self.player_unavailability_reason = Some(format!(
+                            "mpv JSON IPC attach succeeded at '{ipc_path}', but legacy GUI settings could not be applied: {error}"
+                        ));
+                    }
+                },
+                Err(error) => {
+                    self.player_unavailability_reason = Some(format!(
+                        "mpv JSON IPC attach failed at '{ipc_path}': {error}"
+                    ));
+                }
+            },
+            GuiPlayerLaunchRuntimeState::ManagedMpv(config) => {
+                match mpv_launch::spawn_managed_mpv_and_attach(&config) {
+                    Ok((mut adapter, guard)) => {
+                        match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
+                            &mut adapter,
+                            &config.ui_settings,
+                        ) {
+                            Ok(()) => {
+                                self.managed_mpv_process = Some(guard);
+                                self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                                self.player_unavailability_reason = None;
+                            }
+                            Err(error) => {
+                                self.player_unavailability_reason = Some(format!(
+                                    "GUI-owned mpv started, but legacy GUI settings could not be applied: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.player_unavailability_reason = Some(format!(
+                            "GUI-owned mpv launch failed from saved player path '{}': {error}",
+                            config.requested_player_path
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    fn configured_player_launch_state_from_lookup_and_settings<F>(
+        lookup: &F,
+        settings: Option<&StoredClientSettingsMvp>,
+    ) -> Result<GuiPlayerLaunchRuntimeState, String>
     where
         F: Fn(&str) -> Option<String>,
     {
         match env_flag_enabled_lookup(lookup, "SYNCPLAY_GUI_ENABLE_TEST_PLAYER") {
             Ok(true) => {
-                self.player = Some(Box::<GuiTestPlayerAdapter>::default());
-                self.player_unavailability_reason = None;
-                return;
+                return Ok(GuiPlayerLaunchRuntimeState::TestPlayer);
             }
             Ok(false) => {}
             Err(error) => {
-                self.player = None;
-                self.player_unavailability_reason = Some(format!(
+                return Err(format!(
                     "SYNCPLAY_GUI_ENABLE_TEST_PLAYER could not be parsed: {error}"
                 ));
-                return;
             }
         }
 
-        let Some(ipc_path) = explicit_mpv_ipc_path_from_lookup(lookup) else {
+        if let Some(ipc_path) = explicit_mpv_ipc_path_from_lookup(lookup) {
+            let ui_settings =
+                mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(settings);
+            return Ok(GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
+                ipc_path,
+                ui_settings: Box::new(ui_settings),
+            });
+        }
+
+        Ok(
+            match managed_mpv_settings_decision_from_settings(settings) {
+                ManagedMpvSettingsDecision::NotConfigured => GuiPlayerLaunchRuntimeState::None,
+                ManagedMpvSettingsDecision::UnsupportedConfiguredPlayer { player_path } => {
+                    GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { player_path }
+                }
+                ManagedMpvSettingsDecision::Launch(config) => {
+                    GuiPlayerLaunchRuntimeState::ManagedMpv(config)
+                }
+            },
+        )
+    }
+
+    fn try_apply_mpv_ui_settings_in_place(
+        &mut self,
+        next_launch_state: &GuiPlayerLaunchRuntimeState,
+    ) -> bool {
+        if !self
+            .player_launch_state
+            .can_apply_mpv_ui_settings_in_place(next_launch_state)
+        {
+            return false;
+        }
+        let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
+            return false;
+        };
+        let Some(ui_settings) = next_launch_state.mpv_ui_settings() else {
+            return false;
+        };
+        if let Err(error) = apply_legacy_syncplay_ui_settings_to_mpv_adapter(player, ui_settings) {
+            self.player_unavailability_reason =
+                Some(format!("mpv legacy GUI settings reapply failed: {error}"));
+            return false;
+        }
+        self.player_launch_state = next_launch_state.clone();
+        self.player_unavailability_reason = None;
+        true
+    }
+
+    fn sync_player_from_lookup_and_settings<F>(
+        &mut self,
+        lookup: &F,
+        settings: Option<&StoredClientSettingsMvp>,
+        force_relaunch: bool,
+    ) where
+        F: Fn(&str) -> Option<String>,
+    {
+        let next_launch_state =
+            match Self::configured_player_launch_state_from_lookup_and_settings(lookup, settings) {
+                Ok(state) => state,
+                Err(error) => {
+                    self.detach_player();
+                    self.player_launch_state = GuiPlayerLaunchRuntimeState::None;
+                    self.player_unavailability_reason = Some(error);
+                    return;
+                }
+            };
+
+        if !force_relaunch
+            && self.player_launch_state == next_launch_state
+            && (self.player.is_some() || self.player_unavailability_reason.is_some())
+        {
+            return;
+        }
+        if !force_relaunch && self.try_apply_mpv_ui_settings_in_place(&next_launch_state) {
+            return;
+        }
+        self.attach_player_from_launch_state(next_launch_state);
+    }
+
+    fn ensure_configured_player_attached(&mut self) {
+        if self.player.is_some() {
+            return;
+        }
+        match self.player_launch_state.clone() {
+            GuiPlayerLaunchRuntimeState::TestPlayer
+            | GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { .. }
+            | GuiPlayerLaunchRuntimeState::ManagedMpv(_) => {
+                self.attach_player_from_launch_state(self.player_launch_state.clone());
+            }
+            GuiPlayerLaunchRuntimeState::None
+            | GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
+        }
+    }
+
+    fn poll_managed_mpv_process(&mut self) {
+        let exit_status = match self.managed_mpv_process.as_mut() {
+            Some(guard) => match guard.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    self.detach_player();
+                    self.player_unavailability_reason = Some(error);
+                    return;
+                }
+            },
+            None => return,
+        };
+        let Some(exit_status) = exit_status else {
             return;
         };
 
-        match MpvAdapter::with_json_ipc(&ipc_path) {
-            Ok(adapter) => {
-                self.player = Some(Box::new(adapter));
-                self.player_unavailability_reason = None;
-            }
-            Err(error) => {
-                self.player = None;
-                self.player_unavailability_reason = Some(format!(
-                    "mpv JSON IPC attach failed at '{ipc_path}': {error}"
-                ));
-            }
-        }
+        let status_text = exit_status
+            .code()
+            .map(|code| format!("with exit code {code}"))
+            .unwrap_or_else(|| "after an abnormal termination".to_owned());
+        self.detach_player();
+        self.player_unavailability_reason = Some(format!(
+            "GUI-owned mpv exited {status_text}. Open media or save/reload configuration to relaunch it."
+        ));
     }
 
     fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
@@ -4286,11 +4639,9 @@ impl GuiPersistedConfigRuntimeOwner {
             };
             session.drain_gui_actions(projected_state)
         };
-        Self::push_actions_and_project(
-            handle,
-            projected_state,
-            self.augment_runtime_actions_for_room_transitions(projected_state, actions),
-        );
+        let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
+        self.emit_gui_actions_to_attached_player(&actions);
+        Self::push_actions_and_project(handle, projected_state, actions);
     }
 
     fn flush_session_transport_outbound(
@@ -5106,6 +5457,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         paths: Vec<String>,
     ) {
+        self.ensure_configured_player_attached();
         let selected_paths = paths
             .into_iter()
             .filter_map(|path| normalized_editable_text(&path))
@@ -5215,6 +5567,104 @@ impl GuiPersistedConfigRuntimeOwner {
             actions.push(GuiShellAction::AnnounceSystemChatEvent(error));
         }
         handle.push_actions(actions);
+    }
+
+    fn emit_gui_actions_to_attached_player(&mut self, actions: &[GuiShellAction]) {
+        let Some(player) = self.player.as_mut().and_then(GuiOwnedPlayer::as_mpv_mut) else {
+            return;
+        };
+        let mut already_emitted_osd_messages = BTreeSet::new();
+        for action in actions {
+            match action {
+                GuiShellAction::PushChatMessage { sender, message } => {
+                    if let Err(error) =
+                        player.show_syncplay_legacy_chat_message(&format!("<{sender}> {message}"))
+                    {
+                        eprintln!(
+                            "warning: failed to display GUI chat notification via mpv OSD: {error}"
+                        );
+                    }
+                }
+                GuiShellAction::PushTransientNotification { level, message } => {
+                    already_emitted_osd_messages.insert(message.clone());
+                    let kind = match level {
+                        GuiTransientNotificationLevel::Info
+                        | GuiTransientNotificationLevel::Success => {
+                            LegacySyncplayOsdKind::Notification
+                        }
+                        GuiTransientNotificationLevel::Warning
+                        | GuiTransientNotificationLevel::Error => LegacySyncplayOsdKind::Alert,
+                    };
+                    if let Err(error) = player.show_syncplay_legacy_message(message, kind) {
+                        eprintln!(
+                            "warning: failed to display GUI notification via mpv OSD: {error}"
+                        );
+                    }
+                }
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if already_emitted_osd_messages.insert(message.clone()) =>
+                {
+                    if let Err(error) = player
+                        .show_syncplay_legacy_message(message, LegacySyncplayOsdKind::Notification)
+                    {
+                        eprintln!(
+                            "warning: failed to display GUI system-chat event via mpv OSD: {error}"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn drain_player_chat_input(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if self.session.is_none() {
+            return;
+        }
+
+        let mut errors = Vec::new();
+        loop {
+            let pending_chat = self
+                .player
+                .as_mut()
+                .and_then(|player| player.take_pending_chat_request());
+            let Some(message) = pending_chat else {
+                break;
+            };
+            let send_result = self
+                .session
+                .as_mut()
+                .expect("session should exist when draining player chat")
+                .send_chat_message(message.clone());
+            if let Err(error) = send_result {
+                errors.push(format!(
+                    "Chat input from the attached player could not be sent: {error}"
+                ));
+            }
+        }
+
+        if !errors.is_empty() {
+            Self::push_actions_and_project(
+                handle,
+                projected_state,
+                errors
+                    .into_iter()
+                    .flat_map(|message| {
+                        [
+                            GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: message.clone(),
+                            },
+                            GuiShellAction::AnnounceSystemChatEvent(message),
+                        ]
+                    })
+                    .collect(),
+            );
+        }
     }
 
     fn refresh_player_state(&mut self) {
@@ -5415,7 +5865,7 @@ impl Default for GuiPersistedConfigRuntimeOwner {
         );
         if owner.player.is_none() && owner.player_unavailability_reason.is_none() {
             owner.player_unavailability_reason = Some(
-                "Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
+                "Set playerPath to mpv in GUI settings, or set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
                     .to_owned(),
             );
         }
@@ -5425,15 +5875,18 @@ impl Default for GuiPersistedConfigRuntimeOwner {
 
 impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
     fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SyncplayGuiShellAppState) {
+        self.poll_managed_mpv_process();
         self.refresh_player_state();
         let mut projected_state = state.clone();
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
+        self.drain_player_chat_input(handle, &mut projected_state);
         self.flush_session_transport_outbound(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
+        self.drain_player_chat_input(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
             if projected_state.pending_operation.is_none()
@@ -5445,6 +5898,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                 self.pump_session_transport_driver(handle, &mut projected_state);
                 self.drain_session_transport_inbound(handle, &mut projected_state);
                 self.drain_session_runtime_actions(handle, &mut projected_state);
+                self.drain_player_chat_input(handle, &mut projected_state);
             }
         }
         for request in handle.drain_requests() {
@@ -5462,6 +5916,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     if paths.is_empty() {
                         continue;
                     }
+                    self.ensure_configured_player_attached();
                     if self.player.is_some() {
                         self.open_media_files_through_attached_player(handle, paths);
                     } else {
@@ -5473,6 +5928,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                 }
                 GuiRuntimeRequest::SeekOffset(offset_seconds) => {
                     self.refresh_player_state();
+                    self.ensure_configured_player_attached();
                     if self.player.is_some() {
                         let target_position_seconds =
                             (self.player_position_seconds.unwrap_or(0.0) + offset_seconds).max(0.0);
@@ -5573,6 +6029,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     GuiPendingCompletionRequest::TogglePlaybackPause,
                 ) => {
                     self.refresh_player_state();
+                    self.ensure_configured_player_attached();
                     if self.player.is_some() {
                         let target_paused = !projected_state.main_window.playback_paused;
                         let (player_name, toggle_result) = {
@@ -5742,6 +6199,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         Ok(found_path) => {
                             let found_path =
                                 found_path.and_then(|path| normalized_editable_text(&path));
+                            self.ensure_configured_player_attached();
                             match found_path {
                                 Some(path) if self.player.is_some() => {
                                     self.clear_pending_operation_runtime_state(
@@ -5799,6 +6257,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     GuiPendingCompletionRequest::SaveConfiguration(settings),
                 ) => {
                     let Some(path) = self.config_path.as_ref() else {
+                        self.sync_player_from_lookup_and_settings(
+                            &env_trimmed,
+                            Some(&settings),
+                            true,
+                        );
                         Self::push_actions_and_project(
                             handle,
                             &mut projected_state,
@@ -5808,6 +6271,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     };
                     match upsert_syncplay_ini_stored_client_settings_mvp_at_path(path, &settings) {
                         Ok(()) => {
+                            self.sync_player_from_lookup_and_settings(
+                                &env_trimmed,
+                                Some(&settings),
+                                true,
+                            );
                             Self::push_actions_and_project(
                                 handle,
                                 &mut projected_state,
@@ -5851,6 +6319,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                     };
                     match load_syncplay_ini_stored_client_settings_mvp_from_path(path) {
                         Ok(Some(settings)) => {
+                            self.sync_player_from_lookup_and_settings(
+                                &env_trimmed,
+                                Some(&settings),
+                                true,
+                            );
                             Self::push_actions_and_project(
                                 handle,
                                 &mut projected_state,
@@ -5858,6 +6331,11 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                             );
                         }
                         Ok(None) => {
+                            self.sync_player_from_lookup_and_settings(
+                                &env_trimmed,
+                                Some(&fallback_settings),
+                                true,
+                            );
                             Self::push_actions_and_project(
                                 handle,
                                 &mut projected_state,
@@ -5882,11 +6360,14 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                 GuiRuntimeRequest::CompletePendingOperation(
                     GuiPendingCompletionRequest::ClearGuiData,
                 ) => match self.clear_gui_data() {
-                    Ok(()) => Self::push_actions_and_project(
-                        handle,
-                        &mut projected_state,
-                        vec![GuiShellAction::CompleteClearGuiData],
-                    ),
+                    Ok(()) => {
+                        self.sync_player_from_lookup_and_settings(&env_trimmed, None, true);
+                        Self::push_actions_and_project(
+                            handle,
+                            &mut projected_state,
+                            vec![GuiShellAction::CompleteClearGuiData],
+                        )
+                    }
                     Err(error) => Self::push_actions_and_project(
                         handle,
                         &mut projected_state,
@@ -5911,6 +6392,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
             self.pump_session_transport_driver(handle, &mut projected_state);
             self.drain_session_transport_inbound(handle, &mut projected_state);
             self.drain_session_runtime_actions(handle, &mut projected_state);
+            self.drain_player_chat_input(handle, &mut projected_state);
         }
         self.sync_player_runtime_state(handle, &projected_state);
     }
@@ -14479,7 +14961,7 @@ impl GuiStartupPlayerIpcSource {
     }
 
     fn missing_startup_message() -> String {
-        "Startup has no explicit mpv JSON IPC path. Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint.".to_owned()
+        "Startup has no explicit mpv JSON IPC path. The GUI will use the saved playerPath when it points to mpv; otherwise set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint.".to_owned()
     }
 }
 
@@ -21502,7 +21984,7 @@ mod tests {
             matches!(
                 action,
                 GuiShellAction::AnnounceSystemChatEvent(message)
-                    if message == "Startup has no explicit mpv JSON IPC path. Set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
+                    if message == "Startup has no explicit mpv JSON IPC path. The GUI will use the saved playerPath when it points to mpv; otherwise set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
             )
         }));
     }
@@ -22270,6 +22752,111 @@ mod tests {
             );
         assert!(detached_owner.player.is_none());
         assert_eq!(detached_owner.player_unavailability_reason, None);
+    }
+
+    #[test]
+    fn gui_persisted_config_runtime_owner_uses_saved_player_path_for_managed_mpv_launch_state() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let config_path =
+            std::env::temp_dir().join(format!("syncplay-gui-startup-player-{unique_suffix}.ini"));
+        let mut per_player_arguments = std::collections::BTreeMap::new();
+        per_player_arguments.insert(
+            "C:/missing/mpv.exe".to_owned(),
+            vec![
+                "--profile=syncplay".to_owned(),
+                "--keep-open=yes".to_owned(),
+            ],
+        );
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &StoredClientSettingsMvp {
+                player_path: Some("C:/missing/mpv.exe".to_owned()),
+                per_player_arguments: Some(per_player_arguments),
+                chat_input_enabled: Some(true),
+                show_osd: Some(false),
+                ..StoredClientSettingsMvp::default()
+            },
+        )
+        .expect("startup-player seed should write syncplay.ini");
+
+        let owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+                Some(config_path.clone()),
+                &|_name| None,
+            );
+        match &owner.player_launch_state {
+            super::GuiPlayerLaunchRuntimeState::ManagedMpv(config) => {
+                assert_eq!(config.requested_player_path, "C:/missing/mpv.exe");
+                assert_eq!(
+                    config.extra_args,
+                    vec![
+                        "--profile=syncplay".to_owned(),
+                        "--keep-open=yes".to_owned()
+                    ]
+                );
+                assert!(!config.ui_settings.show_osd);
+                assert!(config.ui_settings.chat_input_enabled);
+            }
+            other => panic!("expected managed-mpv launch state, got {other:?}"),
+        }
+        assert!(owner.player.is_none());
+        assert!(
+            owner
+                .player_unavailability_reason
+                .as_deref()
+                .is_some_and(|message| {
+                    message.contains("GUI-owned mpv launch failed from saved player path")
+                }),
+            "startup attach should fail deterministically for a missing mpv binary"
+        );
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "local smoke test; requires standalone mpv binary"]
+    fn gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config() {
+        let default_mpv = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mpv/mpv.exe");
+        let mpv_path = std::env::var_os("SYNCPLAY_MPV_SMOKE_BIN")
+            .map(PathBuf::from)
+            .unwrap_or(default_mpv);
+        if !mpv_path.is_file() {
+            panic!("expected mpv binary at {}", mpv_path.display());
+        }
+
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let config_path =
+            std::env::temp_dir().join(format!("syncplay-gui-real-mpv-startup-{unique_suffix}.ini"));
+        super::upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &StoredClientSettingsMvp {
+                player_path: Some(mpv_path.to_string_lossy().into_owned()),
+                ..StoredClientSettingsMvp::default()
+            },
+        )
+        .expect("real-mpv startup seed should write syncplay.ini");
+
+        let owner =
+            super::GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+                Some(config_path.clone()),
+                &|_name| None,
+            );
+        assert_eq!(
+            owner.player.as_ref().map(|player| player.name()),
+            Some("mpv")
+        );
+        assert!(owner.managed_mpv_process.is_some());
+        assert_eq!(owner.player_unavailability_reason, None);
+
+        drop(owner);
+        let _ = std::fs::remove_file(config_path);
     }
 
     #[test]
@@ -23852,7 +24439,9 @@ assert-pending\tnone\n"
         let mut owner = super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
             .with_client_core_chat_loopback_session_runtime("alice", "room1")
             .expect("client-core loopback runtime owner should bootstrap");
-        owner.player = Some(Box::<super::GuiTestPlayerAdapter>::default());
+        owner.player = Some(super::GuiOwnedPlayer::Test(
+            super::GuiTestPlayerAdapter::default(),
+        ));
 
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -25478,9 +26067,11 @@ assert-pending\tnone\n"
             super::GuiPersistedConfigRuntimeOwner::with_config_path(None)
                 .with_client_core_chat_session_runtime("alice", "room1")
                 .expect("client-core chat runtime owner should bootstrap");
-        owner.player = Some(Box::new(RecordingPlayerAdapter {
-            state: player_state.clone(),
-        }));
+        owner.player = Some(super::GuiOwnedPlayer::Custom(Box::new(
+            RecordingPlayerAdapter {
+                state: player_state.clone(),
+            },
+        )));
         let handle = super::GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             username: Some("alice".to_owned()),
@@ -28453,9 +29044,13 @@ assert-pending\tnone\n"
             session_default_room: None,
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
-            player: Some(Box::new(TelemetryPlayerAdapter {
-                state: player_state.clone(),
-            })),
+            player: Some(super::GuiOwnedPlayer::Custom(Box::new(
+                TelemetryPlayerAdapter {
+                    state: player_state.clone(),
+                },
+            ))),
+            player_launch_state: super::GuiPlayerLaunchRuntimeState::None,
+            managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
             player_position_seconds: None,
@@ -28687,9 +29282,13 @@ assert-pending\tnone\n"
             session_default_room: None,
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
-            player: Some(Box::new(RecordingPlayerAdapter {
-                state: player_state.clone(),
-            })),
+            player: Some(super::GuiOwnedPlayer::Custom(Box::new(
+                RecordingPlayerAdapter {
+                    state: player_state.clone(),
+                },
+            ))),
+            player_launch_state: super::GuiPlayerLaunchRuntimeState::None,
+            managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
             player_position_seconds: None,

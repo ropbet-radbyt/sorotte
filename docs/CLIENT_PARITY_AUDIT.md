@@ -6,12 +6,15 @@
 
 ## Verification Performed For This Refresh
 
-- Reviewed the existing same-day verification record already captured in this audit's previous revision:
-  - `cargo test --workspace`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
-  - `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`9/9` scenarios)
-  - `cargo build -p syncplay-gui --bin syncplay-gui`
-  - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
+- `cargo fmt --all`
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`9/9` scenarios)
+- `cargo build -p syncplay-gui --bin syncplay-gui`
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
+- Local real-`mpv` managed-startup smoke:
+  - `cargo test -p syncplay-gui gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config -- --ignored`
+  - run with `SYNCPLAY_MPV_SMOKE_BIN=C:\Users\shaun\Documents\workspace\syncplay-rust\mpv\mpv.exe`
 - Static comparison of the Python client reference:
   - `../syncplay/syncplay/client.py`
   - `../syncplay/syncplay/ui/gui.py`
@@ -28,10 +31,9 @@
 
 ## Current Read On Parity
 
-- The previous version of this audit understated the amount of Python-client work that still remains on the Rust client side.
-- The Rust client-core is materially ahead of the Rust GUI. A meaningful slice of Python behavior already exists in `syncplay-client-core` and `syncplay-client-app`, but the GUI still exposes only a subset of it.
-- The default Python-style GUI workflow is still not at parity. The biggest blockers are:
-  - the GUI does not launch and own the configured player from saved settings,
+- The Rust client-core is still materially ahead of the Rust GUI. A meaningful slice of Python behavior already exists in `syncplay-client-core` and `syncplay-client-app`, but the GUI still exposes only a subset of it.
+- The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
+- The biggest remaining parity blockers are now:
   - the main window does not project Python's room/user/file browser,
   - many Python playlist/controller/offset/undo workflows are still missing or only exist as shell-only mutations,
   - the language setting is mostly persistence-only because runtime text is still English,
@@ -39,6 +41,11 @@
 
 ## What No Longer Needs Assignment
 
+- The GUI now launches and owns saved-config `mpv` without requiring `SYNCPLAY_CLIENT_MPV_IPC_PATH` or `SYNCPLAY_MPV_IPC_PATH`.
+- Saved `perPlayerArguments` are applied in the GUI-owned `mpv` launch path.
+- Legacy Syncplay `mpv` UI settings now apply in both explicit-IPC attach mode and GUI-owned startup, including chat input/output and timeout-backed OSD behavior.
+- GUI chat/system notifications now forward into attached `mpv` via the legacy OSD/chat path, and `mpv` chat input now routes back into the GUI session runtime.
+- GUI-owned `mpv` lifecycle is managed across startup, save/reload/reset, on-demand reopen, and unexpected process exit reporting.
 - Saved host/port settings can drive a real GUI connect/disconnect flow, including startup auto-connect.
 - Room join and return-to-default flows are runtime-backed over a real session.
 - Shared-playlist import/open now routes through the real runtime owner instead of stopping at shell projection.
@@ -49,18 +56,6 @@
 - The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, undo-seek, playlist undo, and playlist shuffle operations.
 
 ## Remaining Python Client Parity Tasks
-
-### P0. Launch and own `mpv` from GUI settings
-
-Current status: `syncplay-gui` only attaches to an explicit `mpv` JSON IPC path or a test player. The saved `playerPath` and `perPlayerArguments` values are not yet used to start a player from the GUI, so the default Python-style "configure player, start GUI, open media" flow is still blocked.
-
-Work to assign:
-
-- Start `mpv` from the saved `playerPath` instead of requiring `SYNCPLAY_CLIENT_MPV_IPC_PATH` or `SYNCPLAY_MPV_IPC_PATH`.
-- Translate and apply saved per-player arguments in the GUI-owned launch path.
-- Manage player lifecycle, IPC bootstrap, reconnect/relaunch, and user-facing launch failures.
-- Apply legacy Syncplay `mpv` UI settings in the GUI-owned player path, including OSD/chat placement and timeout behavior.
-- Add semantic/native coverage plus a real-`mpv` scripted smoke for the no-manual-env-vars GUI startup path.
 
 ### P0. Replace the shell-style main window with Python's room/user/file browser
 
@@ -155,15 +150,14 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. GUI-owned `mpv` launch and legacy `mpv` UI/OSD behavior.
-2. Python-style room/user/file browser in the main window.
-3. Playback/autoplay/offset/undo parity in the GUI.
-4. Playlist workflows and context menus.
-5. Controlled-room/controller-auth UX and set-others-readiness.
-6. GUI slash-command handling.
-7. Configuration dialog completion.
-8. Localization and language-sensitive service calls.
-9. Additional player backends.
+1. Python-style room/user/file browser in the main window.
+2. Playback/autoplay/offset/undo parity in the GUI.
+3. Playlist workflows and context menus.
+4. Controlled-room/controller-auth UX and set-others-readiness.
+5. GUI slash-command handling.
+6. Configuration dialog completion.
+7. Localization and language-sensitive service calls.
+8. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 
