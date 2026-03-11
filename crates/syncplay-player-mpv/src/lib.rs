@@ -288,6 +288,7 @@ pub struct MpvAdapter {
     observers_registered: bool,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
     legacy_syncplayintf_script_loaded: bool,
+    legacy_syncplayintf_options_applied: bool,
     legacy_syncplayintf_script_name: String,
     ipc_client: Option<MpvJsonIpcClient>,
 }
@@ -337,6 +338,10 @@ impl fmt::Debug for MpvAdapter {
                 &self.legacy_syncplayintf_script_loaded,
             )
             .field(
+                "legacy_syncplayintf_options_applied",
+                &self.legacy_syncplayintf_options_applied,
+            )
+            .field(
                 "legacy_syncplayintf_script_name",
                 &self.legacy_syncplayintf_script_name,
             )
@@ -377,6 +382,7 @@ impl Default for MpvAdapter {
             observers_registered: false,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
             legacy_syncplayintf_script_loaded: false,
+            legacy_syncplayintf_options_applied: false,
             legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
             ipc_client: None,
         }
@@ -523,7 +529,9 @@ impl MpvAdapter {
         self.send_ipc_command_if_attached(json!([MPV_COMMAND_LOAD_SCRIPT, script_path]))?;
         self.legacy_syncplayintf_script_name = script_name;
         self.legacy_syncplayintf_script_loaded = true;
-        self.send_legacy_syncplayintf_options_if_loaded()
+        self.legacy_syncplayintf_options_applied = false;
+        self.try_send_legacy_syncplayintf_options_if_pending();
+        Ok(())
     }
 
     pub fn configure_legacy_syncplay_ui_settings(
@@ -538,7 +546,9 @@ impl MpvAdapter {
                 self.legacy_syncplay_ui_settings.chat_osd_margin,
             )?;
         }
-        self.send_legacy_syncplayintf_options_if_loaded()
+        self.legacy_syncplayintf_options_applied = false;
+        self.try_send_legacy_syncplayintf_options_if_pending();
+        Ok(())
     }
 
     pub fn show_syncplay_legacy_message(
@@ -557,16 +567,22 @@ impl MpvAdapter {
             LegacySyncplayOsdKind::Alert => self.legacy_syncplay_ui_settings.alert_timeout_ms,
         };
         if self.legacy_syncplay_ui_settings.chat_output_enabled
-            && self.legacy_syncplayintf_script_loaded
+            && self.ensure_legacy_syncplayintf_ready()
         {
             let script_message_name = match kind {
                 LegacySyncplayOsdKind::Notification => "notification-osd-neutral",
                 LegacySyncplayOsdKind::Alert => "alert-osd-neutral",
             };
-            return self.send_syncplayintf_script_message(
-                script_message_name,
-                &sanitize_legacy_syncplay_script_message_text(message),
-            );
+            if self
+                .send_syncplayintf_script_message(
+                    script_message_name,
+                    &sanitize_legacy_syncplay_script_message_text(message),
+                )
+                .is_ok()
+            {
+                return Ok(());
+            }
+            self.legacy_syncplayintf_options_applied = false;
         }
         self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
     }
@@ -577,12 +593,18 @@ impl MpvAdapter {
         }
 
         if self.legacy_syncplay_ui_settings.chat_output_enabled
-            && self.legacy_syncplayintf_script_loaded
+            && self.ensure_legacy_syncplayintf_ready()
         {
-            return self.send_syncplayintf_script_message(
-                "chat",
-                &sanitize_legacy_syncplay_script_message_text(message),
-            );
+            if self
+                .send_syncplayintf_script_message(
+                    "chat",
+                    &sanitize_legacy_syncplay_script_message_text(message),
+                )
+                .is_ok()
+            {
+                return Ok(());
+            }
+            self.legacy_syncplayintf_options_applied = false;
         }
 
         let maybe_duration_ms = if self.legacy_syncplay_ui_settings.chat_output_enabled {
@@ -621,10 +643,26 @@ impl MpvAdapter {
             .legacy_syncplay_ui_settings
             .syncplayintf_options_payload();
         if payload.trim().is_empty() {
+            self.legacy_syncplayintf_options_applied = true;
             return Ok(());
         }
 
-        self.send_syncplayintf_script_message("set_syncplayintf_options", &payload)
+        self.send_syncplayintf_script_message("set_syncplayintf_options", &payload)?;
+        self.legacy_syncplayintf_options_applied = true;
+        Ok(())
+    }
+
+    fn try_send_legacy_syncplayintf_options_if_pending(&mut self) {
+        if self.legacy_syncplayintf_options_applied {
+            return;
+        }
+
+        let _ = self.send_legacy_syncplayintf_options_if_loaded();
+    }
+
+    fn ensure_legacy_syncplayintf_ready(&mut self) -> bool {
+        self.try_send_legacy_syncplayintf_options_if_pending();
+        self.legacy_syncplayintf_script_loaded && self.legacy_syncplayintf_options_applied
     }
 
     fn ensure_observers_registered_if_attached(&mut self) {
@@ -741,6 +779,7 @@ impl MpvAdapter {
 
     fn chat_input_polling_enabled(&self) -> bool {
         self.legacy_syncplayintf_script_loaded
+            && self.legacy_syncplayintf_options_applied
             && self.legacy_syncplay_ui_settings.chat_input_enabled
     }
 
@@ -1169,6 +1208,7 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
+        self.try_send_legacy_syncplayintf_options_if_pending();
         if self.pending_chat_requests.is_empty() && !self.chat_input_polling_enabled() {
             return None;
         }
@@ -2228,6 +2268,78 @@ mod tests {
     }
 
     #[test]
+    fn load_legacy_syncplayintf_script_ignores_early_option_message_failure_and_retries_later() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"error running command"}"#,
+            r#"{"request_id":3,"error":"success"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .load_legacy_syncplayintf_script(std::path::Path::new("C:/syncplay/syncplayintf.lua"))
+            .expect("initial syncplayintf load should ignore early option-message timing races");
+
+        adapter
+            .show_syncplay_legacy_chat_message("<alice> hi")
+            .expect("legacy chat should retry option handoff before using the script");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 4);
+        let third_payload: Value = serde_json::from_str(writes[2].trim_end()).expect("valid json");
+        let fourth_payload: Value = serde_json::from_str(writes[3].trim_end()).expect("valid json");
+        assert_eq!(
+            third_payload["command"],
+            json!([
+                "script-message-to",
+                "syncplayintf",
+                "set_syncplayintf_options",
+                third_payload["command"][3]
+                    .as_str()
+                    .expect("options payload"),
+            ])
+        );
+        assert_eq!(
+            fourth_payload,
+            json!({
+                "command": ["script-message-to", "syncplayintf", "chat", "<alice> hi"],
+                "request_id": 4
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_osd_falls_back_to_show_text_while_syncplayintf_initialization_is_still_pending() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"error running command"}"#,
+            r#"{"request_id":3,"error":"error running command"}"#,
+            r#"{"request_id":4,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .load_legacy_syncplayintf_script(std::path::Path::new("C:/syncplay/syncplayintf.lua"))
+            .expect("load-script should still succeed");
+
+        adapter
+            .show_syncplay_legacy_message("room updated", LegacySyncplayOsdKind::Notification)
+            .expect("legacy OSD should fall back to show-text if the script is not ready yet");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 4);
+        let fourth_payload: Value = serde_json::from_str(writes[3].trim_end()).expect("valid json");
+        assert_eq!(
+            fourth_payload,
+            json!({
+                "command": ["show-text", "room updated", 3_000, 1],
+                "request_id": 4
+            })
+        );
+    }
+
+    #[test]
     fn configure_legacy_syncplay_ui_settings_applies_osd_position_when_needed() {
         let (transport, state) = fake_transport_with_reads(&[
             r#"{"request_id":1,"error":"success"}"#,
@@ -2666,6 +2778,7 @@ mod tests {
         ]);
         let mut adapter = MpvAdapter::with_test_transport(transport);
         adapter.legacy_syncplayintf_script_loaded = true;
+        adapter.legacy_syncplayintf_options_applied = true;
         adapter.legacy_syncplay_ui_settings.chat_input_enabled = true;
 
         assert_eq!(
