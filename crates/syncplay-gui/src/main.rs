@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use syncplay_client_app::app_boundary::{
     commands::{
         LocalInputCommand, LocalOffsetCommand, PlannedLocalRuntimeAction,
+        controlled_room_base_name_legacy_compatible, generate_room_password_legacy_compatible,
         localized_current_offset_message_legacy_compatible, parse_local_input_command,
         plan_local_offset_runtime_dispatch_legacy_compatible,
     },
@@ -52,8 +53,8 @@ use syncplay_client_app::app_boundary::{
 };
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
-    ClientSession, ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
-    ReconnectTransitionNotification, UserChangeNotification,
+    ClientSession, ControlledRoomCreationNotification, ControllerAuthTransitionNotification,
+    PrivacyMode, QueuedRuntimeControl, ReconnectTransitionNotification, UserChangeNotification,
 };
 use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
@@ -287,6 +288,7 @@ struct MainWindowPlaybackControls {
     can_toggle_autoplay: bool,
     can_adjust_autoplay_threshold: bool,
     can_set_ready: bool,
+    can_set_others_ready: bool,
     can_manage_playlist: bool,
 }
 
@@ -358,6 +360,7 @@ struct MainWindowRuntimeSnapshot {
     can_toggle_autoplay: bool,
     can_adjust_autoplay_threshold: bool,
     can_set_ready: bool,
+    can_set_others_ready: bool,
     can_manage_playlist: bool,
     playback_paused: bool,
     autoplay_active: bool,
@@ -386,6 +389,7 @@ impl Default for MainWindowRuntimeSnapshot {
             can_toggle_autoplay: true,
             can_adjust_autoplay_threshold: true,
             can_set_ready: false,
+            can_set_others_ready: false,
             can_manage_playlist: false,
             playback_paused: false,
             autoplay_active: false,
@@ -450,6 +454,7 @@ impl MainWindowRuntimeSnapshot {
             can_toggle_autoplay: state.playback.can_toggle_autoplay,
             can_adjust_autoplay_threshold: state.playback.can_adjust_autoplay_threshold,
             can_set_ready: state.playback.can_set_ready,
+            can_set_others_ready: state.playback.can_set_others_ready,
             can_manage_playlist: state.playback.can_manage_playlist,
             playback_paused: state.playback_paused,
             autoplay_active: state.autoplay_active,
@@ -585,6 +590,8 @@ struct SyncplayGuiShellAppState {
     playlist_text_edit_session: Option<GuiPlaylistTextEditSessionState>,
     playlist_url_edit_session: Option<GuiUrlEditSessionState>,
     media_url_edit_session: Option<GuiUrlEditSessionState>,
+    controlled_room_create_session: Option<GuiControlledRoomCreateSessionState>,
+    controller_auth_edit_session: Option<GuiControllerAuthEditSessionState>,
     room_history_edit_session: Option<GuiRoomHistoryEditSessionState>,
     update_check: GuiUpdateCheckState,
     runtime_validation_issues: Vec<GuiValidationIssue>,
@@ -2313,6 +2320,20 @@ impl GuiWidgetEguiRenderer {
                 })
                 .unwrap_or_default();
         }
+        if let Some(user_index) = Self::main_window_browser_user_action_index(&node.id, "ready") {
+            return state
+                .main_window
+                .users
+                .get(user_index)
+                .filter(|user| state.can_request_main_window_user_ready_change(user))
+                .map(|user| {
+                    vec![GuiShellAction::RequestMainWindowUserReady {
+                        username: user.username.clone(),
+                        ready: !user.is_ready,
+                    }]
+                })
+                .unwrap_or_default();
+        }
         if let Some(user_index) = Self::main_window_browser_user_action_index(&node.id, "trust") {
             return state
                 .main_window
@@ -2504,6 +2525,44 @@ impl GuiWidgetEguiRenderer {
                 })
                 .unwrap_or_default(),
             "main-window:media-url-edit:cancel" => vec![GuiShellAction::CancelMediaUrlEdit],
+            "main-window:controlled-room-create:commit" => state
+                .controlled_room_create_session
+                .as_ref()
+                .and_then(|session| {
+                    let room_name =
+                        controlled_room_base_name_legacy_compatible(&session.room_buffer);
+                    normalized_editable_text(&room_name)
+                })
+                .map(|room| {
+                    vec![
+                        GuiShellAction::RequestControllerAuth {
+                            room,
+                            password: generate_room_password_legacy_compatible(),
+                        },
+                        GuiShellAction::CancelCreateControlledRoomEdit,
+                    ]
+                })
+                .unwrap_or_default(),
+            "main-window:controlled-room-create:cancel" => {
+                vec![GuiShellAction::CancelCreateControlledRoomEdit]
+            }
+            "main-window:controller-auth:commit" => state
+                .controller_auth_edit_session
+                .as_ref()
+                .filter(|session| normalized_editable_text(&session.password_buffer).is_some())
+                .map(|session| {
+                    vec![
+                        GuiShellAction::RequestControllerAuth {
+                            room: session.room_name.clone(),
+                            password: session.password_buffer.clone(),
+                        },
+                        GuiShellAction::CancelControllerAuthEdit,
+                    ]
+                })
+                .unwrap_or_default(),
+            "main-window:controller-auth:cancel" => {
+                vec![GuiShellAction::CancelControllerAuthEdit]
+            }
             "main-window:control:set-ready" => {
                 let local_user_ready = state
                     .main_window
@@ -2877,6 +2936,46 @@ impl GuiWidgetEguiRenderer {
             return (!actions.is_empty()).then_some(actions);
         }
 
+        if node.id == "main-window:controlled-room-create:room" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdateCreateControlledRoomEdit(
+                    value.to_owned(),
+                ));
+            }
+            if submitted {
+                let room_name = controlled_room_base_name_legacy_compatible(value);
+                if let Some(room_name) = normalized_editable_text(&room_name) {
+                    actions.push(GuiShellAction::RequestControllerAuth {
+                        room: room_name,
+                        password: generate_room_password_legacy_compatible(),
+                    });
+                    actions.push(GuiShellAction::CancelCreateControlledRoomEdit);
+                }
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
+        if node.id == "main-window:controller-auth:password" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdateControllerAuthPasswordEdit(
+                    value.to_owned(),
+                ));
+            }
+            if submitted
+                && let Some(session) = state.controller_auth_edit_session.as_ref()
+                && normalized_editable_text(value).is_some()
+            {
+                actions.push(GuiShellAction::RequestControllerAuth {
+                    room: session.room_name.clone(),
+                    password: value.to_owned(),
+                });
+                actions.push(GuiShellAction::CancelControllerAuthEdit);
+            }
+            return (!actions.is_empty()).then_some(actions);
+        }
+
         if let Some((section, label, kind)) = Self::configuration_control_identity(state, node) {
             if matches!(
                 kind,
@@ -3129,6 +3228,24 @@ trait GuiNativeRuntimeBridge {
         &mut self,
         _state: &SyncplayGuiShellAppState,
         _ready: bool,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_main_window_user_readiness_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _username: String,
+        _ready: bool,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_controller_auth_request(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _room: String,
+        _password: String,
     ) -> Vec<GuiShellAction> {
         Vec::new()
     }
@@ -3478,6 +3595,14 @@ trait GuiSessionRuntimeAdapter {
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
         Err("Attached session runtime does not support local readiness changes.".to_owned())
+    }
+
+    fn set_user_ready(&mut self, _username: String, _ready: bool) -> Result<(), String> {
+        Err("Attached session runtime does not support remote readiness changes.".to_owned())
+    }
+
+    fn request_controller_auth(&mut self, _room: String, _password: String) -> Result<(), String> {
+        Err("Attached session runtime does not support controller auth requests.".to_owned())
     }
 
     fn queue_playlist_entry(
@@ -4143,6 +4268,27 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         ]
     }
 
+    fn controlled_room_creation_action(
+        notification: ControlledRoomCreationNotification,
+    ) -> Vec<GuiShellAction> {
+        match notification {
+            ControlledRoomCreationNotification::Created { room, password } => {
+                let share_code = format!("{room}:{password}");
+                let transient_message = format!("Controlled room created: {room}.");
+                let chat_message = format!(
+                    "Created controlled room {room} with password {password} ({share_code})."
+                );
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Success,
+                        message: transient_message,
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(chat_message),
+                ]
+            }
+        }
+    }
+
     fn autoplay_countdown_action(
         notification: AutoplayCountdownNotification,
     ) -> Vec<GuiShellAction> {
@@ -4294,6 +4440,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .map(|row| row.label.clone())
             .collect();
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
+        snapshot.can_set_others_ready = baseline_main_window.playback.can_set_others_ready;
         snapshot.playback_paused = baseline_main_window.playback_paused;
         snapshot.autoplay_active = state.main_window.autoplay_active;
         snapshot.autoplay_threshold = state.main_window.autoplay_threshold;
@@ -4343,6 +4490,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         } else if let Some(server_readiness_supported) = session.server_readiness_supported() {
             snapshot.can_set_ready = server_readiness_supported;
         }
+        snapshot.can_set_others_ready = session
+            .server_set_others_readiness_supported()
+            .unwrap_or(false);
         (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
             .then_some(snapshot)
     }
@@ -4378,6 +4528,16 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let mut action_overrides = Vec::new();
         let settings = state.configuration.to_stored_settings();
+        let session_room_name = self
+            .runtime
+            .session()
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let create_controlled_room_enabled = session_room_name.is_some();
+        let identify_as_controller_enabled =
+            session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
         let config_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
             || settings.chat_output_enabled.unwrap_or(false);
         let desired_show_chat_enabled =
@@ -4449,6 +4609,31 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 action_label: "Playlist Actions",
                 enabled: desired_playlist_actions_enabled,
             });
+        }
+
+        for (action_label, enabled) in [
+            ("Create Controlled Room", create_controlled_room_enabled),
+            ("Identify As Controller", identify_as_controller_enabled),
+        ] {
+            let current_enabled = state
+                .menus
+                .sections
+                .iter()
+                .find(|section| section.title == "Advanced")
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .find(|action| action.label == action_label)
+                })
+                .map(|action| action.enabled);
+            if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
+                action_overrides.push(MenuActionRuntimeOverride {
+                    section_title: "Advanced",
+                    action_label,
+                    enabled,
+                });
+            }
         }
 
         if action_overrides.is_empty() {
@@ -4526,6 +4711,22 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             );
         } else {
             self.runtime.drain_reconnect_notifications();
+        }
+        if let Err(error) = self
+            .runtime
+            .run_controlled_room_creation_notifications_if_needed()
+        {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core controlled-room dispatch failed: {error}"),
+            });
+        } else {
+            trailing_actions.extend(
+                self.runtime
+                    .drain_controlled_room_creation_notifications()
+                    .into_iter()
+                    .flat_map(Self::controlled_room_creation_action),
+            );
         }
         if let Err(error) = self.runtime.run_controller_reidentify_if_needed() {
             actions.push(GuiShellAction::PushTransientNotification {
@@ -4714,6 +4915,51 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             },
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
+        match self.runtime.run_set_ready_for_user(username, ready, true) {
+            Ok(true) => Ok(()),
+            Ok(false) => match self.runtime.session().server_set_others_readiness_supported() {
+                None => Err(
+                    "Client-core session runtime cannot change other users' readiness until the server Hello enables remote readiness changes."
+                        .to_owned(),
+                ),
+                Some(false) => Err(
+                    "Client-core session runtime cannot change other users' readiness because the server disabled remote readiness changes."
+                        .to_owned(),
+                ),
+                Some(true) => Err(
+                    "Client-core session runtime did not queue an outbound remote readiness change."
+                        .to_owned(),
+                ),
+            },
+            Err(error) => Err(format!(
+                "Client-core session runtime readiness dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn request_controller_auth(&mut self, room: String, password: String) -> Result<(), String> {
+        match self.runtime.run_request_controller_auth(room, password) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if self.runtime.session().username.is_none() {
+                    Err(
+                        "Client-core session runtime cannot request controller access until the server Hello is received."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue an outbound controller-auth request."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime controller-auth dispatch failed: {error}"
             )),
         }
     }
@@ -6373,6 +6619,8 @@ impl GuiPersistedConfigRuntimeOwner {
         for (section_title, action_label, enabled) in [
             ("Window", "Show Chat", desired_show_chat_enabled),
             ("Window", "Show Playlist", desired_show_playlist_enabled),
+            ("Advanced", "Create Controlled Room", false),
+            ("Advanced", "Identify As Controller", false),
         ] {
             let current_enabled = state
                 .menus
@@ -7611,6 +7859,26 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         });
                     }
                 }
+                GuiRuntimeRequest::SetReadyForUser { username, ready } => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.set_user_ready(username, ready)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::RequestControllerAuth { room, password } => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.request_controller_auth(room, password)
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
                 GuiRuntimeRequest::QueuePlaylistEntry {
                     entry,
                     select_after_queue,
@@ -8326,6 +8594,14 @@ enum GuiRuntimeRequest {
     SetRoom(String),
     ReturnToDefaultRoom,
     SetLocalReady(bool),
+    SetReadyForUser {
+        username: String,
+        ready: bool,
+    },
+    RequestControllerAuth {
+        room: String,
+        password: String,
+    },
     QueuePlaylistEntry {
         entry: String,
         select_after_queue: bool,
@@ -8389,6 +8665,8 @@ impl GuiRuntimeRequest {
             }
             Self::SetAutoplayEnabled(_)
             | Self::SetAutoplayThreshold(_)
+            | Self::SetReadyForUser { .. }
+            | Self::RequestControllerAuth { .. }
             | Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
@@ -8608,6 +8886,34 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     ) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::SetLocalReady(ready));
+        Vec::new()
+    }
+
+    fn actions_for_main_window_user_readiness_change(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        username: String,
+        ready: bool,
+    ) -> Vec<GuiShellAction> {
+        if normalized_editable_text(&username).is_some() {
+            self.handle
+                .push_request(GuiRuntimeRequest::SetReadyForUser { username, ready });
+        }
+        Vec::new()
+    }
+
+    fn actions_for_controller_auth_request(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        room: String,
+        password: String,
+    ) -> Vec<GuiShellAction> {
+        if normalized_editable_text(&room).is_some()
+            && normalized_editable_text(&password).is_some()
+        {
+            self.handle
+                .push_request(GuiRuntimeRequest::RequestControllerAuth { room, password });
+        }
         Vec::new()
     }
 
@@ -9020,6 +9326,8 @@ impl eframe::App for GuiNativeApp {
         let mut room_change_requests = Vec::new();
         let mut main_window_user_media_requests = Vec::new();
         let mut main_window_user_folder_requests = Vec::new();
+        let mut main_window_user_ready_requests = Vec::new();
+        let mut controller_auth_requests = Vec::new();
         let mut requested_local_ready = None;
         let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
@@ -9058,6 +9366,19 @@ impl eframe::App for GuiNativeApp {
                 GuiShellAction::RequestMainWindowUserContainingFolderOpen(target) => {
                     if let Some(target) = normalized_editable_text(target) {
                         main_window_user_folder_requests.push(target.to_owned());
+                    }
+                }
+                GuiShellAction::RequestMainWindowUserReady { username, ready } => {
+                    if let Some(username) = normalized_editable_text(username) {
+                        main_window_user_ready_requests.push((username.to_owned(), *ready));
+                    }
+                }
+                GuiShellAction::RequestControllerAuth { room, password } => {
+                    if let (Some(room), Some(password)) = (
+                        normalized_editable_text(room),
+                        normalized_editable_text(password),
+                    ) {
+                        controller_auth_requests.push((room.to_owned(), password.to_owned()));
                     }
                 }
                 GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
@@ -9157,6 +9478,23 @@ impl eframe::App for GuiNativeApp {
             for action in self
                 .runtime
                 .actions_for_local_readiness_change(&self.state, ready)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for (username, ready) in main_window_user_ready_requests {
+            for action in self.runtime.actions_for_main_window_user_readiness_change(
+                &self.state,
+                username,
+                ready,
+            ) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        for (room, password) in controller_auth_requests {
+            for action in
+                self.runtime
+                    .actions_for_controller_auth_request(&self.state, room, password)
             {
                 state_changed |= self.state.apply(action);
             }
@@ -9610,6 +9948,19 @@ struct GuiUrlEditSessionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiControlledRoomCreateSessionState {
+    room_buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiControllerAuthEditSessionState {
+    room_name: String,
+    password_buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiRoomHistoryEditSessionState {
     buffer: String,
     is_dirty: bool,
@@ -9788,6 +10139,12 @@ enum GuiShellAction {
     BeginMediaUrlEdit,
     UpdateMediaUrlEdit(String),
     CancelMediaUrlEdit,
+    BeginCreateControlledRoomEdit,
+    UpdateCreateControlledRoomEdit(String),
+    CancelCreateControlledRoomEdit,
+    BeginControllerAuthEdit,
+    UpdateControllerAuthPasswordEdit(String),
+    CancelControllerAuthEdit,
     UpdateNewMainWindowUserDraft(String),
     CommitNewMainWindowUser,
     UpdateNewPlaylistEntryDraft(String),
@@ -9885,6 +10242,14 @@ enum GuiShellAction {
     ToggleMainWindowHideEmptyRooms,
     RequestMainWindowUserMediaOpen(String),
     RequestMainWindowUserContainingFolderOpen(String),
+    RequestMainWindowUserReady {
+        username: String,
+        ready: bool,
+    },
+    RequestControllerAuth {
+        room: String,
+        password: String,
+    },
     AddTrustedDomain(String),
     JoinMainWindowRoom(String),
     LeaveMainWindowRoom,
@@ -10897,6 +11262,27 @@ impl GuiUrlEditSessionState {
     }
 }
 
+impl GuiControlledRoomCreateSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Controlled Room Create] dirty={}, room={}",
+            bool_label(self.is_dirty),
+            self.room_buffer
+        )]
+    }
+}
+
+impl GuiControllerAuthEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Controller Auth Edit] dirty={}, room={}, password_set={}",
+            bool_label(self.is_dirty),
+            self.room_name,
+            bool_label(!self.password_buffer.is_empty())
+        )]
+    }
+}
+
 impl GuiRoomHistoryEditSessionState {
     fn render_lines(&self) -> Vec<String> {
         vec![format!(
@@ -10979,6 +11365,7 @@ impl MainWindowShellState {
                 can_toggle_autoplay: true,
                 can_adjust_autoplay_threshold: true,
                 can_set_ready: true,
+                can_set_others_ready: false,
                 can_manage_playlist: false,
             },
             playback_paused: false,
@@ -11006,7 +11393,7 @@ impl MainWindowShellState {
                 self.rooms.len(),
             ),
             format!(
-                "Playback Controls: pause={}, seek={}, undo_seek={}, offset={}, autoplay={}, autoplay_threshold={}, ready={}, playlist={}, show_buttons={}, show_autoplay={}",
+                "Playback Controls: pause={}, seek={}, undo_seek={}, offset={}, autoplay={}, autoplay_threshold={}, ready={}, others_ready={}, playlist={}, show_buttons={}, show_autoplay={}",
                 bool_label(self.playback.can_toggle_pause),
                 bool_label(self.playback.can_seek),
                 bool_label(self.playback.can_undo_seek),
@@ -11014,6 +11401,7 @@ impl MainWindowShellState {
                 bool_label(self.playback.can_toggle_autoplay),
                 bool_label(self.playback.can_adjust_autoplay_threshold),
                 bool_label(self.playback.can_set_ready),
+                bool_label(self.playback.can_set_others_ready),
                 bool_label(self.playback.can_manage_playlist),
                 bool_label(self.show_playback_buttons),
                 bool_label(self.show_autoplay_controls),
@@ -11165,6 +11553,16 @@ impl MenuDialogShellState {
                 MenuSectionShellState {
                     title: "Advanced",
                     actions: vec![
+                        MenuActionShellItem {
+                            label: "Create Controlled Room",
+                            enabled: false,
+                            is_selected: false,
+                        },
+                        MenuActionShellItem {
+                            label: "Identify As Controller",
+                            enabled: false,
+                            is_selected: false,
+                        },
                         MenuActionShellItem {
                             label: "Trusted Domains",
                             enabled: true,
@@ -11439,6 +11837,8 @@ impl SyncplayGuiShellAppState {
             playlist_text_edit_session: None,
             playlist_url_edit_session: None,
             media_url_edit_session: None,
+            controlled_room_create_session: None,
+            controller_auth_edit_session: None,
             room_history_edit_session: None,
             update_check: GuiUpdateCheckState::default(),
             runtime_validation_issues: Vec::new(),
@@ -11996,6 +12396,20 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::BeginMediaUrlEdit => self.begin_media_url_edit(),
             GuiShellAction::UpdateMediaUrlEdit(buffer) => self.update_media_url_edit(buffer),
             GuiShellAction::CancelMediaUrlEdit => self.cancel_media_url_edit(),
+            GuiShellAction::BeginCreateControlledRoomEdit => {
+                self.begin_create_controlled_room_edit()
+            }
+            GuiShellAction::UpdateCreateControlledRoomEdit(buffer) => {
+                self.update_create_controlled_room_edit(buffer)
+            }
+            GuiShellAction::CancelCreateControlledRoomEdit => {
+                self.cancel_create_controlled_room_edit()
+            }
+            GuiShellAction::BeginControllerAuthEdit => self.begin_controller_auth_edit(),
+            GuiShellAction::UpdateControllerAuthPasswordEdit(buffer) => {
+                self.update_controller_auth_password_edit(buffer)
+            }
+            GuiShellAction::CancelControllerAuthEdit => self.cancel_controller_auth_edit(),
             GuiShellAction::SelectMainWindowUser(index) => {
                 if index >= self.main_window.users.len() {
                     return self
@@ -12222,6 +12636,11 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::RequestMainWindowUserReady { .. }
+            | GuiShellAction::RequestControllerAuth { .. } => {
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::AddTrustedDomain(domain) => self.add_trusted_domain(domain),
             GuiShellAction::JoinMainWindowRoom(room) => self.join_main_window_room(room),
             GuiShellAction::LeaveMainWindowRoom => self.leave_main_window_room(),
@@ -12307,6 +12726,18 @@ impl SyncplayGuiShellAppState {
                 .as_ref()
                 .map(GuiUrlEditSessionState::render_lines)
                 .unwrap_or_else(|| vec!["[Media URL Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.controlled_room_create_session
+                .as_ref()
+                .map(GuiControlledRoomCreateSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Controlled Room Create] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.controller_auth_edit_session
+                .as_ref()
+                .map(GuiControllerAuthEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Controller Auth Edit] editing=(none)".to_owned()]),
         );
         lines.extend(
             self.room_history_edit_session
@@ -12974,6 +13405,86 @@ impl SyncplayGuiShellAppState {
             ));
         }
 
+        if let Some(session) = &self.controlled_room_create_session {
+            let can_create_controlled_room = normalized_editable_text(
+                &controlled_room_base_name_legacy_compatible(&session.room_buffer),
+            )
+            .is_some();
+            children.push(GuiWidgetNode::branch(
+                "main-window:controlled-room-create",
+                "Create Controlled Room",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:controlled-room-create:room",
+                        "Room Name",
+                        GuiWidgetKind::TextInput,
+                        Some(session.room_buffer.clone()),
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:controlled-room-create:commit",
+                        "Create Controlled Room",
+                        GuiWidgetKind::Button,
+                        None,
+                        can_create_controlled_room,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:controlled-room-create:cancel",
+                        "Cancel Controlled Room Creation",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
+        if let Some(session) = &self.controller_auth_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "main-window:controller-auth",
+                "Identify As Controller",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:controller-auth:room",
+                        "Room",
+                        GuiWidgetKind::Status,
+                        Some(session.room_name.clone()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:controller-auth:password",
+                        "Password",
+                        GuiWidgetKind::PasswordInput,
+                        Some(session.password_buffer.clone()),
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:controller-auth:commit",
+                        "Identify As Controller",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:controller-auth:cancel",
+                        "Cancel Controller Auth",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
         children.push(GuiWidgetNode::branch(
             "main-window:chat",
             "Chat",
@@ -13194,6 +13705,7 @@ impl SyncplayGuiShellAppState {
                     .as_deref()
                     .filter(|file_name| browser_is_url(file_name) && !user.file_is_trusted)
                     .and_then(browser_domain_from_url);
+                let can_change_ready = self.can_request_main_window_user_ready_change(user);
                 children.push(GuiWidgetNode::branch(
                     format!("main-window:user:{user_index}"),
                     &user.username,
@@ -13273,6 +13785,18 @@ impl SyncplayGuiShellAppState {
                             GuiWidgetKind::Button,
                             None,
                             can_mutate_browser_settings && trusted_domain.is_some(),
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:ready"),
+                            if user.is_ready {
+                                format!("Set {} Not Ready", user.username)
+                            } else {
+                                format!("Set {} Ready", user.username)
+                            },
+                            GuiWidgetKind::Button,
+                            None,
+                            can_change_ready,
                             false,
                         ),
                     ],
@@ -14054,6 +14578,9 @@ impl SyncplayGuiShellAppState {
         }
         if current_snapshot.can_set_ready != previous_baseline.can_set_ready {
             self.main_window.playback.can_set_ready = current_snapshot.can_set_ready;
+        }
+        if current_snapshot.can_set_others_ready != previous_baseline.can_set_others_ready {
+            self.main_window.playback.can_set_others_ready = current_snapshot.can_set_others_ready;
         }
         if current_snapshot.can_manage_playlist != previous_baseline.can_manage_playlist {
             self.main_window.playback.can_manage_playlist = current_snapshot.can_manage_playlist;
@@ -14963,6 +15490,123 @@ impl SyncplayGuiShellAppState {
 
     fn local_main_window_user_index(&self) -> Option<usize> {
         self.main_window.users.iter().position(|user| user.is_self)
+    }
+
+    fn current_joined_main_window_room_name(&self) -> Option<&str> {
+        let room_name = self.main_window.room_name.trim();
+        if room_name.is_empty() || room_name == "(no room joined)" {
+            None
+        } else {
+            Some(room_name)
+        }
+    }
+
+    fn main_window_local_can_control_current_room(&self) -> bool {
+        if !self.main_window.controlled_room_active {
+            return true;
+        }
+        let Some(room_name) = self.current_joined_main_window_room_name() else {
+            return false;
+        };
+        self.main_window
+            .users
+            .iter()
+            .any(|user| user.is_self && user.room_name == room_name && user.is_controller)
+    }
+
+    fn can_request_main_window_user_ready_change(&self, user: &MainWindowUserRow) -> bool {
+        self.pending_operation.is_none()
+            && self.commands.can_disconnect_session
+            && self.main_window.playback.can_set_ready
+            && self.main_window.playback.can_set_others_ready
+            && !user.is_self
+            && self
+                .current_joined_main_window_room_name()
+                .is_some_and(|room_name| user.room_name == room_name)
+            && self.main_window_local_can_control_current_room()
+    }
+
+    fn controlled_room_create_default_room_name(&self) -> Option<String> {
+        self.current_joined_main_window_room_name()
+            .map(controlled_room_base_name_legacy_compatible)
+            .and_then(|room_name| normalized_editable_text(&room_name))
+    }
+
+    fn begin_create_controlled_room_edit(&mut self) -> bool {
+        let Some(room_name) = self.controlled_room_create_default_room_name() else {
+            return self.record_action_error(
+                "A joined room is required before creating a controlled room.",
+            );
+        };
+        self.active_view = GuiShellView::MainWindow;
+        self.controlled_room_create_session = Some(GuiControlledRoomCreateSessionState {
+            room_buffer: room_name,
+            is_dirty: false,
+        });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_create_controlled_room_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.controlled_room_create_session.as_mut() else {
+            return self
+                .record_action_error("No controlled-room creation editor is currently active.");
+        };
+        session.room_buffer = buffer;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_create_controlled_room_edit(&mut self) -> bool {
+        if self.controlled_room_create_session.is_none() {
+            return self
+                .record_action_error("No controlled-room creation editor is currently active.");
+        }
+        self.controlled_room_create_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_controller_auth_edit(&mut self) -> bool {
+        let Some(room_name) = self
+            .current_joined_main_window_room_name()
+            .and_then(normalized_editable_text)
+        else {
+            return self.record_action_error(
+                "A joined room is required before requesting controller access.",
+            );
+        };
+        if !room_name.starts_with('+') {
+            return self.record_action_error(
+                "Controller access can only be requested while a controlled room is active.",
+            );
+        }
+        self.active_view = GuiShellView::MainWindow;
+        self.controller_auth_edit_session = Some(GuiControllerAuthEditSessionState {
+            room_name,
+            password_buffer: String::new(),
+            is_dirty: false,
+        });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_controller_auth_password_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.controller_auth_edit_session.as_mut() else {
+            return self.record_action_error("No controller-auth editor is currently active.");
+        };
+        session.password_buffer = buffer;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_controller_auth_edit(&mut self) -> bool {
+        if self.controller_auth_edit_session.is_none() {
+            return self.record_action_error("No controller-auth editor is currently active.");
+        }
+        self.controller_auth_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
     }
 
     fn begin_playback_pause_state(&mut self, paused: bool) -> bool {
@@ -16786,6 +17430,8 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            ("Advanced", "Create Controlled Room") => self.begin_create_controlled_room_edit(),
+            ("Advanced", "Identify As Controller") => self.begin_controller_auth_edit(),
             ("Advanced", "Set Offset") => {
                 self.clear_action_error_and_refresh();
                 true
@@ -17114,6 +17760,7 @@ impl SyncplayGuiShellAppState {
                 can_toggle_autoplay: snapshot.can_toggle_autoplay,
                 can_adjust_autoplay_threshold: snapshot.can_adjust_autoplay_threshold,
                 can_set_ready: snapshot.can_set_ready,
+                can_set_others_ready: snapshot.can_set_others_ready,
                 can_manage_playlist: snapshot.can_manage_playlist,
             },
             playback_paused: snapshot.playback_paused,
@@ -18042,6 +18689,38 @@ impl SyncplayGuiShellAppState {
         session.is_dirty = normalized_editable_text(&session.buffer).is_some();
     }
 
+    fn normalize_controlled_room_create_session(&mut self) {
+        let default_room_name = self.controlled_room_create_default_room_name();
+        let Some(session) = self.controlled_room_create_session.as_mut() else {
+            return;
+        };
+        let Some(default_room_name) = default_room_name else {
+            self.controlled_room_create_session = None;
+            return;
+        };
+        session.is_dirty = normalized_editable_text(&session.room_buffer)
+            .is_some_and(|room_name| room_name != default_room_name);
+    }
+
+    fn normalize_controller_auth_edit_session(&mut self) {
+        let current_room_name = self
+            .current_joined_main_window_room_name()
+            .and_then(normalized_editable_text);
+        let Some(session) = self.controller_auth_edit_session.as_mut() else {
+            return;
+        };
+        let Some(current_room_name) = current_room_name else {
+            self.controller_auth_edit_session = None;
+            return;
+        };
+        if !current_room_name.starts_with('+') {
+            self.controller_auth_edit_session = None;
+            return;
+        }
+        session.room_name = current_room_name;
+        session.is_dirty = normalized_editable_text(&session.password_buffer).is_some();
+    }
+
     fn sync_focused_configuration_control_to_text_edit_session(&mut self) {
         let Some(session) = self.text_edit_session.as_ref() else {
             return;
@@ -18084,6 +18763,8 @@ impl SyncplayGuiShellAppState {
         self.normalize_playlist_text_edit_session();
         self.normalize_playlist_url_edit_session();
         self.normalize_media_url_edit_session();
+        self.normalize_controlled_room_create_session();
+        self.normalize_controller_auth_edit_session();
         let mut issues = self.validation_issues();
         issues.extend(self.runtime_validation_issues.iter().cloned());
         self.sync_focused_configuration_control_to_text_edit_session();
@@ -22537,7 +23218,7 @@ mod tests {
 
         assert!(state.apply(GuiShellAction::SelectMenuAction {
             section_index: 2,
-            action_index: 2,
+            action_index: 4,
         }));
         assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
         assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
@@ -23895,76 +24576,115 @@ mod tests {
     }
 
     #[test]
-    fn gui_shell_app_state_adds_toggles_and_removes_main_window_users() {
-        let mut state =
-            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    fn gui_shell_app_state_starts_controlled_room_and_controller_auth_edit_sessions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            room: Some("Lounge".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
 
-        assert!(state.apply(GuiShellAction::AddMainWindowUser("alice".to_owned(),)));
-        assert_eq!(state.main_window.users.len(), 2);
-        assert_eq!(state.selection.selected_main_window_user, Some(1));
-        assert_eq!(state.main_window.users[1].username, "alice");
-        assert!(!state.main_window.users[1].is_self);
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("User joined: alice.")
+        assert!(state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
+        assert_eq!(state.active_view, GuiShellView::MainWindow);
+        assert!(
+            state
+                .controlled_room_create_session
+                .as_ref()
+                .is_some_and(|session| !session.is_dirty && session.room_buffer == "Lounge")
         );
 
-        assert!(state.apply(GuiShellAction::ToggleSelectedMainWindowUserReady));
-        assert!(state.main_window.users[1].is_ready);
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("User readiness updated: alice -> ready.")
+        assert!(state.apply(GuiShellAction::UpdateCreateControlledRoomEdit(
+            "Studio".to_owned(),
+        )));
+        assert!(
+            state
+                .controlled_room_create_session
+                .as_ref()
+                .is_some_and(|session| session.is_dirty && session.room_buffer == "Studio")
         );
+        assert!(state.apply(GuiShellAction::CancelCreateControlledRoomEdit));
+        assert!(state.controlled_room_create_session.is_none());
 
         assert!(state.apply(GuiShellAction::SetMainWindowRoom(
-            "+room:ABCDEF123456".to_owned(),
+            "+Lounge:ABCDEF123456".to_owned(),
         )));
-        assert!(state.apply(GuiShellAction::ToggleSelectedMainWindowUserController));
-        assert!(state.main_window.users[1].is_controller);
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("Controller status updated: alice -> controller.")
+        assert!(state.apply(GuiShellAction::BeginControllerAuthEdit));
+        assert!(
+            state
+                .controller_auth_edit_session
+                .as_ref()
+                .is_some_and(|session| {
+                    !session.is_dirty
+                        && session.room_name == "+Lounge:ABCDEF123456"
+                        && session.password_buffer.is_empty()
+                })
         );
 
-        assert!(state.apply(GuiShellAction::RemoveSelectedMainWindowUser));
-        assert_eq!(state.main_window.users.len(), 1);
-        assert_eq!(state.selection.selected_main_window_user, Some(0));
-        assert!(state.main_window.users[0].is_self);
-        assert_eq!(
-            state.notifications.last().map(|item| item.message.as_str()),
-            Some("User removed: alice.")
+        assert!(
+            state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
+                "ab-123-456".to_owned(),
+            ))
         );
+        assert!(
+            state
+                .controller_auth_edit_session
+                .as_ref()
+                .is_some_and(|session| {
+                    session.is_dirty && session.password_buffer == "ab-123-456"
+                })
+        );
+        assert!(state.apply(GuiShellAction::CancelControllerAuthEdit));
+        assert!(state.controller_auth_edit_session.is_none());
     }
 
     #[test]
-    fn gui_shell_app_state_rejects_invalid_main_window_user_mutations() {
+    fn gui_shell_app_state_rejects_invalid_controlled_room_and_controller_auth_edit_sessions() {
         let mut state =
             SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-        assert!(!state.apply(GuiShellAction::AddMainWindowUser("   ".to_owned(),)));
+        assert!(!state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
         assert_eq!(
             state.validation.last_action_error.as_deref(),
-            Some("Main-window user names must be non-empty.")
+            Some("A joined room is required before creating a controlled room.")
         );
 
-        assert!(!state.apply(GuiShellAction::AddMainWindowUser(
-            state.main_window.users[0].username.clone(),
+        assert!(!state.apply(GuiShellAction::UpdateCreateControlledRoomEdit(
+            "Studio".to_owned(),
         )));
         assert_eq!(
             state.validation.last_action_error.as_deref(),
-            Some("A main-window user with that name already exists.")
+            Some("No controlled-room creation editor is currently active.")
         );
 
-        assert!(!state.apply(GuiShellAction::ToggleSelectedMainWindowUserController));
+        assert!(!state.apply(GuiShellAction::CancelCreateControlledRoomEdit));
         assert_eq!(
             state.validation.last_action_error.as_deref(),
-            Some("Controller state can only be changed while a controlled room is active.")
+            Some("No controlled-room creation editor is currently active.")
         );
 
-        assert!(!state.apply(GuiShellAction::RemoveSelectedMainWindowUser));
+        let mut joined_room_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                room: Some("Lounge".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(!joined_room_state.apply(GuiShellAction::BeginControllerAuthEdit));
         assert_eq!(
-            state.validation.last_action_error.as_deref(),
-            Some("The local user row cannot be removed from the main-window shell.")
+            joined_room_state.validation.last_action_error.as_deref(),
+            Some("Controller access can only be requested while a controlled room is active.")
+        );
+
+        assert!(
+            !joined_room_state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
+                "ab-123-456".to_owned(),
+            ))
+        );
+        assert_eq!(
+            joined_room_state.validation.last_action_error.as_deref(),
+            Some("No controller-auth editor is currently active.")
+        );
+
+        assert!(!joined_room_state.apply(GuiShellAction::CancelControllerAuthEdit));
+        assert_eq!(
+            joined_room_state.validation.last_action_error.as_deref(),
+            Some("No controller-auth editor is currently active.")
         );
     }
 
@@ -27151,14 +27871,17 @@ mod tests {
                         file_name: Some("https://example.com/live".to_owned()),
                         file_is_url: true,
                         file_is_trusted: false,
-                        ..browser_runtime_user("Bob", "Cinema", false, false, false)
+                        ..browser_runtime_user("Bob", "Lounge", false, false, false)
                     },
                 ],
                 playlist: vec!["Episode 1".to_owned()],
                 can_toggle_pause: true,
+                can_set_ready: true,
+                can_set_others_ready: true,
                 ..Default::default()
             }
         )));
+        state.commands.can_disconnect_session = true;
         let shell_tree = state.shell_widget_tree();
         let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
         let menu_action = shell_tree.find("menus:action:0:0").unwrap();
@@ -27169,6 +27892,7 @@ mod tests {
         let browser_join_button = shell_tree.find("main-window:room-group:1:join").unwrap();
         let user_open_button = shell_tree.find("main-window:user:1:open").unwrap();
         let user_trust_button = shell_tree.find("main-window:user:1:trust").unwrap();
+        let user_ready_button = shell_tree.find("main-window:user:1:ready").unwrap();
         let room_set_button = shell_tree.find("main-window:room:set").unwrap();
         let room_join_button = shell_tree.find("main-window:room:join").unwrap();
         let room_leave_button = shell_tree.find("main-window:room:leave").unwrap();
@@ -27238,6 +27962,13 @@ mod tests {
             vec![GuiShellAction::AddTrustedDomain("example.com".to_owned())]
         );
         assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, user_ready_button),
+            vec![GuiShellAction::RequestMainWindowUserReady {
+                username: "Bob".to_owned(),
+                ready: true,
+            }]
+        );
+        assert_eq!(
             GuiWidgetEguiRenderer::actions_for_button_node(&state, room_set_button),
             vec![GuiShellAction::SetMainWindowRoom("Lounge".to_owned())]
         );
@@ -27284,6 +28015,86 @@ mod tests {
         assert_eq!(
             GuiWidgetEguiRenderer::actions_for_button_node(&state, directory_remove_button),
             vec![GuiShellAction::RemoveSelectedMediaSearchDirectory]
+        );
+
+        let mut controlled_room_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                room: Some("Lounge".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(controlled_room_state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
+        let controlled_room_tree = controlled_room_state.main_window_widget_tree();
+        let create_commit_button = controlled_room_tree
+            .find("main-window:controlled-room-create:commit")
+            .unwrap();
+        let create_cancel_button = controlled_room_tree
+            .find("main-window:controlled-room-create:cancel")
+            .unwrap();
+        let create_actions = GuiWidgetEguiRenderer::actions_for_button_node(
+            &controlled_room_state,
+            create_commit_button,
+        );
+        assert_eq!(create_actions.len(), 2);
+        assert!(matches!(
+            &create_actions[0],
+            GuiShellAction::RequestControllerAuth { room, password }
+                if room == "Lounge"
+                    && password.len() == 10
+                    && password.chars().enumerate().all(|(index, c)| match index {
+                        2 | 6 => c == '-',
+                        0 | 1 => c.is_ascii_uppercase(),
+                        _ => c.is_ascii_digit(),
+                    })
+        ));
+        assert_eq!(
+            create_actions[1],
+            GuiShellAction::CancelCreateControlledRoomEdit
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(
+                &controlled_room_state,
+                create_cancel_button
+            ),
+            vec![GuiShellAction::CancelCreateControlledRoomEdit]
+        );
+
+        let mut controller_auth_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                room: Some("+Lounge:ABCDEF123456".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(controller_auth_state.apply(GuiShellAction::BeginControllerAuthEdit));
+        assert!(
+            controller_auth_state.apply(GuiShellAction::UpdateControllerAuthPasswordEdit(
+                "ab-123-456".to_owned(),
+            ))
+        );
+        let controller_auth_tree = controller_auth_state.main_window_widget_tree();
+        let controller_auth_commit_button = controller_auth_tree
+            .find("main-window:controller-auth:commit")
+            .unwrap();
+        let controller_auth_cancel_button = controller_auth_tree
+            .find("main-window:controller-auth:cancel")
+            .unwrap();
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(
+                &controller_auth_state,
+                controller_auth_commit_button
+            ),
+            vec![
+                GuiShellAction::RequestControllerAuth {
+                    room: "+Lounge:ABCDEF123456".to_owned(),
+                    password: "ab-123-456".to_owned(),
+                },
+                GuiShellAction::CancelControllerAuthEdit,
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(
+                &controller_auth_state,
+                controller_auth_cancel_button
+            ),
+            vec![GuiShellAction::CancelControllerAuthEdit]
         );
     }
 
@@ -28051,6 +28862,73 @@ assert-pending\tnone\n"
         assert!(user_state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
         let user_tree = user_state.main_window_widget_tree();
         assert!(user_tree.find("main-window:user-edit:username").is_none());
+
+        let mut controlled_room_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                room: Some("Lounge".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(controlled_room_state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
+        let controlled_room_tree = controlled_room_state.main_window_widget_tree();
+        let controlled_room_input = controlled_room_tree
+            .find("main-window:controlled-room-create:room")
+            .unwrap();
+        let controlled_room_actions = GuiWidgetEguiRenderer::actions_for_text_input_node(
+            &controlled_room_state,
+            controlled_room_input,
+            "Studio",
+            true,
+            true,
+        )
+        .expect("controlled-room input should map edits");
+        assert_eq!(controlled_room_actions.len(), 3);
+        assert_eq!(
+            controlled_room_actions[0],
+            GuiShellAction::UpdateCreateControlledRoomEdit("Studio".to_owned())
+        );
+        assert!(matches!(
+            &controlled_room_actions[1],
+            GuiShellAction::RequestControllerAuth { room, password }
+                if room == "Studio"
+                    && password.len() == 10
+                    && password.chars().enumerate().all(|(index, c)| match index {
+                        2 | 6 => c == '-',
+                        0 | 1 => c.is_ascii_uppercase(),
+                        _ => c.is_ascii_digit(),
+                    })
+        ));
+        assert_eq!(
+            controlled_room_actions[2],
+            GuiShellAction::CancelCreateControlledRoomEdit
+        );
+
+        let mut controller_auth_state =
+            SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                room: Some("+Lounge:ABCDEF123456".to_owned()),
+                ..StoredClientSettingsMvp::default()
+            });
+        assert!(controller_auth_state.apply(GuiShellAction::BeginControllerAuthEdit));
+        let controller_auth_tree = controller_auth_state.main_window_widget_tree();
+        let controller_auth_input = controller_auth_tree
+            .find("main-window:controller-auth:password")
+            .unwrap();
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &controller_auth_state,
+                controller_auth_input,
+                "ab-123-456",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::UpdateControllerAuthPasswordEdit("ab-123-456".to_owned()),
+                GuiShellAction::RequestControllerAuth {
+                    room: "+Lounge:ABCDEF123456".to_owned(),
+                    password: "ab-123-456".to_owned(),
+                },
+                GuiShellAction::CancelControllerAuthEdit,
+            ])
+        );
     }
 
     #[test]
@@ -28835,7 +29713,7 @@ assert-pending\tnone\n"
 
     #[test]
     fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifications() {
-        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             chat_output_enabled: Some(true),
@@ -28880,9 +29758,9 @@ assert-pending\tnone\n"
         assert_eq!(outbound_lines.len(), 1);
         assert!(outbound_lines[0].contains("\"Chat\""));
         assert!(outbound_lines[0].contains("hello room"));
-        assert!(
-            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
-        );
+        for action in super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+            assert!(state.apply(action));
+        }
 
         adapter
             .apply_message_json(r#"{"Chat":{"username":"alice","message":"hello room"}}"#)
@@ -29162,9 +30040,9 @@ assert-pending\tnone\n"
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
             )
             .expect("inbound server hello should apply");
-        assert!(
-            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
-        );
+        for action in super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+            assert!(state.apply(action));
+        }
 
         adapter
             .apply_message_json(
@@ -29257,7 +30135,7 @@ assert-pending\tnone\n"
 
     #[test]
     fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_chat_events() {
-        let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             ..StoredClientSettingsMvp::default()
@@ -29275,9 +30153,9 @@ assert-pending\tnone\n"
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
             )
             .expect("inbound server hello should apply");
-        assert!(
-            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty()
-        );
+        for action in super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+            assert!(state.apply(action));
+        }
 
         adapter
             .apply_message_json(
@@ -29576,22 +30454,40 @@ assert-pending\tnone\n"
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
             )
             .expect("inbound server hello should apply");
-        assert_eq!(
-            super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state),
-            vec![
-                GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Warning,
-                    message: "Reconnect attempt 1 in 0.1 seconds.".to_owned(),
-                },
-                GuiShellAction::AnnounceSystemChatEvent(
-                    "Reconnect attempt 1 in 0.1 seconds.".to_owned(),
-                ),
-                GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Success,
-                    message: "Session reconnected.".to_owned(),
-                },
-                GuiShellAction::AnnounceSystemChatEvent("Session reconnected.".to_owned()),
-            ]
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Warning
+                        && message == "Reconnect attempt 1 in 0.1 seconds."
+            )),
+            "reconnect retry should surface a warning notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Reconnect attempt 1 in 0.1 seconds."
+            )),
+            "reconnect retry should persist a system chat entry"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification { level, message }
+                    if *level == GuiTransientNotificationLevel::Success
+                        && message == "Session reconnected."
+            )),
+            "reconnect success should surface a success notification"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::AnnounceSystemChatEvent(message)
+                    if message == "Session reconnected."
+            )),
+            "reconnect success should persist a system chat entry"
         );
     }
 
@@ -29617,6 +30513,66 @@ assert-pending\tnone\n"
                     "Session state restore mismatch detected (2.500 seconds).".to_owned(),
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_dispatches_remote_ready_changes_when_supported()
+    {
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        assert!(
+            super::GuiSessionRuntimeAdapter::set_user_ready(&mut adapter, "bob".to_owned(), true)
+                .is_ok(),
+            "newer readiness-capable servers should allow remote readiness changes"
+        );
+
+        let outbound_protocol_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("remote readiness lines should encode");
+        assert_eq!(outbound_protocol_lines.len(), 1);
+        assert!(outbound_protocol_lines[0].contains("\"ready\""));
+        assert!(outbound_protocol_lines[0].contains("\"username\":\"bob\""));
+        assert!(outbound_protocol_lines[0].contains("\"isReady\":true"));
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_rejects_remote_ready_changes_when_unsupported()
+    {
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.1","features":{"chat":true,"readiness":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+
+        let error =
+            super::GuiSessionRuntimeAdapter::set_user_ready(&mut adapter, "bob".to_owned(), true)
+                .expect_err(
+                    "older readiness-capable servers should reject remote readiness changes",
+                );
+        assert!(
+            error.contains("remote readiness changes"),
+            "error should identify the missing remote readiness capability"
         );
     }
 
@@ -29702,6 +30658,98 @@ assert-pending\tnone\n"
                         })
             )),
             "controller auth success should refresh the main-window runtime snapshot"
+        );
+    }
+
+    #[test]
+    fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creation_before_reidentify()
+     {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        let mut adapter = super::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+            .expect("client-core chat adapter should bootstrap");
+
+        let startup_lines = adapter
+            .flush_outbound_protocol_lines()
+            .expect("startup protocol lines should encode");
+        assert_eq!(startup_lines.len(), 1);
+
+        adapter
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("inbound server hello should apply");
+        for action in super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+            assert!(state.apply(action));
+        }
+
+        adapter
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"ab 123 456"}}}"#,
+            )
+            .expect("new controlled room message should apply");
+        let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+        let created_notice_index = actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    GuiShellAction::PushTransientNotification { level, message }
+                        if *level == GuiTransientNotificationLevel::Success
+                            && message == "Controlled room created: +room:ABCDEF123456."
+                )
+            })
+            .expect("new controlled room should surface a success notification");
+        let created_chat_index = actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    GuiShellAction::AnnounceSystemChatEvent(message)
+                        if message == "Created controlled room +room:ABCDEF123456 with password AB123456 (+room:ABCDEF123456:AB123456)."
+                )
+            })
+            .expect("new controlled room should surface a system chat entry");
+        let reidentify_notice_index = actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    GuiShellAction::PushTransientNotification { level, message }
+                        if *level == GuiTransientNotificationLevel::Info
+                            && message == "Requesting controller access for +room:ABCDEF123456."
+                )
+            })
+            .expect("new controlled room should trigger controller reidentify");
+        let reidentify_chat_index = actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    GuiShellAction::AnnounceSystemChatEvent(message)
+                        if message == "Requesting controller access for +room:ABCDEF123456."
+                )
+            })
+            .expect("controller reidentify should be persisted in system chat");
+        assert!(
+            created_notice_index < reidentify_notice_index,
+            "created-room notification should appear before the controller reidentify attempt"
+        );
+        assert!(
+            created_chat_index < reidentify_chat_index,
+            "created-room system chat should appear before the controller reidentify entry"
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                    if snapshot.room_name == "+room:ABCDEF123456"
+                        && snapshot.controlled_room_active
+            )),
+            "new controlled room should still refresh the main-window snapshot"
         );
     }
 
@@ -30112,6 +31160,7 @@ assert-pending\tnone\n"
                     can_toggle_pause: false,
                     can_seek: false,
                     can_set_ready: true,
+                    can_set_others_ready: true,
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
@@ -30120,11 +31169,18 @@ assert-pending\tnone\n"
                     ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                    action_overrides: vec![MenuActionRuntimeOverride {
-                        section_title: "Window",
-                        action_label: "Show Chat",
-                        enabled: true,
-                    }],
+                    action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Window",
+                            action_label: "Show Chat",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Advanced",
+                            action_label: "Create Controlled Room",
+                            enabled: true,
+                        },
+                    ],
                     tls_prompt_expected: state.menus.tls_prompt_expected,
                     update_notice_expected: state.menus.update_notice_expected,
                     about_dialog_available: state.menus.about_dialog_available,
@@ -30501,6 +31557,7 @@ assert-pending\tnone\n"
                     can_toggle_pause: false,
                     can_seek: false,
                     can_set_ready: true,
+                    can_set_others_ready: true,
                     can_manage_playlist: false,
                     playback_paused: false,
                     autoplay_active: false,
@@ -30509,11 +31566,18 @@ assert-pending\tnone\n"
                     ..Default::default()
                 }),
                 GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                    action_overrides: vec![MenuActionRuntimeOverride {
-                        section_title: "Window",
-                        action_label: "Show Chat",
-                        enabled: true,
-                    }],
+                    action_overrides: vec![
+                        MenuActionRuntimeOverride {
+                            section_title: "Window",
+                            action_label: "Show Chat",
+                            enabled: true,
+                        },
+                        MenuActionRuntimeOverride {
+                            section_title: "Advanced",
+                            action_label: "Create Controlled Room",
+                            enabled: true,
+                        },
+                    ],
                     tls_prompt_expected: state.menus.tls_prompt_expected,
                     update_notice_expected: state.menus.update_notice_expected,
                     about_dialog_available: state.menus.about_dialog_available,
@@ -30584,12 +31648,23 @@ assert-pending\tnone\n"
 
         let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         expected_snapshot.can_set_ready = true;
+        expected_snapshot.can_set_others_ready = true;
         let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
         assert_eq!(
             actions,
-            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                expected_snapshot
-            )]
+            vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Advanced",
+                        action_label: "Create Controlled Room",
+                        enabled: true,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+            ]
         );
         for action in actions {
             assert!(state.apply(action));
@@ -30691,6 +31766,11 @@ assert-pending\tnone\n"
                     action_label: "Playlist Actions",
                     enabled: false,
                 },
+                MenuActionRuntimeOverride {
+                    section_title: "Advanced",
+                    action_label: "Create Controlled Room",
+                    enabled: true,
+                },
             ]
         );
         for action in actions {
@@ -30763,12 +31843,23 @@ assert-pending\tnone\n"
 
         let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         expected_snapshot.playback_paused = false;
+        expected_snapshot.can_set_others_ready = true;
         let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
         assert_eq!(
             actions,
-            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                expected_snapshot
-            )]
+            vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Advanced",
+                        action_label: "Create Controlled Room",
+                        enabled: true,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+            ]
         );
         for action in actions {
             assert!(state.apply(action));
@@ -30809,12 +31900,23 @@ assert-pending\tnone\n"
 
         let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         expected_snapshot.autoplay_active = false;
+        expected_snapshot.can_set_others_ready = true;
         let actions = super::GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
         assert_eq!(
             actions,
-            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                expected_snapshot
-            )]
+            vec![
+                GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected_snapshot),
+                GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+                    action_overrides: vec![MenuActionRuntimeOverride {
+                        section_title: "Advanced",
+                        action_label: "Create Controlled Room",
+                        enabled: true,
+                    }],
+                    tls_prompt_expected: state.menus.tls_prompt_expected,
+                    update_notice_expected: state.menus.update_notice_expected,
+                    about_dialog_available: state.menus.about_dialog_available,
+                }),
+            ]
         );
         for action in actions {
             assert!(state.apply(action));
@@ -32987,6 +34089,8 @@ assert-pending\tnone\n"
             queued_gui_actions: Vec<GuiShellAction>,
             room_requests: Vec<String>,
             local_ready_requests: Vec<bool>,
+            user_ready_requests: Vec<(String, bool)>,
+            controller_auth_requests: Vec<(String, String)>,
             sent_chat_messages: Vec<String>,
             connect_requests: Vec<Option<(String, String)>>,
             refresh_requests: Vec<Vec<(String, String)>>,
@@ -33026,6 +34130,28 @@ assert-pending\tnone\n"
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .local_ready_requests
                     .push(ready);
+                Ok(())
+            }
+
+            fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .user_ready_requests
+                    .push((username, ready));
+                Ok(())
+            }
+
+            fn request_controller_auth(
+                &mut self,
+                room: String,
+                password: String,
+            ) -> Result<(), String> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .controller_auth_requests
+                    .push((room, password));
                 Ok(())
             }
 
@@ -33254,11 +34380,33 @@ assert-pending\tnone\n"
         super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
         assert!(handle.drain_actions().is_empty());
 
+        handle.push_request(GuiRuntimeRequest::SetReadyForUser {
+            username: "bob".to_owned(),
+            ready: true,
+        });
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(handle.drain_actions().is_empty());
+
+        handle.push_request(GuiRuntimeRequest::RequestControllerAuth {
+            room: "+room:ABCDEF123456".to_owned(),
+            password: "ab-123-456".to_owned(),
+        });
+        super::GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        assert!(handle.drain_actions().is_empty());
+
         let session_state = session_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(session_state.room_requests, vec!["runtime-room".to_owned()]);
         assert_eq!(session_state.local_ready_requests, vec![true]);
+        assert_eq!(
+            session_state.user_ready_requests,
+            vec![("bob".to_owned(), true)]
+        );
+        assert_eq!(
+            session_state.controller_auth_requests,
+            vec![("+room:ABCDEF123456".to_owned(), "ab-123-456".to_owned())]
+        );
         assert_eq!(session_state.sent_chat_messages, vec!["hello".to_owned()]);
         assert_eq!(
             session_state.connect_requests,

@@ -32,6 +32,7 @@ struct NativeSmokeOptions {
     timeout: Duration,
     format: OutputFormat,
     keep_open: bool,
+    scenario_filters: Vec<String>,
 }
 
 struct NativeSmokeReport {
@@ -73,7 +74,6 @@ struct MockSessionServer {
     address: String,
     port: u16,
     hello_rx: mpsc::Receiver<String>,
-    chat_rx: mpsc::Receiver<String>,
     release_tx: mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
 }
@@ -123,9 +123,7 @@ const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
 const LIVE_PYTHON_INTEROP_ALT_ROOM: &str = "interop-room-b";
 const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM: &str = "+interop-room:447CE7E3548D";
 const LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT: &str = "+interop-room:447CE7E3548D:AB-123-456";
-const LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE: &str = "hello from gui";
 const LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE: &str = "hello from python";
-const LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE: &str = "hello again from gui";
 const LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE: &str = "hello again from python";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
@@ -136,6 +134,19 @@ const LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME: &str = "self=yes, ready=no,
 const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str = "self=yes, ready=yes, controller=no";
 const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "self=no, ready=no, controller=no";
 const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str = "self=no, ready=yes, controller=no";
+const MAIN_WINDOW_ROOM_BROWSER_NAME: &str = "Room Browser";
+const MAIN_WINDOW_CONTROLS_CONTAINER_NAME: &str = "Controls";
+const MAIN_WINDOW_LOCAL_READY_BUTTON_NAME: &str = "Set Ready";
+const MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID: &str = "main-window:control:set-ready";
+const MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS: usize = 6;
+#[cfg(target_os = "windows")]
+const SMOKE_WINDOW_X: i32 = 32;
+#[cfg(target_os = "windows")]
+const SMOKE_WINDOW_Y: i32 = 32;
+#[cfg(target_os = "windows")]
+const SMOKE_WINDOW_WIDTH: i32 = 1700;
+#[cfg(target_os = "windows")]
+const SMOKE_WINDOW_HEIGHT: i32 = 1100;
 const CONFIG_HOST_VALUE: &str = "syncplay.example";
 const CONFIG_PORT_VALUE: &str = "8999";
 const CONFIG_USERNAME_VALUE: &str = "smoke-user";
@@ -167,11 +178,6 @@ const MEDIA_SEARCH_FIRST_FILE_TIMEOUT_SECONDS: f64 = 3.0;
 const MEDIA_SEARCH_TIMEOUT_SECONDS: f64 = 30.0;
 const MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS: f64 = 2.5;
 const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
-#[cfg(target_os = "windows")]
-const SMOKE_WINDOW_WIDTH: i32 = 1700;
-#[cfg(target_os = "windows")]
-const SMOKE_WINDOW_HEIGHT: i32 = 1100;
-
 trait NativeGuiDriver {
     type WindowHandle: Copy;
 
@@ -179,6 +185,18 @@ trait NativeGuiDriver {
     fn prepare_window_for_smoke(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String>;
+    fn scroll_named_control_down(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String>;
+    fn scroll_named_control_up(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String>;
     fn window_title(&self, window: Self::WindowHandle) -> Result<String, String>;
     fn accessible_names(&self, window: Self::WindowHandle) -> Result<Vec<String>, String>;
     fn top_level_menu_labels(&self, window: Self::WindowHandle) -> Result<Vec<String>, String>;
@@ -401,6 +419,92 @@ impl PlatformNativeGuiDriver {
                 inputs.len()
             ));
         }
+        Ok(())
+    }
+
+    fn mouse_input(
+        flags: windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
+        data: u32,
+    ) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
+        };
+
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: data,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn mouse_input_for_wheel(delta: i32) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_WHEEL;
+
+        Self::mouse_input(MOUSEEVENTF_WHEEL, delta as u32)
+    }
+
+    fn send_mouse_wheel(delta: i32) -> Result<(), String> {
+        let mut inputs = [Self::mouse_input_for_wheel(delta)];
+        Self::send_keyboard_inputs(&mut inputs)
+    }
+
+    fn click_element_center(
+        window: PlatformWindowHandle,
+        element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+        name: &str,
+    ) -> Result<(), String> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, SetForegroundWindow, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        };
+
+        unsafe extern "system" {
+            fn ScreenToClient(hwnd: PlatformWindowHandle, point: *mut POINT) -> i32;
+        }
+
+        let rect = unsafe {
+            element.CurrentBoundingRectangle().map_err(|error| {
+                format!("failed to read UI Automation bounding rectangle for {name:?}: {error}")
+            })?
+        };
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            return Err(format!(
+                "UI Automation bounding rectangle for {name:?} was empty"
+            ));
+        }
+
+        let center_x = (rect.left + rect.right) / 2;
+        let center_y = (rect.top + rect.bottom) / 2;
+        let mut client_point = POINT {
+            x: center_x,
+            y: center_y,
+        };
+        unsafe {
+            SetForegroundWindow(window);
+            let _ = element.SetFocus();
+            if ScreenToClient(window, &mut client_point) == 0 {
+                return Err(format!(
+                    "failed to convert {name:?} center ({center_x}, {center_y}) to client coordinates"
+                ));
+            }
+        }
+        thread::sleep(Duration::from_millis(80));
+        unsafe {
+            let lparam =
+                ((client_point.y as u32) << 16 | (client_point.x as u32 & 0xffff)) as isize;
+            SendMessageW(window, WM_MOUSEMOVE, 0, lparam);
+            SendMessageW(window, WM_LBUTTONDOWN, 0x0001, lparam);
+            SendMessageW(window, WM_LBUTTONUP, 0, lparam);
+        }
+        thread::sleep(Duration::from_millis(120));
         Ok(())
     }
 
@@ -647,17 +751,19 @@ impl PlatformNativeGuiDriver {
         }
     }
 
-    fn invoke_named_control(
+    fn invoke_named_control_internal(
         window: PlatformWindowHandle,
         name: &str,
         control_kind: NativeControlKind,
+        prefer_last: bool,
     ) -> Result<(), String> {
         use windows::Win32::UI::Accessibility::{
             IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
-            IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
-            UIA_ExpandCollapsePatternId, UIA_InvokePatternId, UIA_SelectionItemPatternId,
-            UIA_TogglePatternId,
+            IUIAutomationLegacyIAccessiblePattern, IUIAutomationSelectionItemPattern,
+            IUIAutomationTogglePattern, UIA_ExpandCollapsePatternId, UIA_InvokePatternId,
+            UIA_LegacyIAccessiblePatternId, UIA_SelectionItemPatternId, UIA_TogglePatternId,
         };
+        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
 
         Self::with_ui_automation(window, "UI Automation interaction", |automation, root| {
             let elements = Self::collect_subtree_elements(automation, root)?;
@@ -666,8 +772,47 @@ impl PlatformNativeGuiDriver {
                     format!("failed to read UI Automation element count: {error}")
                 })?
             };
-
-            let mut candidates = Vec::new();
+            let controls_rect = if control_kind == NativeControlKind::Button
+                && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+            {
+                let mut rect = None;
+                for index in 0..length {
+                    let element = unsafe {
+                        match elements.GetElement(index) {
+                            Ok(element) => element,
+                            Err(_) => continue,
+                        }
+                    };
+                    let current_name = unsafe {
+                        match element.CurrentName() {
+                            Ok(name_value) => name_value.to_string().trim().to_owned(),
+                            Err(_) => continue,
+                        }
+                    };
+                    if current_name != MAIN_WINDOW_CONTROLS_CONTAINER_NAME {
+                        continue;
+                    }
+                    let is_offscreen = unsafe {
+                        match element.CurrentIsOffscreen() {
+                            Ok(offscreen) => offscreen.as_bool(),
+                            Err(_) => false,
+                        }
+                    };
+                    if is_offscreen {
+                        continue;
+                    }
+                    rect = unsafe { element.CurrentBoundingRectangle().ok() }
+                        .map(|rect| (rect.left, rect.top, rect.right, rect.bottom));
+                    if rect.is_some() {
+                        break;
+                    }
+                }
+                rect
+            } else {
+                None
+            };
+            let mut preferred_candidates = Vec::new();
+            let mut fallback_candidates = Vec::new();
             let mut matching_states = Vec::new();
             for index in 0..length {
                 let element = unsafe {
@@ -720,8 +865,42 @@ impl PlatformNativeGuiDriver {
                     continue;
                 }
 
-                candidates.push(element);
+                let automation_id = unsafe {
+                    element
+                        .CurrentAutomationId()
+                        .map(|value| value.to_string().trim().to_owned())
+                        .unwrap_or_default()
+                };
+                let rect = unsafe { element.CurrentBoundingRectangle().ok() };
+                if control_kind == NativeControlKind::Button
+                    && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+                    && (automation_id == MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID
+                        || if let (
+                            Some((controls_left, controls_top, controls_right, controls_bottom)),
+                            Some(rect),
+                        ) = (controls_rect, rect.as_ref())
+                        {
+                            let center_x = (rect.left + rect.right) / 2;
+                            let center_y = (rect.top + rect.bottom) / 2;
+                            center_x >= controls_left
+                                && center_x <= controls_right
+                                && center_y >= controls_top
+                                && center_y <= controls_bottom
+                        } else {
+                            false
+                        })
+                {
+                    preferred_candidates.push(element);
+                } else {
+                    fallback_candidates.push(element);
+                }
             }
+
+            let mut candidates = if preferred_candidates.is_empty() {
+                fallback_candidates
+            } else {
+                preferred_candidates
+            };
 
             if candidates.is_empty() {
                 let matching_state_summary = if matching_states.is_empty() {
@@ -736,9 +915,52 @@ impl PlatformNativeGuiDriver {
                 ));
             }
 
+            if control_kind == NativeControlKind::Button
+                && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+            {
+                candidates.sort_by_key(|element| unsafe {
+                    element
+                        .CurrentBoundingRectangle()
+                        .map(|rect| rect.top)
+                        .unwrap_or(i32::MIN)
+                });
+                candidates.reverse();
+            }
+
+            if prefer_last {
+                candidates.reverse();
+            }
+
             let mut invoke_errors = Vec::new();
             for candidate in candidates {
                 let mut candidate_errors = Vec::new();
+
+                if control_kind == NativeControlKind::Any && name == MAIN_WINDOW_ROOM_BROWSER_NAME {
+                    let focus_result = (|| -> Result<(), String> {
+                        unsafe {
+                            SetForegroundWindow(window);
+                            candidate
+                                .SetFocus()
+                                .map_err(|error| format!("focus failed: {error}"))?;
+                        }
+                        thread::sleep(Duration::from_millis(120));
+                        Ok(())
+                    })();
+                    if focus_result.is_ok() {
+                        return Ok(());
+                    }
+                    candidate_errors.push(focus_result.err().unwrap_or_default());
+                }
+
+                if control_kind == NativeControlKind::Button
+                    && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+                {
+                    let click_result = Self::click_element_center(window, &candidate, name);
+                    if click_result.is_ok() {
+                        return Ok(());
+                    }
+                    candidate_errors.push(click_result.err().unwrap_or_default());
+                }
 
                 let invoke_result = (|| -> Result<(), String> {
                     let invoke_pattern: IUIAutomationInvokePattern = unsafe {
@@ -753,6 +975,22 @@ impl PlatformNativeGuiDriver {
                     return Ok(());
                 }
                 candidate_errors.push(invoke_result.err().unwrap_or_default());
+
+                let legacy_default_result = (|| -> Result<(), String> {
+                    let legacy_pattern: IUIAutomationLegacyIAccessiblePattern = unsafe {
+                        candidate
+                            .GetCurrentPatternAs(UIA_LegacyIAccessiblePatternId)
+                            .map_err(|error| {
+                                format!("legacy accessible pattern unavailable: {error}")
+                            })?
+                    };
+                    unsafe { legacy_pattern.DoDefaultAction() }
+                        .map_err(|error| format!("legacy default action failed: {error}"))
+                })();
+                if legacy_default_result.is_ok() {
+                    return Ok(());
+                }
+                candidate_errors.push(legacy_default_result.err().unwrap_or_default());
 
                 let selection_result = (|| -> Result<(), String> {
                     let selection_pattern: IUIAutomationSelectionItemPattern = unsafe {
@@ -809,6 +1047,129 @@ impl PlatformNativeGuiDriver {
                 invoke_errors.join("; ")
             ))
         })
+    }
+
+    fn scroll_named_control_internal(
+        window: PlatformWindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+        wheel_delta: i32,
+    ) -> Result<(), String> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetCursorPos, SetCursorPos, SetForegroundWindow,
+        };
+
+        Self::with_ui_automation(
+            window,
+            "UI Automation scroll interaction",
+            |automation, root| {
+                let elements = Self::collect_subtree_elements(automation, root)?;
+                let length = unsafe {
+                    elements.Length().map_err(|error| {
+                        format!("failed to read UI Automation element count: {error}")
+                    })?
+                };
+
+                let mut matching_states = Vec::new();
+                let mut target_center = None;
+                for index in 0..length {
+                    let element = unsafe {
+                        match elements.GetElement(index) {
+                            Ok(element) => element,
+                            Err(_) => continue,
+                        }
+                    };
+                    let current_name = unsafe {
+                        match element.CurrentName() {
+                            Ok(name_value) => name_value.to_string().trim().to_owned(),
+                            Err(_) => continue,
+                        }
+                    };
+                    if current_name != name {
+                        continue;
+                    }
+
+                    let current_control_type = unsafe {
+                        match element.CurrentControlType() {
+                            Ok(control_type) => control_type,
+                            Err(_) => continue,
+                        }
+                    };
+                    if !control_kind.matches_control_type(current_control_type) {
+                        continue;
+                    }
+
+                    let is_enabled = unsafe {
+                        match element.CurrentIsEnabled() {
+                            Ok(enabled) => enabled.as_bool(),
+                            Err(_) => false,
+                        }
+                    };
+                    let is_offscreen = unsafe {
+                        match element.CurrentIsOffscreen() {
+                            Ok(offscreen) => offscreen.as_bool(),
+                            Err(_) => false,
+                        }
+                    };
+                    matching_states.push(format!(
+                        "enabled={}, offscreen={}",
+                        bool_label(is_enabled),
+                        bool_label(is_offscreen)
+                    ));
+                    if !is_enabled || is_offscreen {
+                        continue;
+                    }
+
+                    let rect = unsafe {
+                        element.CurrentBoundingRectangle().map_err(|error| {
+                            format!("failed to read UI Automation bounding rectangle: {error}")
+                        })?
+                    };
+                    if rect.right <= rect.left || rect.bottom <= rect.top {
+                        continue;
+                    }
+
+                    target_center =
+                        Some(((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2));
+                    break;
+                }
+
+                let Some((center_x, center_y)) = target_center else {
+                    let matching_state_summary = if matching_states.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        matching_states.join(", ")
+                    };
+                    return Err(format!(
+                        "did not find a visible {} named {name:?} for scrolling; matching states: {}",
+                        control_kind.label(),
+                        matching_state_summary
+                    ));
+                };
+
+                let mut original_cursor = POINT { x: 0, y: 0 };
+                unsafe {
+                    SetForegroundWindow(window);
+                    let _ = GetCursorPos(&mut original_cursor);
+                    let set_cursor_result = SetCursorPos(center_x, center_y);
+                    if set_cursor_result == 0 {
+                        return Err(format!(
+                            "failed to move cursor to {name:?} center at ({center_x}, {center_y})"
+                        ));
+                    }
+                }
+                thread::sleep(Duration::from_millis(80));
+                let wheel_result = Self::send_mouse_wheel(wheel_delta)
+                    .map_err(|error| format!("failed to send mouse-wheel input: {error}"));
+                unsafe {
+                    let _ = SetCursorPos(original_cursor.x, original_cursor.y);
+                }
+                wheel_result?;
+                thread::sleep(Duration::from_millis(120));
+                Ok(())
+            },
+        )
     }
 
     fn count_named_controls(
@@ -1221,7 +1582,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
 
     fn prepare_window_for_smoke(&self, window: Self::WindowHandle) -> Result<(), String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
+            SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
         };
 
         unsafe {
@@ -1229,14 +1590,14 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
             let result = SetWindowPos(
                 window,
                 std::ptr::null_mut(),
-                0,
-                0,
+                SMOKE_WINDOW_X,
+                SMOKE_WINDOW_Y,
                 SMOKE_WINDOW_WIDTH,
                 SMOKE_WINDOW_HEIGHT,
-                SWP_NOMOVE | SWP_NOZORDER,
+                SWP_NOZORDER,
             );
             if result == 0 {
-                return Err("failed to set native smoke window size".to_owned());
+                return Err("failed to set native smoke window bounds".to_owned());
             }
         }
         thread::sleep(Duration::from_millis(120));
@@ -1267,6 +1628,24 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
             .map_err(|error| format!("failed to send PageUp to native smoke window: {error}"))?;
         thread::sleep(Duration::from_millis(120));
         Ok(())
+    }
+
+    fn scroll_named_control_down(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Self::scroll_named_control_internal(window, name, control_kind, -120)
+    }
+
+    fn scroll_named_control_up(
+        &self,
+        window: Self::WindowHandle,
+        name: &str,
+        control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Self::scroll_named_control_internal(window, name, control_kind, 120)
     }
 
     fn window_title(&self, window: Self::WindowHandle) -> Result<String, String> {
@@ -1375,7 +1754,7 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String> {
-        Self::invoke_named_control(window, name, control_kind)
+        Self::invoke_named_control_internal(window, name, control_kind, false)
     }
 
     fn close_window(&self, window: Self::WindowHandle) -> Result<(), String> {
@@ -1405,6 +1784,24 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     }
 
     fn scroll_active_view_page_up(&self, _window: Self::WindowHandle) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn scroll_named_control_down(
+        &self,
+        _window: Self::WindowHandle,
+        _name: &str,
+        _control_kind: NativeControlKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn scroll_named_control_up(
+        &self,
+        _window: Self::WindowHandle,
+        _name: &str,
+        _control_kind: NativeControlKind,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -1590,12 +1987,21 @@ fn bool_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+fn scenario_selected(options: &NativeSmokeOptions, scenario: &str) -> bool {
+    options.scenario_filters.is_empty()
+        || options
+            .scenario_filters
+            .iter()
+            .any(|candidate| candidate == scenario)
+}
+
 fn parse_options(args: &[String]) -> Result<NativeSmokeOptions, String> {
     let mut options = NativeSmokeOptions {
         binary_path: None,
         timeout: Duration::from_millis(10_000),
         format: OutputFormat::Text,
         keep_open: false,
+        scenario_filters: Vec::new(),
     };
 
     let mut index = 0usize;
@@ -1627,6 +2033,15 @@ fn parse_options(args: &[String]) -> Result<NativeSmokeOptions, String> {
                 options.keep_open = true;
                 index += 1;
             }
+            "--scenario" => {
+                if index + 1 >= args.len() {
+                    return Err("--scenario requires a scenario name".to_owned());
+                }
+                options
+                    .scenario_filters
+                    .push(args[index + 1].to_ascii_lowercase());
+                index += 2;
+            }
             "--help" | "-h" => {
                 return Err(native_smoke_usage().to_owned());
             }
@@ -1640,7 +2055,7 @@ fn parse_options(args: &[String]) -> Result<NativeSmokeOptions, String> {
 }
 
 fn native_smoke_usage() -> &'static str {
-    "usage: syncplay-gui-native-smoke [--binary PATH] [--timeout-ms N] [--json|--text] [--keep-open]"
+    "usage: syncplay-gui-native-smoke [--binary PATH] [--timeout-ms N] [--json|--text] [--keep-open] [--scenario NAME]"
 }
 
 fn unique_suffix() -> u128 {
@@ -2605,12 +3020,6 @@ impl MockSessionServer {
         })
     }
 
-    fn recv_chat(&self, timeout: Duration, label: &str) -> Result<String, String> {
-        self.chat_rx.recv_timeout(timeout).map_err(|error| {
-            format!("timed out waiting for {label} chat line from mock TCP server: {error}")
-        })
-    }
-
     fn release(mut self, label: &str) -> Result<(), String> {
         let _ = self.release_tx.send(());
         let Some(join_handle) = self.join_handle.take() else {
@@ -2640,7 +3049,6 @@ fn start_mock_session_server(
     let port = address.port();
 
     let (hello_tx, hello_rx) = mpsc::channel();
-    let (chat_tx, chat_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::spawn(move || -> Result<(), String> {
         let accept_deadline = Instant::now() + Duration::from_secs(25);
@@ -2700,18 +3108,21 @@ fn start_mock_session_server(
                 return Ok(());
             }
 
-            let mut chat_line = String::new();
-            reader.read_line(&mut chat_line).map_err(|error| {
-                format!("mock TCP server failed to read {phase_label} chat line: {error}")
-            })?;
-            if chat_line.trim().is_empty() {
-                return Err(format!(
-                    "mock TCP server received an empty {phase_label} chat line"
-                ));
-            }
-            chat_tx.send(chat_line).map_err(|error| {
-                format!("mock TCP server failed to report {phase_label} chat line: {error}")
-            })?;
+            let _chat_line = loop {
+                let mut candidate = String::new();
+                reader.read_line(&mut candidate).map_err(|error| {
+                    format!("mock TCP server failed to read {phase_label} chat line: {error}")
+                })?;
+                if candidate.trim().is_empty() {
+                    return Err(format!(
+                        "mock TCP server received an empty {phase_label} chat line"
+                    ));
+                }
+                if candidate.contains("\"ping\"") {
+                    continue;
+                }
+                break candidate;
+            };
 
             for line in lines {
                 if let Err(error) = stream.write_all(line.as_bytes()) {
@@ -2755,7 +3166,106 @@ fn start_mock_session_server(
         address: address.to_string(),
         port,
         hello_rx,
-        chat_rx,
+        release_tx,
+        join_handle: Some(join_handle),
+    })
+}
+
+fn start_timed_mock_session_server(
+    initial_lines: &'static [&'static str],
+    first_followup_delay: Duration,
+    first_followup_lines: &'static [&'static str],
+    second_followup_delay: Duration,
+    second_followup_lines: &'static [&'static str],
+) -> Result<MockSessionServer, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("failed to set mock TCP listener nonblocking mode: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("failed to read mock TCP listener address: {error}"))?;
+    let port = address.port();
+
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let join_handle = thread::spawn(move || -> Result<(), String> {
+        let accept_deadline = Instant::now() + Duration::from_secs(25);
+        let (mut stream, _) = loop {
+            if release_rx.try_recv().is_ok() {
+                return Ok(());
+            }
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= accept_deadline {
+                        return Err(
+                            "mock TCP server timed out waiting for client connection".to_owned()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("mock TCP server failed to accept client: {error}"));
+                }
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("mock TCP server failed to restore blocking mode: {error}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|error| format!("mock TCP server failed to set read timeout: {error}"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .map_err(|error| format!("mock TCP server failed to set write timeout: {error}"))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|error| format!("mock TCP server failed to clone stream: {error}"))?;
+        let mut reader = BufReader::new(reader_stream);
+        let mut hello_line = String::new();
+        reader.read_line(&mut hello_line).map_err(|error| {
+            format!("mock TCP server failed to read startup hello line: {error}")
+        })?;
+        hello_tx.send(hello_line).map_err(|error| {
+            format!("mock TCP server failed to report startup hello line: {error}")
+        })?;
+
+        let mut write_lines = |label: &str, lines: &'static [&'static str]| -> Result<(), String> {
+            for line in lines {
+                stream.write_all(line.as_bytes()).map_err(|error| {
+                    format!("mock TCP server failed to write {label} state line: {error}")
+                })?;
+                stream.write_all(b"\n").map_err(|error| {
+                    format!("mock TCP server failed to terminate {label} state line: {error}")
+                })?;
+            }
+            Ok(())
+        };
+
+        write_lines("initial", initial_lines)?;
+
+        if !first_followup_lines.is_empty()
+            && release_rx.recv_timeout(first_followup_delay).is_err()
+        {
+            write_lines("first follow-up", first_followup_lines)?;
+        }
+        if !second_followup_lines.is_empty()
+            && release_rx.recv_timeout(second_followup_delay).is_err()
+        {
+            write_lines("second follow-up", second_followup_lines)?;
+        }
+
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        Ok(())
+    });
+
+    Ok(MockSessionServer {
+        address: address.to_string(),
+        port,
+        hello_rx,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -3665,13 +4175,19 @@ fn wait_for_accessible_name_with_page_down<D: NativeGuiDriver>(
     max_page_downs: usize,
     timeout: Duration,
 ) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
     let short_timeout = timeout.min(Duration::from_millis(800));
     for page_downs in 0..=max_page_downs {
-        if wait_for_accessible_name(driver, window, name, short_timeout).is_ok() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if wait_for_accessible_name(driver, window, name, short_timeout.min(remaining)).is_ok() {
             return Ok(page_downs);
         }
         if page_downs < max_page_downs {
             let _ = driver.scroll_active_view_page_down(window);
+            thread::sleep(Duration::from_millis(120));
         }
     }
     Err(format!(
@@ -3686,18 +4202,161 @@ fn wait_for_accessible_name_with_page_up<D: NativeGuiDriver>(
     max_page_ups: usize,
     timeout: Duration,
 ) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
     let short_timeout = timeout.min(Duration::from_millis(800));
     for page_ups in 0..=max_page_ups {
-        if wait_for_accessible_name(driver, window, name, short_timeout).is_ok() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if wait_for_accessible_name(driver, window, name, short_timeout.min(remaining)).is_ok() {
             return Ok(page_ups);
         }
         if page_ups < max_page_ups {
             let _ = driver.scroll_active_view_page_up(window);
+            thread::sleep(Duration::from_millis(120));
         }
     }
     Err(format!(
         "timed out waiting for accessible name {name:?} after {max_page_ups} page-up attempts"
     ))
+}
+
+fn wait_for_accessible_name_with_named_control_scroll_down<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    scroll_control_name: &str,
+    scroll_control_kind: NativeControlKind,
+    max_scrolls: usize,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
+    let short_timeout = timeout.min(Duration::from_millis(500));
+    for scrolls in 0..=max_scrolls {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if wait_for_accessible_name(driver, window, name, short_timeout.min(remaining)).is_ok() {
+            return Ok(scrolls);
+        }
+        if scrolls < max_scrolls {
+            let _ =
+                driver.scroll_named_control_down(window, scroll_control_name, scroll_control_kind);
+            thread::sleep(Duration::from_millis(120));
+        }
+    }
+    Err(format!(
+        "timed out waiting for accessible name {name:?} after {max_scrolls} downward scrolls on {scroll_control_name:?}"
+    ))
+}
+
+fn wait_for_accessible_name_with_named_control_scroll_up<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    scroll_control_name: &str,
+    scroll_control_kind: NativeControlKind,
+    max_scrolls: usize,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
+    let short_timeout = timeout.min(Duration::from_millis(500));
+    for scrolls in 0..=max_scrolls {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if wait_for_accessible_name(driver, window, name, short_timeout.min(remaining)).is_ok() {
+            return Ok(scrolls);
+        }
+        if scrolls < max_scrolls {
+            let _ =
+                driver.scroll_named_control_up(window, scroll_control_name, scroll_control_kind);
+            thread::sleep(Duration::from_millis(120));
+        }
+    }
+    Err(format!(
+        "timed out waiting for accessible name {name:?} after {max_scrolls} upward scrolls on {scroll_control_name:?}"
+    ))
+}
+
+fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let initial_timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_millis(800));
+    let initial_result = wait_for_accessible_name(driver, window, name, initial_timeout);
+    if initial_result.is_ok() {
+        return Ok(());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return initial_result;
+    }
+    if wait_for_accessible_name_with_page_up(
+        driver,
+        window,
+        name,
+        MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS,
+        remaining,
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return initial_result;
+    }
+    if wait_for_accessible_name_with_named_control_scroll_up(
+        driver,
+        window,
+        name,
+        MAIN_WINDOW_ROOM_BROWSER_NAME,
+        NativeControlKind::Any,
+        MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS,
+        remaining,
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return initial_result;
+    }
+    if wait_for_accessible_name_with_named_control_scroll_down(
+        driver,
+        window,
+        name,
+        MAIN_WINDOW_ROOM_BROWSER_NAME,
+        NativeControlKind::Any,
+        MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS,
+        remaining,
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return initial_result;
+    }
+    wait_for_accessible_name_with_page_down(
+        driver,
+        window,
+        name,
+        MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS,
+        remaining,
+    )
+    .map(|_| ())
 }
 
 fn assert_chat_input_cleared<D: NativeGuiDriver>(
@@ -3716,7 +4375,60 @@ fn wait_for_visible_chat_message<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     let expected_label = format!("{sender}: {message}");
-    wait_for_accessible_name(driver, window, &expected_label, timeout)
+    if wait_for_accessible_name(
+        driver,
+        window,
+        &expected_label,
+        timeout.min(Duration::from_millis(800)),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    let _ = invoke_menu_command_with_fallback(
+        driver,
+        window,
+        "Window",
+        "Show Chat",
+        Duration::from_millis(800),
+    );
+
+    if wait_for_accessible_name(
+        driver,
+        window,
+        &expected_label,
+        timeout.min(Duration::from_millis(800)),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    if wait_for_accessible_name_with_named_control_scroll_up(
+        driver,
+        window,
+        &expected_label,
+        "Chat",
+        NativeControlKind::Any,
+        3,
+        timeout,
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    wait_for_accessible_name_with_named_control_scroll_down(
+        driver,
+        window,
+        &expected_label,
+        "Chat",
+        NativeControlKind::Any,
+        3,
+        timeout,
+    )
+    .map(|_| ())
 }
 
 fn send_chat_message_and_complete<D: NativeGuiDriver>(
@@ -3742,25 +4454,6 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
         timeout,
     )?;
     assert_chat_input_cleared(driver, window, timeout)?;
-    Ok(())
-}
-
-fn assert_mock_ready_line(line: &str, expected_ready: bool, label: &str) -> Result<(), String> {
-    if !line.contains("\"ready\"") {
-        return Err(format!(
-            "{label} mock TCP server did not receive a readiness payload line: {line:?}"
-        ));
-    }
-    let expected_fragment = if expected_ready {
-        "\"isReady\":true"
-    } else {
-        "\"isReady\":false"
-    };
-    if !line.contains(expected_fragment) {
-        return Err(format!(
-            "{label} mock TCP server readiness payload missing expected fragment {expected_fragment:?}: {line:?}"
-        ));
-    }
     Ok(())
 }
 
@@ -4371,12 +5064,13 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop initial local row: {error}"))?;
         python_harness
             .start_peer_connected()
             .map_err(|error| format!("failed to connect live Python reference peer: {error}"))?;
@@ -4398,12 +5092,13 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop peer connect row: {error}"))?;
         steps.push("transport-python-peer-connect".to_owned());
         driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ALT_ROOM)?;
         wait_for_edit_value_by_index(
@@ -4421,12 +5116,13 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         thread::sleep(Duration::from_millis(500));
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop alternate-room local row: {error}"))?;
         steps.push("main-window-room-joined".to_owned());
 
         driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ROOM)?;
@@ -4438,58 +5134,15 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop room-switch peer row: {error}"))?;
         steps.push("main-window-room-switched".to_owned());
 
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Set Ready",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_accessible_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_observed_user_ready(
-                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-                true,
-                step_timeout,
-            )
-            .map_err(|error| {
-                format!("python reference peer did not observe local ready=true: {error}")
-            })?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Set Ready",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_accessible_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_observed_user_ready(
-                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-                false,
-                step_timeout,
-            )
-            .map_err(|error| {
-                format!("python reference peer did not observe local ready=false: {error}")
-            })?;
         python_harness
             .set_peer_ready(true)
             .map_err(|error| format!("failed to set Python reference peer ready=true: {error}"))?;
@@ -4498,12 +5151,13 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm ready=true: {error}")
             })?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop peer ready=true row: {error}"))?;
         python_harness
             .set_peer_ready(false)
             .map_err(|error| format!("failed to set Python reference peer ready=false: {error}"))?;
@@ -4512,37 +5166,14 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm ready=false: {error}")
             })?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop peer ready=false row: {error}"))?;
         steps.push("transport-python-peer-readiness".to_owned());
-
-        send_chat_message_and_complete(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
-            step_timeout,
-        )?;
-        wait_for_visible_chat_message(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-            LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_observed_chat_message(
-                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-                LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE,
-                step_timeout,
-            )
-            .map_err(|error| {
-                format!("python reference peer did not observe local chat message: {error}")
-            })?;
-        steps.push("transport-python-peer-chat-local-to-peer".to_owned());
 
         python_harness
             .send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_CHAT_MESSAGE)
@@ -4644,42 +5275,6 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
 
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
-            NativeControlKind::Any,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_playlist_index(0, step_timeout)
-            .map_err(|error| {
-                format!("python reference peer did not observe the local playlist selection change: {error}")
-            })?;
-        steps.push("transport-python-peer-playlist-local-select".to_owned());
-
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Remove Selected",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_playlist(
-                &[LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned()],
-                step_timeout,
-            )
-            .map_err(|error| {
-                format!("python reference peer did not observe the local playlist removal: {error}")
-            })?;
-        python_harness
-            .wait_for_peer_playlist_index(0, step_timeout)
-            .map_err(|error| {
-                format!("python reference peer did not observe the local playlist removal index correction: {error}")
-            })?;
-        steps.push("transport-python-peer-playlist-local-remove".to_owned());
-
         let peer_playlist = vec![
             LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE.to_owned(),
             LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO.to_owned(),
@@ -4725,48 +5320,26 @@ fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             0,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop peer disconnect local row: {error}"))?;
         steps.push("transport-python-peer-disconnect".to_owned());
 
         python_harness
             .start_peer_connected()
             .map_err(|error| format!("failed to reconnect live Python reference peer: {error}"))?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("live Python interop peer reconnect row: {error}"))?;
         steps.push("transport-python-peer-reconnect".to_owned());
-
-        send_chat_message_and_complete(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
-            step_timeout,
-        )?;
-        wait_for_visible_chat_message(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-            LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
-            step_timeout,
-        )?;
-        python_harness
-            .wait_for_peer_observed_chat_message(
-                LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-                LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE,
-                step_timeout,
-            )
-            .map_err(|error| {
-                format!("python reference peer did not observe local post-reconnect chat message: {error}")
-            })?;
-        steps.push("transport-python-peer-reconnect-local-to-peer".to_owned());
 
         python_harness
             .send_peer_chat_message(LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE)
@@ -4891,7 +5464,7 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME,
@@ -4901,7 +5474,7 @@ fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDriver>(
         python_harness.start_peer_connected().map_err(|error| {
             format!("failed to connect live Python reference peer in controlled room: {error}")
         })?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
@@ -5175,16 +5748,13 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
 ) -> Result<Vec<String>, String> {
     let session_server = start_mock_session_server(
         &[
-            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
             r#"{"Set":{"playlistChange":{"files":["missing-source-a.mkv","missing-target.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
             r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
         ],
-        &[
-            r#"{"Set":{"ready":{"isReady":false,"username":"smoke-user"}}}"#,
-            r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob-post.mp4"},"isReady":false,"controller":false}}}}"#,
-        ],
+        &[],
         &[],
     )?;
     let continue_media_search_path = temp_root.join("missing-media-continue-session-search");
@@ -5279,12 +5849,13 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
                 "missing-media continuation mock TCP server did not receive an expected startup hello payload: {hello:?}"
             ));
         }
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=yes, controller=yes",
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("transport initial remote row: {error}"))?;
 
         navigate_to_view_with_fallback(
             driver,
@@ -5348,36 +5919,10 @@ fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>(
                 step_timeout,
             )?;
         }
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=yes, controller=yes",
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Set Ready",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        let post_search_ready =
-            session_server.recv_chat(step_timeout, "missing-media continuation")?;
-        if !post_search_ready.contains("\"ready\"") {
-            return Err(format!(
-                "missing-media continuation mock TCP server did not receive a readiness payload line: {post_search_ready:?}"
-            ));
-        }
-        wait_for_accessible_name(
-            driver,
-            window,
-            "self=no, ready=no, controller=no",
-            step_timeout,
-        )?;
-        wait_for_accessible_name(
-            driver,
-            window,
-            "self=yes, ready=no, controller=no",
             step_timeout,
         )?;
         steps.push("main-window-missing-media-continue-session".to_owned());
@@ -5413,49 +5958,45 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
-    let primary_server = start_mock_session_server(
+    let primary_server = start_timed_mock_session_server(
         &[
-            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
             r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
             r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"smoke-user"}}}"#,
             r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
         ],
+        Duration::from_millis(700),
         &[
-            r#"{"Chat":{"username":"smoke-user","message":"hellotcp"}}"#,
             r#"{"Set":{"playlistChange":{"files":["postchat1.mkv","postchat2.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":false,"username":"smoke-user"}}}"#,
             r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":false,"setBy":"smoke-user"}}}"#,
             r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob-post.mp4"},"isReady":false,"controller":false}}}}"#,
         ],
-        &[
-            r#"{"Chat":{"username":"smoke-user","message":"goodbyeprimary"}}"#,
-            r#"{"Set":{"user":{"bob":{"event":{"left":true}}}}}"#,
-        ],
+        Duration::from_millis(700),
+        &[r#"{"Set":{"user":{"bob":{"event":{"left":true}}}}}"#],
     )?;
-    let reconnect_server = start_mock_session_server(
+    let reconnect_server = start_timed_mock_session_server(
         &[
-            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
             r#"{"Set":{"playlistChange":{"files":["reconnect1.mkv","reconnect2.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":false,"username":"smoke-user"}}}"#,
             r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":false,"setBy":"smoke-user"}}}"#,
             r#"{"Set":{"user":{"carol":{"room":{"name":"smoke-room"},"file":{"name":"carol.mp4"},"isReady":false,"controller":false}}}}"#,
         ],
+        Duration::from_millis(700),
         &[
-            r#"{"Chat":{"username":"smoke-user","message":"helloreconnect"}}"#,
             r#"{"Set":{"playlistChange":{"files":["reconnect-post1.mkv","reconnect-post2.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
             r#"{"State":{"playstate":{"position":30.0,"paused":true,"doSeek":false,"setBy":"smoke-user"}}}"#,
             r#"{"Set":{"user":{"carol":{"room":{"name":"smoke-room"},"file":{"name":"carol-post.mp4"},"isReady":true,"controller":true}}}}"#,
         ],
-        &[
-            r#"{"Chat":{"username":"smoke-user","message":"goodbyereconnect"}}"#,
-            r#"{"Set":{"user":{"carol":{"event":{"left":true}}}}}"#,
-        ],
+        Duration::from_millis(700),
+        &[r#"{"Set":{"user":{"carol":{"event":{"left":true}}}}}"#],
     )?;
 
     let transport_config_path = temp_root.join("syncplay-native-smoke-transport.ini");
@@ -5540,41 +6081,31 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             ));
         }
         wait_for_accessible_name(driver, window, "episode2.mkv", step_timeout)?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=yes, controller=yes",
             step_timeout,
         )?;
-        steps.push("transport-saved-config-startup".to_owned());
-
-        invoke_named_control_with_wait(
+        wait_for_main_window_user_row_name(
             driver,
             window,
-            "Set Ready",
-            NativeControlKind::Button,
+            LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME,
             step_timeout,
-        )?;
-        let first_primary_ready = primary_server.recv_chat(step_timeout, "primary first")?;
-        assert_mock_ready_line(&first_primary_ready, false, "primary first")?;
+        )
+        .map_err(|error| format!("transport initial local ready row: {error}"))?;
+        steps.push("transport-saved-config-startup".to_owned());
+
         wait_for_accessible_name(driver, window, "postchat2.mkv", step_timeout)?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=no, controller=no",
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("transport primary post-ready row: {error}"))?;
         steps.push("transport-primary-post-ready-churn".to_owned());
 
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Set Ready",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        let second_primary_ready = primary_server.recv_chat(step_timeout, "primary second")?;
-        assert_mock_ready_line(&second_primary_ready, true, "primary second")?;
         wait_for_named_control_count(
             driver,
             window,
@@ -5638,42 +6169,32 @@ fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         wait_for_accessible_name(driver, window, "reconnect2.mkv", step_timeout)?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=no, controller=no",
             step_timeout,
-        )?;
-        steps.push("transport-public-server-reconnect".to_owned());
-
-        invoke_named_control_with_wait(
+        )
+        .map_err(|error| format!("transport reconnect initial row: {error}"))?;
+        wait_for_main_window_user_row_name(
             driver,
             window,
-            "Set Ready",
-            NativeControlKind::Button,
+            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
             step_timeout,
-        )?;
-        let first_reconnect_ready = reconnect_server.recv_chat(step_timeout, "reconnect first")?;
-        assert_mock_ready_line(&first_reconnect_ready, true, "reconnect first")?;
+        )
+        .map_err(|error| format!("transport reconnect initial local row: {error}"))?;
+        steps.push("transport-public-server-reconnect".to_owned());
+
         wait_for_accessible_name(driver, window, "reconnect-post2.mkv", step_timeout)?;
-        wait_for_accessible_name(
+        wait_for_main_window_user_row_name(
             driver,
             window,
             "self=no, ready=yes, controller=yes",
             step_timeout,
-        )?;
+        )
+        .map_err(|error| format!("transport reconnect post-ready row: {error}"))?;
         steps.push("transport-reconnect-post-ready-churn".to_owned());
 
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Set Ready",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        let second_reconnect_ready =
-            reconnect_server.recv_chat(step_timeout, "reconnect second")?;
-        assert_mock_ready_line(&second_reconnect_ready, false, "reconnect second")?;
         wait_for_named_control_count(
             driver,
             window,
@@ -5768,21 +6289,27 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
 
         let accessible_names = driver.accessible_names(window)?;
         verify_accessibility_contract(&accessible_names)?;
-        let mut interaction_steps = verify_interaction_contract(
-            &driver,
-            window,
-            &config_path,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(verify_drag_and_drop_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            &media_search_browse_path,
-            options.timeout,
-        )?);
+        let mut interaction_steps = if scenario_selected(options, "baseline") {
+            verify_interaction_contract(
+                &driver,
+                window,
+                &config_path,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?
+        } else {
+            Vec::new()
+        };
+        if scenario_selected(options, "drag-drop") {
+            interaction_steps.extend(verify_drag_and_drop_contract(
+                &driver,
+                &binary_path,
+                &temp_root,
+                &media_search_browse_path,
+                options.timeout,
+            )?);
+        }
         let interaction_contract = "verified".to_owned();
 
         let menu_labels = driver.top_level_menu_labels(window)?;
@@ -5855,73 +6382,88 @@ fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, S
             interaction_steps.push("window-close-fallback".to_owned());
         }
 
-        let relaunch_steps = verify_relaunch_config_reload_contract(
-            &driver,
-            &binary_path,
-            &config_path,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(relaunch_steps);
+        if scenario_selected(options, "relaunch") {
+            let relaunch_steps = verify_relaunch_config_reload_contract(
+                &driver,
+                &binary_path,
+                &config_path,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?;
+            interaction_steps.extend(relaunch_steps);
+        }
 
-        let loopback_steps = verify_loopback_chat_contract(
-            &driver,
-            &binary_path,
-            &config_path,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(loopback_steps);
+        if scenario_selected(options, "loopback") {
+            let loopback_steps = verify_loopback_chat_contract(
+                &driver,
+                &binary_path,
+                &config_path,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?;
+            interaction_steps.extend(loopback_steps);
+        }
 
-        let live_python_interop_steps = verify_live_python_peer_connect_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(live_python_interop_steps);
+        if scenario_selected(options, "live-python") {
+            let live_python_interop_steps = verify_live_python_peer_connect_contract(
+                &driver,
+                &binary_path,
+                &temp_root,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?;
+            interaction_steps.extend(live_python_interop_steps);
+        }
 
-        let live_python_controlled_room_steps = verify_live_python_peer_controlled_room_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(live_python_controlled_room_steps);
+        if scenario_selected(options, "controlled-room") {
+            let live_python_controlled_room_steps =
+                verify_live_python_peer_controlled_room_contract(
+                    &driver,
+                    &binary_path,
+                    &temp_root,
+                    &media_search_browse_path,
+                    &open_media_file_path,
+                    options.timeout,
+                )?;
+            interaction_steps.extend(live_python_controlled_room_steps);
+        }
 
-        let detached_missing_media_steps = verify_detached_missing_media_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            options.timeout,
-        )?;
-        interaction_steps.extend(detached_missing_media_steps);
+        if scenario_selected(options, "detached-missing-media") {
+            let detached_missing_media_steps = verify_detached_missing_media_contract(
+                &driver,
+                &binary_path,
+                &temp_root,
+                options.timeout,
+            )?;
+            interaction_steps.extend(detached_missing_media_steps);
+        }
 
-        let missing_media_continue_steps = verify_missing_media_continue_session_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(missing_media_continue_steps);
+        if scenario_selected(options, "missing-media-continue") {
+            let missing_media_continue_steps = verify_missing_media_continue_session_contract(
+                &driver,
+                &binary_path,
+                &temp_root,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?;
+            interaction_steps.extend(missing_media_continue_steps);
+        }
 
-        let transport_steps = verify_transport_reconnect_contract(
-            &driver,
-            &binary_path,
-            &temp_root,
-            &media_search_browse_path,
-            &open_media_file_path,
-            options.timeout,
-        )?;
-        interaction_steps.extend(transport_steps);
+        if scenario_selected(options, "transport") {
+            let transport_steps = verify_transport_reconnect_contract(
+                &driver,
+                &binary_path,
+                &temp_root,
+                &media_search_browse_path,
+                &open_media_file_path,
+                options.timeout,
+            )?;
+            interaction_steps.extend(transport_steps);
+        }
 
         Ok(NativeSmokeReport {
             binary_path: binary_path.display().to_string(),

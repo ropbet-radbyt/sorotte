@@ -34,7 +34,7 @@
 - The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers the main-window playback/autoplay/offset slice that had been one of the most obvious P1 gaps.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The biggest remaining parity blockers are now:
-  - controller-auth UX and GUI slash-command handling still trail the Python client,
+  - GUI slash-command handling still trails the Python client,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
 
@@ -57,20 +57,16 @@
 - Python playlist workflow parity now includes shuffle remaining, shuffle entire, undo playlist change, add-URL/open-URL flows, playlist text editing, dedicated load/save playlist dialogs, and playlist context actions for opening selected items, opening containing folders, and trusting selected playlist domains.
 - The matching Playback/Advanced/Window menu affordances are runtime-backed, and detached local player/session synchronization no longer leaks hidden session state into the visible shell.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
-- The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, playlist undo, and playlist shuffle operations.
+- Controlled-room/controller-auth parity now includes create-controlled-room UX, generated-password surfacing, manual identify-as-controller flows, runtime-backed controller-auth requests, and set-others-readiness actions when the server advertises support.
+- The client-core still implements some operations the GUI does not fully expose yet, including slash-command routing beyond the current chat box behavior.
 
 ## Remaining Python Client Parity Tasks
 
 ### P1. Port controlled-room and controller-auth UX
 
-Current status: auto-auth from a stored controlled-room password works. Python also lets the user create a controlled room and manually identify as controller from the GUI. The Rust GUI currently still has shell-style controller toggles instead of Python's controller-auth flows.
+Current status: completed. The Rust GUI now matches the Python client for the main controlled-room/controller-auth slice: create-controlled-room UX is present, generated room/password details are surfaced back to the user, manual identify-as-controller requests are runtime-backed, controller-auth retries no longer depend on shell-only toggles, and set-others-readiness is wired from the user browser when supported by the server.
 
-Work to assign:
-
-- Add the create-controlled-room dialog and surface the generated room/password information.
-- Add manual identify-as-controller and retry flows.
-- Replace shell-only controller-state toggles with runtime-backed controller-auth requests and result handling.
-- Wire set-others-readiness from the user list/context menu when the server supports it.
+No further assignment is needed here beyond normal regression coverage and smoke-harness stabilization.
 
 ### P1. Port Python slash-command handling in the GUI chat box
 
@@ -117,11 +113,10 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Controlled-room/controller-auth UX and set-others-readiness.
-2. GUI slash-command handling.
-3. Configuration dialog completion.
-4. Localization and language-sensitive service calls.
-5. Additional player backends.
+1. GUI slash-command handling.
+2. Configuration dialog completion.
+3. Localization and language-sensitive service calls.
+4. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 

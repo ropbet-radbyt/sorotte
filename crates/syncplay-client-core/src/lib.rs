@@ -36,6 +36,7 @@ const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
 const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
 const LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
+const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
 const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
 const LEGACY_SHOW_OSD_WARNINGS: bool = true;
 const LEGACY_SHOW_NONCONTROLLER_OSD: bool = false;
@@ -199,6 +200,11 @@ pub enum ControllerAuthTransitionNotification {
         room: String,
         hide_from_osd: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlledRoomCreationNotification {
+    Created { room: String, password: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,6 +543,7 @@ pub enum ClientRuntimeAction {
         message: String,
     },
     NotifyChat(ChatNotification),
+    NotifyControlledRoomCreation(ControlledRoomCreationNotification),
     NotifyControllerAuthTransition(ControllerAuthTransitionNotification),
     NotifyUserChange(UserChangeNotification),
     NotifyReconnectTransition(ReconnectTransitionNotification),
@@ -562,6 +569,11 @@ pub trait ClientRuntimeControl {
     fn request_controller_auth(&mut self, _room: String, _password: String) {}
     fn send_chat(&mut self, _message: String) {}
     fn notify_chat(&mut self, _notification: ChatNotification) {}
+    fn notify_controlled_room_creation(
+        &mut self,
+        _notification: ControlledRoomCreationNotification,
+    ) {
+    }
     fn notify_controller_auth_transition(
         &mut self,
         _notification: ControllerAuthTransitionNotification,
@@ -580,6 +592,7 @@ pub struct QueuedRuntimeControl {
     reconnect_delays: Vec<f64>,
     stop_reconnect_calls: usize,
     chat_notifications: Vec<ChatNotification>,
+    controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
     controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     user_change_notifications: Vec<UserChangeNotification>,
     reconnect_notifications: Vec<ReconnectTransitionNotification>,
@@ -630,6 +643,10 @@ impl QueuedRuntimeControl {
         &self.chat_notifications
     }
 
+    pub fn controlled_room_creation_notifications(&self) -> &[ControlledRoomCreationNotification] {
+        &self.controlled_room_creation_notifications
+    }
+
     pub fn controller_auth_notifications(&self) -> &[ControllerAuthTransitionNotification] {
         &self.controller_auth_notifications
     }
@@ -670,6 +687,12 @@ impl QueuedRuntimeControl {
 
     pub fn drain_chat_notifications(&mut self) -> Vec<ChatNotification> {
         std::mem::take(&mut self.chat_notifications)
+    }
+
+    pub fn drain_controlled_room_creation_notifications(
+        &mut self,
+    ) -> Vec<ControlledRoomCreationNotification> {
+        std::mem::take(&mut self.controlled_room_creation_notifications)
     }
 
     pub fn drain_controller_auth_notifications(
@@ -751,6 +774,14 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
 
     fn notify_chat(&mut self, notification: ChatNotification) {
         self.chat_notifications.push(notification);
+    }
+
+    fn notify_controlled_room_creation(
+        &mut self,
+        notification: ControlledRoomCreationNotification,
+    ) {
+        self.controlled_room_creation_notifications
+            .push(notification);
     }
 
     fn notify_controller_auth_transition(
@@ -901,6 +932,15 @@ where
         let actions = self
             .session
             .runtime_actions_for_controller_auth_notifications_if_needed();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+    }
+
+    pub fn run_controlled_room_creation_notifications_if_needed(
+        &mut self,
+    ) -> Result<(), PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_controlled_room_creation_notifications_if_needed();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }
 
@@ -1484,6 +1524,12 @@ where
         self.control.drain_chat_notifications()
     }
 
+    pub fn drain_controlled_room_creation_notifications(
+        &mut self,
+    ) -> Vec<ControlledRoomCreationNotification> {
+        self.control.drain_controlled_room_creation_notifications()
+    }
+
     pub fn drain_controller_auth_notifications(
         &mut self,
     ) -> Vec<ControllerAuthTransitionNotification> {
@@ -1553,6 +1599,19 @@ where
         F: FnMut(&ControllerAuthTransitionNotification) -> Result<(), E>,
     {
         for notification in self.drain_controller_auth_notifications() {
+            notify(&notification)?;
+        }
+        Ok(())
+    }
+
+    pub fn drain_controlled_room_creation_notifications_to_sink<F, E>(
+        &mut self,
+        mut notify: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut(&ControlledRoomCreationNotification) -> Result<(), E>,
+    {
+        for notification in self.drain_controlled_room_creation_notifications() {
             notify(&notification)?;
         }
         Ok(())
@@ -1634,6 +1693,7 @@ pub struct ClientSession {
     pub room: Option<String>,
     pub domain: SyncDomain,
     server_readiness_supported: Option<bool>,
+    server_set_others_readiness_supported: Option<bool>,
     server_chat_supported: Option<bool>,
     desync_config: DesyncCorrectionConfig,
     reconnect_policy: ReconnectPolicyConfig,
@@ -1669,6 +1729,7 @@ pub struct ClientSession {
     reconnect_state_restore_correction_recovery_reenabled_this_cycle: bool,
     reconnect_state_restore_correction_metrics: ReconnectStateRestoreCorrectionMetrics,
     pending_chat_notifications: Vec<ChatNotification>,
+    pending_controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
     reconnect_in_progress: bool,
@@ -1698,6 +1759,7 @@ impl Default for ClientSession {
             room: None,
             domain: SyncDomain::default(),
             server_readiness_supported: None,
+            server_set_others_readiness_supported: None,
             server_chat_supported: None,
             desync_config: DesyncCorrectionConfig::default(),
             reconnect_policy: ReconnectPolicyConfig::default(),
@@ -1734,6 +1796,7 @@ impl Default for ClientSession {
             reconnect_state_restore_correction_metrics:
                 ReconnectStateRestoreCorrectionMetrics::default(),
             pending_chat_notifications: Vec::new(),
+            pending_controlled_room_creation_notifications: Vec::new(),
             pending_controller_auth_notifications: Vec::new(),
             pending_user_change_notifications: Vec::new(),
             reconnect_in_progress: false,
@@ -2056,6 +2119,9 @@ impl ClientSession {
                 }
                 ClientRuntimeAction::NotifyChat(notification) => {
                     control.notify_chat(notification.clone());
+                }
+                ClientRuntimeAction::NotifyControlledRoomCreation(notification) => {
+                    control.notify_controlled_room_creation(notification.clone());
                 }
                 ClientRuntimeAction::NotifyControllerAuthTransition(notification) => {
                     control.notify_controller_auth_transition(notification.clone());
@@ -2447,6 +2513,10 @@ impl ClientSession {
 
     pub fn server_readiness_supported(&self) -> Option<bool> {
         self.server_readiness_supported
+    }
+
+    pub fn server_set_others_readiness_supported(&self) -> Option<bool> {
+        self.server_set_others_readiness_supported
     }
 
     pub fn server_chat_supported(&self) -> Option<bool> {
@@ -2941,6 +3011,15 @@ impl ClientSession {
             .collect()
     }
 
+    pub fn runtime_actions_for_controlled_room_creation_notifications_if_needed(
+        &mut self,
+    ) -> Vec<ClientRuntimeAction> {
+        self.pending_controlled_room_creation_notifications
+            .drain(..)
+            .map(ClientRuntimeAction::NotifyControlledRoomCreation)
+            .collect()
+    }
+
     pub fn runtime_actions_for_chat_notifications_if_needed(&mut self) -> Vec<ClientRuntimeAction> {
         self.pending_chat_notifications
             .drain(..)
@@ -3226,14 +3305,22 @@ impl ClientSession {
         ready: bool,
         manually_initiated: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_readiness_supported == Some(false) {
+        if self.username.is_none() {
             return Vec::new();
         }
         if username.is_empty() {
+            if self.server_readiness_supported == Some(false) {
+                return Vec::new();
+            }
             return vec![ClientRuntimeAction::SetReady {
                 ready,
                 manually_initiated,
             }];
+        }
+        if self.server_readiness_supported == Some(false)
+            || self.server_set_others_readiness_supported == Some(false)
+        {
+            return Vec::new();
         }
         vec![ClientRuntimeAction::SetReadyForUser {
             ready,
@@ -4111,6 +4198,7 @@ impl ClientSession {
         self.reconnect_connected_intent = false;
         self.clear_reconnect_state_restore_validation_state();
         self.pending_chat_notifications.clear();
+        self.pending_controlled_room_creation_notifications.clear();
         self.pending_controller_auth_notifications.clear();
         self.pending_user_change_notifications.clear();
         self.controlled_room_switch_intent = None;
@@ -4223,6 +4311,16 @@ impl ClientSession {
 
         self.server_readiness_supported = Self::feature_bool(hello.features.as_ref(), "readiness");
         let server_version = hello.effective_version().to_owned();
+        self.server_set_others_readiness_supported = Some(
+            Self::feature_bool(hello.features.as_ref(), "setOthersReadiness").unwrap_or_else(
+                || {
+                    Self::meets_min_version_legacy_compatible(
+                        &server_version,
+                        LEGACY_SET_OTHERS_READINESS_MIN_VERSION,
+                    )
+                },
+            ),
+        );
         self.server_chat_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
@@ -4403,6 +4501,12 @@ impl ClientSession {
         {
             let normalized_password = Self::normalize_control_password_legacy_compatible(&password);
             self.remember_control_password_for_room(&room_name, &password);
+            self.pending_controlled_room_creation_notifications.push(
+                ControlledRoomCreationNotification::Created {
+                    room: room_name.clone(),
+                    password: normalized_password.clone(),
+                },
+            );
 
             if let Some(local_username) = self.username.clone() {
                 self.room = Some(room_name.clone());
@@ -5277,13 +5381,14 @@ mod tests {
     use super::{
         AutoplayCountdownNotification, ChatConfig, ChatNotification,
         ClientPingMetricsLegacyCompatible, ClientRuntime, ClientRuntimeAction,
-        ClientRuntimeControl, ClientSession, ControllerAuthTransitionNotification,
-        DesyncCorrectionAction, FileDifferenceSummary, LEGACY_CHAT_MAX_MESSAGE_LENGTH,
-        LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS, LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH,
-        PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
-        ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionPolicyMode,
-        ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode,
-        UserChangeNotification, unix_wall_clock_time_seconds_legacy_compatible,
+        ClientRuntimeControl, ClientSession, ControlledRoomCreationNotification,
+        ControllerAuthTransitionNotification, DesyncCorrectionAction, FileDifferenceSummary,
+        LEGACY_CHAT_MAX_MESSAGE_LENGTH, LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
+        LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, PrivacyMode, QueuedRuntimeControl,
+        ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
+        ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification,
+        RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
+        unix_wall_clock_time_seconds_legacy_compatible,
     };
     use syncplay_player_api::{
         LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
@@ -5456,6 +5561,7 @@ mod tests {
         controller_auth_requests: Vec<(String, String)>,
         chat_messages: Vec<String>,
         chat_notifications: Vec<ChatNotification>,
+        controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
         controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
         user_change_notifications: Vec<UserChangeNotification>,
         reconnect_schedules: Vec<f64>,
@@ -5494,6 +5600,14 @@ mod tests {
 
         fn notify_chat(&mut self, notification: ChatNotification) {
             self.chat_notifications.push(notification);
+        }
+
+        fn notify_controlled_room_creation(
+            &mut self,
+            notification: ControlledRoomCreationNotification,
+        ) {
+            self.controlled_room_creation_notifications
+                .push(notification);
         }
 
         fn notify_controller_auth_transition(
@@ -5574,6 +5688,31 @@ mod tests {
             )
             .expect("hello should apply");
         assert_eq!(feature_list_session.server_chat_supported(), Some(true));
+    }
+
+    #[test]
+    fn hello_without_features_uses_legacy_version_gate_for_set_others_readiness_support() {
+        let mut old_server_session = ClientSession::default();
+        old_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.1","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            old_server_session.server_set_others_readiness_supported(),
+            Some(false)
+        );
+
+        let mut new_server_session = ClientSession::default();
+        new_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            new_server_session.server_set_others_readiness_supported(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -6358,6 +6497,32 @@ mod tests {
     }
 
     #[test]
+    fn new_controlled_room_message_emits_creation_notification() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"ab 123 456"}}}"#,
+            )
+            .expect("new controlled room message should apply");
+
+        assert_eq!(
+            session.runtime_actions_for_controlled_room_creation_notifications_if_needed(),
+            vec![ClientRuntimeAction::NotifyControlledRoomCreation(
+                ControlledRoomCreationNotification::Created {
+                    room: "+room:ABCDEF123456".to_owned(),
+                    password: "AB123456".to_owned(),
+                },
+            )]
+        );
+        assert!(
+            session
+                .runtime_actions_for_controlled_room_creation_notifications_if_needed()
+                .is_empty(),
+            "controlled room creation notifications should drain after first retrieval"
+        );
+    }
+
+    #[test]
     fn non_hello_message_is_ignored() {
         let mut session = ClientSession::default();
         session
@@ -6396,6 +6561,12 @@ mod tests {
                 username: Some("bob".to_owned()),
                 message: "hi".to_owned(),
             }),
+            ClientRuntimeAction::NotifyControlledRoomCreation(
+                ControlledRoomCreationNotification::Created {
+                    room: "+room:ABCDEF123456".to_owned(),
+                    password: "AB-123-456".to_owned(),
+                },
+            ),
             ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting {
                     room: "+room:ABCDEF123456".to_owned(),
@@ -6440,6 +6611,13 @@ mod tests {
             vec![ChatNotification::Message {
                 username: Some("bob".to_owned()),
                 message: "hi".to_owned(),
+            }]
+        );
+        assert_eq!(
+            control.controlled_room_creation_notifications,
+            vec![ControlledRoomCreationNotification::Created {
+                room: "+room:ABCDEF123456".to_owned(),
+                password: "AB-123-456".to_owned(),
             }]
         );
         assert_eq!(
@@ -13460,6 +13638,36 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_new_controlled_room_dispatches_creation_notification() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"ab 123 456"}}}"#,
+            )
+            .expect("new controlled room message should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_controlled_room_creation_notifications_if_needed()
+            .expect("controlled room creation notifications should dispatch");
+
+        assert_eq!(
+            runtime.control().controlled_room_creation_notifications(),
+            &[ControlledRoomCreationNotification::Created {
+                room: "+room:ABCDEF123456".to_owned(),
+                password: "AB123456".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
     fn client_runtime_controller_auth_outcome_notifications_dispatch_from_inbound_set() {
         let mut session = ClientSession::default();
         session
@@ -14184,6 +14392,26 @@ mod tests {
                 .run_set_ready_for_user("bob", true, true)
                 .expect("set ready for user should not fail"),
             "set ready for user should be suppressed before server hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_set_ready_for_user_is_omitted_when_remote_readiness_is_unsupported() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.1","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_ready_for_user("bob", true, true)
+                .expect("set ready for other user should not fail"),
+            "set ready for other user should be suppressed when remote readiness changes are unavailable"
         );
         assert!(runtime.control().outbound_messages().is_empty());
     }
@@ -15998,6 +16226,44 @@ mod tests {
             ]
         );
         assert!(runtime.drain_controller_auth_notifications().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_drain_controlled_room_creation_notifications_to_sink_dispatches_callback() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"ab 123 456"}}}"#,
+            )
+            .expect("new controlled room message should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_controlled_room_creation_notifications_if_needed()
+            .expect("controlled room creation notifications should dispatch");
+
+        let mut captured = Vec::new();
+        runtime
+            .drain_controlled_room_creation_notifications_to_sink(|notification| {
+                captured.push(notification.clone());
+                Ok::<(), ()>(())
+            })
+            .expect("controlled room creation notification sink dispatch should succeed");
+
+        assert_eq!(
+            captured,
+            vec![ControlledRoomCreationNotification::Created {
+                room: "+room:ABCDEF123456".to_owned(),
+                password: "AB123456".to_owned(),
+            }]
+        );
+        assert!(
+            runtime
+                .drain_controlled_room_creation_notifications()
+                .is_empty()
+        );
     }
 
     #[test]
