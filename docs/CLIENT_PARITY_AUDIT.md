@@ -9,7 +9,7 @@
 - `cargo fmt --all`
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`9/9` scenarios)
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` (`10/10` scenarios)
 - `cargo build -p syncplay-gui --bin syncplay-gui`
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000`
 - Local real-`mpv` managed-startup smoke:
@@ -34,7 +34,7 @@
 - The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers the main-window playback/autoplay/offset slice that had been one of the most obvious P1 gaps.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The biggest remaining parity blockers are now:
-  - Python playlist workflows, controller-auth UX, and GUI slash-command handling still trail the Python client,
+  - controller-auth UX and GUI slash-command handling still trail the Python client,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
 
@@ -54,23 +54,12 @@
 - Missing-media search exists as a real GUI flow.
 - The main window now projects a Python-style room/user/file browser, including room grouping, per-user file metadata and difference cues, runtime-backed room/file/folder/trusted-domain actions, and hide-empty-room behavior.
 - Main-window playback parity now includes explicit play/pause actions, undo seek, set-offset prompts, autoplay toggle/threshold controls, countdown/status feedback, and persisted playback/autoplay control visibility.
+- Python playlist workflow parity now includes shuffle remaining, shuffle entire, undo playlist change, add-URL/open-URL flows, playlist text editing, dedicated load/save playlist dialogs, and playlist context actions for opening selected items, opening containing folders, and trusting selected playlist domains.
 - The matching Playback/Advanced/Window menu affordances are runtime-backed, and detached local player/session synchronization no longer leaks hidden session state into the visible shell.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
 - The client-core already implements more than the GUI exposes, including controller-auth requests, set-others-readiness, playlist undo, and playlist shuffle operations.
 
 ## Remaining Python Client Parity Tasks
-
-### P1. Port Python playlist workflows instead of only the minimal shared-playlist slice
-
-Current status: the Rust GUI wires queue/select/remove/reorder, and shared-playlist file import now works. The Python GUI also exposes shuffle remaining, shuffle entire, undo playlist change, add URLs, edit playlist text, dedicated load/save playlist dialogs, and richer playlist context actions.
-
-Work to assign:
-
-- Wire the existing client-core operations for shuffle remaining, shuffle entire, and undo playlist change into the GUI.
-- Add URL entry dialogs for playlist items and detached/open-file URL flows.
-- Add a real playlist text editor flow rather than only per-row editing.
-- Add dedicated load/save playlist dialogs. The current shared-playlist import path only covers part of Python's "load playlist from file" behavior and does not cover save/export.
-- Port playlist context actions: open selected item, open containing folder, add trusted domain, load-and-shuffle-from-file, and other Python menu affordances.
 
 ### P1. Port controlled-room and controller-auth UX
 
@@ -128,12 +117,11 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Playlist workflows and context menus.
-2. Controlled-room/controller-auth UX and set-others-readiness.
-3. GUI slash-command handling.
-4. Configuration dialog completion.
-5. Localization and language-sensitive service calls.
-6. Additional player backends.
+1. Controlled-room/controller-auth UX and set-others-readiness.
+2. GUI slash-command handling.
+3. Configuration dialog completion.
+4. Localization and language-sensitive service calls.
+5. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 

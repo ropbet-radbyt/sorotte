@@ -376,6 +376,11 @@ const GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT: &str =
 static GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_DESCRIPTION: &str = "Exercises desktop dropped-file routing so window drops open media while playlist-surface drops ingest shared-playlist media and playlist files.";
+const GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT: &str =
+    include_str!("semantic_scenarios/playlist-workflow-flow.txt");
+static GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
+const GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_DESCRIPTION: &str = "Exercises the playlist editor, playlist URL editor, undo flow, and detached open-URL editor from a runtime-backed main window.";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT: &str = "# Persistence, clear-GUI-data, and config-migration flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\thost\tpersisted.example\nsetting\troom\tPersistenceRoom\nsetting\tplayer-path\tC:/Windows/System32/notepad.exe\n";
 const GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION: &str = "Seeds legacy GUI-side state next to syncplay.ini, verifies non-INI restore on startup, runs the clear-GUI-data flow through the runtime owner, and proves GUI-owned public-server state wins predictably over conflicting syncplay.ini rows during migration.";
 const GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT: &str = "# Detached runtime ownership flow\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\nsetting\tusername\tsemantic-user\nsetting\troom\tsemantic-room\nsetting\tpublic-server\tPrimary\t127.0.0.1:8999\nsetting\tmedia-search-directory\tC:/Media\n";
@@ -435,6 +440,10 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
             GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT,
             &GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT_NORMALIZED,
         )),
+        "playlist-workflow-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT_NORMALIZED,
+        )),
         "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_SCRIPT),
         "detached-runtime-ownership-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_SCRIPT)
@@ -462,6 +471,7 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
         "drag-and-drop-ingest-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_DESCRIPTION)
         }
+        "playlist-workflow-flow" => Some(GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_DESCRIPTION),
         "persistence-reset-flow" => Some(GUI_SEMANTIC_SCENARIO_PERSISTENCE_RESET_FLOW_DESCRIPTION),
         "detached-runtime-ownership-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_DETACHED_RUNTIME_OWNERSHIP_FLOW_DESCRIPTION)
@@ -551,6 +561,15 @@ pub(super) fn gui_semantic_scenario_drag_and_drop_ingest_flow() -> GuiSemanticSc
     )
 }
 
+pub(super) fn gui_semantic_scenario_playlist_workflow_flow() -> GuiSemanticScenario {
+    gui_semantic_scenario_from_builtin_script(
+        "playlist-workflow-flow",
+        "playlist-workflow-flow",
+        gui_semantic_scenario_script("playlist-workflow-flow")
+            .expect("playlist workflow semantic scenario script should exist"),
+    )
+}
+
 pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
     &[
         "configuration-surface-flow",
@@ -558,6 +577,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
         "runtime-chat-flow",
         "runtime-transport-churn-flow",
         "drag-and-drop-ingest-flow",
+        "playlist-workflow-flow",
         "persistence-reset-flow",
         "detached-runtime-ownership-flow",
         "live-python-peer-connect-flow",
@@ -574,6 +594,7 @@ pub(super) fn gui_semantic_scenario_named(name: &str) -> Option<GuiSemanticScena
             Some(gui_semantic_scenario_runtime_transport_churn_flow())
         }
         "drag-and-drop-ingest-flow" => Some(gui_semantic_scenario_drag_and_drop_ingest_flow()),
+        "playlist-workflow-flow" => Some(gui_semantic_scenario_playlist_workflow_flow()),
         _ => None,
     }
 }

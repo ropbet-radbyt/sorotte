@@ -17,6 +17,7 @@ use std::{
 use eframe::egui;
 use rfd::FileDialog;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use syncplay_client_app::app_boundary::{
     commands::{
         LocalInputCommand, LocalOffsetCommand, PlannedLocalRuntimeAction,
@@ -581,12 +582,17 @@ struct SyncplayGuiShellAppState {
     public_server_edit_session: Option<GuiPublicServerEditSessionState>,
     main_window_user_edit_session: Option<GuiMainWindowUserEditSessionState>,
     text_edit_session: Option<GuiTextEditSessionState>,
+    playlist_text_edit_session: Option<GuiPlaylistTextEditSessionState>,
+    playlist_url_edit_session: Option<GuiUrlEditSessionState>,
+    media_url_edit_session: Option<GuiUrlEditSessionState>,
     room_history_edit_session: Option<GuiRoomHistoryEditSessionState>,
     update_check: GuiUpdateCheckState,
     runtime_validation_issues: Vec<GuiValidationIssue>,
     notifications: Vec<GuiTransientNotification>,
     validation: GuiValidationState,
     last_media_dialog_directory: Option<String>,
+    playlist_undo_snapshot: Option<Vec<String>>,
+    playlist_shuffle_nonce: u64,
     saved_configuration: StoredClientSettingsMvp,
     configuration: FirstRunConfigurationDialogDraft,
     main_window: MainWindowShellState,
@@ -1191,6 +1197,49 @@ fn browser_uri_is_trusted(
     })
 }
 
+fn playlist_entries_from_multiline_text(value: &str) -> Vec<String> {
+    value.lines().filter_map(normalized_editable_text).collect()
+}
+
+fn playlist_entries_multiline_text(entries: &[String]) -> String {
+    entries.join("\n")
+}
+
+fn load_playlist_entries_from_path(path: &str) -> Result<Vec<String>, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read playlist file '{path}': {error}"))
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(normalized_editable_text)
+                .collect()
+        })
+}
+
+fn save_playlist_entries_to_path(path: &str, entries: &[String]) -> Result<(), String> {
+    std::fs::write(path, playlist_entries_multiline_text(entries))
+        .map_err(|error| format!("Failed to save playlist file '{path}': {error}"))
+}
+
+fn playlist_next_shuffle_state(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state
+}
+
+fn shuffle_playlist_entries_in_place(entries: &mut [String], seed: u64) {
+    if entries.len() <= 1 {
+        return;
+    }
+    let mut state = seed;
+    for index in (1..entries.len()).rev() {
+        let random_value = playlist_next_shuffle_state(&mut state);
+        let swap_index = (random_value as usize) % (index + 1);
+        entries.swap(index, swap_index);
+    }
+}
+
 fn browser_format_time(seconds: f64) -> String {
     let rounded = seconds.abs().round() as i64;
     let sign = if seconds.is_sign_negative() { "-" } else { "" };
@@ -1298,6 +1347,18 @@ struct GuiTextEditSessionRuntimeSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPlaylistTextEditSessionRuntimeSnapshot {
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiUrlEditSessionRuntimeSnapshot {
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiInteractionRuntimeSnapshot {
     selection: GuiSelectionState,
     selected_public_server_index: Option<usize>,
@@ -1305,6 +1366,9 @@ struct GuiInteractionRuntimeSnapshot {
     public_server_edit_session: Option<GuiPublicServerEditSessionRuntimeSnapshot>,
     main_window_user_edit_session: Option<GuiMainWindowUserEditSessionRuntimeSnapshot>,
     text_edit_session: Option<GuiTextEditSessionRuntimeSnapshot>,
+    playlist_text_edit_session: Option<GuiPlaylistTextEditSessionRuntimeSnapshot>,
+    playlist_url_edit_session: Option<GuiUrlEditSessionRuntimeSnapshot>,
+    media_url_edit_session: Option<GuiUrlEditSessionRuntimeSnapshot>,
 }
 
 impl GuiInteractionRuntimeSnapshot {
@@ -1338,6 +1402,24 @@ impl GuiInteractionRuntimeSnapshot {
                 GuiTextEditSessionRuntimeSnapshot {
                     section: session.section.to_owned(),
                     label: session.label.to_owned(),
+                    buffer: session.buffer.clone(),
+                    is_dirty: session.is_dirty,
+                }
+            }),
+            playlist_text_edit_session: state.playlist_text_edit_session.as_ref().map(|session| {
+                GuiPlaylistTextEditSessionRuntimeSnapshot {
+                    buffer: session.buffer.clone(),
+                    is_dirty: session.is_dirty,
+                }
+            }),
+            playlist_url_edit_session: state.playlist_url_edit_session.as_ref().map(|session| {
+                GuiUrlEditSessionRuntimeSnapshot {
+                    buffer: session.buffer.clone(),
+                    is_dirty: session.is_dirty,
+                }
+            }),
+            media_url_edit_session: state.media_url_edit_session.as_ref().map(|session| {
+                GuiUrlEditSessionRuntimeSnapshot {
                     buffer: session.buffer.clone(),
                     is_dirty: session.is_dirty,
                 }
@@ -2241,6 +2323,55 @@ impl GuiWidgetEguiRenderer {
                 .map(|domain| vec![GuiShellAction::AddTrustedDomain(domain)])
                 .unwrap_or_default();
         }
+        if node.id == "main-window:playlist:add-files" {
+            return Self::pick_media_files(state)
+                .map(GuiShellAction::AppendSharedPlaylistEntries)
+                .into_iter()
+                .collect();
+        }
+        if matches!(
+            node.id.as_str(),
+            "main-window:playlist:load" | "main-window:playlist:load-shuffle"
+        ) {
+            let Some(path) = Self::pick_playlist_load_file(state) else {
+                return Vec::new();
+            };
+            return match load_playlist_entries_from_path(&path) {
+                Ok(entries) => vec![GuiShellAction::LoadSharedPlaylistFromFile {
+                    path,
+                    entries,
+                    shuffled: node.id == "main-window:playlist:load-shuffle",
+                }],
+                Err(error) => vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(error),
+                ],
+            };
+        }
+        if node.id == "main-window:playlist:save" {
+            let Some(path) = Self::pick_playlist_save_file(state) else {
+                return Vec::new();
+            };
+            let entries = state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>();
+            return match save_playlist_entries_to_path(&path, &entries) {
+                Ok(()) => vec![GuiShellAction::SaveSharedPlaylistToFile(path)],
+                Err(error) => vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Error,
+                        message: error.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(error),
+                ],
+            };
+        }
         match node.id.as_str() {
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
             "config-command:connect" => vec![GuiShellAction::BeginSavedServerConnect],
@@ -2302,6 +2433,77 @@ impl GuiWidgetEguiRenderer {
             "main-window:playlist:up" => vec![GuiShellAction::MoveSelectedMainWindowPlaylistUp],
             "main-window:playlist:down" => vec![GuiShellAction::MoveSelectedMainWindowPlaylistDown],
             "main-window:playlist:remove" => vec![GuiShellAction::RemoveSelectedMainWindowPlaylist],
+            "main-window:playlist:add-url" => vec![GuiShellAction::BeginSharedPlaylistUrlEdit],
+            "main-window:playlist:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
+            "main-window:playlist:open-selected" => state
+                .selected_shared_playlist_entry()
+                .map(|target| {
+                    vec![GuiShellAction::RequestMainWindowUserMediaOpen(
+                        target.to_owned(),
+                    )]
+                })
+                .unwrap_or_default(),
+            "main-window:playlist:open-selected-folder" => state
+                .selected_shared_playlist_entry()
+                .map(|target| {
+                    vec![GuiShellAction::RequestMainWindowUserContainingFolderOpen(
+                        target.to_owned(),
+                    )]
+                })
+                .unwrap_or_default(),
+            "main-window:playlist:trust-selected" => state
+                .selected_shared_playlist_entry()
+                .and_then(browser_domain_from_url)
+                .map(|domain| vec![GuiShellAction::AddTrustedDomain(domain)])
+                .unwrap_or_default(),
+            "main-window:playlist:shuffle-remaining" => {
+                vec![GuiShellAction::ShuffleRemainingSharedPlaylist]
+            }
+            "main-window:playlist:shuffle-entire" => {
+                vec![GuiShellAction::ShuffleEntireSharedPlaylist]
+            }
+            "main-window:playlist:undo" => vec![GuiShellAction::UndoSharedPlaylistChange],
+            "main-window:playlist:edit" => vec![GuiShellAction::BeginSharedPlaylistTextEdit],
+            "main-window:playlist-edit:commit" => {
+                let entries = state
+                    .playlist_text_edit_session
+                    .as_ref()
+                    .map(|session| playlist_entries_from_multiline_text(&session.buffer))
+                    .unwrap_or_default();
+                vec![
+                    GuiShellAction::ReplaceSharedPlaylistEntries(entries),
+                    GuiShellAction::CancelSharedPlaylistTextEdit,
+                ]
+            }
+            "main-window:playlist-edit:cancel" => {
+                vec![GuiShellAction::CancelSharedPlaylistTextEdit]
+            }
+            "main-window:playlist-url-edit:commit" => {
+                let entries = state
+                    .playlist_url_edit_session
+                    .as_ref()
+                    .map(|session| playlist_entries_from_multiline_text(&session.buffer))
+                    .unwrap_or_default();
+                vec![
+                    GuiShellAction::AppendSharedPlaylistEntries(entries),
+                    GuiShellAction::CancelSharedPlaylistUrlEdit,
+                ]
+            }
+            "main-window:playlist-url-edit:cancel" => {
+                vec![GuiShellAction::CancelSharedPlaylistUrlEdit]
+            }
+            "main-window:media-url-edit:commit" => state
+                .media_url_edit_session
+                .as_ref()
+                .and_then(|session| normalized_editable_text(&session.buffer))
+                .map(|target| {
+                    vec![
+                        GuiShellAction::RequestMainWindowUserMediaOpen(target),
+                        GuiShellAction::CancelMediaUrlEdit,
+                    ]
+                })
+                .unwrap_or_default(),
+            "main-window:media-url-edit:cancel" => vec![GuiShellAction::CancelMediaUrlEdit],
             "main-window:control:set-ready" => {
                 let local_user_ready = state
                     .main_window
@@ -2461,6 +2663,52 @@ impl GuiWidgetEguiRenderer {
         if paths.is_empty() { None } else { Some(paths) }
     }
 
+    fn pick_playlist_load_file(state: &SyncplayGuiShellAppState) -> Option<String> {
+        if let Some(path) = Self::playlist_load_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        let mut dialog = FileDialog::new().set_title("Load Playlist From File");
+        if let Some(directory) = Self::media_search_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+            .add_filter("playlist", &["txt", "m3u", "m3u8"])
+            .pick_file()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn playlist_load_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SYNCPLAY_GUI_TEST_LOAD_PLAYLIST_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn pick_playlist_save_file(state: &SyncplayGuiShellAppState) -> Option<String> {
+        if let Some(path) = Self::playlist_save_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        let mut dialog = FileDialog::new().set_title("Save Playlist To File");
+        if let Some(directory) = Self::media_search_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+            .add_filter("playlist", &["txt", "m3u", "m3u8"])
+            .save_file()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn playlist_save_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SYNCPLAY_GUI_TEST_SAVE_PLAYLIST_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
     fn pick_media_search_directory(state: &SyncplayGuiShellAppState) -> Option<String> {
         if let Some(path) = Self::media_search_browse_override_path_from_lookup(&env_trimmed) {
             return Some(path);
@@ -2599,6 +2847,34 @@ impl GuiWidgetEguiRenderer {
 
         if node.id == "room-history:edit:entries" {
             return changed.then(|| vec![GuiShellAction::UpdateRoomHistoryEdit(value.to_owned())]);
+        }
+
+        if node.id == "main-window:playlist-edit:text" {
+            return changed.then(|| {
+                vec![GuiShellAction::UpdateSharedPlaylistTextEdit(
+                    value.to_owned(),
+                )]
+            });
+        }
+
+        if node.id == "main-window:playlist-url-edit:text" {
+            return changed.then(|| {
+                vec![GuiShellAction::UpdateSharedPlaylistUrlEdit(
+                    value.to_owned(),
+                )]
+            });
+        }
+
+        if node.id == "main-window:media-url-edit:text" {
+            let mut actions = Vec::new();
+            if changed {
+                actions.push(GuiShellAction::UpdateMediaUrlEdit(value.to_owned()));
+            }
+            if submitted && let Some(target) = normalized_editable_text(value) {
+                actions.push(GuiShellAction::RequestMainWindowUserMediaOpen(target));
+                actions.push(GuiShellAction::CancelMediaUrlEdit);
+            }
+            return (!actions.is_empty()).then_some(actions);
         }
 
         if let Some((section, label, kind)) = Self::configuration_control_identity(state, node) {
@@ -2887,6 +3163,27 @@ trait GuiNativeRuntimeBridge {
         _state: &SyncplayGuiShellAppState,
         _playlist: Vec<String>,
         _selected_index: Option<usize>,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_undo(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_shuffle_remaining(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
+    fn actions_for_playlist_shuffle_entire(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
         Vec::new()
     }
@@ -3212,6 +3509,24 @@ trait GuiSessionRuntimeAdapter {
     ) -> Result<(), String> {
         Err(
             "Attached session runtime does not support shared playlist reorder operations."
+                .to_owned(),
+        )
+    }
+
+    fn undo_playlist_change(&mut self) -> Result<(), String> {
+        Err("Attached session runtime does not support shared playlist undo.".to_owned())
+    }
+
+    fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not support shared playlist shuffle operations."
+                .to_owned(),
+        )
+    }
+
+    fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
+        Err(
+            "Attached session runtime does not support shared playlist shuffle operations."
                 .to_owned(),
         )
     }
@@ -4504,6 +4819,72 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             }
             Err(error) => Err(format!(
                 "Client-core session runtime playlist reorder dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn undo_playlist_change(&mut self) -> Result<(), String> {
+        match self.runtime.run_undo_playlist_change() {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot undo shared playlist changes before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist undo."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime shared playlist undo dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
+        match self.runtime.run_shuffle_remaining_playlist() {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot shuffle remaining shared playlist entries before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist shuffle."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime shared playlist shuffle dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
+        match self.runtime.run_shuffle_entire_playlist() {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot shuffle the shared playlist before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist shuffle."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime shared playlist shuffle dispatch failed: {error}"
             )),
         }
     }
@@ -7263,6 +7644,36 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
                         });
                     }
                 }
+                GuiRuntimeRequest::UndoPlaylistChange => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.undo_playlist_change()
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::ShuffleRemainingPlaylist => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.shuffle_remaining_playlist()
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
+                GuiRuntimeRequest::ShuffleEntirePlaylist => {
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.shuffle_entire_playlist()
+                    {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                }
                 GuiRuntimeRequest::ReplacePlaylist {
                     files,
                     selected_index,
@@ -7921,6 +8332,9 @@ enum GuiRuntimeRequest {
     },
     SetPlaylistIndex(usize),
     DeletePlaylistIndex(usize),
+    UndoPlaylistChange,
+    ShuffleRemainingPlaylist,
+    ShuffleEntirePlaylist,
     ReplacePlaylist {
         files: Vec<String>,
         selected_index: Option<usize>,
@@ -7978,6 +8392,9 @@ impl GuiRuntimeRequest {
             | Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
             | Self::DeletePlaylistIndex(_)
+            | Self::UndoPlaylistChange
+            | Self::ShuffleRemainingPlaylist
+            | Self::ShuffleEntirePlaylist
             | Self::ReplacePlaylist { .. }
             | Self::SetRoom(_)
             | Self::ReturnToDefaultRoom => Vec::new(),
@@ -8239,6 +8656,33 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
                 files: playlist,
                 selected_index,
             });
+        Vec::new()
+    }
+
+    fn actions_for_playlist_undo(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::UndoPlaylistChange);
+        Vec::new()
+    }
+
+    fn actions_for_playlist_shuffle_remaining(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::ShuffleRemainingPlaylist);
+        Vec::new()
+    }
+
+    fn actions_for_playlist_shuffle_entire(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        self.handle
+            .push_request(GuiRuntimeRequest::ShuffleEntirePlaylist);
         Vec::new()
     }
 
@@ -8580,9 +9024,14 @@ impl eframe::App for GuiNativeApp {
         let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
         let mut playlist_entry_commits = Vec::new();
+        let mut appended_playlist_entries = Vec::new();
         let mut playlist_selection_changes = Vec::new();
         let mut playlist_deletions = Vec::new();
         let mut playlist_reorder_requested = false;
+        let mut playlist_replace_requested = false;
+        let mut playlist_undo_requested = false;
+        let mut playlist_shuffle_remaining_requested = false;
+        let mut playlist_shuffle_entire_requested = false;
         let mut requested_playback_prompt = None;
         let mut requested_undo_seek = false;
         let mut requested_autoplay_state = None;
@@ -8621,6 +9070,13 @@ impl eframe::App for GuiNativeApp {
                         playlist_entry_commits.push(entry.to_owned());
                     }
                 }
+                GuiShellAction::AppendSharedPlaylistEntries(entries) => {
+                    appended_playlist_entries.push(entries.clone());
+                }
+                GuiShellAction::ReplaceSharedPlaylistEntries(_)
+                | GuiShellAction::LoadSharedPlaylistFromFile { .. } => {
+                    playlist_replace_requested = true;
+                }
                 GuiShellAction::SelectMainWindowPlaylist(index) => {
                     selected_playlist_index = Some(*index);
                     playlist_selection_changes.push(*index);
@@ -8633,6 +9089,15 @@ impl eframe::App for GuiNativeApp {
                 GuiShellAction::MoveSelectedMainWindowPlaylistUp
                 | GuiShellAction::MoveSelectedMainWindowPlaylistDown => {
                     playlist_reorder_requested = true;
+                }
+                GuiShellAction::UndoSharedPlaylistChange => {
+                    playlist_undo_requested = true;
+                }
+                GuiShellAction::ShuffleRemainingSharedPlaylist => {
+                    playlist_shuffle_remaining_requested = true;
+                }
+                GuiShellAction::ShuffleEntireSharedPlaylist => {
+                    playlist_shuffle_entire_requested = true;
                 }
                 GuiShellAction::RequestSeekPrompt => {
                     requested_playback_prompt = Some(GuiPlaybackPromptKind::Seek);
@@ -8704,6 +9169,18 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
+        for entries in appended_playlist_entries {
+            let last_index = entries.len().saturating_sub(1);
+            for (index, entry) in entries.into_iter().enumerate() {
+                for action in self.runtime.actions_for_playlist_entry_commit(
+                    &self.state,
+                    entry,
+                    index == last_index,
+                ) {
+                    state_changed |= self.state.apply(action);
+                }
+            }
+        }
         for index in playlist_selection_changes {
             for action in self
                 .runtime
@@ -8716,6 +9193,43 @@ impl eframe::App for GuiNativeApp {
             for action in self
                 .runtime
                 .actions_for_playlist_entry_removal(&self.state, index)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if playlist_replace_requested {
+            let playlist = self
+                .state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.clone())
+                .collect();
+            for action in self.runtime.actions_for_playlist_reorder(
+                &self.state,
+                playlist,
+                self.state.selection.selected_main_window_playlist,
+            ) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if playlist_undo_requested {
+            for action in self.runtime.actions_for_playlist_undo(&self.state) {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if playlist_shuffle_remaining_requested {
+            for action in self
+                .runtime
+                .actions_for_playlist_shuffle_remaining(&self.state)
+            {
+                state_changed |= self.state.apply(action);
+            }
+        }
+        if playlist_shuffle_entire_requested {
+            for action in self
+                .runtime
+                .actions_for_playlist_shuffle_entire(&self.state)
             {
                 state_changed |= self.state.apply(action);
             }
@@ -9084,6 +9598,18 @@ struct GuiTextEditSessionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPlaylistTextEditSessionState {
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiUrlEditSessionState {
+    buffer: String,
+    is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GuiRoomHistoryEditSessionState {
     buffer: String,
     is_dirty: bool,
@@ -9253,10 +9779,27 @@ enum GuiShellAction {
     UpdateRoomHistoryEdit(String),
     CommitRoomHistoryEdit,
     CancelRoomHistoryEdit,
+    BeginSharedPlaylistTextEdit,
+    UpdateSharedPlaylistTextEdit(String),
+    CancelSharedPlaylistTextEdit,
+    BeginSharedPlaylistUrlEdit,
+    UpdateSharedPlaylistUrlEdit(String),
+    CancelSharedPlaylistUrlEdit,
+    BeginMediaUrlEdit,
+    UpdateMediaUrlEdit(String),
+    CancelMediaUrlEdit,
     UpdateNewMainWindowUserDraft(String),
     CommitNewMainWindowUser,
     UpdateNewPlaylistEntryDraft(String),
     CommitNewPlaylistEntry,
+    AppendSharedPlaylistEntries(Vec<String>),
+    ReplaceSharedPlaylistEntries(Vec<String>),
+    LoadSharedPlaylistFromFile {
+        path: String,
+        entries: Vec<String>,
+        shuffled: bool,
+    },
+    SaveSharedPlaylistToFile(String),
     SelectMainWindowUser(usize),
     AddMainWindowUser(String),
     AnnounceMainWindowUserJoined(String),
@@ -9280,6 +9823,9 @@ enum GuiShellAction {
     AnnounceSharedPlaylistEntryAdded(String),
     AnnounceSharedPlaylistSelectionChanged(usize),
     AnnounceSelectedSharedPlaylistEntryRemoved,
+    UndoSharedPlaylistChange,
+    ShuffleRemainingSharedPlaylist,
+    ShuffleEntireSharedPlaylist,
     BeginLocalChatSend(String),
     CompleteLocalChatSend,
     CancelLocalChatSend,
@@ -10331,6 +10877,26 @@ impl GuiTextEditSessionState {
     }
 }
 
+impl GuiPlaylistTextEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Playlist Edit] dirty={}, entries={}",
+            bool_label(self.is_dirty),
+            self.buffer.lines().count()
+        )]
+    }
+}
+
+impl GuiUrlEditSessionState {
+    fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[URL Edit] dirty={}, lines={}",
+            bool_label(self.is_dirty),
+            self.buffer.lines().count()
+        )]
+    }
+}
+
 impl GuiRoomHistoryEditSessionState {
     fn render_lines(&self) -> Vec<String> {
         vec![format!(
@@ -10870,12 +11436,17 @@ impl SyncplayGuiShellAppState {
             public_server_edit_session: None,
             main_window_user_edit_session: None,
             text_edit_session: None,
+            playlist_text_edit_session: None,
+            playlist_url_edit_session: None,
+            media_url_edit_session: None,
             room_history_edit_session: None,
             update_check: GuiUpdateCheckState::default(),
             runtime_validation_issues: Vec::new(),
             notifications: Vec::new(),
             validation: GuiValidationState::default(),
             last_media_dialog_directory: None,
+            playlist_undo_snapshot: None,
+            playlist_shuffle_nonce: 0,
             saved_configuration: settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(settings),
             main_window: MainWindowShellState::from_stored_settings(settings),
@@ -11298,6 +11869,20 @@ impl SyncplayGuiShellAppState {
                 self.new_playlist_entry_draft.clear();
                 true
             }
+            GuiShellAction::AppendSharedPlaylistEntries(entries) => {
+                self.append_shared_playlist_entries_locally(entries)
+            }
+            GuiShellAction::ReplaceSharedPlaylistEntries(entries) => {
+                self.replace_shared_playlist_entries_locally(entries)
+            }
+            GuiShellAction::LoadSharedPlaylistFromFile {
+                path,
+                entries,
+                shuffled,
+            } => self.load_shared_playlist_from_file(path, entries, shuffled),
+            GuiShellAction::SaveSharedPlaylistToFile(path) => {
+                self.save_shared_playlist_to_file(path)
+            }
             GuiShellAction::PushTransientNotification { level, message } => {
                 let trimmed = message.trim();
                 if trimmed.is_empty() {
@@ -11398,6 +11983,19 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::UpdateRoomHistoryEdit(buffer) => self.update_room_history_edit(buffer),
             GuiShellAction::CommitRoomHistoryEdit => self.commit_room_history_edit(),
             GuiShellAction::CancelRoomHistoryEdit => self.cancel_room_history_edit(),
+            GuiShellAction::BeginSharedPlaylistTextEdit => self.begin_shared_playlist_text_edit(),
+            GuiShellAction::UpdateSharedPlaylistTextEdit(buffer) => {
+                self.update_shared_playlist_text_edit(buffer)
+            }
+            GuiShellAction::CancelSharedPlaylistTextEdit => self.cancel_shared_playlist_text_edit(),
+            GuiShellAction::BeginSharedPlaylistUrlEdit => self.begin_shared_playlist_url_edit(),
+            GuiShellAction::UpdateSharedPlaylistUrlEdit(buffer) => {
+                self.update_shared_playlist_url_edit(buffer)
+            }
+            GuiShellAction::CancelSharedPlaylistUrlEdit => self.cancel_shared_playlist_url_edit(),
+            GuiShellAction::BeginMediaUrlEdit => self.begin_media_url_edit(),
+            GuiShellAction::UpdateMediaUrlEdit(buffer) => self.update_media_url_edit(buffer),
+            GuiShellAction::CancelMediaUrlEdit => self.cancel_media_url_edit(),
             GuiShellAction::SelectMainWindowUser(index) => {
                 if index >= self.main_window.users.len() {
                     return self
@@ -11451,6 +12049,11 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::AnnounceSelectedSharedPlaylistEntryRemoved => {
                 self.announce_selected_shared_playlist_entry_removed()
             }
+            GuiShellAction::UndoSharedPlaylistChange => self.undo_shared_playlist_change(),
+            GuiShellAction::ShuffleRemainingSharedPlaylist => {
+                self.shuffle_remaining_shared_playlist()
+            }
+            GuiShellAction::ShuffleEntireSharedPlaylist => self.shuffle_entire_shared_playlist(),
             GuiShellAction::BeginLocalChatSend(message) => self.begin_local_chat_send(message),
             GuiShellAction::CompleteLocalChatSend => self.complete_local_chat_send(),
             GuiShellAction::CancelLocalChatSend => self.cancel_local_chat_send(),
@@ -11688,6 +12291,24 @@ impl SyncplayGuiShellAppState {
                 .unwrap_or_else(|| vec!["[Text Edit] editing=(none)".to_owned()]),
         );
         lines.extend(
+            self.playlist_text_edit_session
+                .as_ref()
+                .map(GuiPlaylistTextEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Playlist Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.playlist_url_edit_session
+                .as_ref()
+                .map(GuiUrlEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Playlist URL Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
+            self.media_url_edit_session
+                .as_ref()
+                .map(GuiUrlEditSessionState::render_lines)
+                .unwrap_or_else(|| vec!["[Media URL Edit] editing=(none)".to_owned()]),
+        );
+        lines.extend(
             self.room_history_edit_session
                 .as_ref()
                 .map(GuiRoomHistoryEditSessionState::render_lines)
@@ -11894,6 +12515,39 @@ impl SyncplayGuiShellAppState {
         let can_remove_playlist = can_manage_playlist && selected_playlist_index.is_some();
         let can_add_playlist_entry =
             can_manage_playlist && !self.new_playlist_entry_draft.trim().is_empty();
+        let selected_playlist_entry = self.selected_shared_playlist_entry().map(str::to_owned);
+        let selected_playlist_is_url = selected_playlist_entry
+            .as_deref()
+            .is_some_and(browser_is_url);
+        let trusted_domains = self
+            .configuration
+            .to_stored_settings()
+            .trusted_domains
+            .unwrap_or_default();
+        let selected_playlist_domain = selected_playlist_entry
+            .as_deref()
+            .and_then(browser_domain_from_url);
+        let can_open_selected_playlist =
+            self.pending_operation.is_none() && selected_playlist_entry.is_some();
+        let can_open_selected_playlist_folder = self.pending_operation.is_none()
+            && selected_playlist_entry.is_some()
+            && !selected_playlist_is_url;
+        let can_trust_selected_playlist_domain = self.pending_operation.is_none()
+            && selected_playlist_domain.is_some()
+            && selected_playlist_entry
+                .as_deref()
+                .is_some_and(|entry| !browser_uri_is_trusted(entry, true, &trusted_domains));
+        let can_save_playlist =
+            self.pending_operation.is_none() && !self.main_window.playlist.is_empty();
+        let can_shuffle_remaining = can_manage_playlist
+            && selected_playlist_index
+                .is_some_and(|index| index + 1 < self.main_window.playlist.len());
+        let can_shuffle_entire = can_manage_playlist && !self.main_window.playlist.is_empty();
+        let can_undo_playlist = can_manage_playlist
+            && self
+                .playlist_undo_snapshot
+                .as_ref()
+                .is_some_and(|previous| *previous != self.current_shared_playlist_entries());
         let saved_session_target = self.saved_session_connect_target();
         let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
             Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
@@ -12108,8 +12762,217 @@ impl SyncplayGuiShellAppState {
                     can_remove_playlist,
                     false,
                 ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:add-files",
+                    "Add Files",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:add-url",
+                    "Add URLs",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:open-url",
+                    "Open URL",
+                    GuiWidgetKind::Button,
+                    None,
+                    self.pending_operation.is_none(),
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:open-selected",
+                    "Open Selected",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_open_selected_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:open-selected-folder",
+                    "Open Selected Folder",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_open_selected_playlist_folder,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:trust-selected",
+                    selected_playlist_domain
+                        .as_deref()
+                        .map(|domain| format!("Trust {domain}"))
+                        .unwrap_or_else(|| "Trust Selected Domain".to_owned()),
+                    GuiWidgetKind::Button,
+                    None,
+                    can_trust_selected_playlist_domain,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:shuffle-remaining",
+                    "Shuffle Remaining",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_shuffle_remaining,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:shuffle-entire",
+                    "Shuffle Entire",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_shuffle_entire,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:undo",
+                    "Undo Playlist",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_undo_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:edit",
+                    "Edit Playlist",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:load",
+                    "Load Playlist",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:load-shuffle",
+                    "Load + Shuffle",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:save",
+                    "Save Playlist",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_save_playlist,
+                    false,
+                ),
             ],
         ));
+
+        if let Some(session) = &self.playlist_text_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "main-window:playlist-edit",
+                "Playlist Editor",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-edit:text",
+                        "Playlist Entries",
+                        GuiWidgetKind::TextArea,
+                        Some(session.buffer.clone()),
+                        can_manage_playlist,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-edit:commit",
+                        "Apply Playlist",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-edit:cancel",
+                        "Cancel Playlist Edit",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
+        if let Some(session) = &self.playlist_url_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "main-window:playlist-url-edit",
+                "Playlist URLs",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-url-edit:text",
+                        "URLs",
+                        GuiWidgetKind::TextArea,
+                        Some(session.buffer.clone()),
+                        can_manage_playlist,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-url-edit:commit",
+                        "Add URLs To Playlist",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-url-edit:cancel",
+                        "Cancel URL Entry",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
+
+        if let Some(session) = &self.media_url_edit_session {
+            children.push(GuiWidgetNode::branch(
+                "main-window:media-url-edit",
+                "Open URL",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:media-url-edit:text",
+                        "URL",
+                        GuiWidgetKind::TextInput,
+                        Some(session.buffer.clone()),
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:media-url-edit:commit",
+                        "Open URL",
+                        GuiWidgetKind::Button,
+                        None,
+                        session.is_dirty,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:media-url-edit:cancel",
+                        "Cancel Open URL",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                ],
+            ));
+        }
 
         children.push(GuiWidgetNode::branch(
             "main-window:chat",
@@ -13148,6 +14011,7 @@ impl SyncplayGuiShellAppState {
                 .collect();
         }
         if current_snapshot.playlist != previous_baseline.playlist {
+            self.remember_shared_playlist_undo_snapshot_if_changed(&current_snapshot.playlist);
             self.main_window.playlist = current_snapshot
                 .playlist
                 .iter()
@@ -13349,12 +14213,17 @@ impl SyncplayGuiShellAppState {
         let public_server_edit_session = self.public_server_edit_session.clone();
         let main_window_user_edit_session = self.main_window_user_edit_session.clone();
         let text_edit_session = self.text_edit_session.clone();
+        let playlist_text_edit_session = self.playlist_text_edit_session.clone();
+        let playlist_url_edit_session = self.playlist_url_edit_session.clone();
+        let media_url_edit_session = self.media_url_edit_session.clone();
         let room_history_edit_session = self.room_history_edit_session.clone();
         let update_check = self.update_check.clone();
         let runtime_validation_issues = self.runtime_validation_issues.clone();
         let notifications = self.notifications.clone();
         let last_media_dialog_directory = self.last_media_dialog_directory.clone();
         let last_action_error = self.validation.last_action_error.clone();
+        let playlist_undo_snapshot = self.playlist_undo_snapshot.clone();
+        let playlist_shuffle_nonce = self.playlist_shuffle_nonce;
         let saved_configuration = self.saved_configuration.clone();
         let tls_prompt_expected = self.menus.tls_prompt_expected;
         let update_notice_expected = self.menus.update_notice_expected;
@@ -13393,11 +14262,16 @@ impl SyncplayGuiShellAppState {
         self.public_server_edit_session = public_server_edit_session;
         self.main_window_user_edit_session = main_window_user_edit_session;
         self.text_edit_session = text_edit_session;
+        self.playlist_text_edit_session = playlist_text_edit_session;
+        self.playlist_url_edit_session = playlist_url_edit_session;
+        self.media_url_edit_session = media_url_edit_session;
         self.room_history_edit_session = room_history_edit_session;
         self.update_check = update_check;
         self.runtime_validation_issues = runtime_validation_issues;
         self.notifications = notifications;
         self.last_media_dialog_directory = last_media_dialog_directory;
+        self.playlist_undo_snapshot = playlist_undo_snapshot;
+        self.playlist_shuffle_nonce = playlist_shuffle_nonce;
         self.saved_configuration = saved_configuration;
         if preserve_tls_prompt_expected {
             self.menus.tls_prompt_expected = tls_prompt_expected;
@@ -13879,6 +14753,12 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("The selected playlist row cannot move further.");
         }
 
+        let next_entries = {
+            let mut entries = self.current_shared_playlist_entries();
+            entries.swap(index, target_index);
+            entries
+        };
+        self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
         self.main_window.playlist.swap(index, target_index);
         self.selection.selected_main_window_playlist = Some(target_index);
         self.apply_selection_to_surfaces();
@@ -14324,15 +15204,404 @@ impl SyncplayGuiShellAppState {
             .collect()
     }
 
-    fn announce_shared_playlist_loaded(&mut self, entries: Vec<String>) -> bool {
+    fn current_shared_playlist_entries(&self) -> Vec<String> {
+        self.main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.clone())
+            .collect()
+    }
+
+    fn remember_shared_playlist_undo_snapshot_if_changed(&mut self, next_entries: &[String]) {
+        let current_entries = self.current_shared_playlist_entries();
+        if current_entries != next_entries {
+            self.playlist_undo_snapshot = Some(current_entries);
+        }
+    }
+
+    fn shared_playlist_target_index_from_changed_entries(
+        current_entries: &[String],
+        current_index: Option<usize>,
+        next_entries: &[String],
+    ) -> usize {
+        let Some(current_index) = current_index else {
+            return 0;
+        };
+        if next_entries.len() <= 1 {
+            return 0;
+        }
+
+        let mut index = current_index;
+        while index <= current_entries.len() {
+            if let Some(entry) = current_entries.get(index)
+                && let Some(valid_index) =
+                    next_entries.iter().position(|candidate| candidate == entry)
+            {
+                return valid_index;
+            }
+            index = index.saturating_add(1);
+        }
+
+        let mut index = current_index;
+        while index > 0 {
+            if let Some(entry) = current_entries.get(index)
+                && let Some(valid_index) =
+                    next_entries.iter().position(|candidate| candidate == entry)
+            {
+                return if valid_index < next_entries.len().saturating_sub(1) {
+                    valid_index.saturating_add(1)
+                } else {
+                    valid_index
+                };
+            }
+            index = index.saturating_sub(1);
+        }
+        0
+    }
+
+    fn apply_shared_playlist_entries(
+        &mut self,
+        entries: Vec<String>,
+        selected_index: Option<usize>,
+    ) {
+        self.main_window.playlist = entries
+            .iter()
+            .map(|label| MainWindowPlaylistRow {
+                label: label.clone(),
+                is_selected: false,
+            })
+            .collect();
+        self.selection.selected_main_window_playlist =
+            selected_index.filter(|index| *index < self.main_window.playlist.len());
+        self.apply_selection_to_surfaces();
+    }
+
+    fn next_shared_playlist_shuffle_seed(
+        &mut self,
+        entries: &[String],
+        current_index: usize,
+        shuffle_scope_remaining: bool,
+    ) -> u64 {
+        let mut hasher = Sha256::new();
+        hasher.update(if shuffle_scope_remaining {
+            &b"remaining"[..]
+        } else {
+            &b"entire"[..]
+        });
+        hasher.update((current_index as u64).to_le_bytes());
+        hasher.update(self.playlist_shuffle_nonce.to_le_bytes());
+        for entry in entries {
+            hasher.update(entry.as_bytes());
+            hasher.update([0]);
+        }
+        self.playlist_shuffle_nonce = self.playlist_shuffle_nonce.wrapping_add(1);
+
+        let digest = hasher.finalize();
+        let mut seed_bytes = [0u8; 8];
+        seed_bytes.copy_from_slice(&digest[..8]);
+        let seed = u64::from_le_bytes(seed_bytes);
+        if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        }
+    }
+
+    fn selected_shared_playlist_entry(&self) -> Option<&str> {
+        self.selection
+            .selected_main_window_playlist
+            .and_then(|index| self.main_window.playlist.get(index))
+            .map(|row| row.label.as_str())
+    }
+
+    fn replace_shared_playlist_entries_locally(&mut self, entries: Vec<String>) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let entries = Self::normalize_shared_playlist_entries(entries);
+        let current_entries = self.current_shared_playlist_entries();
+        let current_index = self.selection.selected_main_window_playlist;
+        let target_index = if entries.is_empty() {
+            None
+        } else {
+            Some(
+                Self::shared_playlist_target_index_from_changed_entries(
+                    &current_entries,
+                    current_index,
+                    &entries,
+                )
+                .min(entries.len().saturating_sub(1)),
+            )
+        };
+        self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
+        self.apply_shared_playlist_entries(entries.clone(), target_index);
+        let message = if entries.is_empty() {
+            "Shared playlist cleared.".to_owned()
+        } else {
+            format!("Shared playlist updated ({} entries).", entries.len())
+        };
+        self.push_system_chat_message(message.clone());
+        self.push_transient_notification(GuiTransientNotificationLevel::Success, message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn append_shared_playlist_entries_locally(&mut self, entries: Vec<String>) -> bool {
         if !self.ensure_shared_playlist_event_allowed() {
             return false;
         }
         let entries = Self::normalize_shared_playlist_entries(entries);
         if entries.is_empty() {
-            self.main_window.playlist.clear();
-            self.selection.selected_main_window_playlist = None;
-            self.apply_selection_to_surfaces();
+            return self.record_action_error("Shared playlist entries must be non-empty.");
+        }
+        let mut playlist_entries = self.current_shared_playlist_entries();
+        self.remember_shared_playlist_undo_snapshot_if_changed(
+            &[playlist_entries.clone(), entries.clone()].concat(),
+        );
+        playlist_entries.extend(entries.iter().cloned());
+        let selected_index = playlist_entries.len().checked_sub(1);
+        self.apply_shared_playlist_entries(playlist_entries, selected_index);
+        let message = if entries.len() == 1 {
+            format!("Shared playlist entry added: {}.", entries[0])
+        } else {
+            format!("Shared playlist entries added: {} items.", entries.len())
+        };
+        self.push_system_chat_message(message.clone());
+        self.push_transient_notification(GuiTransientNotificationLevel::Info, message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn undo_shared_playlist_change(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let current_entries = self.current_shared_playlist_entries();
+        let Some(previous_entries) = self.playlist_undo_snapshot.clone() else {
+            return self.record_action_error("No shared playlist change is available to undo.");
+        };
+        if previous_entries == current_entries {
+            return self.record_action_error("No shared playlist change is available to undo.");
+        }
+        let current_index = self.selection.selected_main_window_playlist;
+        let target_index = if previous_entries.is_empty() {
+            None
+        } else {
+            Some(
+                Self::shared_playlist_target_index_from_changed_entries(
+                    &current_entries,
+                    current_index,
+                    &previous_entries,
+                )
+                .min(previous_entries.len().saturating_sub(1)),
+            )
+        };
+        self.playlist_undo_snapshot = Some(current_entries);
+        self.apply_shared_playlist_entries(previous_entries, target_index);
+        self.push_system_chat_message("Shared playlist undo requested.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Shared playlist undo requested.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn shuffle_remaining_shared_playlist(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let Some(current_index) = self.selection.selected_main_window_playlist else {
+            return self.record_action_error("No shared playlist entry is currently selected.");
+        };
+        let current_entries = self.current_shared_playlist_entries();
+        if current_index >= current_entries.len() {
+            return self.record_action_error("No shared playlist entry is currently selected.");
+        }
+        let shuffle_start = current_index.saturating_add(1);
+        if shuffle_start >= current_entries.len() {
+            return self
+                .record_action_error("No remaining shared playlist entries can be shuffled.");
+        }
+        let mut shuffled_entries = current_entries.clone();
+        let seed = self.next_shared_playlist_shuffle_seed(&current_entries, current_index, true);
+        shuffle_playlist_entries_in_place(&mut shuffled_entries[shuffle_start..], seed);
+        if shuffled_entries == current_entries {
+            return self
+                .record_action_error("No remaining shared playlist entries can be shuffled.");
+        }
+        self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
+        self.apply_shared_playlist_entries(shuffled_entries, Some(current_index));
+        self.push_system_chat_message("Remaining shared playlist entries shuffled.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Remaining shared playlist entries shuffled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn shuffle_entire_shared_playlist(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let current_entries = self.current_shared_playlist_entries();
+        if current_entries.is_empty() {
+            return self.record_action_error("The shared playlist is currently empty.");
+        }
+        let current_index = self.selection.selected_main_window_playlist.unwrap_or(0);
+        let mut shuffled_entries = current_entries.clone();
+        let seed = self.next_shared_playlist_shuffle_seed(&current_entries, current_index, false);
+        shuffle_playlist_entries_in_place(&mut shuffled_entries, seed);
+        self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
+        self.apply_shared_playlist_entries(shuffled_entries, Some(0));
+        self.push_system_chat_message("Shared playlist shuffled.".to_owned());
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            "Shared playlist shuffled.".to_owned(),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_shared_playlist_text_edit(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        self.playlist_text_edit_session = Some(GuiPlaylistTextEditSessionState {
+            buffer: playlist_entries_multiline_text(&self.current_shared_playlist_entries()),
+            is_dirty: false,
+        });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_shared_playlist_text_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.playlist_text_edit_session.as_mut() else {
+            return self.record_action_error("No shared playlist text editor is currently active.");
+        };
+        session.buffer = buffer;
+        session.is_dirty = true;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_shared_playlist_text_edit(&mut self) -> bool {
+        if self.playlist_text_edit_session.is_none() {
+            return self.record_action_error("No shared playlist text editor is currently active.");
+        }
+        self.playlist_text_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_shared_playlist_url_edit(&mut self) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        self.playlist_url_edit_session = Some(GuiUrlEditSessionState {
+            buffer: String::new(),
+            is_dirty: false,
+        });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_shared_playlist_url_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.playlist_url_edit_session.as_mut() else {
+            return self.record_action_error("No shared playlist URL editor is currently active.");
+        };
+        session.buffer = buffer;
+        session.is_dirty = normalized_editable_text(&session.buffer).is_some();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_shared_playlist_url_edit(&mut self) -> bool {
+        if self.playlist_url_edit_session.is_none() {
+            return self.record_action_error("No shared playlist URL editor is currently active.");
+        }
+        self.playlist_url_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn begin_media_url_edit(&mut self) -> bool {
+        self.media_url_edit_session = Some(GuiUrlEditSessionState {
+            buffer: String::new(),
+            is_dirty: false,
+        });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn update_media_url_edit(&mut self, buffer: String) -> bool {
+        let Some(session) = self.media_url_edit_session.as_mut() else {
+            return self.record_action_error("No open-URL editor is currently active.");
+        };
+        session.buffer = buffer;
+        session.is_dirty = normalized_editable_text(&session.buffer).is_some();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn cancel_media_url_edit(&mut self) -> bool {
+        if self.media_url_edit_session.is_none() {
+            return self.record_action_error("No open-URL editor is currently active.");
+        }
+        self.media_url_edit_session = None;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn load_shared_playlist_from_file(
+        &mut self,
+        path: String,
+        entries: Vec<String>,
+        shuffled: bool,
+    ) -> bool {
+        self.remember_media_dialog_directory(&path);
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let mut entries = Self::normalize_shared_playlist_entries(entries);
+        if shuffled && !entries.is_empty() {
+            let seed = self.next_shared_playlist_shuffle_seed(&entries, 0, false);
+            shuffle_playlist_entries_in_place(&mut entries, seed);
+        }
+        let target_index = (!entries.is_empty()).then_some(0);
+        self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
+        self.apply_shared_playlist_entries(entries, target_index);
+        let message = if shuffled {
+            format!("Shared playlist loaded and shuffled from file: {path}.")
+        } else {
+            format!("Shared playlist loaded from file: {path}.")
+        };
+        self.push_system_chat_message(message.clone());
+        self.push_transient_notification(GuiTransientNotificationLevel::Success, message);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn save_shared_playlist_to_file(&mut self, path: String) -> bool {
+        self.remember_media_dialog_directory(&path);
+        self.push_system_chat_message(format!("Shared playlist saved to file: {path}."));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            format!("Shared playlist saved to file: {path}."),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    fn announce_shared_playlist_loaded(&mut self, entries: Vec<String>) -> bool {
+        if !self.ensure_shared_playlist_event_allowed() {
+            return false;
+        }
+        let entries = Self::normalize_shared_playlist_entries(entries);
+        self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
+        if entries.is_empty() {
+            self.apply_shared_playlist_entries(Vec::new(), None);
             self.push_system_chat_message("Shared playlist cleared.".to_owned());
             self.push_transient_notification(
                 GuiTransientNotificationLevel::Info,
@@ -14342,16 +15611,7 @@ impl SyncplayGuiShellAppState {
             return true;
         }
 
-        self.main_window.playlist = entries
-            .iter()
-            .enumerate()
-            .map(|(index, label)| MainWindowPlaylistRow {
-                label: label.clone(),
-                is_selected: index == 0,
-            })
-            .collect();
-        self.selection.selected_main_window_playlist = Some(0);
-        self.apply_selection_to_surfaces();
+        self.apply_shared_playlist_entries(entries, Some(0));
         self.push_system_chat_message(format!(
             "Shared playlist loaded ({} entries).",
             self.main_window.playlist.len()
@@ -14374,17 +15634,11 @@ impl SyncplayGuiShellAppState {
         let Some(entry) = normalized_editable_text(&entry) else {
             return self.record_action_error("Shared playlist entries must be non-empty.");
         };
-        if self.main_window.playlist.len() == 1
-            && self.main_window.playlist[0].label == "Playlist pane ready for shared entries"
-        {
-            self.main_window.playlist.clear();
-        }
-        self.main_window.playlist.push(MainWindowPlaylistRow {
-            label: entry.clone(),
-            is_selected: false,
-        });
-        self.selection.selected_main_window_playlist = Some(self.main_window.playlist.len() - 1);
-        self.apply_selection_to_surfaces();
+        let mut playlist_entries = self.current_shared_playlist_entries();
+        playlist_entries.push(entry.clone());
+        self.remember_shared_playlist_undo_snapshot_if_changed(&playlist_entries);
+        let selected_index = playlist_entries.len().checked_sub(1);
+        self.apply_shared_playlist_entries(playlist_entries, selected_index);
         self.push_system_chat_message(format!("Shared playlist entry added: {entry}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -14426,15 +15680,17 @@ impl SyncplayGuiShellAppState {
                 .record_action_error("No shared playlist entry exists at the requested index.");
         };
         let label = entry.label.clone();
-        self.main_window.playlist.remove(index);
-        self.selection.selected_main_window_playlist = if self.main_window.playlist.is_empty() {
+        let mut playlist_entries = self.current_shared_playlist_entries();
+        playlist_entries.remove(index);
+        self.remember_shared_playlist_undo_snapshot_if_changed(&playlist_entries);
+        let next_selection = if playlist_entries.is_empty() {
             None
-        } else if index >= self.main_window.playlist.len() {
-            Some(self.main_window.playlist.len() - 1)
+        } else if index >= playlist_entries.len() {
+            Some(playlist_entries.len() - 1)
         } else {
             Some(index)
         };
-        self.apply_selection_to_surfaces();
+        self.apply_shared_playlist_entries(playlist_entries, next_selection);
         self.push_system_chat_message(format!("Shared playlist entry removed: {label}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
@@ -14965,6 +16221,44 @@ impl SyncplayGuiShellAppState {
             None => None,
         };
 
+        let playlist_text_edit_session = match snapshot.playlist_text_edit_session {
+            Some(session) => {
+                if !self.shared_playlist_events_enabled() {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot edit the shared playlist when shared playlists are disabled.",
+                    );
+                }
+                Some(GuiPlaylistTextEditSessionState {
+                    buffer: session.buffer,
+                    is_dirty: session.is_dirty,
+                })
+            }
+            None => None,
+        };
+
+        let playlist_url_edit_session = match snapshot.playlist_url_edit_session {
+            Some(session) => {
+                if !self.shared_playlist_events_enabled() {
+                    return self.record_action_error(
+                        "GUI interaction runtime snapshots cannot edit shared playlist URLs when shared playlists are disabled.",
+                    );
+                }
+                Some(GuiUrlEditSessionState {
+                    buffer: session.buffer,
+                    is_dirty: session.is_dirty,
+                })
+            }
+            None => None,
+        };
+
+        let media_url_edit_session =
+            snapshot
+                .media_url_edit_session
+                .map(|session| GuiUrlEditSessionState {
+                    buffer: session.buffer,
+                    is_dirty: session.is_dirty,
+                });
+
         let public_server_edit_session = match snapshot.public_server_edit_session {
             Some(session) => {
                 if session
@@ -15017,6 +16311,9 @@ impl SyncplayGuiShellAppState {
         self.public_server_edit_session = public_server_edit_session;
         self.main_window_user_edit_session = main_window_user_edit_session;
         self.text_edit_session = text_edit_session;
+        self.playlist_text_edit_session = playlist_text_edit_session;
+        self.playlist_url_edit_session = playlist_url_edit_session;
+        self.media_url_edit_session = media_url_edit_session;
         self.normalize_selection();
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
@@ -15024,6 +16321,9 @@ impl SyncplayGuiShellAppState {
         self.normalize_public_server_edit_session();
         self.normalize_main_window_user_edit_session();
         self.normalize_text_edit_session();
+        self.normalize_playlist_text_edit_session();
+        self.normalize_playlist_url_edit_session();
+        self.normalize_media_url_edit_session();
         self.clear_action_error_and_refresh();
         true
     }
@@ -16711,6 +18011,37 @@ impl SyncplayGuiShellAppState {
         session.is_dirty = session.buffer != control.value;
     }
 
+    fn normalize_playlist_text_edit_session(&mut self) {
+        if !self.shared_playlist_events_enabled() {
+            self.playlist_text_edit_session = None;
+            return;
+        }
+        let current_value =
+            playlist_entries_multiline_text(&self.current_shared_playlist_entries());
+        let Some(session) = self.playlist_text_edit_session.as_mut() else {
+            return;
+        };
+        session.is_dirty = session.buffer != current_value;
+    }
+
+    fn normalize_playlist_url_edit_session(&mut self) {
+        if !self.shared_playlist_events_enabled() {
+            self.playlist_url_edit_session = None;
+            return;
+        }
+        let Some(session) = self.playlist_url_edit_session.as_mut() else {
+            return;
+        };
+        session.is_dirty = normalized_editable_text(&session.buffer).is_some();
+    }
+
+    fn normalize_media_url_edit_session(&mut self) {
+        let Some(session) = self.media_url_edit_session.as_mut() else {
+            return;
+        };
+        session.is_dirty = normalized_editable_text(&session.buffer).is_some();
+    }
+
     fn sync_focused_configuration_control_to_text_edit_session(&mut self) {
         let Some(session) = self.text_edit_session.as_ref() else {
             return;
@@ -16750,6 +18081,9 @@ impl SyncplayGuiShellAppState {
         let last_action_error = self.validation.last_action_error.clone();
         self.normalize_public_server_edit_session();
         self.normalize_main_window_user_edit_session();
+        self.normalize_playlist_text_edit_session();
+        self.normalize_playlist_url_edit_session();
+        self.normalize_media_url_edit_session();
         let mut issues = self.validation_issues();
         issues.extend(self.runtime_validation_issues.iter().cloned());
         self.sync_focused_configuration_control_to_text_edit_session();
@@ -19475,6 +20809,9 @@ mod tests {
                         buffer: "runtime.example".to_owned(),
                         is_dirty: true,
                     }),
+                    playlist_text_edit_session: None,
+                    playlist_url_edit_session: None,
+                    media_url_edit_session: None,
                 }
             ))
         );
@@ -19563,6 +20900,9 @@ mod tests {
                     public_server_edit_session: None,
                     main_window_user_edit_session: None,
                     text_edit_session: None,
+                    playlist_text_edit_session: None,
+                    playlist_url_edit_session: None,
+                    media_url_edit_session: None,
                 }
             ))
         );
@@ -19602,6 +20942,9 @@ mod tests {
                     public_server_edit_session: None,
                     main_window_user_edit_session: None,
                     text_edit_session: None,
+                    playlist_text_edit_session: None,
+                    playlist_url_edit_session: None,
+                    media_url_edit_session: None,
                 }
             ))
         );
@@ -22977,6 +24320,271 @@ mod tests {
     }
 
     #[test]
+    fn gui_shell_app_state_tracks_playlist_workflow_editors_undo_and_shuffle() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.main_window.playback.can_manage_playlist = true;
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "Episode 1.mkv".to_owned(),
+                "Episode 2.mkv".to_owned(),
+                "Episode 3.mkv".to_owned(),
+                "Episode 4.mkv".to_owned(),
+            ]))
+        );
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+        assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
+        assert_eq!(
+            state
+                .playlist_text_edit_session
+                .as_ref()
+                .map(|session| session.buffer.as_str()),
+            Some("Episode 1.mkv\nEpisode 2.mkv\nEpisode 3.mkv\nEpisode 4.mkv")
+        );
+        assert!(state.apply(GuiShellAction::UpdateSharedPlaylistTextEdit(
+            "Episode 1.mkv\nhttps://example.com/live".to_owned(),
+        )));
+        let replacement_entries = super::playlist_entries_from_multiline_text(
+            state
+                .playlist_text_edit_session
+                .as_ref()
+                .expect("playlist text edit session should remain active")
+                .buffer
+                .as_str(),
+        );
+        assert_eq!(
+            replacement_entries,
+            vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]
+        );
+        assert!(state.apply(GuiShellAction::ReplaceSharedPlaylistEntries(
+            replacement_entries.clone(),
+        )));
+        assert_eq!(state.current_shared_playlist_entries(), replacement_entries);
+        assert!(state.apply(GuiShellAction::CancelSharedPlaylistTextEdit));
+        assert!(state.playlist_text_edit_session.is_none());
+
+        assert!(state.apply(GuiShellAction::BeginSharedPlaylistUrlEdit));
+        assert!(
+            state.apply(GuiShellAction::UpdateSharedPlaylistUrlEdit(
+                "https://example.com/next\nhttps://example.com/bonus\nhttps://example.com/finale"
+                    .to_owned(),
+            ))
+        );
+        let appended_entries = super::playlist_entries_from_multiline_text(
+            state
+                .playlist_url_edit_session
+                .as_ref()
+                .expect("playlist URL edit session should remain active")
+                .buffer
+                .as_str(),
+        );
+        assert_eq!(
+            appended_entries,
+            vec![
+                "https://example.com/next".to_owned(),
+                "https://example.com/bonus".to_owned(),
+                "https://example.com/finale".to_owned(),
+            ]
+        );
+        assert!(state.apply(GuiShellAction::AppendSharedPlaylistEntries(
+            appended_entries.clone(),
+        )));
+        assert!(state.apply(GuiShellAction::CancelSharedPlaylistUrlEdit));
+        assert!(state.playlist_url_edit_session.is_none());
+        let entries_before_shuffle = state.current_shared_playlist_entries();
+        assert_eq!(
+            entries_before_shuffle,
+            vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+                "https://example.com/next".to_owned(),
+                "https://example.com/bonus".to_owned(),
+                "https://example.com/finale".to_owned(),
+            ]
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(4));
+
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+        let mut shuffled_remaining = false;
+        for _ in 0..4 {
+            if state.apply(GuiShellAction::ShuffleRemainingSharedPlaylist) {
+                shuffled_remaining = true;
+                break;
+            }
+        }
+        assert!(
+            shuffled_remaining,
+            "remaining-playlist shuffle should eventually permute the tail"
+        );
+        let entries_after_remaining_shuffle = state.current_shared_playlist_entries();
+        assert_eq!(
+            &entries_after_remaining_shuffle[..2],
+            &entries_before_shuffle[..2]
+        );
+        let mut expected_tail = entries_before_shuffle[2..].to_vec();
+        let mut actual_tail = entries_after_remaining_shuffle[2..].to_vec();
+        expected_tail.sort();
+        actual_tail.sort();
+        assert_eq!(actual_tail, expected_tail);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+
+        assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            entries_before_shuffle
+        );
+        assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+
+        assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            entries_after_remaining_shuffle
+        );
+
+        let mut shuffled_entire = false;
+        for _ in 0..4 {
+            if state.apply(GuiShellAction::ShuffleEntireSharedPlaylist) {
+                shuffled_entire = true;
+                break;
+            }
+        }
+        assert!(
+            shuffled_entire,
+            "entire-playlist shuffle should eventually permute the playlist"
+        );
+        let entries_after_entire_shuffle = state.current_shared_playlist_entries();
+        let mut expected_entries = entries_after_remaining_shuffle.clone();
+        let mut actual_entries = entries_after_entire_shuffle.clone();
+        expected_entries.sort();
+        actual_entries.sort();
+        assert_eq!(actual_entries, expected_entries);
+        assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+
+        assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            entries_after_remaining_shuffle
+        );
+
+        assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
+        assert!(state.apply(GuiShellAction::UpdateMediaUrlEdit(
+            "https://media.example/stream".to_owned(),
+        )));
+        assert_eq!(
+            state
+                .media_url_edit_session
+                .as_ref()
+                .map(|session| (session.buffer.as_str(), session.is_dirty)),
+            Some(("https://media.example/stream", true))
+        );
+        assert!(state.apply(GuiShellAction::CancelMediaUrlEdit));
+        assert!(state.media_url_edit_session.is_none());
+    }
+
+    #[test]
+    fn gui_playlist_file_helpers_roundtrip_and_track_file_actions() {
+        let root = test_temp_root("playlist-file-helpers");
+        let playlist_path = root.join("shared-playlist.m3u");
+        let playlist_path_string = playlist_path.to_string_lossy().into_owned();
+
+        super::save_playlist_entries_to_path(
+            &playlist_path_string,
+            &[
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ],
+        )
+        .expect("playlist entries should save to disk");
+        assert_eq!(
+            std::fs::read_to_string(&playlist_path)
+                .expect("saved playlist file should be readable"),
+            "Episode 1.mkv\nhttps://example.com/live"
+        );
+
+        std::fs::write(
+            &playlist_path,
+            " Episode 1.mkv \n\n https://example.com/live \n",
+        )
+        .expect("playlist fixture should be updated");
+        assert_eq!(
+            super::load_playlist_entries_from_path(&playlist_path_string)
+                .expect("playlist entries should load from disk"),
+            vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]
+        );
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::playlist_load_override_path_from_lookup(&|name| {
+                (name == "SYNCPLAY_GUI_TEST_LOAD_PLAYLIST_PATH")
+                    .then(|| format!("  {playlist_path_string} "))
+            }),
+            Some(playlist_path_string.clone())
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::playlist_save_override_path_from_lookup(&|name| {
+                (name == "SYNCPLAY_GUI_TEST_SAVE_PLAYLIST_PATH")
+                    .then(|| format!("  {playlist_path_string} "))
+            }),
+            Some(playlist_path_string.clone())
+        );
+
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        assert!(state.apply(GuiShellAction::LoadSharedPlaylistFromFile {
+            path: playlist_path_string.clone(),
+            entries: vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ],
+            shuffled: false,
+        }));
+        let expected_load_message =
+            format!("Shared playlist loaded from file: {playlist_path_string}.");
+        assert_eq!(
+            state.current_shared_playlist_entries(),
+            vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]
+        );
+        assert_eq!(
+            state.last_media_dialog_directory.as_deref(),
+            Some(root.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            state.notifications.last().map(|item| item.message.as_str()),
+            Some(expected_load_message.as_str())
+        );
+
+        assert!(state.apply(GuiShellAction::SaveSharedPlaylistToFile(
+            playlist_path_string.clone(),
+        )));
+        let expected_save_message =
+            format!("Shared playlist saved to file: {playlist_path_string}.");
+        assert_eq!(
+            state
+                .main_window
+                .chat
+                .last()
+                .map(|row| row.message.as_str()),
+            Some(expected_save_message.as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn gui_shell_app_state_moves_and_removes_media_search_rows() {
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             media_search_directories: Some(vec![
@@ -25329,6 +26937,186 @@ mod tests {
     }
 
     #[test]
+    fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
+        let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.main_window.playback.can_manage_playlist = true;
+        state.main_window.playback.can_toggle_pause = true;
+
+        assert!(
+            state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "Episode 1.mkv".to_owned(),
+                "https://example.com/live".to_owned(),
+            ]))
+        );
+        assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+        let shell_tree = state.shell_widget_tree();
+        let add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
+        let open_url_button = shell_tree.find("main-window:playlist:open-url").unwrap();
+        let open_selected_button = shell_tree
+            .find("main-window:playlist:open-selected")
+            .unwrap();
+        let open_selected_folder_button = shell_tree
+            .find("main-window:playlist:open-selected-folder")
+            .unwrap();
+        let trust_selected_button = shell_tree
+            .find("main-window:playlist:trust-selected")
+            .unwrap();
+        let shuffle_remaining_button = shell_tree
+            .find("main-window:playlist:shuffle-remaining")
+            .unwrap();
+        let shuffle_entire_button = shell_tree
+            .find("main-window:playlist:shuffle-entire")
+            .unwrap();
+        let undo_button = shell_tree.find("main-window:playlist:undo").unwrap();
+        let edit_button = shell_tree.find("main-window:playlist:edit").unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, add_url_button),
+            vec![GuiShellAction::BeginSharedPlaylistUrlEdit]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, open_url_button),
+            vec![GuiShellAction::BeginMediaUrlEdit]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, open_selected_button),
+            vec![GuiShellAction::RequestMainWindowUserMediaOpen(
+                "https://example.com/live".to_owned(),
+            )]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, open_selected_folder_button),
+            vec![GuiShellAction::RequestMainWindowUserContainingFolderOpen(
+                "https://example.com/live".to_owned(),
+            )]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, trust_selected_button),
+            vec![GuiShellAction::AddTrustedDomain("example.com".to_owned())]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, shuffle_remaining_button),
+            vec![GuiShellAction::ShuffleRemainingSharedPlaylist]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, shuffle_entire_button),
+            vec![GuiShellAction::ShuffleEntireSharedPlaylist]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_button),
+            vec![GuiShellAction::UndoSharedPlaylistChange]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, edit_button),
+            vec![GuiShellAction::BeginSharedPlaylistTextEdit]
+        );
+
+        assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
+        assert!(state.apply(GuiShellAction::UpdateSharedPlaylistTextEdit(
+            "Episode 9.mkv\nhttps://example.com/live".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::BeginSharedPlaylistUrlEdit));
+        assert!(state.apply(GuiShellAction::UpdateSharedPlaylistUrlEdit(
+            "https://example.com/extra".to_owned(),
+        )));
+        assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
+
+        let shell_tree = state.shell_widget_tree();
+        let playlist_text_node = shell_tree.find("main-window:playlist-edit:text").unwrap();
+        let playlist_text_commit = shell_tree.find("main-window:playlist-edit:commit").unwrap();
+        let playlist_text_cancel = shell_tree.find("main-window:playlist-edit:cancel").unwrap();
+        let playlist_url_text_node = shell_tree
+            .find("main-window:playlist-url-edit:text")
+            .unwrap();
+        let playlist_url_commit = shell_tree
+            .find("main-window:playlist-url-edit:commit")
+            .unwrap();
+        let playlist_url_cancel = shell_tree
+            .find("main-window:playlist-url-edit:cancel")
+            .unwrap();
+        let media_url_text_node = shell_tree.find("main-window:media-url-edit:text").unwrap();
+        let media_url_cancel = shell_tree
+            .find("main-window:media-url-edit:cancel")
+            .unwrap();
+
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_text_commit),
+            vec![
+                GuiShellAction::ReplaceSharedPlaylistEntries(vec![
+                    "Episode 9.mkv".to_owned(),
+                    "https://example.com/live".to_owned(),
+                ]),
+                GuiShellAction::CancelSharedPlaylistTextEdit,
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_text_cancel),
+            vec![GuiShellAction::CancelSharedPlaylistTextEdit]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_url_commit),
+            vec![
+                GuiShellAction::AppendSharedPlaylistEntries(vec![
+                    "https://example.com/extra".to_owned(),
+                ]),
+                GuiShellAction::CancelSharedPlaylistUrlEdit,
+            ]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_url_cancel),
+            vec![GuiShellAction::CancelSharedPlaylistUrlEdit]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_button_node(&state, media_url_cancel),
+            vec![GuiShellAction::CancelMediaUrlEdit]
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &state,
+                playlist_text_node,
+                "Episode 10.mkv",
+                true,
+                false,
+            ),
+            Some(vec![GuiShellAction::UpdateSharedPlaylistTextEdit(
+                "Episode 10.mkv".to_owned(),
+            )])
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &state,
+                playlist_url_text_node,
+                "https://example.com/final",
+                true,
+                false,
+            ),
+            Some(vec![GuiShellAction::UpdateSharedPlaylistUrlEdit(
+                "https://example.com/final".to_owned(),
+            )])
+        );
+        assert_eq!(
+            GuiWidgetEguiRenderer::actions_for_text_input_node(
+                &state,
+                media_url_text_node,
+                "https://media.example/stream",
+                true,
+                true,
+            ),
+            Some(vec![
+                GuiShellAction::UpdateMediaUrlEdit("https://media.example/stream".to_owned()),
+                GuiShellAction::RequestMainWindowUserMediaOpen(
+                    "https://media.example/stream".to_owned(),
+                ),
+                GuiShellAction::CancelMediaUrlEdit,
+            ])
+        );
+    }
+
+    #[test]
     fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
             public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
@@ -25634,6 +27422,34 @@ mod tests {
     }
 
     #[test]
+    fn gui_semantic_driver_runs_playlist_workflow_scenario_without_platform_ui() {
+        let scenario = super::gui_semantic_scenario_named("playlist-workflow-flow")
+            .expect("playlist workflow semantic scenario should exist");
+        let driver = scenario.run().unwrap_or_else(|error| {
+            panic!("{} should execute successfully: {error}", scenario.name())
+        });
+
+        assert_eq!(driver.state().main_window.room_name, "sync-room");
+        assert_eq!(
+            driver
+                .state()
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["episode3.mkv"]
+        );
+        assert_eq!(
+            driver.state().selection.selected_main_window_playlist,
+            Some(0)
+        );
+        assert!(driver.state().playlist_text_edit_session.is_none());
+        assert!(driver.state().playlist_url_edit_session.is_none());
+        assert!(driver.state().media_url_edit_session.is_none());
+    }
+
+    #[test]
     fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         assert_eq!(
             super::gui_semantic_scenario_names(),
@@ -25643,6 +27459,7 @@ mod tests {
                 "runtime-chat-flow",
                 "runtime-transport-churn-flow",
                 "drag-and-drop-ingest-flow",
+                "playlist-workflow-flow",
                 "persistence-reset-flow",
                 "detached-runtime-ownership-flow",
                 "live-python-peer-connect-flow",
@@ -25675,6 +27492,11 @@ mod tests {
                 .contains("drop-media-files\tplaylist")
         );
         assert!(
+            super::semantic_smoke::gui_semantic_scenario_script("playlist-workflow-flow")
+                .expect("playlist workflow scenario should expose a script")
+                .contains("main-window:playlist:edit")
+        );
+        assert!(
             super::semantic_smoke::gui_semantic_scenario_script("persistence-reset-flow")
                 .expect("persistence/reset scenario should expose a script description")
                 .contains("PersistenceRoom")
@@ -25701,7 +27523,7 @@ mod tests {
             "unknown semantic scenario scripts should not resolve"
         );
         let descriptors = super::semantic_smoke::gui_semantic_scenario_descriptors();
-        assert_eq!(descriptors.len(), 9);
+        assert_eq!(descriptors.len(), 10);
         assert_eq!(descriptors[0].name, "configuration-surface-flow");
         assert!(descriptors[0].description.contains("configuration fields"));
         assert!(
@@ -25726,22 +27548,29 @@ mod tests {
                 .contains("window drops open media")
         );
         assert!(descriptors[4].script.contains("drop-media-files\twindow"));
-        assert_eq!(descriptors[5].name, "persistence-reset-flow");
-        assert!(descriptors[5].description.contains("clear-GUI-data"));
-        assert!(descriptors[5].script.contains("PersistenceRoom"));
-        assert_eq!(descriptors[6].name, "detached-runtime-ownership-flow");
+        assert_eq!(descriptors[5].name, "playlist-workflow-flow");
+        assert!(descriptors[5].description.contains("playlist editor"));
         assert!(
-            descriptors[6]
+            descriptors[5]
+                .script
+                .contains("main-window:playlist:add-url")
+        );
+        assert_eq!(descriptors[6].name, "persistence-reset-flow");
+        assert!(descriptors[6].description.contains("clear-GUI-data"));
+        assert!(descriptors[6].script.contains("PersistenceRoom"));
+        assert_eq!(descriptors[7].name, "detached-runtime-ownership-flow");
+        assert!(
+            descriptors[7]
                 .description
                 .contains("detached public-server connect")
         );
-        assert!(descriptors[6].script.contains("semantic-user"));
-        assert_eq!(descriptors[7].name, "live-python-peer-connect-flow");
-        assert!(descriptors[7].description.contains("Python reference peer"));
-        assert!(descriptors[7].script.contains("interop-room"));
-        assert_eq!(descriptors[8].name, "live-python-peer-controlled-room-flow");
-        assert!(descriptors[8].description.contains("controlled room"));
-        assert!(descriptors[8].script.contains("+interop-room:447CE7E3548D"));
+        assert!(descriptors[7].script.contains("semantic-user"));
+        assert_eq!(descriptors[8].name, "live-python-peer-connect-flow");
+        assert!(descriptors[8].description.contains("Python reference peer"));
+        assert!(descriptors[8].script.contains("interop-room"));
+        assert_eq!(descriptors[9].name, "live-python-peer-controlled-room-flow");
+        assert!(descriptors[9].description.contains("controlled room"));
+        assert!(descriptors[9].script.contains("+interop-room:447CE7E3548D"));
         assert!(
             super::gui_semantic_scenario_named("missing-scenario").is_none(),
             "unknown semantic scenarios should not resolve"
@@ -25926,7 +27755,7 @@ assert-selected\tconfiguration-root\ttrue\n",
             super::run_gui_semantic_scenario_named("missing-scenario")
                 .expect_err("unknown scenario should fail")
                 .contains(
-                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                    "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
                 )
         );
     }
@@ -26433,6 +28262,29 @@ assert-pending\tnone\n"
                 files: vec!["One".to_owned(), "Two".to_owned()],
                 selected_index: Some(1),
             }]
+        );
+        assert!(runtime.actions_for_playlist_undo(&state).is_empty());
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::UndoPlaylistChange]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_shuffle_remaining(&state)
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::ShuffleRemainingPlaylist]
+        );
+        assert!(
+            runtime
+                .actions_for_playlist_shuffle_entire(&state)
+                .is_empty()
+        );
+        assert_eq!(
+            handle.drain_requests(),
+            vec![GuiRuntimeRequest::ShuffleEntirePlaylist]
         );
         handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
             paths: vec![

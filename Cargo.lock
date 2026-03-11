@@ -3370,6 +3370,7 @@ dependencies = [
  "rfd",
  "rustls",
  "serde_json",
+ "sha2",
  "syncplay-client-app",
  "syncplay-client-core",
  "syncplay-compat",
