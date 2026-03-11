@@ -58,6 +58,15 @@ const LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL: i64 = 1;
 const LEGACY_SYNCPLAYINTF_SCRIPT_NAME: &str = "syncplayintf";
 const LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT: &str = "syncplayintf-chat";
 
+fn legacy_syncplayintf_script_name_for_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or(LEGACY_SYNCPLAYINTF_SCRIPT_NAME)
+        .to_owned()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacySyncplayOsdKind {
     Notification,
@@ -279,6 +288,7 @@ pub struct MpvAdapter {
     observers_registered: bool,
     legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
     legacy_syncplayintf_script_loaded: bool,
+    legacy_syncplayintf_script_name: String,
     ipc_client: Option<MpvJsonIpcClient>,
 }
 
@@ -326,6 +336,10 @@ impl fmt::Debug for MpvAdapter {
                 "legacy_syncplayintf_script_loaded",
                 &self.legacy_syncplayintf_script_loaded,
             )
+            .field(
+                "legacy_syncplayintf_script_name",
+                &self.legacy_syncplayintf_script_name,
+            )
             .field("ipc_attached", &self.ipc_client.is_some())
             .finish()
     }
@@ -363,6 +377,7 @@ impl Default for MpvAdapter {
             observers_registered: false,
             legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
             legacy_syncplayintf_script_loaded: false,
+            legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
             ipc_client: None,
         }
     }
@@ -504,7 +519,9 @@ impl MpvAdapter {
         }
 
         let script_path = path.as_ref().to_string_lossy().into_owned();
+        let script_name = legacy_syncplayintf_script_name_for_path(path.as_ref());
         self.send_ipc_command_if_attached(json!([MPV_COMMAND_LOAD_SCRIPT, script_path]))?;
+        self.legacy_syncplayintf_script_name = script_name;
         self.legacy_syncplayintf_script_loaded = true;
         self.send_legacy_syncplayintf_options_if_loaded()
     }
@@ -589,7 +606,7 @@ impl MpvAdapter {
     ) -> Result<(), PlayerError> {
         self.send_ipc_command_if_attached(json!([
             MPV_COMMAND_SCRIPT_MESSAGE_TO,
-            LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
+            self.legacy_syncplayintf_script_name.as_str(),
             message_name,
             payload
         ]))
@@ -2185,6 +2202,29 @@ mod tests {
         assert!(options.contains("alertTimeout=6"));
         assert!(options.contains("chatTimeout=8"));
         assert!(options.contains("chatOutputEnabled=True"));
+    }
+
+    #[test]
+    fn load_legacy_syncplayintf_script_targets_script_messages_to_loaded_file_stem() {
+        let (transport, state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"request_id":2,"error":"success"}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .load_legacy_syncplayintf_script(std::path::Path::new(
+                "C:/Temp/syncplay-rust-syncplayintf-702304.lua",
+            ))
+            .expect("attached mpv transport should accept load-script for patched temp files");
+
+        let writes = state.writes();
+        assert_eq!(writes.len(), 2);
+        let second_payload: Value = serde_json::from_str(writes[1].trim_end()).expect("valid json");
+        assert_eq!(
+            second_payload["command"][1],
+            Value::String("syncplay-rust-syncplayintf-702304".to_owned())
+        );
     }
 
     #[test]
