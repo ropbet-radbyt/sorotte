@@ -1,6 +1,6 @@
-#[allow(unused_imports)]
-#[path = "main.rs"]
 mod app;
+
+pub use app::run_syncplay_gui;
 
 pub mod semantic_smoke {
     pub use super::app::semantic_smoke::{
