@@ -1,4 +1,10 @@
-use super::*;
+use super::shell_state::{
+    GuiShellModal, GuiShellView, GuiTransientNotification, GuiTransientNotificationLevel,
+    MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
+    MainWindowRuntimeSnapshot, MainWindowShellState, MainWindowUserRow, SyncplayGuiRuntimeSnapshot,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {

@@ -1,4 +1,34 @@
-use super::*;
+use std::{
+    env,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
+
+use syncplay_client_app::app_boundary::{
+    language::normalized_legacy_runtime_language_tag_legacy_compatible,
+    persistence::load_syncplay_ini_stored_client_settings_mvp_from_path,
+    state::StoredClientSettingsMvp,
+};
+
+use super::GuiAppHost;
+use super::native_host::GuiEframeNativeHost;
+#[cfg(test)]
+use super::native_host::GuiTextPreviewHost;
+use super::remote_services;
+use super::runtime_stack::GuiClientCoreChatSessionRuntimeAdapter;
+use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
+use super::startup_support::{
+    GuiStartupConfigPathSource, GuiStartupPlayerIpcSource, GuiStartupPublicServerSource,
+    env_trimmed, gui_client_core_chat_loopback_bootstrap_from_lookup,
+    gui_client_core_chat_tcp_bootstrap_from_lookup,
+};
+use super::ui_state::{GuiPersistedUiState, load_gui_ui_state_from_root};
+#[cfg(test)]
+use super::widget_tree::GuiWidgetTextPreviewRenderer;
+
+#[cfg(test)]
+#[path = "app_startup/tests.rs"]
+mod tests;
 
 pub(super) fn gui_startup_settings_from_lookup_with<F, R, C, I, L>(
     lookup: F,

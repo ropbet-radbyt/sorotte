@@ -1,4 +1,18 @@
-use super::*;
+use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+use super::shell_state::{
+    GuiCommandAvailabilityRuntimeOverride, GuiCommandRuntimeSnapshot,
+    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
+    GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
+    GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
+    GuiMainWindowUserEditSessionState, GuiPendingOperationKind, GuiPendingOperationState,
+    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
+    GuiRoomHistoryEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiShellView,
+    GuiTextEditSessionState, GuiTransientNotification, GuiTransientNotificationLevel,
+    GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn apply_menu_dialog_runtime_snapshot(

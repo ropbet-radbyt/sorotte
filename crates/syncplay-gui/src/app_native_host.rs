@@ -1,4 +1,36 @@
-use super::*;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use eframe::egui;
+use syncplay_client_app::app_boundary::commands::{
+    LocalInputCommand, LocalOffsetCommand, parse_local_input_command,
+};
+
+use super::GuiAppHost;
+use super::render_egui::{GuiPlaybackPromptKind, GuiWidgetEguiRenderer};
+use super::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
+use super::runtime_bridge::{
+    GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiNoopRuntimePump, GuiPendingRoomChangeRequest,
+    GuiPreviewRuntimeBridge, GuiQueuedRuntimeOwner,
+};
+use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use super::runtime_queue::{
+    GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwnerPump,
+};
+use super::runtime_stack::GuiQueuedSessionTransportHandle;
+use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
+use super::startup::syncplay_gui_qsettings_root_from_env;
+use super::startup_support::env_trimmed;
+use super::support::normalized_editable_text;
+use super::ui_state::{GuiPersistedUiState, persist_gui_ui_state_at_root};
+#[cfg(test)]
+use super::widget_tree::GuiWidgetTextPreviewRenderer;
+
+#[cfg(test)]
+#[path = "app_native_host/tests.rs"]
+mod tests;
 
 pub(super) struct GuiNativeApp {
     state: SyncplayGuiShellAppState,

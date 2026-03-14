@@ -1,0 +1,224 @@
+use super::*;
+
+#[test]
+fn gui_shell_app_state_adds_media_directory_and_pushes_chat_messages() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(state.apply(GuiShellAction::AddMediaSearchDirectory(
+        "C:/Media".to_owned(),
+    )));
+    assert!(state.apply(GuiShellAction::PushChatMessage {
+        sender: "system".to_owned(),
+        message: "Connected".to_owned(),
+    }));
+
+    assert_eq!(state.media_search.directories.len(), 1);
+    assert_eq!(state.media_search.directories[0].path, "C:/Media");
+    assert!(state.media_search.directories[0].is_selected);
+    assert!(state.media_search.can_search_missing_media);
+    assert_eq!(state.main_window.chat.len(), 1);
+    assert_eq!(state.main_window.chat[0].message, "Connected");
+
+    let saved = state.configuration.to_stored_settings();
+    assert_eq!(
+        saved.media_search_directories,
+        Some(vec!["C:/Media".to_owned()])
+    );
+}
+
+#[test]
+fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello world".to_owned(),)));
+    assert_eq!(
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::SendChatMessage)
+    );
+    assert_eq!(state.outgoing_chat_message.as_deref(), Some("hello world"));
+    assert!(
+        state
+            .render_lines()
+            .join("\n")
+            .contains("[Chat Send] pending_message=hello world")
+    );
+
+    assert!(state.apply(GuiShellAction::CompleteLocalChatSend));
+    assert_eq!(state.pending_operation, None);
+    assert_eq!(state.outgoing_chat_message, None);
+    assert_eq!(
+        state
+            .main_window
+            .chat
+            .last()
+            .map(|row| row.message.as_str()),
+        Some("hello world")
+    );
+    assert_eq!(
+        state.notifications.last().map(|item| item.message.as_str()),
+        Some("Chat sent.")
+    );
+
+    assert!(state.apply(GuiShellAction::AnnounceRemoteChatMessage {
+        sender: "alice".to_owned(),
+        message: "hi there".to_owned(),
+    }));
+    assert_eq!(
+        state.main_window.chat.last().map(|row| row.sender.as_str()),
+        Some("alice")
+    );
+    assert_eq!(
+        state
+            .main_window
+            .chat
+            .last()
+            .map(|row| row.message.as_str()),
+        Some("hi there")
+    );
+
+    assert!(state.apply(GuiShellAction::AnnounceSystemChatEvent(
+        "Connection stabilized.".to_owned(),
+    )));
+    assert_eq!(
+        state.main_window.chat.last().map(|row| row.sender.as_str()),
+        Some("system")
+    );
+    assert_eq!(
+        state
+            .main_window
+            .chat
+            .last()
+            .map(|row| row.message.as_str()),
+        Some("Connection stabilized.")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(!state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Local chat sending is unavailable when chat input is disabled.")
+    );
+
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(!state.apply(GuiShellAction::BeginLocalChatSend("   ".to_owned())));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Local chat messages must be non-empty.")
+    );
+
+    assert!(!state.apply(GuiShellAction::CompleteLocalChatSend));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("No local chat send is currently in progress.")
+    );
+
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    assert!(!state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned())));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Another GUI operation is already in progress.")
+    );
+    assert!(state.apply(GuiShellAction::CancelLocalChatSend));
+    assert_eq!(state.pending_operation, None);
+    assert_eq!(state.outgoing_chat_message, None);
+    assert_eq!(
+        state.notifications.last().map(|item| item.message.as_str()),
+        Some("Chat send canceled.")
+    );
+
+    assert!(!state.apply(GuiShellAction::AnnounceRemoteChatMessage {
+        sender: " ".to_owned(),
+        message: "hi".to_owned(),
+    }));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Remote chat sender and message must both be non-empty.")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_handles_text_edits_and_room_switches() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Connection",
+        label: "Username",
+        value: TEST_USERNAME.to_owned(),
+    }));
+    assert!(state.apply(GuiShellAction::SetMainWindowRoom(
+        "+room:ABCDEF123456".to_owned(),
+    )));
+
+    let saved = state.configuration.to_stored_settings();
+    assert_eq!(saved.username.as_deref(), Some(TEST_USERNAME));
+    assert_eq!(saved.room.as_deref(), Some("+room:ABCDEF123456"));
+    assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+    assert!(state.main_window.controlled_room_active);
+    assert!(state.main_window.users[0].is_controller);
+}
+
+#[test]
+fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        room: Some("+room:ABCDEF123456".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let baseline_chat_len = state.main_window.chat.len();
+    let baseline_notification_len = state.notifications.len();
+
+    assert!(state.apply(GuiShellAction::JoinMainWindowRoom(
+        "+room:NEEDS_RUNTIME".to_owned(),
+    )));
+    assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+    assert!(state.main_window.controlled_room_active);
+    assert!(state.main_window.users[0].is_controller);
+    assert_eq!(
+        state.configuration.to_stored_settings().room.as_deref(),
+        Some("+room:ABCDEF123456")
+    );
+    assert_eq!(state.main_window.chat.len(), baseline_chat_len);
+    assert_eq!(state.notifications.len(), baseline_notification_len);
+
+    assert!(state.apply(GuiShellAction::LeaveMainWindowRoom));
+    assert_eq!(state.main_window.room_name, "+room:ABCDEF123456");
+    assert!(state.main_window.controlled_room_active);
+    assert!(state.main_window.users[0].is_controller);
+    assert_eq!(
+        state.configuration.to_stored_settings().room.as_deref(),
+        Some("+room:ABCDEF123456")
+    );
+    assert_eq!(state.main_window.chat.len(), baseline_chat_len);
+    assert_eq!(state.notifications.len(), baseline_notification_len);
+}
+
+#[test]
+fn gui_shell_app_state_rejects_invalid_room_status_actions() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(!state.apply(GuiShellAction::JoinMainWindowRoom("   ".to_owned(),)));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("Room name cannot be empty.")
+    );
+
+    assert!(!state.apply(GuiShellAction::LeaveMainWindowRoom));
+    assert_eq!(
+        state.validation.last_action_error.as_deref(),
+        Some("No joined room is currently active.")
+    );
+}

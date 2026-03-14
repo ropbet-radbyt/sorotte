@@ -1,4 +1,12 @@
-use super::*;
+use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+
+use super::shell_state::{
+    GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiMainWindowUserEditSessionState,
+    GuiPendingOperationKind, GuiPendingOperationState, GuiPublicServerEditSessionState,
+    GuiShellAction, GuiTextEditSessionState, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn apply(&mut self, action: GuiShellAction) -> bool {

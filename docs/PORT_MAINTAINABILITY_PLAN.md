@@ -2,148 +2,372 @@
 
 Working plan for keeping the Rust port shippable while finishing client parity.
 
-## Audit date
+## Independent evaluation
 
-- 2026-03-11
+- Audit date: 2026-03-14
+- Last updated: 2026-03-14
 
-## Purpose
+## Verdict
 
-The port is already functionally advanced, but the main client crates have accumulated enough code in single files that change risk is rising faster than feature coverage. This document turns that audit into a working plan that can be executed incrementally.
+The recent GUI maintainability work was worthwhile. In the current tree:
+
+- `syncplay-gui` is still library-first,
+- `src/main.rs` is still a thin launcher,
+- `app_tests.rs` is gone,
+- area-owned GUI test modules now exist,
+- `src/app/mod.rs` now owns the GUI router instead of a flat `app.rs` path table,
+- `src/semantic_smoke/` now owns parser, catalog, CLI, and code-driven smoke submodules,
+- and broad `use super::*;` imports no longer appear in production GUI modules.
+
+The library/app side of the GUI maintainability round can now be called done. The remaining GUI
+maintainability risk is no longer the app tree itself; it sits in specialized tooling and harness
+code:
+
+- `src/bin/syncplay-gui-native-smoke.rs` is no longer a single 6275-line tooling monolith and is
+  now a 1161-line root helper layer,
+- `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` is now 930 lines with
+  scenario-owned submodules ranging from 51 to 800 lines,
+- `src/bin/syncplay-gui-native-smoke/platform_driver.rs` is still 1598 lines and remains the only
+  native-smoke production file above the soft cap,
+- `src/live_python_interop.rs` is still a specialized interop harness sitting at the split range,
+- and the largest remaining GUI test files are area-owned local hotspots rather than crate-global
+  dumping grounds.
+
+That is valuable progress. Do not keep splitting app/library files just to satisfy this plan. If
+more GUI maintainability work happens next, point it at the native smoke platform driver or the
+shared native-smoke helper layer, or leave the GUI app layer alone and move back to parity work.
 
 ## Scope
 
 - Keep using the upstream Python client as the behavioral oracle.
 - Keep `mpv` as the active parity target.
-- Improve maintainability without pausing client parity work indefinitely.
-- Bias toward changes that make future agent work easier to navigate, test, and review.
+- Improve maintainability without pausing parity work indefinitely.
+- Prefer changes that make future review, testing, and agent-driven work more targeted.
+
+## Current measured hotspots
+
+GUI hotspots were remeasured on 2026-03-14. This pass now includes `src/bin/` so the native smoke
+tooling binary is visible in the figures. Non-GUI crate figures below are carried forward from the
+2026-03-13 audit and were not remeasured in this pass.
+
+### `syncplay-gui` library and app production
+
+- `src/app_shell_state.rs` - 1153 lines
+- `src/live_python_interop.rs` - 1000 lines
+- `src/app_shell_projection.rs` - 909 lines
+- `src/app_runtime_stack.rs` - 901 lines
+- `src/app_widget_views/main_window.rs` - 900 lines
+- `src/semantic_driver.rs` - 866 lines
+
+### `syncplay-gui` binaries and tooling
+
+- `src/bin/syncplay-gui-native-smoke/platform_driver.rs` - 1598 lines
+- `src/bin/syncplay-gui-native-smoke.rs` - 1161 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` - 930 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_runner/baseline_contract.rs` - 800 lines
+- `src/bin/syncplay-gui-semantic-suite.rs` - 227 lines
+- `src/bin/syncplay-gui-semantic-smoke.rs` - 30 lines
+
+### `syncplay-gui` tests and smoke
+
+- `src/app_runtime_owner/tests/transport_tests.rs` - 919 lines
+- `src/app_shell_state/tests/runtime_snapshot_tests/configuration_runtime_tests.rs` - 851 lines
+- `src/app_render_egui/tests.rs` - 817 lines
+- `src/app_runtime_owner/tests/connection_runtime_tests.rs` - 810 lines
+- `src/app_startup/tests.rs` - 760 lines
+- `src/app_shell_state/tests/command_tests.rs` - 728 lines
+- `src/app_shell_state/tests/runtime_snapshot_tests/menu_runtime_tests.rs` - 684 lines
+
+### `syncplay-cli` from the previous audit
+
+- `src/main.rs` - 25872 lines
+
+### `syncplay-client-core` from the previous audit
+
+- `src/lib.rs` - 15115 lines
+
+### `syncplay-compat` from the previous audit
+
+- `src/lib.rs` - 10172 lines
 
 ## Current read
 
 ### Strengths
 
-- Workspace tests, `clippy`, and GUI semantic coverage are green in the latest audit.
-- The repo already has good crate separation at the workspace level.
-- `syncplay-client-app` provides a useful shared boundary for commands, persistence, language, diagnostics, and startup/session planning.
-- The GUI has meaningful semantic and Python-interop coverage rather than only unit tests.
+- Workspace-level crate boundaries are already useful.
+- `syncplay-client-app` provides a real shared seam for commands, persistence, language, and
+  startup/session planning.
+- `syncplay-gui` is already library-first and keeps its launcher surface stable.
+- The crate-global GUI test hotspot has been broken apart into area-owned test modules.
+- `src/app/mod.rs` now acts as the real GUI module root instead of a flat router file.
+- `src/app_widget_views/` and `src/app_runtime_stack/` now use area-owned production submodules
+  rather than monolithic top-level files.
+- `src/app_shell_state/` now owns browser/playlist helpers plus the extracted configuration and
+  main-window state models, leaving `app_shell_state.rs` below the soft cap.
+- `src/semantic_smoke/` now separates external-script parsing, scenario cataloging, CLI handling,
+  and code-driven smoke flows while keeping the public semantic smoke entrypoints stable.
+- `src/bin/syncplay-gui-native-smoke/` now separates CLI/process orchestration, platform-driver
+  integration, a shared runner root, and scenario-owned contract modules instead of concentrating
+  all tooling behavior in one file.
+- `src/app/testing/support.rs` now provides a shared fixture and harness seam for GUI tests.
+- The GUI has semantic and Python-interop coverage rather than only narrow unit tests.
+- The repository already has stable smoke commands for semantic and native GUI validation.
 
 ### Main risks
 
-- `crates/syncplay-gui/src/app.rs` is still the largest production risk concentration, but it is now down to roughly `10.0k` lines after the shell state/projection pass. The crate is now library-first and the active working split has already moved legacy GUI UI-state persistence into `app_ui_state.rs`, startup/bootstrap support into `app_startup.rs` and `app_startup_support.rs`, shared formatting/normalization helpers into `app_support.rs`, the widget-tree model and test preview renderer into `app_widget_tree.rs`, queued-runtime/native host plumbing into `app_runtime_queue.rs` and `app_native_host.rs`, configuration-draft round-tripping into `app_configuration_draft.rs`, shell/reducer projection layers into `app_reducer.rs`, `app_widget_projection.rs`, and `app_shell_projection.rs`, lower shell/runtime workflows into `app_feedback_workflows.rs`, `app_shell_workflows.rs`, `app_runtime_updates.rs`, `app_connection_workflows.rs`, `app_media_workflows.rs`, and state-integrity helpers/tests into `app_state_integrity.rs` and `app_tests.rs`. The remaining hotspot is now the egui renderer/action mapping, runtime-owner orchestration, and top-level app wiring still living in `app.rs`, and that is where future extraction work should stay focused.
-- `crates/syncplay-cli/src/main.rs` still owns too much business logic even though `syncplay-client-app` exists.
-- `crates/syncplay-client-core/src/lib.rs` has a good runtime/session seam, but too much behavior still lives in one file.
-- `crates/syncplay-compat/src/lib.rs` is also large enough to become a maintenance problem, but it is lower priority than GUI, CLI, and client-core.
-- The remaining parity backlog is now narrow enough that architecture debt is the main source of delivery risk.
+- The remaining GUI-local maintainability hotspot is now
+  `src/bin/syncplay-gui-native-smoke/platform_driver.rs`, which is the only native-smoke
+  production file still above the soft cap.
+- `src/bin/syncplay-gui-native-smoke.rs` still sits slightly above the smoke-harness target
+  because it owns shared launch, config-seeding, and mock-server helpers.
+- `live_python_interop.rs` still sits at the interop split range and should not absorb more
+  unrelated behavior.
+- `app_runtime_owner/tests/transport_tests.rs`, `app_shell_state/tests/runtime_snapshot_tests/configuration_runtime_tests.rs`,
+  and `app_render_egui/tests.rs` now contain the next local test files to watch.
+- `syncplay-cli/src/main.rs` and `syncplay-client-core/src/lib.rs` remain large enough to dominate
+  change risk outside the GUI.
+- The plan should now describe measured state and decisions, not continue growing as a progress log.
 
 ## Guiding rules
 
 1. Keep landing parity work as small, test-backed vertical slices.
-2. When touching a giant file, extract the touched area in the same change if the edit increases complexity.
-3. Prefer library modules over growing binaries.
-4. Preserve existing test behavior during extraction; refactors should be behavior-neutral unless explicitly closing a parity gap.
+2. When touching a large module, extract the touched concern in the same change if complexity would
+   otherwise increase.
+3. Prefer real module trees over flat file fan-out once an area has many related source files.
+4. Preserve behavior during extractions unless a change explicitly closes a parity gap.
 5. Keep public seams stable while moving internals.
-6. Avoid introducing new global state or new cross-crate duplication.
+6. Avoid widening visibility only to make tests easier.
+7. Keep scripts and smoke entrypoints stable while their implementation moves underneath them.
+8. Do not do layout-only churn; a file move is only justified when it also reduces a real hotspot
+   or clarifies ownership.
+
+## Size policy
+
+These are working thresholds, not style rules:
+
+- Production modules: target roughly 400-900 lines.
+- Production modules: treat roughly 1200 lines as a soft cap.
+- Production modules: require extraction before or during new feature work once a touched module is
+  above roughly 1500 lines.
+- Test modules: target roughly 150-400 lines.
+- Test modules: split once a test module crosses roughly 600-800 lines or mixes multiple unrelated
+  concerns.
+- Smoke and interop harnesses: split once a file crosses roughly 800-1200 lines or mixes unrelated
+  flows that could be reviewed independently.
+- Binary entrypoints should stay thin and focused on process entry, argument handling, and exit
+  behavior.
+
+## GUI architecture decision
+
+The library-first step is complete, the crate-global GUI test breakup is complete, the flat router
+is retired behind `src/app/mod.rs`, and `semantic_smoke.rs` is now split into area-owned
+submodules. The next GUI maintainability work, if any, should target standalone tooling binaries
+and shared harness helpers rather than more churn inside the app tree.
+
+### Direction
+
+- Keep `src/main.rs` as a thin launcher.
+- Keep `src/lib.rs` as the crate entry surface.
+- Keep `src/app/mod.rs` as the real GUI module root and continue using area-owned submodules when
+  touched concerns need extraction.
+- Keep `src/semantic_smoke/` as an area-owned harness module tree rather than letting the root file
+  regrow.
+- Keep moving dependencies toward explicit area imports rather than parent-wide namespace imports.
+- If native smoke tooling keeps growing, move shared launch, config, and mock-server helpers out of
+  `src/bin/syncplay-gui-native-smoke.rs` and split `platform_driver.rs` before expanding the
+  Windows/UIA driver further.
+
+### Suggested target layout
+
+```text
+crates/syncplay-gui/src/
+  lib.rs
+  main.rs
+  app/
+    mod.rs
+    state/
+      mod.rs
+      configuration.rs
+      selection.rs
+      runtime_snapshots.rs
+    runtime/
+      mod.rs
+      owner.rs
+      stack.rs
+      detached.rs
+      projection.rs
+      requests.rs
+      player.rs
+      transport.rs
+    views/
+      mod.rs
+      configuration.rs
+      main_window.rs
+      public_servers.rs
+      media_search.rs
+      widget_projection.rs
+    workflows/
+      mod.rs
+      configuration.rs
+      playlist.rs
+      main_window.rs
+      connection.rs
+      feedback.rs
+    render/
+      mod.rs
+      egui.rs
+      actions.rs
+      io.rs
+    testing/
+      mod.rs
+      support.rs
+      semantic_driver.rs
+      semantic_smoke.rs
+      live_python_interop.rs
+  semantic_scenarios/
+    *.txt
+```
+
+This layout is not required as one giant move. It should be reached incrementally by moving the
+largest remaining hotspots first.
+
+## Test organization decision
+
+### Decision
+
+For this repository, prefer separate source-owned unit-test modules and folders over large inline
+test blocks or one crate-global GUI test file. The current tree validates that this is the right
+direction: `app_tests.rs` is gone and the remaining test problems are now local hotspot files that
+can be split without widening visibility.
+
+In practice, that means:
+
+- do not keep growing `app_tests.rs`,
+- do not move most GUI tests into crate-root `tests/`,
+- and do not default to long inline `mod tests` blocks in production files.
+
+### Why this is the right Rust choice here
+
+- Most GUI behavior depends on crate-private state and internal reducers/runtime owners.
+- Top-level integration tests in `tests/` only see the public API and would force unnecessary
+  visibility widening.
+- Small colocated unit-test modules preserve private access while keeping ownership local.
+- The current problem is navigability and ownership; a large inline test block would recreate the
+  same problem inside each production file.
+
+### Prescribed test layout
+
+Use sibling unit-test modules or test folders owned by the module they exercise.
+
+Examples:
+
+```text
+src/app/runtime/stack.rs
+src/app/runtime/stack/tests.rs
+
+src/app/views/configuration.rs
+src/app/views/configuration/tests.rs
+
+src/app/workflows/playlist.rs
+src/app/workflows/playlist/tests.rs
+```
+
+The production file should declare:
+
+```rust
+#[cfg(test)]
+mod tests;
+```
+
+### Rules
+
+- Keep tiny, obviously local tests inline only when they stay very small and directly explain one
+  helper or parser.
+- Put most GUI unit tests in sibling `tests.rs` files or `tests/` folders under the owning module.
+- Reserve crate-root `tests/` for true integration tests:
+  public API behavior, CLI behavior, binary entrypoints, and cross-crate end-to-end flows.
+- Keep reusable fixtures and harness helpers in `src/app/testing/support.rs` or
+  `src/app/testing/support/`, not in a giant general-purpose test file.
+- Keep semantic scenario data in `src/semantic_scenarios/` as external text fixtures.
+- Do not make internal types `pub` only to satisfy tests.
+
+### Immediate action for the GUI crate
+
+The old `app_tests.rs` action is done. The next test-maintainability action is to split the new
+largest local hotspots before they become the next dumping grounds. The first split should be:
+
+- keep `app_runtime_owner/tests/` split into area-owned modules rather than recombining it
+- keep `app_runtime_stack/tests/` split into area-owned modules rather than recombining it
+- keep `app_smoke/` split into scenario-owned smoke modules rather than recombining it
+- continued subdivision inside `app_shell_state/tests/` whenever a local file crosses the test-size
+  threshold
+- continued use of `app/testing/support.rs` for temp roots, fake bridges, pump helpers, and shared
+  assertions
 
 ## Working order
 
-### 1. Establish extraction rules
-
-Outcome:
-
-- New work stops making the large files larger by default.
-
-Actions:
-
-- Treat roughly `1-2k` lines as a soft module target.
-- Treat roughly `3k` lines as the point where extraction is mandatory.
-- Do not add new feature slices directly to the current GUI/CLI/client-core monoliths unless the same change extracts the touched area.
-- Keep tests close to the module they exercise once extraction begins.
-
-Definition of done:
-
-- The team agrees to enforce these limits for new work.
-
-### 2. Turn `syncplay-gui` into a real library-first crate
+### 1. Keep the native GUI smoke tooling bounded
 
 Why first:
 
-- It is the biggest single-file risk.
-- It is also where remaining user-visible parity work will land.
+- The app/library side of the GUI is now in a defensible state.
+- The native smoke runner is now scenario-owned and no longer the main GUI-local review hazard.
+- The only remaining GUI-local extraction targets are the Windows/UIA driver and, secondarily, the
+  shared helper layer in the native-smoke root binary.
 
 Actions:
 
-- Move app code out of `src/main.rs` into `src/lib.rs` plus `src/app/...`.
-- Leave `src/main.rs` as a thin launcher.
-- Move `semantic_smoke`, `semantic_driver`, and `live_python_interop` out of the binary file and into normal library modules.
-- Preserve existing semantic-smoke and live-interop entrypoints so scripts do not break.
-
-Progress so far:
-
-- `src/main.rs` is now a thin launcher.
-- `src/lib.rs` exposes the GUI entrypoint and semantic wrappers.
-- `app_ui_state.rs` now owns legacy GUI UI-state persistence, QSettings parsing/writing, and the persisted update-check/media-dialog/public-server state model.
-- `app_startup.rs` now owns config-path resolution, startup action planning, and startup host wiring.
-- `app_startup_support.rs` now owns startup environment lookup, client-core chat bootstrap parsing, and startup-source descriptors shared by startup planning and tests.
-- `app_support.rs` now owns shared shell helper functions for optional text/number formatting, editable-text normalization, runtime timestamps, and autoplay/offset helpers.
-- `app_widget_tree.rs` now owns the widget-tree model, widget renderer trait, and test preview renderer used by semantic and shell preview code.
-- `app_runtime_queue.rs` now owns the queued runtime request/action bridge plus the owner pump.
-- `app_native_host.rs` now owns the egui-native host/app wiring and related host-side helpers.
-- `app_configuration_draft.rs` now owns the editable configuration-draft round-tripping layer, including the split between raw control values and parsed stored settings.
-- `app_reducer.rs`, `app_widget_projection.rs`, and `app_shell_projection.rs` now own the action reducer plus the shell/widget projection layers that were previously inline in `app.rs`.
-- `app_feedback_workflows.rs`, `app_shell_workflows.rs`, `app_runtime_updates.rs`, `app_connection_workflows.rs`, `app_media_workflows.rs`, `app_state_integrity.rs`, and `app_tests.rs` now own the lower-half workflow/update/state-integrity/test bodies that were previously in `app.rs`.
-- The remaining work is to keep peeling `app.rs` apart along egui renderer/interaction mapping, runtime-owner boundaries, and the remaining top-level shell/app wiring.
-
-Suggested module split:
-
-- `app/state.rs`
-- `app/actions.rs`
-- `app/reducer.rs`
-- `app/runtime_bridge.rs`
-- `app/runtime_owner.rs`
-- `app/render.rs`
-- `app/views/configuration.rs`
-- `app/views/main_window.rs`
-- `app/views/public_servers.rs`
-- `app/views/media_search.rs`
-- `app/testing/semantic_driver.rs`
-- `app/testing/semantic_smoke.rs`
-- `app/testing/live_python_interop.rs`
+- Keep `src/bin/syncplay-gui-native-smoke.rs` focused on process entry plus shared launch/config
+  helpers; do not let scenario logic drift back into it.
+- Keep `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` as the orchestration/helper
+  layer and add new scenarios in owned submodules.
+- Split `src/bin/syncplay-gui-native-smoke/platform_driver.rs` further only if more UIA/Windows
+  driver behavior lands there.
+- Revisit the native-smoke root helper layer only if more launch/config/mock-server behavior lands
+  there.
+- Revisit `live_python_interop.rs` only if more behavior lands there.
+- Keep `app/testing/support.rs` as the shared support seam.
+- Keep semantic, native, and real-`mpv` smoke entrypoints stable while their internals move.
 
 Definition of done:
 
-- `src/main.rs` is small and contains launch wiring only.
-- `src/lib.rs` exposes the GUI app surface and test entrypoints directly.
-- Existing GUI semantic and interop commands still work unchanged.
+- The GUI app/library layer stays under the current thresholds and keeps its module ownership clear.
+- The native smoke runner stays scenario-owned and under its current size range.
+- No new GUI extraction starts unless parity work touches `platform_driver.rs`,
+  `syncplay-gui-native-smoke.rs`, or `live_python_interop.rs` enough to justify moving a concern.
+- Existing semantic and Python-interop commands still work unchanged.
 
-### 3. Thin down `syncplay-cli`
+### 2. Thin down `syncplay-cli`
 
 Why second:
 
-- The CLI is a large binary with a lot of logic that should be library-owned.
-- It already has a natural destination crate in `syncplay-client-app`.
+- `syncplay-cli/src/main.rs` is still a major monolith.
+- It has a clear destination seam in `syncplay-client-app`.
 
 Actions:
 
 - Add `crates/syncplay-cli/src/lib.rs`.
-- Move parsing, startup planning, persistence wiring, and network-loop orchestration out of `main.rs`.
-- Prefer moving reusable behavior into `syncplay-client-app` when it is not CLI-specific.
+- Move parsing, startup planning, persistence wiring, and network-loop orchestration out of
+  `main.rs`.
+- Move reusable behavior into `syncplay-client-app` when it is not CLI-specific.
 - Leave `main.rs` responsible only for process entry, stdout/stderr behavior, and exit handling.
 
 Definition of done:
 
-- `syncplay-cli/src/main.rs` becomes a thin entrypoint.
-- Shared startup behavior lives in library code and can be reused by tests or future frontends.
+- `syncplay-cli/src/main.rs` is a thin entrypoint.
+- Shared startup behavior lives in library code that can be reused by tests or future frontends.
 
-### 4. Split `syncplay-client-core` around existing seams
+### 3. Split `syncplay-client-core` around existing seams
 
 Why third:
 
-- The runtime/session boundary is already present, so this refactor has a clear path.
+- The runtime/session boundary already exists.
 - Many future parity slices depend on touching this crate safely.
 
 Actions:
 
-- Keep `ClientRuntimeAction` and `ClientRuntimeControl` as the initial stable seam.
-- Split `lib.rs` into focused modules:
+- Keep `ClientRuntimeAction` and `ClientRuntimeControl` as the stable seam.
+- Split `lib.rs` into focused modules such as:
   - `session.rs`
   - `runtime.rs`
   - `chat.rs`
@@ -157,57 +381,67 @@ Actions:
 
 Definition of done:
 
-- `lib.rs` becomes a small re-export and crate-wiring layer.
-- Session state and runtime orchestration are no longer maintained in one file.
+- `lib.rs` becomes a small crate-wiring layer.
+- Session state and runtime orchestration no longer live in one file.
 
-### 5. Only then resume feature slices in the highest-risk GUI areas
+### 4. Resume parity slices in the highest-risk GUI areas
 
-Priority order for parity work after the first extraction round:
+Priority order after the next GUI extraction round:
 
-1. GUI slash-command handling.
-2. Configuration dialog completion.
-3. Runtime localization and language-sensitive service calls.
-4. Explicit decision on whether non-`mpv` backends remain deferred or are re-opened.
+1. GUI slash-command handling
+2. Configuration dialog completion
+3. Runtime localization and language-sensitive service calls
+4. Explicit decision on whether non-`mpv` backends remain deferred or are reopened
 
 Execution rule:
 
-- Each feature slice must use the Python client as the reference behavior.
-- Each slice must add the lowest-sensible failing test first.
+- Use the Python client as the reference behavior.
+- Add the lowest-sensible failing test first.
 - If a slice touches a still-large module, extract before or during the feature change.
 
-### 6. Improve agent-facing development ergonomics
-
-Goal:
-
-- Make it easier for an agent to work in a targeted area without loading tens of thousands of lines of mixed concerns.
-
-Actions:
+### 5. Improve agent-facing ergonomics
 
 - Prefer one concern per module and one major state owner per file.
-- Keep adapter traits and reducer entrypoints explicit and easy to grep.
-- Keep test helpers in dedicated modules instead of embedding every helper in giant `mod tests`.
-- Add short module-level docs for major boundaries once extraction lands.
-- Maintain a small set of stable commands for verification:
-  - `cargo test --workspace`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
-  - `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json`
+- Keep reducer entrypoints, runtime adapters, and transport seams explicit and easy to grep.
+- Add short module-level docs for major boundaries once the extraction lands.
+- Keep a small stable set of verification commands for routine use.
 
-### 7. Secondary cleanup after the main extractions
+### 6. Secondary cleanup after the main extractions
 
-Lower priority, but worth scheduling after the main three crates improve:
-
-- Split `syncplay-compat/src/lib.rs` into protocol probes, live Python harnesses, and server-runtime scenarios.
-- Revisit whether some GUI-only shell state types belong in their own modules or a separate crate later.
-- Add a compact compatibility matrix generated from tests when the remaining parity backlog is smaller.
+- Split `syncplay-compat/src/lib.rs` into protocol probes, Python harnesses, and server-runtime
+  scenarios.
+- Revisit whether some GUI-only shell state types belong in narrower modules or a separate crate.
+- Add a compact compatibility matrix generated from tests once the parity backlog is smaller.
 
 ## Immediate backlog
 
-- [x] Create `syncplay-gui` library-first module structure without changing behavior.
-- [x] Move GUI semantic and Python-interop helpers out of `crates/syncplay-gui/src/main.rs`.
-- [ ] Continue splitting `crates/syncplay-gui/src/app.rs` into state, runtime, render, and test modules.
-- [ ] Add a repeatable full GUI smoke gate that bundles semantic, native, and real-`mpv` smoke coverage into one documented validation pass.
-- [ ] Add `syncplay-cli/src/lib.rs` and reduce `main.rs` to entrypoint code.
-- [ ] Split `syncplay-client-core/src/lib.rs` into runtime/session-focused modules.
+- [x] Create `syncplay-gui` library-first structure and reduce `src/main.rs` to a thin launcher.
+- [x] Move GUI semantic and Python-interop helpers out of the GUI binary entrypoint.
+- [x] Dissolve `crates/syncplay-gui/src/app_tests.rs` into area-owned unit-test modules and
+      `app/testing/support`.
+- [x] Add `crates/syncplay-gui/src/app/testing/support.rs` as the shared GUI test harness seam.
+- [x] Create a real `crates/syncplay-gui/src/app/` hierarchy and retire the flat `app.rs`
+      `#[path]` router.
+- [x] Finish splitting `crates/syncplay-gui/src/app_runtime_stack.rs`.
+- [x] Split `crates/syncplay-gui/src/app_widget_views.rs`.
+- [x] Split `crates/syncplay-gui/src/app_shell_state.rs`.
+- [x] Split `crates/syncplay-gui/src/app_runtime_owner/tests.rs`.
+- [x] Split `crates/syncplay-gui/src/app_runtime_stack/tests.rs`.
+- [x] Split `crates/syncplay-gui/src/app_smoke.rs` into smaller scenario-owned smoke modules.
+- [x] Keep `semantic_smoke.rs` public entrypoints stable while splitting parser, catalog, CLI, and
+      code-driven smoke internals into `src/semantic_smoke/`.
+- [x] Split `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke.rs` into root, platform-driver,
+      and scenario-runner modules.
+- [x] Split
+      `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` into
+      scenario-owned submodules while keeping the runner root under 1000 lines.
+- [ ] Split `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke/platform_driver.rs` further
+      only if more Windows driver logic lands there.
+- [ ] Split shared launch/config/mock-server helpers out of
+      `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke.rs` only if more behavior lands there.
+- [x] Keep the documented full GUI smoke gate for semantic, native, and real-`mpv` coverage.
+- [ ] Add `crates/syncplay-cli/src/lib.rs` and reduce `main.rs` to entrypoint code.
+- [ ] Split `crates/syncplay-client-core/src/lib.rs` into runtime/session-focused modules.
 - [ ] Implement GUI slash-command handling using `syncplay-client-app` command planning.
 - [ ] Finish missing configuration dialog controls.
 - [ ] Localize runtime strings and language-sensitive service calls.
@@ -238,17 +472,33 @@ For full GUI smoke validation:
 - `cargo test -p syncplay-gui gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config -- --ignored`
   Requires local `SYNCPLAY_MPV_SMOKE_BIN` and media fixture setup.
 
-## Non-goals for this plan
+## Non-goals
 
 - Reopening non-`mpv` player parity immediately.
-- Large-scale crate reshuffling without first using the existing seams.
+- Large-scale crate reshuffling before using the seams that already exist.
 - Rewriting working behavior for style alone.
 
 ## Success criteria
 
 This plan is succeeding if:
 
-- the giant files are shrinking instead of growing,
-- parity work can land in smaller slices,
+- the largest files are shrinking instead of growing,
+- test ownership stays local instead of converging back into giant shared files,
+- parity work lands in smaller vertical slices,
 - tests stay green through extractions,
-- and future audits focus on behavior gaps rather than codebase navigability.
+- and future audits focus more on behavior gaps than on codebase navigability.
+
+The current GUI app/library maintainability round is done:
+
+- `app.rs` no longer acts as a flat path router,
+- `semantic_smoke.rs` no longer concentrates unrelated parser, catalog, CLI, and code-driven
+  smoke concerns in one file,
+- no GUI app/library production module remains above roughly 1500 lines,
+- the current overlarge GUI test and smoke library files are back under the working thresholds,
+- `native_smoke_runner.rs` is now scenario-owned and back under the working threshold,
+- and the next GUI audit is more about behavior gaps plus the native smoke driver/helper tooling
+  than about app-tree ownership.
+
+If another GUI maintainability round is opened, it should start with
+`src/bin/syncplay-gui-native-smoke/platform_driver.rs` or the shared helper layer in
+`src/bin/syncplay-gui-native-smoke.rs`, not with more churn in `src/app/`.

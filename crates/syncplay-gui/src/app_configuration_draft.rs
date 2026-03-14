@@ -1,4 +1,23 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use syncplay_client_app::app_boundary::{
+    language::normalized_legacy_runtime_language_tag_legacy_compatible,
+    state::{
+        StoredClientSettingsMvp, parse_autoplay_min_users_override_legacy_compatible,
+        parse_unpause_action_mode_legacy_compatible,
+    },
+};
+use syncplay_client_core::PrivacyMode;
+
+use super::shell_state::{
+    FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
+    GuiDialogControlKind,
+};
+use super::support::{bool_label, normalized_editable_text, parse_trusted_domains_text};
+
+#[cfg(test)]
+#[path = "app_configuration_draft/tests.rs"]
+mod tests;
 
 impl FirstRunConfigurationDialogDraft {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {

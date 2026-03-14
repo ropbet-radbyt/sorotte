@@ -1,4 +1,19 @@
-use super::*;
+use syncplay_client_app::app_boundary::{
+    language::normalized_legacy_runtime_language_tag_legacy_compatible,
+    state::{
+        parse_autoplay_min_users_override_legacy_compatible,
+        parse_host_and_optional_port_from_host_arg_legacy_compatible,
+        parse_unpause_action_mode_legacy_compatible,
+    },
+};
+use syncplay_client_core::PrivacyMode;
+
+use super::shell_state::{
+    GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiPendingOperationKind,
+    GuiValidationIssue, GuiValidationState, SyncplayGuiShellAppState,
+    playlist_entries_multiline_text,
+};
+use super::support::{normalized_editable_text, parse_trusted_domains_text};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn normalize_public_server_edit_session(&mut self) {

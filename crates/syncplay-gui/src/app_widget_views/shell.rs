@@ -1,0 +1,242 @@
+use super::*;
+
+impl SyncplayGuiShellAppState {
+    pub(crate) fn command_status_widget_tree(&self) -> GuiWidgetNode {
+        let items = [
+            ("busy", "Busy", self.pending_operation.is_some()),
+            ("save", "Save", self.commands.can_save_configuration),
+            ("reset", "Reset", self.commands.can_reset_configuration),
+            ("reload", "Reload", self.commands.can_reload_configuration),
+            (
+                "connect-saved-server",
+                "Connect Saved Server",
+                self.commands.can_connect_saved_server,
+            ),
+            (
+                "disconnect-session",
+                "Disconnect Session",
+                self.commands.can_disconnect_session,
+            ),
+            (
+                "connect-public-server",
+                "Connect Public Server",
+                self.commands.can_connect_public_server,
+            ),
+            (
+                "refresh-public-servers",
+                "Refresh Public Servers",
+                self.commands.can_refresh_public_servers,
+            ),
+            (
+                "search-missing-media",
+                "Search Missing Media",
+                self.commands.can_search_missing_media,
+            ),
+            (
+                "toggle-pause",
+                "Toggle Pause",
+                self.commands.can_toggle_pause,
+            ),
+            (
+                "send-chat-message",
+                "Send Chat Message",
+                self.commands.can_send_chat_message,
+            ),
+        ]
+        .into_iter()
+        .map(|(id, label, enabled)| {
+            GuiWidgetNode::leaf(
+                format!("shell:command:{id}"),
+                label,
+                GuiWidgetKind::Status,
+                Some(if id == "busy" {
+                    bool_label(enabled).to_owned()
+                } else if enabled {
+                    "enabled".to_owned()
+                } else {
+                    "disabled".to_owned()
+                }),
+                true,
+                false,
+            )
+        })
+        .collect();
+
+        GuiWidgetNode::branch("shell:commands", "Commands", GuiWidgetKind::List, items)
+    }
+
+    pub(crate) fn validation_widget_tree(&self) -> GuiWidgetNode {
+        let mut children = vec![
+            GuiWidgetNode::leaf(
+                "shell:validation:status",
+                "Status",
+                GuiWidgetKind::Status,
+                Some(if self.validation.issues.is_empty() {
+                    "clean".to_owned()
+                } else {
+                    format!("{} issue(s)", self.validation.issues.len())
+                }),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "shell:validation:last-action-error",
+                "Last Action Error",
+                GuiWidgetKind::Status,
+                Some(
+                    self.validation
+                        .last_action_error
+                        .clone()
+                        .unwrap_or("(none)".to_owned()),
+                ),
+                true,
+                false,
+            ),
+        ];
+        children.extend(
+            self.validation
+                .issues
+                .iter()
+                .enumerate()
+                .map(|(index, issue)| {
+                    GuiWidgetNode::leaf(
+                        format!("shell:validation:issue:{index}"),
+                        format!("{} / {}", issue.scope, issue.label),
+                        GuiWidgetKind::ListItem,
+                        Some(issue.message.clone()),
+                        true,
+                        false,
+                    )
+                }),
+        );
+        GuiWidgetNode::branch(
+            "shell:validation",
+            "Validation",
+            GuiWidgetKind::List,
+            children,
+        )
+    }
+
+    pub(crate) fn quick_actions_widget_tree(&self) -> GuiWidgetNode {
+        let can_open_media_file = self
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "File")
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == "Open Media File")
+            })
+            .is_some_and(|action| action.enabled);
+
+        GuiWidgetNode::branch(
+            "shell:quick-actions",
+            "Quick Actions",
+            GuiWidgetKind::Panel,
+            vec![GuiWidgetNode::leaf(
+                "shell:quick:open-media-file",
+                "Quick Open Media File",
+                GuiWidgetKind::Button,
+                None,
+                can_open_media_file,
+                false,
+            )],
+        )
+    }
+
+    pub(crate) fn shell_widget_tree(&self) -> GuiWidgetNode {
+        let mut configuration = self.configuration_widget_tree();
+        configuration.selected = self.active_view == GuiShellView::Configuration;
+
+        let mut main_window = self.main_window_widget_tree();
+        main_window.selected = self.active_view == GuiShellView::MainWindow;
+
+        let mut menus = self.menu_dialog_widget_tree();
+        menus.selected = self.active_view == GuiShellView::MenusAndDialogs;
+
+        let mut public_servers = self.public_server_widget_tree();
+        public_servers.selected = self.active_view == GuiShellView::PublicServers;
+
+        let mut media_search = self.media_search_widget_tree();
+        media_search.selected = self.active_view == GuiShellView::MediaSearch;
+
+        let notifications = GuiWidgetNode::branch(
+            "shell:notifications",
+            "Notifications",
+            GuiWidgetKind::List,
+            self.notifications
+                .iter()
+                .enumerate()
+                .map(|(index, notification)| {
+                    GuiWidgetNode::leaf(
+                        format!("shell:notification:{index}"),
+                        notification.level.label(),
+                        GuiWidgetKind::ListItem,
+                        Some(notification.message.clone()),
+                        true,
+                        false,
+                    )
+                })
+                .collect(),
+        );
+
+        GuiWidgetNode::branch(
+            "shell-root",
+            "Syncplay GUI",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::leaf(
+                    "shell:active-view",
+                    "Active View",
+                    GuiWidgetKind::Status,
+                    Some(self.active_view.label().to_owned()),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:open-modal",
+                    "Open Modal",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.open_modal
+                            .map(GuiShellModal::label)
+                            .unwrap_or("(none)")
+                            .to_owned(),
+                    ),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:pending-operation",
+                    "Pending Operation",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.pending_operation
+                            .as_ref()
+                            .map(|pending| pending.kind.label())
+                            .unwrap_or("(none)")
+                            .to_owned(),
+                    ),
+                    true,
+                    false,
+                ),
+                self.shell_modal_widget_tree(),
+                self.quick_actions_widget_tree(),
+                self.command_status_widget_tree(),
+                self.validation_widget_tree(),
+                notifications,
+                configuration,
+                main_window,
+                menus,
+                public_servers,
+                media_search,
+            ],
+        )
+    }
+
+    pub(crate) fn render_shell_widgets(&self, renderer: &mut impl GuiWidgetRenderer) {
+        self.shell_widget_tree().render_with(renderer);
+    }
+}

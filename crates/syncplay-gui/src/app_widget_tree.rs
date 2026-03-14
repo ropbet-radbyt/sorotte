@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "app_widget_tree/tests.rs"]
+mod tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiWidgetKind {
     Panel,

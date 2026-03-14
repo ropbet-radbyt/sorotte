@@ -1,4 +1,24 @@
-use super::*;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use syncplay_client_app::app_boundary::{
+    persistence::{
+        format_serialized_public_servers_list_legacy_compatible,
+        parse_serialized_public_servers_list_legacy_compatible,
+    },
+    state::StoredClientSettingsMvp,
+};
+
+use super::LEGACY_GUI_QSETTINGS_STORE_NAMES;
+use super::remote_services;
+use super::shell_state::{GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
+use super::support::autoplay_threshold_from_settings;
+
+#[cfg(test)]
+#[path = "app_ui_state/tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct GuiPersistedUiState {

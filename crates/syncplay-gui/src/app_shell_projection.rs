@@ -1,4 +1,21 @@
-use super::*;
+use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+use super::shell_state::{
+    FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
+    GuiCommandAvailabilityState, GuiControlledRoomCreateSessionState,
+    GuiControllerAuthEditSessionState, GuiFocusedConfigurationControlState,
+    GuiMainWindowUserEditSessionState, GuiPendingOperationState, GuiPlaylistTextEditSessionState,
+    GuiPublicServerEditSessionState, GuiRoomHistoryEditSessionState, GuiSelectionState,
+    GuiShellModal, GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState,
+    GuiValidationState, MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow,
+    MainWindowRoomRow, MainWindowShellState, MainWindowUserRow, MediaSearchDirectoryRow,
+    MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState, MenuActionShellItem,
+    MenuDialogShellState, MenuSectionShellState, PublicServerBrowserRow,
+    PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState, SyncplayGuiShellAppState,
+};
+use super::support::{
+    autoplay_threshold_from_settings, bool_label, optional_index_text, optional_seconds_text,
+};
 
 impl FirstRunConfigurationDialogDraft {
     pub(super) fn render_lines(&self) -> Vec<String> {

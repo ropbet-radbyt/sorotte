@@ -1,0 +1,123 @@
+use super::*;
+
+#[test]
+fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "syncplay-gui-persisted-config-owner-{}-{unique_suffix}.ini",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let saved_settings = StoredClientSettingsMvp {
+        host: Some("persisted.example".to_owned()),
+        room: Some("Cinema".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert_eq!(
+        handle.drain_actions(),
+        vec![GuiShellAction::CompleteConfigurationSave(
+            saved_settings.clone()
+        )]
+    );
+    assert_eq!(
+        load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
+            .expect("save should leave a readable config file"),
+        Some(saved_settings.clone())
+    );
+
+    let reloaded_settings = StoredClientSettingsMvp {
+        host: Some("reloaded.example".to_owned()),
+        room: Some("Rewatch".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+        .expect("updating the config file should succeed");
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert_eq!(
+        handle.drain_actions(),
+        vec![GuiShellAction::CompleteConfigurationReload(
+            reloaded_settings.clone()
+        )]
+    );
+
+    std::fs::remove_file(&path).expect("temporary config file should be removable");
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
+    let root = test_temp_root("clear-gui-data-owner");
+    let path = root.join("syncplay.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        host: Some("persisted.example".to_owned()),
+        room: Some("Cinema".to_owned()),
+        public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
+        media_search_directories: Some(vec!["C:/Media".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &saved_settings)
+        .expect("saved configuration should be written");
+    persist_gui_ui_state_at_root(
+        &root,
+        &GuiPersistedUiState {
+            active_view: Some(GuiShellView::PublicServers),
+            selected_public_server_address: Some("custom.example:9001".to_owned()),
+            selected_media_search_directory: None,
+            last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
+            last_checked_for_updates: None,
+            hide_empty_rooms: false,
+            public_servers: vec![("Custom".to_owned(), "custom.example:9001".to_owned())],
+            ..Default::default()
+        },
+    )
+    .expect("GUI state should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&saved_settings);
+
+    assert!(state.apply(GuiShellAction::BeginClearGuiData));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ClearGuiData,
+    ));
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompleteClearGuiData)),
+        "clear-GUI-data runtime completion should round-trip through the queued owner"
+    );
+    assert!(!path.exists(), "clear-GUI-data should remove syncplay.ini");
+    for store_name in ["MainWindow", "Interface", "MediaBrowseDialog"] {
+        assert!(
+            !legacy_gui_qsettings_store_path(&root, store_name).exists(),
+            "clear-GUI-data should remove legacy GUI state store {store_name}"
+        );
+    }
+    assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
+    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(
+        state.saved_configuration,
+        StoredClientSettingsMvp::default()
+    );
+    assert_eq!(state.last_media_dialog_directory, None);
+    assert!(state.public_servers.servers.is_empty());
+    assert!(state.media_search.directories.is_empty());
+
+    let _ = std::fs::remove_dir_all(&root);
+}

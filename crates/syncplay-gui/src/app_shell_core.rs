@@ -1,0 +1,485 @@
+use std::path::Path;
+
+use syncplay_client_app::app_boundary::state::{
+    StoredClientSettingsMvp, parse_host_and_optional_port_from_host_arg_legacy_compatible,
+    stored_client_settings_runtime_snapshot_legacy_compatible,
+};
+
+use super::shell_state::{
+    FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
+    GuiCommandAvailabilityState, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
+    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
+    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
+use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
+
+impl SyncplayGuiShellAppState {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let mut state = Self {
+            active_view: GuiShellView::Configuration,
+            open_modal: None,
+            selection: GuiSelectionState::default(),
+            runtime_menu_action_overrides: Vec::new(),
+            runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
+            commands: GuiCommandAvailabilityState::default(),
+            pending_operation: None,
+            outgoing_chat_message: None,
+            new_main_window_user_draft: String::new(),
+            new_playlist_entry_draft: String::new(),
+            focused_configuration_control: None,
+            public_server_edit_session: None,
+            main_window_user_edit_session: None,
+            text_edit_session: None,
+            playlist_text_edit_session: None,
+            playlist_url_edit_session: None,
+            media_url_edit_session: None,
+            controlled_room_create_session: None,
+            controller_auth_edit_session: None,
+            room_history_edit_session: None,
+            update_check: GuiUpdateCheckState::default(),
+            runtime_validation_issues: Vec::new(),
+            notifications: Vec::new(),
+            validation: GuiValidationState::default(),
+            last_media_dialog_directory: None,
+            playlist_undo_snapshot: None,
+            playlist_shuffle_nonce: 0,
+            saved_configuration: settings.clone(),
+            configuration: FirstRunConfigurationDialogDraft::from_stored_settings(settings),
+            main_window: MainWindowShellState::from_stored_settings(settings),
+            menus: MenuDialogShellState::from_stored_settings(settings),
+            public_servers: PublicServerBrowserShellState::from_stored_settings(settings),
+            media_search: MediaSearchWorkflowShellState::from_stored_settings(settings),
+        };
+        state.default_selection_from_surfaces();
+        state.apply_selection_to_surfaces();
+        state.refresh_validation();
+        state
+    }
+
+    pub(super) fn saved_session_connect_target(&self) -> Option<GuiSavedSessionConnectTarget> {
+        let raw_host = self
+            .configuration
+            .control_value("Connection", "Host")
+            .unwrap_or_default()
+            .trim();
+        if raw_host.is_empty() {
+            return None;
+        }
+        let (normalized_host, _) =
+            parse_host_and_optional_port_from_host_arg_legacy_compatible(raw_host);
+        let normalized_host = normalized_host.trim();
+        if normalized_host.is_empty() {
+            return None;
+        }
+
+        let raw_port = self
+            .configuration
+            .control_value("Connection", "Port")
+            .unwrap_or_default()
+            .trim();
+        let port = if raw_port.is_empty() {
+            self.configuration.to_stored_settings().port.unwrap_or(8999)
+        } else {
+            raw_port.parse::<u16>().ok().filter(|port| *port > 0)?
+        };
+
+        let mut settings = self.configuration.to_stored_settings();
+        settings.host = Some(normalized_host.to_owned());
+        settings.port = Some(port);
+        settings.username = settings
+            .username
+            .take()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        settings.room = settings
+            .room
+            .take()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if settings.room.is_none()
+            && let Some(room) = settings.room_list.as_ref().and_then(|rooms| {
+                rooms.iter().find_map(|room| {
+                    let trimmed = room.trim();
+                    (!trimmed.is_empty()).then_some(trimmed.to_owned())
+                })
+            })
+        {
+            settings.room = Some(room);
+        }
+        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let address = format!("{normalized_host}:{port}");
+        Some(GuiSavedSessionConnectTarget {
+            address,
+            username: runtime_settings.settings.username.unwrap_or_default(),
+            room: runtime_settings.settings.room.unwrap_or_default(),
+            controlled_room_password_override: runtime_settings.controlled_room_password_override,
+        })
+    }
+
+    pub(super) fn saved_session_connect_button_label(&self) -> &'static str {
+        if self.commands.can_disconnect_session {
+            "Reconnect"
+        } else {
+            "Connect"
+        }
+    }
+
+    pub(super) fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {
+        persisted_ui_state.apply_to_shell_state(self);
+        self.refresh_validation();
+        self.refresh_command_availability();
+    }
+
+    pub(super) fn remember_media_dialog_directory(&mut self, path: &str) {
+        let directory = Path::new(path)
+            .parent()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.to_string_lossy().into_owned())
+            .or_else(|| normalized_editable_text(path));
+        self.last_media_dialog_directory = directory;
+    }
+
+    pub(super) fn reset_to_first_run_state(&mut self, settings: StoredClientSettingsMvp) {
+        *self = Self::from_stored_settings(&settings);
+    }
+
+    pub(super) fn default_selection_from_surfaces(&mut self) {
+        self.selection.selected_main_window_user =
+            (!self.main_window.users.is_empty()).then_some(0);
+        self.selection.selected_main_window_playlist = self
+            .main_window
+            .playlist
+            .iter()
+            .position(|row| row.is_selected)
+            .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0));
+        self.selection.selected_menu_action =
+            self.menus
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(section_index, section)| {
+                    (!section.actions.is_empty()).then_some((section_index, 0))
+                });
+        self.selection.selected_media_search_directory =
+            (!self.media_search.directories.is_empty()).then_some(0);
+    }
+
+    pub(super) fn normalize_selection(&mut self) {
+        if self
+            .selection
+            .selected_main_window_user
+            .is_some_and(|index| index >= self.main_window.users.len())
+        {
+            self.selection.selected_main_window_user =
+                (!self.main_window.users.is_empty()).then_some(0);
+        }
+        if self
+            .selection
+            .selected_main_window_playlist
+            .is_some_and(|index| index >= self.main_window.playlist.len())
+        {
+            self.selection.selected_main_window_playlist =
+                (!self.main_window.playlist.is_empty()).then_some(0);
+        }
+        if self
+            .selection
+            .selected_menu_action
+            .is_some_and(|(section_index, action_index)| {
+                self.menus
+                    .sections
+                    .get(section_index)
+                    .is_none_or(|section| action_index >= section.actions.len())
+            })
+        {
+            self.selection.selected_menu_action =
+                self.menus
+                    .sections
+                    .iter()
+                    .enumerate()
+                    .find_map(|(section_index, section)| {
+                        (!section.actions.is_empty()).then_some((section_index, 0))
+                    });
+        }
+        if self
+            .selection
+            .selected_media_search_directory
+            .is_some_and(|index| index >= self.media_search.directories.len())
+        {
+            self.selection.selected_media_search_directory =
+                (!self.media_search.directories.is_empty()).then_some(0);
+        }
+    }
+
+    pub(super) fn normalize_selected_menu_action_after_runtime_update(&mut self) {
+        let Some((selected_section_index, selected_action_index)) =
+            self.selection.selected_menu_action
+        else {
+            return;
+        };
+        if self
+            .menus
+            .sections
+            .get(selected_section_index)
+            .and_then(|section| section.actions.get(selected_action_index))
+            .is_some_and(|action| action.enabled)
+        {
+            return;
+        }
+
+        let replacement_in_section =
+            self.menus
+                .sections
+                .get(selected_section_index)
+                .and_then(|section| {
+                    section
+                        .actions
+                        .iter()
+                        .position(|action| action.enabled)
+                        .map(|action_index| (selected_section_index, action_index))
+                });
+        self.selection.selected_menu_action = replacement_in_section.or_else(|| {
+            self.menus
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(section_index, section)| {
+                    section
+                        .actions
+                        .iter()
+                        .position(|action| action.enabled)
+                        .map(|action_index| (section_index, action_index))
+                })
+        });
+    }
+
+    pub(super) fn set_menu_action_enabled(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+        enabled: bool,
+    ) {
+        let Some(action) = self
+            .menus
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.label == action_label)
+            })
+        else {
+            return;
+        };
+        action.enabled = enabled;
+    }
+
+    pub(super) fn set_menu_action_selected(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+        selected: bool,
+    ) {
+        let Some(action) = self
+            .menus
+            .sections
+            .iter_mut()
+            .find(|section| section.title == section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.label == action_label)
+            })
+        else {
+            return;
+        };
+        action.is_selected = selected;
+    }
+
+    pub(super) fn set_runtime_menu_action_override(
+        &mut self,
+        action_override: MenuActionRuntimeOverride,
+    ) {
+        if let Some(existing) = self
+            .runtime_menu_action_overrides
+            .iter_mut()
+            .find(|existing| {
+                existing.section_title == action_override.section_title
+                    && existing.action_label == action_override.action_label
+            })
+        {
+            existing.enabled = action_override.enabled;
+            return;
+        }
+        self.runtime_menu_action_overrides.push(action_override);
+    }
+
+    pub(super) fn clear_runtime_menu_action_override(
+        &mut self,
+        section_title: &'static str,
+        action_label: &'static str,
+    ) {
+        self.runtime_menu_action_overrides
+            .retain(|action_override| {
+                action_override.section_title != section_title
+                    || action_override.action_label != action_label
+            });
+    }
+
+    pub(super) fn remember_runtime_menu_action_override(
+        &mut self,
+        baseline_menus: &MenuDialogShellState,
+        action_override: &MenuActionRuntimeOverride,
+    ) {
+        let baseline_enabled = baseline_menus
+            .sections
+            .iter()
+            .find(|section| section.title == action_override.section_title)
+            .and_then(|section| {
+                section
+                    .actions
+                    .iter()
+                    .find(|action| action.label == action_override.action_label)
+            })
+            .map(|action| action.enabled);
+        let Some(baseline_enabled) = baseline_enabled else {
+            return;
+        };
+        if action_override.enabled == baseline_enabled {
+            self.clear_runtime_menu_action_override(
+                action_override.section_title,
+                action_override.action_label,
+            );
+            return;
+        }
+        self.set_runtime_menu_action_override(action_override.clone());
+    }
+
+    pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
+        &mut self,
+        settings: &StoredClientSettingsMvp,
+    ) {
+        let baseline_menus = MenuDialogShellState::from_stored_settings(settings);
+        self.runtime_menu_action_overrides
+            .retain(|action_override| {
+                baseline_menus
+                    .sections
+                    .iter()
+                    .find(|section| section.title == action_override.section_title)
+                    .and_then(|section| {
+                        section
+                            .actions
+                            .iter()
+                            .find(|action| action.label == action_override.action_label)
+                    })
+                    .is_some_and(|action| action.enabled != action_override.enabled)
+            });
+    }
+
+    pub(super) fn command_availability_without_runtime_override(
+        &self,
+    ) -> GuiCommandAvailabilityState {
+        let settings = self.configuration.to_stored_settings();
+        let busy = self.pending_operation.is_some();
+        GuiCommandAvailabilityState {
+            can_save_configuration: !busy && self.validation.issues.is_empty(),
+            can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
+            can_reload_configuration: !busy,
+            can_connect_saved_server: !busy && self.saved_session_connect_target().is_some(),
+            can_disconnect_session: false,
+            can_connect_public_server: !busy && self.public_servers.can_connect,
+            can_refresh_public_servers: !busy && self.public_servers.can_refresh,
+            can_search_missing_media: !busy && self.media_search.can_search_missing_media,
+            can_toggle_pause: !busy && self.main_window.playback.can_toggle_pause,
+            can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
+        }
+    }
+
+    pub(super) fn normalize_runtime_command_availability_override_for_current_state(&mut self) {
+        let baseline = self.command_availability_without_runtime_override();
+        self.runtime_command_availability_override
+            .normalize_for_baseline(&baseline);
+    }
+
+    pub(super) fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
+        let busy = self.pending_operation.is_some();
+        let can_open_media_file = !busy && self.media_open_runtime_available();
+        self.set_menu_action_enabled("File", "Open Media File", can_open_media_file);
+        self.set_menu_action_enabled("Playback", "Play", can_toggle_pause);
+        self.set_menu_action_enabled("Playback", "Pause", can_toggle_pause);
+        self.set_menu_action_enabled("Playback", "Toggle Pause", can_toggle_pause);
+        self.set_menu_action_enabled(
+            "Playback",
+            "Seek",
+            !busy && self.main_window.playback.can_seek,
+        );
+        self.set_menu_action_enabled(
+            "Playback",
+            "Undo Seek",
+            !busy && self.main_window.playback.can_undo_seek,
+        );
+        self.set_menu_action_enabled(
+            "Playback",
+            "Playlist Actions",
+            !busy && self.main_window.playback.can_manage_playlist,
+        );
+        self.set_menu_action_enabled(
+            "Advanced",
+            "Set Offset",
+            !busy && self.main_window.playback.can_set_offset,
+        );
+        self.normalize_selected_menu_action_after_runtime_update();
+        self.apply_selection_to_surfaces();
+    }
+
+    pub(super) fn sync_dialog_menu_actions_from_runtime_state(&mut self) {
+        let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
+        for action_override in runtime_menu_action_overrides {
+            self.set_menu_action_enabled(
+                action_override.section_title,
+                action_override.action_label,
+                action_override.enabled,
+            );
+        }
+        self.set_menu_action_enabled("Help", "About", self.menus.about_dialog_available);
+    }
+
+    pub(super) fn open_newly_expected_modal_if_needed(
+        &mut self,
+        previous_tls_prompt_expected: bool,
+        previous_update_notice_expected: bool,
+    ) {
+        if self.open_modal.is_some() {
+            return;
+        }
+        if self.menus.tls_prompt_expected && !previous_tls_prompt_expected {
+            self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
+            return;
+        }
+        if self.menus.update_notice_expected && !previous_update_notice_expected {
+            self.open_modal = Some(GuiShellModal::UpdateNotice);
+        }
+    }
+
+    pub(super) fn apply_selection_to_surfaces(&mut self) {
+        for (index, user) in self.main_window.users.iter_mut().enumerate() {
+            user.is_selected = self.selection.selected_main_window_user == Some(index);
+        }
+        for (index, item) in self.main_window.playlist.iter_mut().enumerate() {
+            item.is_selected = self.selection.selected_main_window_playlist == Some(index);
+        }
+        for (section_index, section) in self.menus.sections.iter_mut().enumerate() {
+            for (action_index, action) in section.actions.iter_mut().enumerate() {
+                action.is_selected =
+                    self.selection.selected_menu_action == Some((section_index, action_index));
+            }
+        }
+        for (index, directory) in self.media_search.directories.iter_mut().enumerate() {
+            directory.is_selected = self.selection.selected_media_search_directory == Some(index);
+        }
+    }
+}

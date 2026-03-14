@@ -1,4 +1,10 @@
-use super::*;
+use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+
+use super::shell_state::{
+    GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn selected_public_server_index(&self) -> Option<usize> {

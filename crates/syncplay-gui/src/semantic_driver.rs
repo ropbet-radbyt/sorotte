@@ -7,6 +7,10 @@ use super::{
     StoredClientSettingsMvp, SyncplayGuiShellAppState,
 };
 
+#[cfg(test)]
+#[path = "semantic_driver/tests.rs"]
+mod tests;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),

@@ -1,4 +1,11 @@
-use super::*;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
+
+#[cfg(test)]
+#[path = "app_startup_support/tests.rs"]
+mod tests;
 
 pub(super) fn env_trimmed(name: &str) -> Option<String> {
     env::var(name).ok().and_then(|value| {

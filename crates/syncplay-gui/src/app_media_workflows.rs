@@ -1,4 +1,8 @@
-use super::*;
+use super::shell_state::{
+    GuiPendingOperationKind, GuiPendingOperationState, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
+};
+use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn add_media_search_directory_path(&mut self, path: String) -> bool {
