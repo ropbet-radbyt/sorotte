@@ -20,3 +20,14 @@ complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 assert-value	main-window:chat:2	hello room
+enter-text	main-window:chat-input	true	/undo
+assert-pending	none
+assert-value	main-window:chat-input	<empty>
+assert-value	main-window:chat:3	/undo
+assert-value	main-window:chat:4	Undo seek requested.
+enter-text	main-window:chat-input	true	//literal
+assert-pending	send-chat-message
+complete-pending
+assert-pending	none
+assert-value	main-window:chat-input	<empty>
+assert-value	main-window:chat:5	/literal

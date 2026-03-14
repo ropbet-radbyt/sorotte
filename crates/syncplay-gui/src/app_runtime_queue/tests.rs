@@ -166,6 +166,24 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         handle.drain_requests(),
         vec![GuiRuntimeRequest::ShuffleEntirePlaylist]
     );
+    assert!(
+        runtime
+            .dispatch_runtime_request(&state, GuiRuntimeRequest::TogglePlaybackPause)
+            .is_empty()
+    );
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::TogglePlaybackPause]
+    );
+    assert!(
+        runtime
+            .dispatch_runtime_request(&state, GuiRuntimeRequest::SeekToPosition(42.0))
+            .is_empty()
+    );
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::SeekToPosition(42.0)]
+    );
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![
             "C:/Media/episode1.mkv".to_owned(),

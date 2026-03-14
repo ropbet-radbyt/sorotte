@@ -232,6 +232,50 @@ impl GuiPersistedConfigRuntimeOwner {
                     );
                 }
             }
+            GuiRuntimeRequest::SeekToPosition(target_position_seconds) => {
+                self.refresh_player_state();
+                self.ensure_configured_player_attached();
+                if self.player.is_some() {
+                    let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
+                    let target_position_seconds = target_position_seconds.max(0.0);
+                    let (player_name, seek_result) = {
+                        let player = self.player.as_mut().expect("player should exist");
+                        (player.name(), player.set_position(target_position_seconds))
+                    };
+                    match seek_result {
+                        Ok(()) => {
+                            self.player_position_seconds = Some(target_position_seconds);
+                            self.refresh_player_state();
+                            if let Err(error) = self.sync_manual_seek_into_detached_session(
+                                projected_state,
+                                previous_position_seconds,
+                                target_position_seconds,
+                            ) {
+                                Self::push_player_error(handle, error);
+                            }
+                            Self::push_player_success(
+                                handle,
+                                format!(
+                                    "Applied an absolute seek via the attached {player_name} player (target {target_position_seconds:.3} seconds)."
+                                ),
+                            );
+                        }
+                        Err(error) => {
+                            Self::push_player_error(
+                                handle,
+                                format!(
+                                    "Playback seek through the attached {player_name} player failed: {error}"
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    Self::push_runtime_unavailable(
+                        handle,
+                        "Playback absolute seek requires a playback runtime connection.".to_owned(),
+                    );
+                }
+            }
             GuiRuntimeRequest::SetRoom(room) => {
                 self.request_room_join_runtime(handle, projected_state, room);
             }
@@ -331,6 +375,22 @@ impl GuiPersistedConfigRuntimeOwner {
                     });
                 }
             }
+            GuiRuntimeRequest::AdvancePlaylistIndex => {
+                if let Some(session) = self.session.as_mut() {
+                    if let Err(error) = session.advance_playlist_index() {
+                        handle.push_action(GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Error,
+                            message: error,
+                        });
+                    }
+                } else {
+                    Self::push_runtime_unavailable(
+                        handle,
+                        "Advancing the shared playlist requires an active session runtime."
+                            .to_owned(),
+                    );
+                }
+            }
             GuiRuntimeRequest::ReplacePlaylist {
                 files,
                 selected_index,
@@ -342,6 +402,82 @@ impl GuiPersistedConfigRuntimeOwner {
                         level: GuiTransientNotificationLevel::Error,
                         message: error,
                     });
+                }
+            }
+            GuiRuntimeRequest::SendChatMessage(message) => {
+                if let Some(session) = self.session.as_mut() {
+                    match session.send_chat_message(message.clone()) {
+                        Ok(()) => {
+                            let sender = projected_state
+                                .main_window
+                                .users
+                                .iter()
+                                .find(|user| user.is_self)
+                                .map(|user| user.username.clone())
+                                .unwrap_or_else(|| "You".to_owned());
+                            Self::push_actions_and_project(
+                                handle,
+                                projected_state,
+                                vec![
+                                    GuiShellAction::PushChatMessage { sender, message },
+                                    GuiShellAction::PushTransientNotification {
+                                        level: GuiTransientNotificationLevel::Success,
+                                        message: "Chat sent.".to_owned(),
+                                    },
+                                ],
+                            );
+                        }
+                        Err(error) => Self::push_runtime_unavailable(
+                            handle,
+                            format!(
+                                "Chat sending through the attached session runtime failed: {error}"
+                            ),
+                        ),
+                    }
+                } else {
+                    Self::push_runtime_unavailable(handle, self.send_chat_unavailable_message());
+                }
+            }
+            GuiRuntimeRequest::TogglePlaybackPause => {
+                self.refresh_player_state();
+                self.ensure_configured_player_attached();
+                if self.player.is_some() {
+                    let target_paused = !projected_state.main_window.playback_paused;
+                    let previous_paused = projected_state.main_window.playback_paused;
+                    let (player_name, toggle_result) = {
+                        let player = self.player.as_mut().expect("player should exist");
+                        (player.name(), player.set_paused(target_paused))
+                    };
+                    match toggle_result {
+                        Ok(()) => {
+                            self.player_paused = Some(target_paused);
+                            self.refresh_player_state();
+                            if let Err(error) = self.sync_playback_pause_into_detached_session(
+                                projected_state,
+                                previous_paused,
+                                target_paused,
+                            ) {
+                                Self::push_player_error(handle, error);
+                            }
+                            Self::push_actions_and_project(
+                                handle,
+                                projected_state,
+                                vec![if target_paused {
+                                    GuiShellAction::AnnouncePlaybackPaused
+                                } else {
+                                    GuiShellAction::AnnouncePlaybackResumed
+                                }],
+                            );
+                        }
+                        Err(error) => Self::push_player_error(
+                            handle,
+                            format!(
+                                "Playback pause toggle through the attached {player_name} player failed: {error}"
+                            ),
+                        ),
+                    }
+                } else {
+                    Self::push_runtime_unavailable(handle, self.toggle_pause_unavailable_message());
                 }
             }
             GuiRuntimeRequest::CompletePendingOperation(

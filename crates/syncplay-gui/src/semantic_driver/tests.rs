@@ -110,14 +110,18 @@ fn gui_semantic_driver_runs_runtime_snapshot_chat_scenario_without_platform_ui()
         driver.state().selection.selected_main_window_playlist,
         Some(1)
     );
-    let last_chat = driver
-        .state()
-        .main_window
-        .chat
+    let chat_rows = &driver.state().main_window.chat;
+    assert_eq!(chat_rows[2].sender, "smoke-user");
+    assert_eq!(chat_rows[2].message, "hello room");
+    assert_eq!(chat_rows[3].sender, "system");
+    assert_eq!(chat_rows[3].message, "/undo");
+    assert_eq!(chat_rows[4].sender, "system");
+    assert_eq!(chat_rows[4].message, "Undo seek requested.");
+    let last_chat = chat_rows
         .last()
-        .expect("local chat completion should append a row");
+        .expect("literal slash chat completion should append a row");
     assert_eq!(last_chat.sender, "smoke-user");
-    assert_eq!(last_chat.message, "hello room");
+    assert_eq!(last_chat.message, "/literal");
 }
 
 #[test]

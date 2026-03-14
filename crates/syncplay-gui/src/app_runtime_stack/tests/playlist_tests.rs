@@ -67,6 +67,18 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
         .apply_message_json(&selection_lines[0])
         .expect("selection echo should apply");
 
+    GuiSessionRuntimeAdapter::advance_playlist_index(&mut adapter)
+        .expect("playlist advancement should dispatch");
+    let advance_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("advance lines should encode");
+    assert_eq!(advance_lines.len(), 1);
+    assert!(advance_lines[0].contains("\"playlistIndex\""));
+    assert!(advance_lines[0].contains("\"index\":1"));
+    adapter
+        .apply_message_json(&advance_lines[0])
+        .expect("advance echo should apply");
+
     GuiSessionRuntimeAdapter::delete_playlist_index(&mut adapter, 0)
         .expect("playlist removal should dispatch");
     let delete_lines = adapter

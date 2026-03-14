@@ -109,6 +109,10 @@ pub(super) trait GuiSessionRuntimeAdapter {
         )
     }
 
+    fn advance_playlist_index(&mut self) -> Result<(), String> {
+        Err("Attached session runtime does not support shared playlist advancement.".to_owned())
+    }
+
     fn delete_playlist_index(&mut self, _index: usize) -> Result<(), String> {
         Err("Attached session runtime does not support shared playlist removal.".to_owned())
     }
@@ -732,6 +736,28 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             }
             Err(error) => Err(format!(
                 "Client-core session runtime playlist selection dispatch failed: {error}"
+            )),
+        }
+    }
+
+    fn advance_playlist_index(&mut self) -> Result<(), String> {
+        match self.runtime.run_advance_playlist_index() {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                if !self.shared_playlist_control_available() {
+                    Err(
+                        "Client-core session runtime cannot advance the shared playlist before room control becomes available."
+                            .to_owned(),
+                    )
+                } else {
+                    Err(
+                        "Client-core session runtime did not queue a shared playlist advancement."
+                            .to_owned(),
+                    )
+                }
+            }
+            Err(error) => Err(format!(
+                "Client-core session runtime playlist advancement dispatch failed: {error}"
             )),
         }
     }

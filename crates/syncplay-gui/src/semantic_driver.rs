@@ -6,6 +6,7 @@ use super::{
     MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
     StoredClientSettingsMvp, SyncplayGuiShellAppState,
 };
+use super::{GuiNativeRuntimeBridge, local_command_dispatch::GuiShellDispatchPlan};
 
 #[cfg(test)]
 #[path = "semantic_driver/tests.rs"]
@@ -660,7 +661,16 @@ impl GuiSemanticDriver {
                 "semantic text entry should map {widget_id} to at least one action",
             ));
         };
-        self.apply_actions(actions);
+        let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(&self.state, actions);
+        self.apply_actions(dispatch_plan.shell_actions);
+        let mut runtime = GuiPreviewRuntimeBridge;
+        for request in dispatch_plan.runtime_requests {
+            self.apply_actions(GuiNativeRuntimeBridge::dispatch_runtime_request(
+                &mut runtime,
+                &self.state,
+                request,
+            ));
+        }
         Ok(())
     }
 

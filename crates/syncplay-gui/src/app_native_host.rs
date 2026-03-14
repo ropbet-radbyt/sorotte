@@ -9,6 +9,7 @@ use syncplay_client_app::app_boundary::commands::{
 };
 
 use super::GuiAppHost;
+use super::local_command_dispatch::GuiShellDispatchPlan;
 use super::render_egui::{GuiPlaybackPromptKind, GuiWidgetEguiRenderer};
 use super::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use super::runtime_bridge::{
@@ -317,7 +318,10 @@ impl eframe::App for GuiNativeApp {
         let mut renderer = GuiWidgetEguiRenderer::default();
         self.state.render_shell_widgets(&mut renderer);
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
-        let actions = renderer.show(ctx, &self.state, show_manual_pending_controls);
+        let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(
+            &self.state,
+            renderer.show(ctx, &self.state, show_manual_pending_controls),
+        );
         let close_requested = renderer.take_close_requested();
         let selected_media_files = renderer.take_selected_media_files();
         let dropped_files_request = renderer.take_dropped_files_request();
@@ -344,7 +348,7 @@ impl eframe::App for GuiNativeApp {
         let mut requested_undo_seek = false;
         let mut requested_autoplay_state = None;
         let mut requested_autoplay_threshold = None;
-        for action in &actions {
+        for action in &dispatch_plan.shell_actions {
             match action {
                 GuiShellAction::JoinMainWindowRoom(room) => {
                     if let Some(room) = normalized_editable_text(room) {
@@ -442,8 +446,13 @@ impl eframe::App for GuiNativeApp {
             self.open_playback_prompt(prompt);
         }
         let mut state_changed = false;
-        for action in actions {
+        for action in dispatch_plan.shell_actions {
             state_changed |= self.state.apply(action);
+        }
+        for request in dispatch_plan.runtime_requests {
+            for action in self.runtime.dispatch_runtime_request(&self.state, request) {
+                state_changed |= self.state.apply(action);
+            }
         }
         for request in room_change_requests {
             let runtime_actions = match request {

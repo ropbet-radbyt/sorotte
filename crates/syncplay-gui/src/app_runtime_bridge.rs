@@ -22,6 +22,14 @@ pub(super) trait GuiNativeRuntimeBridge {
         Vec::new()
     }
 
+    fn dispatch_runtime_request(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        _request: GuiRuntimeRequest,
+    ) -> Vec<GuiShellAction> {
+        Vec::new()
+    }
+
     fn actions_for_open_media_files(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -208,8 +216,12 @@ pub(super) struct GuiPreviewRuntimeOwner;
 
 #[allow(dead_code)]
 impl GuiPreviewRuntimeOwner {
-    fn push_preview_response(handle: &GuiQueuedRuntimeBridgeHandle, request: GuiRuntimeRequest) {
-        let actions = request.preview_actions();
+    fn push_preview_response(
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        state: &SyncplayGuiShellAppState,
+        request: GuiRuntimeRequest,
+    ) {
+        let actions = request.preview_actions_for_state(state);
         if !actions.is_empty() {
             handle.push_actions(actions);
         }
@@ -217,9 +229,9 @@ impl GuiPreviewRuntimeOwner {
 }
 
 impl GuiQueuedRuntimeOwner for GuiPreviewRuntimeOwner {
-    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, _state: &SyncplayGuiShellAppState) {
+    fn pump(&mut self, handle: &GuiQueuedRuntimeBridgeHandle, state: &SyncplayGuiShellAppState) {
         for request in handle.drain_requests() {
-            Self::push_preview_response(handle, request);
+            Self::push_preview_response(handle, state, request);
         }
     }
 }
@@ -314,6 +326,14 @@ impl GuiPreviewRuntimeBridge {
 impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
     fn shows_manual_pending_controls(&self) -> bool {
         true
+    }
+
+    fn dispatch_runtime_request(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        request: GuiRuntimeRequest,
+    ) -> Vec<GuiShellAction> {
+        request.preview_actions_for_state(state)
     }
 
     fn actions_for_open_media_files(
@@ -506,12 +526,62 @@ pub(super) enum GuiRuntimeRequest {
         files: Vec<String>,
         selected_index: Option<usize>,
     },
+    SendChatMessage(String),
     SeekOffset(f64),
+    SeekToPosition(f64),
+    AdvancePlaylistIndex,
+    TogglePlaybackPause,
     CompletePendingOperation(GuiPendingCompletionRequest),
     CancelPendingOperation(GuiPendingOperationKind),
 }
 
 impl GuiRuntimeRequest {
+    pub(super) fn preview_actions_for_state(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        match self {
+            Self::SendChatMessage(message) => {
+                let sender = state
+                    .main_window
+                    .users
+                    .iter()
+                    .find(|user| user.is_self)
+                    .map(|user| user.username.clone())
+                    .unwrap_or_else(|| "You".to_owned());
+                vec![
+                    GuiShellAction::PushChatMessage {
+                        sender,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Success,
+                        message: "Chat sent.".to_owned(),
+                    },
+                ]
+            }
+            Self::SeekToPosition(target_position_seconds) => {
+                let message = format!("Seek requested: target {target_position_seconds} seconds.");
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            }
+            Self::AdvancePlaylistIndex => Vec::new(),
+            Self::TogglePlaybackPause => {
+                if state.main_window.playback_paused {
+                    vec![GuiShellAction::AnnouncePlaybackResumed]
+                } else {
+                    vec![GuiShellAction::AnnouncePlaybackPaused]
+                }
+            }
+            _ => self.preview_actions(),
+        }
+    }
+
     pub(super) fn preview_actions(&self) -> Vec<GuiShellAction> {
         match self {
             Self::OpenMediaFiles {
@@ -560,15 +630,28 @@ impl GuiRuntimeRequest {
             | Self::RequestControllerAuth { .. }
             | Self::QueuePlaylistEntry { .. }
             | Self::SetPlaylistIndex(_)
+            | Self::AdvancePlaylistIndex
             | Self::DeletePlaylistIndex(_)
             | Self::UndoPlaylistChange
             | Self::ShuffleRemainingPlaylist
             | Self::ShuffleEntirePlaylist
             | Self::ReplacePlaylist { .. }
             | Self::SetRoom(_)
-            | Self::ReturnToDefaultRoom => Vec::new(),
+            | Self::ReturnToDefaultRoom
+            | Self::SendChatMessage(_)
+            | Self::TogglePlaybackPause => Vec::new(),
             Self::SeekOffset(offset_seconds) => {
                 let message = format!("Seek requested: {offset_seconds} seconds.");
+                vec![
+                    GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: message.clone(),
+                    },
+                    GuiShellAction::AnnounceSystemChatEvent(message),
+                ]
+            }
+            Self::SeekToPosition(target_position_seconds) => {
+                let message = format!("Seek requested: target {target_position_seconds} seconds.");
                 vec![
                     GuiShellAction::PushTransientNotification {
                         level: GuiTransientNotificationLevel::Info,

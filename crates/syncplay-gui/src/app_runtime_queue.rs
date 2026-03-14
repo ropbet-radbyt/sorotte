@@ -115,6 +115,15 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         self.handle.drain_actions()
     }
 
+    fn dispatch_runtime_request(
+        &mut self,
+        _state: &SyncplayGuiShellAppState,
+        request: GuiRuntimeRequest,
+    ) -> Vec<GuiShellAction> {
+        self.handle.push_request(request);
+        Vec::new()
+    }
+
     fn actions_for_open_media_files(
         &mut self,
         _state: &SyncplayGuiShellAppState,

@@ -2,7 +2,7 @@
 
 ## Audit Date
 
-- 2026-03-11
+- 2026-03-14
 
 ## Verification Performed For This Refresh
 
@@ -31,10 +31,10 @@
 
 ## Current Read On Parity
 
-- The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers the main-window playback/autoplay/offset slice that had been one of the most obvious P1 gaps.
+- The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers both of the most obvious P1 gaps from the last audit: main-window playback/autoplay/offset behavior and Python-style slash-command routing from the chat box.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The biggest remaining parity blockers are now:
-  - GUI slash-command handling still trails the Python client,
+  - the configuration dialog still trails the Python client in several stored legacy controls,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
 
@@ -58,26 +58,9 @@
 - The matching Playback/Advanced/Window menu affordances are runtime-backed, and detached local player/session synchronization no longer leaks hidden session state into the visible shell.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
 - Controlled-room/controller-auth parity now includes create-controlled-room UX, generated-password surfacing, manual identify-as-controller flows, runtime-backed controller-auth requests, Python-style autoplay reset on controlled-room creation, and set-others-readiness actions when the server advertises support.
-- The client-core still implements some operations the GUI does not fully expose yet, including slash-command routing beyond the current chat box behavior.
+- The GUI chat box now mirrors Python slash-command handling, including local command dispatch before chat send, literal `//` escaping, echoed command lines, and runtime-backed seek/undo/offset/playlist/readiness/controller/chat aliases via the shared `syncplay-client-app` planner.
 
 ## Remaining Python Client Parity Tasks
-
-### P1. Port controlled-room and controller-auth UX
-
-Current status: completed. The Rust GUI now matches the Python client for the main controlled-room/controller-auth slice: create-controlled-room UX is present, generated room/password details are surfaced back to the user, manual identify-as-controller requests are runtime-backed, controller-auth retries no longer depend on shell-only toggles, controlled-room creation resets autoplay state like Python, and set-others-readiness is wired from the user browser when supported by the server and verified against a live Python peer.
-
-No further assignment is needed here beyond normal regression coverage and smoke-harness stabilization.
-
-### P1. Port Python slash-command handling in the GUI chat box
-
-Current status: the Python GUI chat box routes slash-prefixed local commands before falling back to chat send. The Rust GUI currently treats the field as chat-only input.
-
-Work to assign:
-
-- Reuse `syncplay-client-app` local-command parsing in the GUI path.
-- Support the Python-visible seek, undo, offset, playlist, readiness, and controller-related commands.
-- Preserve normal chat behavior for non-command text and literal `/` handling.
-- Add semantic coverage that proves commands no longer fall through as chat messages.
 
 ### P2. Finish configuration dialog parity
 
@@ -113,10 +96,9 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. GUI slash-command handling.
-2. Configuration dialog completion.
-3. Localization and language-sensitive service calls.
-4. Additional player backends.
+1. Configuration dialog completion.
+2. Localization and language-sensitive service calls.
+3. Additional player backends.
 
 ## Outside Strict Python-Client Feature Parity
 

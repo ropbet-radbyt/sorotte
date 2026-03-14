@@ -226,6 +226,34 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         Some("hello")
     );
 
+    handle.push_request(GuiRuntimeRequest::SendChatMessage("slash hello".to_owned()));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let direct_chat_actions = handle.drain_actions();
+    assert_eq!(
+        direct_chat_actions,
+        vec![
+            GuiShellAction::PushChatMessage {
+                sender: "You".to_owned(),
+                message: "slash hello".to_owned(),
+            },
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: "Chat sent.".to_owned(),
+            },
+        ]
+    );
+    for action in direct_chat_actions {
+        assert!(state.apply(action));
+    }
+    assert_eq!(
+        state
+            .main_window
+            .chat
+            .last()
+            .map(|row| row.message.as_str()),
+        Some("slash hello")
+    );
+
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ConnectPublicServer,
@@ -323,7 +351,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         session_state.controller_auth_requests,
         vec![("+room:ABCDEF123456".to_owned(), "ab-123-456".to_owned())]
     );
-    assert_eq!(session_state.sent_chat_messages, vec!["hello".to_owned()]);
+    assert_eq!(
+        session_state.sent_chat_messages,
+        vec!["hello".to_owned(), "slash hello".to_owned()]
+    );
     assert_eq!(
         session_state.connect_requests,
         vec![Some(("Primary".to_owned(), "syncplay.pl:8999".to_owned()))]

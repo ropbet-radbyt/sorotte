@@ -8,6 +8,8 @@ mod connection_workflows;
 mod feedback_workflows;
 #[path = "../app_launcher.rs"]
 mod launcher;
+#[path = "../app_local_command_dispatch.rs"]
+mod local_command_dispatch;
 #[path = "../app_main_window_workflows.rs"]
 mod main_window_workflows;
 #[path = "../app_media_workflows.rs"]

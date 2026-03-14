@@ -2,7 +2,8 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
-    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    GuiRuntimeRequest, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
 };
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -47,6 +48,22 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
             GuiShellAction::AnnounceSystemChatEvent(
                 "Media file selected: C:/Media/movie.mkv.".to_owned(),
             ),
+        ]
+    );
+    assert_eq!(
+        runtime.dispatch_runtime_request(
+            &fallback_state,
+            GuiRuntimeRequest::SendChatMessage("preview hello".to_owned()),
+        ),
+        vec![
+            GuiShellAction::PushChatMessage {
+                sender: "You".to_owned(),
+                message: "preview hello".to_owned(),
+            },
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: "Chat sent.".to_owned(),
+            },
         ]
     );
 }

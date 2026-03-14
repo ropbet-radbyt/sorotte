@@ -467,6 +467,18 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         vec![true]
     );
 
+    handle.push_request(GuiRuntimeRequest::TogglePlaybackPause);
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let direct_toggle_actions = handle.drain_actions();
+    assert_eq!(
+        direct_toggle_actions,
+        vec![GuiShellAction::AnnouncePlaybackResumed]
+    );
+    for action in direct_toggle_actions {
+        assert!(state.apply(action));
+    }
+    assert!(!state.main_window.playback_paused);
+
     handle.push_request(GuiRuntimeRequest::SeekOffset(12.5));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert_eq!(
@@ -502,11 +514,36 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             ),
         ]
     );
+
+    handle.push_request(GuiRuntimeRequest::SeekToPosition(42.0));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert_eq!(
+        handle.drain_actions(),
+        vec![
+            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: "Applied an absolute seek via the attached recording player (target 42.000 seconds)."
+                    .to_owned(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(
+                "Applied an absolute seek via the attached recording player (target 42.000 seconds)."
+                    .to_owned(),
+            ),
+        ]
+    );
     assert_eq!(
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .set_positions,
-        vec![12.5, 10.0]
+        vec![12.5, 10.0, 42.0]
+    );
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values,
+        vec![true, false]
     );
 }
