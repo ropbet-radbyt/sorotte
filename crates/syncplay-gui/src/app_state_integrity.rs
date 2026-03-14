@@ -320,6 +320,20 @@ impl SyncplayGuiShellAppState {
             |value| parse_trusted_domains_text(value).is_some(),
             "must be a comma/semicolon-separated list or legacy bracketed list.",
         );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Chat",
+            "Input Position",
+            |value| matches!(value, "Top" | "Middle" | "Bottom"),
+            "must be Top, Middle, or Bottom.",
+        );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "Chat",
+            "Output Mode",
+            |value| matches!(value, "Chatroom" | "Scrolling"),
+            "must be Chatroom or Scrolling.",
+        );
         for (section, label) in [
             ("Desync", "Rewind Threshold"),
             ("Desync", "Fastforward Threshold"),
@@ -334,6 +348,30 @@ impl SyncplayGuiShellAppState {
                 section,
                 label,
                 "must be a finite non-negative number.",
+            );
+        }
+        for (section, label, message) in [
+            ("Chat", "Input Font Size", "must be a positive integer."),
+            ("Chat", "Output Font Size", "must be a positive integer."),
+        ] {
+            self.push_positive_i64_validation_issue(&mut issues, section, label, message);
+        }
+        for (section, label) in [
+            ("Chat", "Input Font Weight"),
+            ("Chat", "Output Font Weight"),
+            ("Chat", "Top Margin"),
+            ("Chat", "Left Margin"),
+            ("Chat", "Bottom Margin"),
+            ("Chat", "OSD Margin"),
+            ("OSD", "Notification Timeout"),
+            ("OSD", "Alert Timeout"),
+            ("OSD", "Chat Timeout"),
+        ] {
+            self.push_nonnegative_i64_validation_issue(
+                &mut issues,
+                section,
+                label,
+                "must be a non-negative integer.",
             );
         }
         self.push_positive_i64_validation_issue(
@@ -448,6 +486,22 @@ impl SyncplayGuiShellAppState {
             section,
             label,
             |value| value.parse::<i64>().is_ok_and(|parsed| parsed > 0),
+            message,
+        );
+    }
+
+    pub(super) fn push_nonnegative_i64_validation_issue(
+        &self,
+        issues: &mut Vec<GuiValidationIssue>,
+        section: &'static str,
+        label: &'static str,
+        message: &'static str,
+    ) {
+        self.push_parse_validation_issue(
+            issues,
+            section,
+            label,
+            |value| value.parse::<i64>().is_ok_and(|parsed| parsed >= 0),
             message,
         );
     }

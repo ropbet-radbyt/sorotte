@@ -176,22 +176,23 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     for (edit_index, expected_value) in [
-        (0usize, CONFIG_HOST_VALUE),
-        (1usize, CONFIG_PORT_VALUE),
-        (2usize, CONFIG_USERNAME_VALUE),
-        (3usize, CONFIG_ROOM_VALUE),
-        (5usize, CONFIG_PLAYER_PATH_VALUE),
+        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
     ] {
         let current_value = driver.get_edit_value_by_index(window, edit_index)?;
         if current_value != expected_value {
             driver.set_edit_value_by_index(window, edit_index, expected_value)?;
         }
     }
-    driver.set_edit_value_by_index(window, TRUSTED_DOMAINS_EDIT_INDEX, TRUSTED_DOMAINS_VALUE)?;
+    let trusted_domains_index = trusted_domains_edit_index(true);
+    driver.set_edit_value_by_index(window, trusted_domains_index, TRUSTED_DOMAINS_VALUE)?;
     wait_for_edit_value_by_index(
         driver,
         window,
-        TRUSTED_DOMAINS_EDIT_INDEX,
+        trusted_domains_index,
         TRUSTED_DOMAINS_VALUE,
         step_timeout,
     )?;
@@ -202,33 +203,23 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Any,
         step_timeout,
     )?;
-    let password_value = driver.get_edit_value_by_index(window, 4)?;
-    if !password_value.is_empty()
-        && let Err(error) = driver.set_edit_value_by_index(window, 4, "")
-    {
-        steps.push(format!(
-            "config-password-set-skipped:{}",
-            error.replace('|', "/").replace('\n', " ")
-        ));
-    }
-    if let Err(error) =
-        wait_for_edit_value_by_index(driver, window, 0, CONFIG_HOST_VALUE, step_timeout)
-    {
-        steps.push(format!(
-            "config-host-verify-skipped:{}",
-            error.replace('|', "/").replace('\n', " ")
-        ));
-    }
     for (edit_index, expected_value) in [
-        (1usize, CONFIG_PORT_VALUE),
-        (2usize, CONFIG_USERNAME_VALUE),
-        (3usize, CONFIG_ROOM_VALUE),
-        (5usize, CONFIG_PLAYER_PATH_VALUE),
+        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
     ] {
         wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
     }
-    driver.set_edit_value_by_index(window, 1, "70000")?;
-    wait_for_edit_value_by_index(driver, window, 1, "70000", step_timeout)?;
+    driver.set_edit_value_by_index(window, CONFIG_PORT_EDIT_INDEX, "70000")?;
+    wait_for_edit_value_by_index(
+        driver,
+        window,
+        CONFIG_PORT_EDIT_INDEX,
+        "70000",
+        step_timeout,
+    )?;
     wait_for_accessible_name(driver, window, "Status: 1 issue(s)", step_timeout)?;
     wait_for_accessible_name(
         driver,
@@ -238,8 +229,14 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "Save: disabled", step_timeout)?;
     steps.push("config-validation-visible".to_owned());
-    driver.set_edit_value_by_index(window, 1, CONFIG_PORT_VALUE)?;
-    wait_for_edit_value_by_index(driver, window, 1, CONFIG_PORT_VALUE, step_timeout)?;
+    driver.set_edit_value_by_index(window, CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE)?;
+    wait_for_edit_value_by_index(
+        driver,
+        window,
+        CONFIG_PORT_EDIT_INDEX,
+        CONFIG_PORT_VALUE,
+        step_timeout,
+    )?;
     wait_for_accessible_name(driver, window, "Status: clean", step_timeout)?;
     wait_for_accessible_name(driver, window, "Save: enabled", step_timeout)?;
 
@@ -468,11 +465,14 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         "Trusted Domains",
         step_timeout,
     )?;
-    for (index, expected_value) in [(0usize, CUSTOM_SERVER_HOST), (1usize, CUSTOM_SERVER_PORT)] {
-        let actual = driver.get_edit_value_by_index(window, index)?;
+    for (edit_index, expected_value) in [
+        (CONFIG_HOST_EDIT_INDEX, CUSTOM_SERVER_HOST),
+        (CONFIG_PORT_EDIT_INDEX, CUSTOM_SERVER_PORT),
+    ] {
+        let actual = driver.get_edit_value_by_index(window, edit_index)?;
         if actual != expected_value {
             return Err(format!(
-                "custom public-server selection did not update configuration edit field [{index}]: expected {expected_value:?}, got {actual:?}"
+                "custom public-server selection did not update configuration edit field [{edit_index}]: expected {expected_value:?}, got {actual:?}"
             ));
         }
     }
@@ -642,16 +642,22 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         &media_search_directory_value,
         config_persist_timeout,
     )?;
-    for (index, expected_value) in [
-        (0usize, CONFIG_HOST_VALUE),
-        (1usize, CONFIG_PORT_VALUE),
-        (2usize, CONFIG_USERNAME_VALUE),
-        (3usize, CONFIG_ROOM_VALUE),
-        (5usize, CONFIG_PLAYER_PATH_VALUE),
-        (TRUSTED_DOMAINS_EDIT_INDEX, TRUSTED_DOMAINS_VALUE),
+    for (edit_index, expected_value) in [
+        (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
+        (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
+        (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
+        (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
+        (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
     ] {
-        wait_for_edit_value_by_index(driver, window, index, expected_value, step_timeout)?;
+        wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
     }
+    wait_for_edit_value_by_index(
+        driver,
+        window,
+        trusted_domains_edit_index(true),
+        TRUSTED_DOMAINS_VALUE,
+        step_timeout,
+    )?;
     wait_for_accessible_name(driver, window, "Ready At Start", step_timeout)?;
     wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
     wait_for_accessible_name(driver, window, "Trusted Domains Only", step_timeout)?;

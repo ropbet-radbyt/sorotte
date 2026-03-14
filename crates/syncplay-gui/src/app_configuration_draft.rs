@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use syncplay_client_app::app_boundary::{
     language::normalized_legacy_runtime_language_tag_legacy_compatible,
     state::{
@@ -13,7 +11,10 @@ use super::shell_state::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
     GuiDialogControlKind,
 };
-use super::support::{bool_label, normalized_editable_text, parse_trusted_domains_text};
+use super::support::{
+    bool_label, normalized_editable_text, optional_string_list_multiline_text,
+    parse_editable_string_list_text, parse_room_history_text, set_player_arguments_text_for_path,
+};
 
 #[cfg(test)]
 #[path = "app_configuration_draft/tests.rs"]
@@ -105,19 +106,11 @@ impl FirstRunConfigurationDialogDraft {
     }
 
     pub(super) fn room_history_multiline_text(&self) -> String {
-        self.settings
-            .room_list
-            .as_deref()
-            .map(|rooms| rooms.join("\n"))
-            .unwrap_or_default()
+        optional_string_list_multiline_text(self.settings.room_list.as_deref())
     }
 
     pub(super) fn apply_room_history_multiline_text(&mut self, value: &str) {
-        let rooms = value
-            .lines()
-            .filter_map(normalized_editable_text)
-            .collect::<BTreeSet<_>>();
-        self.settings.room_list = (!rooms.is_empty()).then(|| rooms.into_iter().collect());
+        self.settings.room_list = parse_room_history_text(value);
         self.refresh_derived_controls();
     }
 
@@ -148,6 +141,17 @@ impl FirstRunConfigurationDialogDraft {
             ("Connection", "Player Path") => {
                 self.settings.player_path = normalized_editable_text(value);
             }
+            ("Connection", "Player Arguments") => {
+                let player_path = self.settings.player_path.clone();
+                set_player_arguments_text_for_path(
+                    &mut self.settings.per_player_arguments,
+                    player_path.as_deref(),
+                    value,
+                );
+            }
+            ("Connection", "Room History") => {
+                self.settings.room_list = parse_room_history_text(value);
+            }
             ("Readiness", "Unpause Action") => {
                 self.settings.unpause_action = normalized_editable_text(value)
                     .as_deref()
@@ -175,7 +179,7 @@ impl FirstRunConfigurationDialogDraft {
                     .and_then(PrivacyMode::from_legacy_name);
             }
             ("Privacy", "Trusted Domains") => {
-                self.settings.trusted_domains = parse_trusted_domains_text(value);
+                self.settings.trusted_domains = parse_editable_string_list_text(value);
             }
             ("Desync", "Rewind Threshold") => {
                 self.settings.rewind_threshold_seconds = parse_optional_nonnegative_f64(value);
@@ -189,6 +193,9 @@ impl FirstRunConfigurationDialogDraft {
             ("Media Search", "First File Timeout") => {
                 self.settings.folder_search_first_file_timeout_seconds =
                     parse_optional_nonnegative_f64(value);
+            }
+            ("Media Search", "Directories") => {
+                self.settings.media_search_directories = parse_editable_string_list_text(value);
             }
             ("Media Search", "Search Timeout") => {
                 self.settings.folder_search_timeout_seconds = parse_optional_nonnegative_f64(value);
@@ -204,11 +211,53 @@ impl FirstRunConfigurationDialogDraft {
             ("Chat", "Max Lines") => {
                 self.settings.chat_max_lines = parse_optional_positive_i64(value);
             }
+            ("Chat", "Input Position") => {
+                self.settings.chat_input_position = normalized_editable_text(value);
+            }
             ("Chat", "Input Font") => {
                 self.settings.chat_input_font_family = normalized_editable_text(value);
             }
+            ("Chat", "Input Font Size") => {
+                self.settings.chat_input_relative_font_size = parse_optional_positive_i64(value);
+            }
+            ("Chat", "Input Font Weight") => {
+                self.settings.chat_input_font_weight = parse_optional_nonnegative_i64(value);
+            }
+            ("Chat", "Input Color") => {
+                self.settings.chat_input_font_color = normalized_editable_text(value);
+            }
+            ("Chat", "Output Mode") => {
+                self.settings.chat_output_mode = normalized_editable_text(value);
+            }
             ("Chat", "Output Font") => {
                 self.settings.chat_output_font_family = normalized_editable_text(value);
+            }
+            ("Chat", "Output Font Size") => {
+                self.settings.chat_output_relative_font_size = parse_optional_positive_i64(value);
+            }
+            ("Chat", "Output Font Weight") => {
+                self.settings.chat_output_font_weight = parse_optional_nonnegative_i64(value);
+            }
+            ("Chat", "Top Margin") => {
+                self.settings.chat_top_margin = parse_optional_nonnegative_i64(value);
+            }
+            ("Chat", "Left Margin") => {
+                self.settings.chat_left_margin = parse_optional_nonnegative_i64(value);
+            }
+            ("Chat", "Bottom Margin") => {
+                self.settings.chat_bottom_margin = parse_optional_nonnegative_i64(value);
+            }
+            ("Chat", "OSD Margin") => {
+                self.settings.chat_osd_margin = parse_optional_nonnegative_i64(value);
+            }
+            ("OSD", "Notification Timeout") => {
+                self.settings.notification_timeout_seconds = parse_optional_nonnegative_i64(value);
+            }
+            ("OSD", "Alert Timeout") => {
+                self.settings.alert_timeout_seconds = parse_optional_nonnegative_i64(value);
+            }
+            ("OSD", "Chat Timeout") => {
+                self.settings.chat_timeout_seconds = parse_optional_nonnegative_i64(value);
             }
             ("System", "Language") => {
                 self.settings.language = normalized_editable_text(value)
@@ -236,6 +285,12 @@ impl FirstRunConfigurationDialogDraft {
             }
             ("Readiness", "Pause On Leave") => {
                 self.settings.pause_on_leave = Some(value);
+            }
+            ("Readiness", "Loop At End Of Playlist") => {
+                self.settings.loop_at_end_of_playlist = Some(value);
+            }
+            ("Readiness", "Loop Single Files") => {
+                self.settings.loop_single_files = Some(value);
             }
             ("Privacy", "Trusted Domains Only") => {
                 self.settings.only_switch_to_trusted_domains = Some(value);
@@ -276,6 +331,9 @@ impl FirstRunConfigurationDialogDraft {
             ("OSD", "Show Warnings") => {
                 self.settings.show_osd_warnings = Some(value);
             }
+            ("OSD", "Show Slowdown") => {
+                self.settings.show_slowdown_osd = Some(value);
+            }
             ("OSD", "Show Noncontroller") => {
                 self.settings.show_noncontroller_osd = Some(value);
             }
@@ -287,6 +345,12 @@ impl FirstRunConfigurationDialogDraft {
             }
             ("System", "Auto Update") => {
                 self.settings.check_for_updates_automatically = Some(value);
+            }
+            ("System", "Autosave Joins To List") => {
+                self.settings.autosave_joins_to_list = Some(value);
+            }
+            ("System", "Force GUI Prompt") => {
+                self.settings.force_gui_prompt = Some(value);
             }
             _ => {}
         }
@@ -313,6 +377,9 @@ impl FirstRunConfigurationDialogDraft {
                 if !control.kind.is_editable()
                     || control.kind == GuiDialogControlKind::Checkbox
                     || (section.title == "Connection" && control.label == "Server Password")
+                    || (section.title == "Connection" && control.label == "Room History")
+                    || (section.title == "Connection" && control.label == "Player Arguments")
+                    || (section.title == "Media Search" && control.label == "Directories")
                 {
                     control.value = baseline_control.value.clone();
                 }
@@ -340,4 +407,11 @@ fn parse_optional_positive_i64(value: &str) -> Option<i64> {
         .parse::<i64>()
         .ok()
         .filter(|parsed| *parsed > 0)
+}
+
+fn parse_optional_nonnegative_i64(value: &str) -> Option<i64> {
+    normalized_editable_text(value)?
+        .parse::<i64>()
+        .ok()
+        .filter(|parsed| *parsed >= 0)
 }

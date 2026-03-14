@@ -130,6 +130,12 @@ fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
         state
             .configuration
             .control_value("Connection", "Room History"),
+        Some("alpha\nbeta\nzeta")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .control_value("Connection", "Room History Count"),
         Some("3")
     );
     assert!(state.room_history_edit_session.is_none());

@@ -19,7 +19,7 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(stored.room.as_deref(), Some("smoke-room"));
     assert_eq!(
         stored.media_search_directories,
-        Some(vec!["C:/Media".to_owned()])
+        Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()])
     );
     assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
     assert_eq!(saved.port, Some(8999));
@@ -58,31 +58,50 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.slowdown_threshold_seconds, Some(2.25));
     assert_eq!(
         saved.media_search_directories,
-        Some(vec!["C:/Media".to_owned()])
+        Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()])
     );
     assert_eq!(saved.folder_search_first_file_timeout_seconds, Some(3.0));
     assert_eq!(saved.folder_search_timeout_seconds, Some(30.0));
     assert_eq!(saved.folder_search_double_check_interval_seconds, Some(2.5));
     assert_eq!(saved.folder_search_warning_threshold_seconds, Some(7.5));
+    assert_eq!(saved.loop_at_end_of_playlist, Some(true));
+    assert_eq!(saved.loop_single_files, Some(true));
     assert_eq!(saved.chat_input_enabled, Some(true));
     assert_eq!(saved.chat_output_enabled, Some(true));
     assert_eq!(saved.chat_direct_input, Some(true));
     assert_eq!(saved.chat_move_osd, Some(true));
     assert_eq!(saved.chat_max_lines, Some(7));
     assert_eq!(saved.chat_input_font_family.as_deref(), Some("Consolas"));
+    assert_eq!(saved.chat_input_position.as_deref(), Some("Bottom"));
+    assert_eq!(saved.chat_input_relative_font_size, Some(24));
+    assert_eq!(saved.chat_input_font_weight, Some(50));
+    assert_eq!(saved.chat_input_font_color.as_deref(), Some("#abcdef"));
     assert_eq!(
         saved.chat_output_font_family.as_deref(),
         Some("Cascadia Mono")
     );
+    assert_eq!(saved.chat_output_mode.as_deref(), Some("Scrolling"));
+    assert_eq!(saved.chat_output_relative_font_size, Some(20));
+    assert_eq!(saved.chat_output_font_weight, Some(60));
+    assert_eq!(saved.chat_top_margin, Some(25));
+    assert_eq!(saved.chat_left_margin, Some(20));
+    assert_eq!(saved.chat_bottom_margin, Some(30));
+    assert_eq!(saved.chat_osd_margin, Some(110));
     assert_eq!(saved.show_osd, Some(true));
     assert_eq!(saved.show_duration_notification, Some(true));
     assert_eq!(saved.show_same_room_osd, Some(true));
     assert_eq!(saved.show_osd_warnings, Some(true));
+    assert_eq!(saved.show_slowdown_osd, Some(true));
     assert_eq!(saved.show_noncontroller_osd, Some(true));
     assert_eq!(saved.show_different_room_osd, Some(true));
     assert_eq!(saved.show_contact_info, Some(true));
+    assert_eq!(saved.notification_timeout_seconds, Some(3));
+    assert_eq!(saved.alert_timeout_seconds, Some(5));
+    assert_eq!(saved.chat_timeout_seconds, Some(7));
     assert_eq!(saved.language.as_deref(), Some("pt_BR"));
     assert_eq!(saved.check_for_updates_automatically, Some(true));
+    assert_eq!(saved.autosave_joins_to_list, Some(true));
+    assert_eq!(saved.force_gui_prompt, Some(true));
     assert!(driver.state().menus.tls_prompt_expected);
     assert!(!driver.state().menus.update_notice_expected);
     assert!(

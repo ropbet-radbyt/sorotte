@@ -35,6 +35,19 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
     assert_eq!(host.value.as_deref(), Some("widget.example"));
     assert!(host.enabled);
     assert!(host.selected);
+    let player_arguments = tree
+        .find("config:Connection:Player Arguments")
+        .expect("player-arguments control should exist in widget tree");
+    assert_eq!(player_arguments.kind, GuiWidgetKind::TextInput);
+    assert!(!player_arguments.enabled);
+    let room_history = tree
+        .find("config:Connection:Room History")
+        .expect("room-history control should exist in widget tree");
+    assert_eq!(room_history.kind, GuiWidgetKind::TextArea);
+    let trusted_domains = tree
+        .find("config:Privacy:Trusted Domains")
+        .expect("trusted-domains control should exist in widget tree");
+    assert_eq!(trusted_domains.kind, GuiWidgetKind::TextArea);
 
     let save = tree
         .find("config-command:save")

@@ -33,8 +33,8 @@
 
 - The Rust client-core is still ahead of the Rust GUI overall, but the GUI now covers both of the most obvious P1 gaps from the last audit: main-window playback/autoplay/offset behavior and Python-style slash-command routing from the chat box.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
+- The configuration dialog now covers the remaining `mpv`-scope legacy settings from the Python client, including player/startup toggles, multiline room/trusted-domain/media-directory editing, chat appearance settings, and OSD timing controls.
 - The biggest remaining parity blockers are now:
-  - the configuration dialog still trails the Python client in several stored legacy controls,
   - the language setting is mostly persistence-only because runtime text is still English,
   - only `mpv` is represented as a first-class Rust player backend today.
 
@@ -59,18 +59,9 @@
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
 - Controlled-room/controller-auth parity now includes create-controlled-room UX, generated-password surfacing, manual identify-as-controller flows, runtime-backed controller-auth requests, Python-style autoplay reset on controlled-room creation, and set-others-readiness actions when the server advertises support.
 - The GUI chat box now mirrors Python slash-command handling, including local command dispatch before chat send, literal `//` escaping, echoed command lines, and runtime-backed seek/undo/offset/playlist/readiness/controller/chat aliases via the shared `syncplay-client-app` planner.
+- Configuration dialog parity now covers the remaining `mpv`-scope legacy settings, including per-player arguments, loop/autosave/force-GUI toggles, multiline room/trusted-domain/media-directory editing on the main configuration surface, chat appearance controls, and OSD timeout/slowdown settings.
 
 ## Remaining Python Client Parity Tasks
-
-### P2. Finish configuration dialog parity
-
-Current status: Rust persists a broad legacy settings model, but the GUI only exposes part of it. Several Python settings are stored in the Rust model or supported elsewhere in the workspace without a matching GUI control.
-
-Work to assign:
-
-- Add the missing player/startup behavior controls: per-player arguments, loop-at-end-of-playlist, loop-single-files, autosave-joins-to-list, and force-GUI-prompt behavior.
-- Add the missing chat/OSD appearance and timing controls: chat input position, chat output mode, font size/weight/color, margins, notification timeout, alert timeout, chat timeout, and slowdown OSD.
-- Decide whether room-list/media-directory/trusted-domain editing should remain split across separate Rust views or be brought back into Python-like dialog flows, and then make that surface consistent.
 
 ### P2. Localize runtime strings and language-sensitive service calls
 
@@ -96,9 +87,8 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Configuration dialog completion.
-2. Localization and language-sensitive service calls.
-3. Additional player backends.
+1. Localization and language-sensitive service calls.
+2. Revisit additional player backends only after the current `mpv`-first parity scope is no longer the primary blocker.
 
 ## Outside Strict Python-Client Feature Parity
 

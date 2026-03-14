@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::{
     FirstRunConfigurationDialogState, GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
     GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
@@ -44,14 +46,22 @@ fn configuration_surface_defaults_to_first_run_mode() {
     assert_eq!(state.system.language_tag, "en");
     assert_eq!(state.readiness.unpause_action_label, "IfAlreadyReady");
     assert_eq!(state.readiness.autoplay_min_users_label, "app-default");
+    assert_eq!(state.chat.chat_input_position_label, "Top");
+    assert_eq!(state.chat.chat_output_mode_label, "Chatroom");
     assert_eq!(state.connection.public_server_count, 0);
 }
 
 #[test]
 fn configuration_surface_maps_existing_stored_settings_into_sections() {
+    let mut per_player_arguments = BTreeMap::new();
+    per_player_arguments.insert(
+        "C:/Program Files/mpv/mpv.exe".to_owned(),
+        vec!["--profile=fast".to_owned(), "--no-border".to_owned()],
+    );
     let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
         language: Some("pt-br".to_owned()),
         check_for_updates_automatically: Some(true),
+        force_gui_prompt: Some(true),
         host: Some("syncplay.example".to_owned()),
         port: Some(8995),
         server_password: Some("secret".to_owned()),
@@ -59,6 +69,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         room: Some("room-a".to_owned()),
         room_list: Some(vec!["room-a".to_owned(), "room-b".to_owned()]),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        per_player_arguments: Some(per_player_arguments),
         public_servers: Some(vec![("Public".to_owned(), "example.org:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
         folder_search_first_file_timeout_seconds: Some(2.0),
@@ -70,6 +81,8 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         ready_at_start: Some(true),
         shared_playlist_enabled: Some(true),
         pause_on_leave: Some(true),
+        loop_at_end_of_playlist: Some(true),
+        loop_single_files: Some(true),
         only_switch_to_trusted_domains: Some(true),
         trusted_domains: Some(vec!["example.org".to_owned(), "syncplay.pl".to_owned()]),
         rewind_on_desync: Some(true),
@@ -84,16 +97,32 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         filename_privacy_mode: Some(PrivacyMode::SendHashed),
         filesize_privacy_mode: Some(PrivacyMode::DoNotSend),
         show_duration_notification: Some(true),
+        autosave_joins_to_list: Some(true),
         show_osd: Some(true),
         chat_input_enabled: Some(true),
         chat_input_font_family: Some("Consolas".to_owned()),
+        chat_input_relative_font_size: Some(26),
+        chat_input_font_weight: Some(50),
+        chat_input_font_color: Some("#abcdef".to_owned()),
+        chat_input_position: Some("Bottom".to_owned()),
         chat_direct_input: Some(true),
         chat_output_enabled: Some(true),
         chat_output_font_family: Some("Segoe UI".to_owned()),
+        chat_output_relative_font_size: Some(20),
+        chat_output_font_weight: Some(60),
+        chat_output_mode: Some("Scrolling".to_owned()),
         chat_move_osd: Some(true),
         chat_max_lines: Some(7),
+        chat_top_margin: Some(25),
+        chat_left_margin: Some(20),
+        chat_bottom_margin: Some(30),
+        chat_osd_margin: Some(110),
+        notification_timeout_seconds: Some(3),
+        alert_timeout_seconds: Some(5),
+        chat_timeout_seconds: Some(7),
         show_same_room_osd: Some(true),
         show_osd_warnings: Some(true),
+        show_slowdown_osd: Some(true),
         show_noncontroller_osd: Some(true),
         show_different_room_osd: Some(true),
         show_contact_info: Some(true),
@@ -106,27 +135,55 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
     assert_eq!(state.connection.port, Some(8995));
     assert!(state.connection.server_password_set);
     assert_eq!(state.connection.public_server_count, 1);
+    assert_eq!(
+        state.connection.player_arguments_text,
+        "--profile=fast --no-border"
+    );
+    assert_eq!(state.connection.room_history_text, "room-a\nroom-b");
     assert_eq!(state.connection.room_history_count, 2);
+    assert!(state.readiness.loop_at_end_of_playlist);
+    assert!(state.readiness.loop_single_files);
     assert_eq!(state.readiness.unpause_action_label, "IfMinUsersReady");
     assert_eq!(state.readiness.autoplay_min_users_label, "3");
     assert_eq!(state.privacy.filename_privacy_mode_label, "SendHashed");
     assert_eq!(state.privacy.filesize_privacy_mode_label, "DoNotSend");
     assert_eq!(
-        state.privacy.trusted_domains_label,
-        "example.org; syncplay.pl"
+        state.privacy.trusted_domains_text,
+        "example.org\nsyncplay.pl"
     );
     assert_eq!(state.privacy.trusted_domain_count, 2);
+    assert_eq!(
+        state.media_search.media_directories_text,
+        "C:/Media\nD:/Archive"
+    );
     assert_eq!(state.media_search.media_directory_count, 2);
+    assert_eq!(state.chat.chat_input_position_label, "Bottom");
     assert_eq!(
         state.chat.chat_input_font_family.as_deref(),
         Some("Consolas")
     );
+    assert_eq!(state.chat.chat_input_relative_font_size, Some(26));
+    assert_eq!(state.chat.chat_input_font_weight, Some(50));
+    assert_eq!(state.chat.chat_input_font_color.as_deref(), Some("#abcdef"));
+    assert_eq!(state.chat.chat_output_mode_label, "Scrolling");
     assert_eq!(
         state.chat.chat_output_font_family.as_deref(),
         Some("Segoe UI")
     );
+    assert_eq!(state.chat.chat_output_relative_font_size, Some(20));
+    assert_eq!(state.chat.chat_output_font_weight, Some(60));
+    assert_eq!(state.chat.chat_top_margin, Some(25));
+    assert_eq!(state.chat.chat_left_margin, Some(20));
+    assert_eq!(state.chat.chat_bottom_margin, Some(30));
+    assert_eq!(state.chat.chat_osd_margin, Some(110));
+    assert!(state.osd.show_slowdown_osd);
+    assert_eq!(state.osd.notification_timeout_seconds, Some(3));
+    assert_eq!(state.osd.alert_timeout_seconds, Some(5));
+    assert_eq!(state.osd.chat_timeout_seconds, Some(7));
     assert!(state.osd.show_contact_info);
     assert!(state.system.check_for_updates_automatically);
+    assert!(state.system.autosave_joins_to_list);
+    assert!(state.system.force_gui_prompt);
 }
 
 #[test]
@@ -145,6 +202,9 @@ fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
     assert!(connection.controls.iter().any(|control| {
         control.label == "Server Password" && control.kind == GuiDialogControlKind::PasswordInput
     }));
+    assert!(connection.controls.iter().any(|control| {
+        control.label == "Room History" && control.kind == GuiDialogControlKind::TextArea
+    }));
 
     let readiness = sections
         .iter()
@@ -161,7 +221,7 @@ fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
         .find(|section| section.title == "Privacy")
         .expect("privacy section should exist");
     assert!(privacy.controls.iter().any(|control| {
-        control.label == "Trusted Domains" && control.kind == GuiDialogControlKind::TextInput
+        control.label == "Trusted Domains" && control.kind == GuiDialogControlKind::TextArea
     }));
 }
 
@@ -295,6 +355,9 @@ fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
         folder_search_timeout_seconds: Some(30.0),
         folder_search_double_check_interval_seconds: Some(2.5),
         folder_search_warning_threshold_seconds: Some(7.5),
+        chat_input_relative_font_size: Some(24),
+        chat_output_relative_font_size: Some(26),
+        notification_timeout_seconds: Some(3),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -328,6 +391,52 @@ fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
             .control_value("Media Search", "Warning Threshold"),
         Some("7.5")
     );
+    assert_eq!(
+        state.configuration.control_value("Chat", "Input Font Size"),
+        Some("24")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .control_value("Chat", "Output Font Size"),
+        Some("26")
+    );
+    assert_eq!(
+        state
+            .configuration
+            .control_value("OSD", "Notification Timeout"),
+        Some("3")
+    );
     assert!(state.validation.issues.is_empty());
     assert!(state.commands.can_save_configuration);
+}
+
+#[test]
+fn configuration_validation_flags_invalid_chat_mode_controls() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Chat",
+        label: "Input Position",
+        value: "Sideways".to_owned(),
+    }));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Chat",
+        label: "Input Font Size",
+        value: "0".to_owned(),
+    }));
+
+    assert_eq!(state.validation.issues.len(), 2);
+    assert!(state.validation.issues.iter().any(|issue| {
+        issue.scope == "Chat"
+            && issue.label == "Input Position"
+            && issue.message == "must be Top, Middle, or Bottom."
+    }));
+    assert!(state.validation.issues.iter().any(|issue| {
+        issue.scope == "Chat"
+            && issue.label == "Input Font Size"
+            && issue.message == "must be a positive integer."
+    }));
+    assert!(!state.commands.can_save_configuration);
 }

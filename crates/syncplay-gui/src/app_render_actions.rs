@@ -631,6 +631,7 @@ impl GuiWidgetEguiRenderer {
             if matches!(
                 kind,
                 GuiDialogControlKind::TextInput
+                    | GuiDialogControlKind::TextArea
                     | GuiDialogControlKind::PasswordInput
                     | GuiDialogControlKind::NumericInput
                     | GuiDialogControlKind::Select
@@ -732,6 +733,14 @@ impl GuiWidgetEguiRenderer {
                     .map(str::to_owned)
                     .collect()
             }
+            ("Chat", "Input Position") => ["Top", "Middle", "Bottom"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            ("Chat", "Output Mode") => ["Chatroom", "Scrolling"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             ("System", "Language") => SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY
                 .split('/')
                 .map(str::to_owned)

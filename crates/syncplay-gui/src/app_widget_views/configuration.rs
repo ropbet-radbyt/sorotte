@@ -3,6 +3,12 @@ use super::*;
 impl SyncplayGuiShellAppState {
     pub(crate) fn configuration_widget_tree(&self) -> GuiWidgetNode {
         let busy = self.pending_operation.is_some();
+        let player_arguments_enabled = self
+            .configuration
+            .settings
+            .player_path
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
         let mut children =
             self.configuration
                 .sections
@@ -27,12 +33,17 @@ impl SyncplayGuiShellAppState {
                             let value = active_edit_session
                                 .map(|session| session.buffer.clone())
                                 .unwrap_or_else(|| control.value.clone());
+                            let enabled = control.kind.is_editable()
+                                && !busy
+                                && !((section.title == "Connection"
+                                    && control.label == "Player Arguments")
+                                    && !player_arguments_enabled);
                             GuiWidgetNode::leaf(
                                 format!("config:{}:{}", section.title, control.label),
                                 control.label,
                                 control.kind.widget_kind(),
                                 Some(value),
-                                control.kind.is_editable() && !busy,
+                                enabled,
                                 focused,
                             )
                         })

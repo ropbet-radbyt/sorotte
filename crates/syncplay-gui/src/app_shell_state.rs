@@ -17,7 +17,7 @@ use super::GuiLaunchMode;
 use super::remote_services;
 use super::support::{
     bool_label, optional_f64_text, optional_i64_text, optional_port_text,
-    optional_string_list_text, optional_text,
+    optional_string_list_multiline_text, optional_text, player_arguments_text_for_path,
 };
 use super::ui_state::GuiUpdateCheckState;
 use super::widget_tree::GuiWidgetKind;
@@ -379,6 +379,7 @@ impl GuiDialogControlKind {
     pub(super) fn widget_kind(self) -> GuiWidgetKind {
         match self {
             Self::TextInput => GuiWidgetKind::TextInput,
+            Self::TextArea => GuiWidgetKind::TextArea,
             Self::PasswordInput => GuiWidgetKind::PasswordInput,
             Self::Checkbox => GuiWidgetKind::Checkbox,
             Self::Select => GuiWidgetKind::Select,
@@ -812,6 +813,13 @@ impl FirstRunConfigurationDialogState {
                     .map(str::trim)
                     .is_some_and(|value| !value.is_empty()),
                 player_path: settings.player_path.clone(),
+                player_arguments_text: player_arguments_text_for_path(
+                    settings.per_player_arguments.as_ref(),
+                    settings.player_path.as_deref(),
+                ),
+                room_history_text: optional_string_list_multiline_text(
+                    settings.room_list.as_deref(),
+                ),
                 public_server_count: settings.public_servers.as_ref().map_or(0, Vec::len),
                 room_history_count: settings.room_list.as_ref().map_or(0, Vec::len),
             },
@@ -823,6 +831,8 @@ impl FirstRunConfigurationDialogState {
                     .unwrap_or(false),
                 shared_playlist_enabled: settings.shared_playlist_enabled.unwrap_or(false),
                 pause_on_leave: settings.pause_on_leave.unwrap_or(false),
+                loop_at_end_of_playlist: settings.loop_at_end_of_playlist.unwrap_or(false),
+                loop_single_files: settings.loop_single_files.unwrap_or(false),
                 unpause_action_label: settings
                     .unpause_action
                     .clone()
@@ -849,7 +859,7 @@ impl FirstRunConfigurationDialogState {
                 only_switch_to_trusted_domains: settings
                     .only_switch_to_trusted_domains
                     .unwrap_or(false),
-                trusted_domains_label: optional_string_list_text(
+                trusted_domains_text: optional_string_list_multiline_text(
                     settings.trusted_domains.as_deref(),
                 ),
                 trusted_domain_count: settings.trusted_domains.as_ref().map_or(0, Vec::len),
@@ -864,6 +874,9 @@ impl FirstRunConfigurationDialogState {
                 slowdown_threshold_seconds: settings.slowdown_threshold_seconds,
             },
             media_search: GuiMediaSearchSection {
+                media_directories_text: optional_string_list_multiline_text(
+                    settings.media_search_directories.as_deref(),
+                ),
                 media_directory_count: settings
                     .media_search_directories
                     .as_ref()
@@ -882,17 +895,44 @@ impl FirstRunConfigurationDialogState {
                 chat_direct_input: settings.chat_direct_input.unwrap_or(false),
                 chat_move_osd: settings.chat_move_osd.unwrap_or(false),
                 chat_max_lines: settings.chat_max_lines,
+                chat_input_position_label: settings
+                    .chat_input_position
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Top")
+                    .to_owned(),
                 chat_input_font_family: settings.chat_input_font_family.clone(),
+                chat_input_relative_font_size: settings.chat_input_relative_font_size,
+                chat_input_font_weight: settings.chat_input_font_weight,
+                chat_input_font_color: settings.chat_input_font_color.clone(),
+                chat_output_mode_label: settings
+                    .chat_output_mode
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Chatroom")
+                    .to_owned(),
                 chat_output_font_family: settings.chat_output_font_family.clone(),
+                chat_output_relative_font_size: settings.chat_output_relative_font_size,
+                chat_output_font_weight: settings.chat_output_font_weight,
+                chat_top_margin: settings.chat_top_margin,
+                chat_left_margin: settings.chat_left_margin,
+                chat_bottom_margin: settings.chat_bottom_margin,
+                chat_osd_margin: settings.chat_osd_margin,
             },
             osd: GuiOsdSection {
                 show_osd: settings.show_osd.unwrap_or(false),
                 show_duration_notification: settings.show_duration_notification.unwrap_or(false),
                 show_same_room_osd: settings.show_same_room_osd.unwrap_or(false),
                 show_osd_warnings: settings.show_osd_warnings.unwrap_or(false),
+                show_slowdown_osd: settings.show_slowdown_osd.unwrap_or(false),
                 show_noncontroller_osd: settings.show_noncontroller_osd.unwrap_or(false),
                 show_different_room_osd: settings.show_different_room_osd.unwrap_or(false),
                 show_contact_info: settings.show_contact_info.unwrap_or(false),
+                notification_timeout_seconds: settings.notification_timeout_seconds,
+                alert_timeout_seconds: settings.alert_timeout_seconds,
+                chat_timeout_seconds: settings.chat_timeout_seconds,
             },
             system: GuiSystemSection {
                 language_tag: settings
@@ -904,6 +944,8 @@ impl FirstRunConfigurationDialogState {
                 check_for_updates_automatically: settings
                     .check_for_updates_automatically
                     .unwrap_or(false),
+                autosave_joins_to_list: settings.autosave_joins_to_list.unwrap_or(false),
+                force_gui_prompt: settings.force_gui_prompt.unwrap_or(false),
                 compatibility_startup_entry_count: startup_entries.len(),
                 ignored_startup_exception_count,
             },
@@ -950,12 +992,22 @@ impl FirstRunConfigurationDialogState {
                         value: optional_text(self.connection.player_path.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
+                        label: "Player Arguments",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: self.connection.player_arguments_text.clone(),
+                    },
+                    GuiDialogControl {
                         label: "Public Servers",
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.connection.public_server_count.to_string(),
                     },
                     GuiDialogControl {
                         label: "Room History",
+                        kind: GuiDialogControlKind::TextArea,
+                        value: self.connection.room_history_text.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Room History Count",
                         kind: GuiDialogControlKind::ReadOnly,
                         value: self.connection.room_history_count.to_string(),
                     },
@@ -991,6 +1043,16 @@ impl FirstRunConfigurationDialogState {
                         value: bool_label(self.readiness.pause_on_leave).to_owned(),
                     },
                     GuiDialogControl {
+                        label: "Loop At End Of Playlist",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.loop_at_end_of_playlist).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Loop Single Files",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.readiness.loop_single_files).to_owned(),
+                    },
+                    GuiDialogControl {
                         label: "Unpause Action",
                         kind: GuiDialogControlKind::Select,
                         value: self.readiness.unpause_action_label.clone(),
@@ -1022,8 +1084,8 @@ impl FirstRunConfigurationDialogState {
                     },
                     GuiDialogControl {
                         label: "Trusted Domains",
-                        kind: GuiDialogControlKind::TextInput,
-                        value: self.privacy.trusted_domains_label.clone(),
+                        kind: GuiDialogControlKind::TextArea,
+                        value: self.privacy.trusted_domains_text.clone(),
                     },
                     GuiDialogControl {
                         label: "Trusted Domain Count",
@@ -1075,6 +1137,11 @@ impl FirstRunConfigurationDialogState {
             GuiDialogSection {
                 title: "Media Search",
                 controls: vec![
+                    GuiDialogControl {
+                        label: "Directories",
+                        kind: GuiDialogControlKind::TextArea,
+                        value: self.media_search.media_directories_text.clone(),
+                    },
                     GuiDialogControl {
                         label: "Directory Count",
                         kind: GuiDialogControlKind::ReadOnly,
@@ -1133,6 +1200,16 @@ impl FirstRunConfigurationDialogState {
                         value: bool_label(self.chat.chat_move_osd).to_owned(),
                     },
                     GuiDialogControl {
+                        label: "Input Position",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.chat.chat_input_position_label.clone(),
+                    },
+                    GuiDialogControl {
+                        label: "Output Mode",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.chat.chat_output_mode_label.clone(),
+                    },
+                    GuiDialogControl {
                         label: "Max Lines",
                         kind: GuiDialogControlKind::NumericInput,
                         value: optional_i64_text(self.chat.chat_max_lines),
@@ -1144,10 +1221,55 @@ impl FirstRunConfigurationDialogState {
                             .to_owned(),
                     },
                     GuiDialogControl {
+                        label: "Input Font Size",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_input_relative_font_size),
+                    },
+                    GuiDialogControl {
+                        label: "Input Font Weight",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_input_font_weight),
+                    },
+                    GuiDialogControl {
+                        label: "Input Color",
+                        kind: GuiDialogControlKind::TextInput,
+                        value: optional_text(self.chat.chat_input_font_color.as_deref()).to_owned(),
+                    },
+                    GuiDialogControl {
                         label: "Output Font",
                         kind: GuiDialogControlKind::TextInput,
                         value: optional_text(self.chat.chat_output_font_family.as_deref())
                             .to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Output Font Size",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_output_relative_font_size),
+                    },
+                    GuiDialogControl {
+                        label: "Output Font Weight",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_output_font_weight),
+                    },
+                    GuiDialogControl {
+                        label: "Top Margin",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_top_margin),
+                    },
+                    GuiDialogControl {
+                        label: "Left Margin",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_left_margin),
+                    },
+                    GuiDialogControl {
+                        label: "Bottom Margin",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_bottom_margin),
+                    },
+                    GuiDialogControl {
+                        label: "OSD Margin",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.chat.chat_osd_margin),
                     },
                 ],
             },
@@ -1175,6 +1297,11 @@ impl FirstRunConfigurationDialogState {
                         value: bool_label(self.osd.show_osd_warnings).to_owned(),
                     },
                     GuiDialogControl {
+                        label: "Show Slowdown",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.osd.show_slowdown_osd).to_owned(),
+                    },
+                    GuiDialogControl {
                         label: "Show Noncontroller",
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_noncontroller_osd).to_owned(),
@@ -1188,6 +1315,21 @@ impl FirstRunConfigurationDialogState {
                         label: "Show Contact Info",
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.osd.show_contact_info).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Notification Timeout",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.osd.notification_timeout_seconds),
+                    },
+                    GuiDialogControl {
+                        label: "Alert Timeout",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.osd.alert_timeout_seconds),
+                    },
+                    GuiDialogControl {
+                        label: "Chat Timeout",
+                        kind: GuiDialogControlKind::NumericInput,
+                        value: optional_i64_text(self.osd.chat_timeout_seconds),
                     },
                 ],
             },
@@ -1203,6 +1345,16 @@ impl FirstRunConfigurationDialogState {
                         label: "Auto Update",
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.system.check_for_updates_automatically).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Autosave Joins To List",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.system.autosave_joins_to_list).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Force GUI Prompt",
+                        kind: GuiDialogControlKind::Checkbox,
+                        value: bool_label(self.system.force_gui_prompt).to_owned(),
                     },
                     GuiDialogControl {
                         label: "Supported Languages",

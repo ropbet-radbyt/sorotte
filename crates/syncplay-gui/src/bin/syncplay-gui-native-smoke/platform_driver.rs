@@ -427,11 +427,32 @@ impl PlatformNativeGuiDriver {
         }
 
         let mut text_inputs = Vec::with_capacity(value.encode_utf16().count() * 2);
-        for ch in value.encode_utf16() {
-            text_inputs.push(Self::keyboard_input_for_unicode(ch, 0));
-            text_inputs.push(Self::keyboard_input_for_unicode(ch, KEYEVENTF_KEYUP));
+        for ch in value.chars() {
+            if ch == '\r' {
+                continue;
+            }
+            if ch == '\n' {
+                if !text_inputs.is_empty() {
+                    Self::send_keyboard_inputs(&mut text_inputs)?;
+                    text_inputs.clear();
+                }
+                Self::send_enter_key()?;
+                continue;
+            }
+            let mut utf16_buffer = [0u16; 2];
+            for code_unit in ch.encode_utf16(&mut utf16_buffer) {
+                text_inputs.push(Self::keyboard_input_for_unicode(*code_unit, 0));
+                text_inputs.push(Self::keyboard_input_for_unicode(
+                    *code_unit,
+                    KEYEVENTF_KEYUP,
+                ));
+            }
         }
-        Self::send_keyboard_inputs(&mut text_inputs)
+        if text_inputs.is_empty() {
+            Ok(())
+        } else {
+            Self::send_keyboard_inputs(&mut text_inputs)
+        }
     }
 
     fn send_enter_key() -> Result<(), String> {

@@ -129,11 +129,34 @@ impl GuiSemanticStep {
         GuiDroppedFilesTarget::parse(token)
     }
 
-    fn parse_optional_value(token: &str) -> Option<&str> {
+    fn decode_text_token(token: &str) -> String {
+        let mut decoded = String::new();
+        let mut characters = token.chars();
+        while let Some(character) = characters.next() {
+            if character != '\\' {
+                decoded.push(character);
+                continue;
+            }
+            match characters.next() {
+                Some('n') => decoded.push('\n'),
+                Some('r') => decoded.push('\r'),
+                Some('t') => decoded.push('\t'),
+                Some('\\') => decoded.push('\\'),
+                Some(other) => {
+                    decoded.push('\\');
+                    decoded.push(other);
+                }
+                None => decoded.push('\\'),
+            }
+        }
+        decoded
+    }
+
+    fn parse_optional_value(token: &str) -> Option<String> {
         match token {
             "<none>" => None,
-            "<empty>" => Some(""),
-            _ => Some(token),
+            "<empty>" => Some(String::new()),
+            _ => Some(Self::decode_text_token(token)),
         }
     }
 
@@ -435,7 +458,7 @@ impl GuiSemanticStep {
                     if fields.next().is_some() {
                         return Err("enter-text accepts exactly three arguments".to_owned());
                     }
-                    Self::enter_text(widget_id, value, submit)
+                    Self::enter_text(widget_id, &Self::decode_text_token(value), submit)
                 }
                 "assert-label" => {
                     let widget_id = fields
@@ -459,7 +482,8 @@ impl GuiSemanticStep {
                     if fields.next().is_some() {
                         return Err("assert-value accepts exactly two arguments".to_owned());
                     }
-                    Self::assert_widget_value(widget_id, Self::parse_optional_value(value))
+                    let parsed_value = Self::parse_optional_value(value);
+                    Self::assert_widget_value(widget_id, parsed_value.as_deref())
                 }
                 "assert-selected" => {
                     let widget_id = fields

@@ -831,6 +831,10 @@ fn wait_for_named_edit_value<D: NativeGuiDriver>(
     }
 }
 
+fn trusted_domains_edit_index(player_arguments_enabled: bool) -> usize {
+    if player_arguments_enabled { 8 } else { 7 }
+}
+
 fn wait_for_edit_value_by_index<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,

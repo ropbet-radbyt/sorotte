@@ -6,16 +6,21 @@ enter-text	config:Connection:Port	false	8999
 enter-text	config:Connection:Username	false	smoke-user
 enter-text	config:Connection:Room	false	smoke-room
 enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
+assert-enabled	config:Connection:Player Arguments	true
+enter-text	config:Connection:Player Arguments	false	--profile=fast --no-border
+enter-text	config:Connection:Room History	false	smoke-backup\nsmoke-room
 activate	config:Readiness:Ready At Start
 activate	config:Readiness:Autoplay
 activate	config:Readiness:Require Same Filenames
 activate	config:Readiness:Shared Playlists
 activate	config:Readiness:Pause On Leave
+activate	config:Readiness:Loop At End Of Playlist
+activate	config:Readiness:Loop Single Files
 enter-text	config:Readiness:Unpause Action	false	Always
 enter-text	config:Readiness:Autoplay Min Users	false	3
 enter-text	config:Privacy:Filename Privacy	false	SendHashed
 enter-text	config:Privacy:Filesize Privacy	false	DoNotSend
-enter-text	config:Privacy:Trusted Domains	false	youtube.com; *.example.com/videos
+enter-text	config:Privacy:Trusted Domains	false	youtube.com\n*.example.com/videos
 activate	config:Privacy:Trusted Domains Only
 activate	config:Desync:Rewind On Desync
 activate	config:Desync:Fastforward On Desync
@@ -24,6 +29,7 @@ activate	config:Desync:Dont Slow Down With Me
 enter-text	config:Desync:Rewind Threshold	false	1.25
 enter-text	config:Desync:Fastforward Threshold	false	3.5
 enter-text	config:Desync:Slowdown Threshold	false	2.25
+enter-text	config:Media Search:Directories	false	C:/Media\nD:/Archive
 enter-text	config:Media Search:First File Timeout	false	3.0
 enter-text	config:Media Search:Search Timeout	false	30.0
 enter-text	config:Media Search:Double Check Interval	false	2.5
@@ -32,20 +38,37 @@ activate	config:Chat:Chat Input
 activate	config:Chat:Chat Output
 activate	config:Chat:Direct Input
 activate	config:Chat:Move OSD
+enter-text	config:Chat:Input Position	false	Bottom
+enter-text	config:Chat:Output Mode	false	Scrolling
 enter-text	config:Chat:Max Lines	false	7
 enter-text	config:Chat:Input Font	false	Consolas
+enter-text	config:Chat:Input Font Size	false	24
+enter-text	config:Chat:Input Font Weight	false	50
+enter-text	config:Chat:Input Color	false	#abcdef
 enter-text	config:Chat:Output Font	false	Cascadia Mono
+enter-text	config:Chat:Output Font Size	false	20
+enter-text	config:Chat:Output Font Weight	false	60
+enter-text	config:Chat:Top Margin	false	25
+enter-text	config:Chat:Left Margin	false	20
+enter-text	config:Chat:Bottom Margin	false	30
+enter-text	config:Chat:OSD Margin	false	110
 activate	config:OSD:Show OSD
 activate	config:OSD:Show Duration
 activate	config:OSD:Show Same Room
 activate	config:OSD:Show Warnings
+activate	config:OSD:Show Slowdown
 activate	config:OSD:Show Noncontroller
 activate	config:OSD:Show Different Room
 activate	config:OSD:Show Contact Info
+enter-text	config:OSD:Notification Timeout	false	3
+enter-text	config:OSD:Alert Timeout	false	5
+enter-text	config:OSD:Chat Timeout	false	7
 enter-text	config:System:Language	false	pt-br
 activate	config:System:Auto Update
-add-media-search-directory	C:/Media
-assert-value	config:Media Search:Directory Count	1
+activate	config:System:Autosave Joins To List
+activate	config:System:Force GUI Prompt
+assert-value	config:Connection:Room History Count	2
+assert-value	config:Media Search:Directory Count	2
 assert-value	menus:dialog:tls	yes
 assert-value	menus:dialog:update	no
 enter-text	config:Connection:Port	false	70000
@@ -59,24 +82,44 @@ assert-value	shell:validation:status	clean
 assert-value	shell:command:save	enabled
 assert-value	config:Connection:Host	syncplay.example
 assert-value	config:Connection:Player Path	C:/Windows/System32/notepad.exe
+assert-value	config:Connection:Player Arguments	--profile=fast --no-border
+assert-value	config:Connection:Room History	smoke-backup\nsmoke-room
 assert-value	config:Readiness:Unpause Action	Always
 assert-value	config:Readiness:Autoplay Min Users	3
 assert-value	config:Privacy:Filename Privacy	SendHashed
 assert-value	config:Privacy:Filesize Privacy	DoNotSend
-assert-value	config:Privacy:Trusted Domains	youtube.com; *.example.com/videos
+assert-value	config:Privacy:Trusted Domains	youtube.com\n*.example.com/videos
 assert-value	config:Privacy:Trusted Domains Only	yes
 assert-value	config:Privacy:Trusted Domain Count	2
+assert-value	config:Media Search:Directories	C:/Media\nD:/Archive
 assert-value	config:Desync:Rewind Threshold	1.25
 assert-value	config:Desync:Fastforward Threshold	3.5
 assert-value	config:Desync:Slowdown Threshold	2.25
-assert-value	config:Media Search:First File Timeout	3
-assert-value	config:Media Search:Search Timeout	30
+assert-value	config:Media Search:First File Timeout	3.0
+assert-value	config:Media Search:Search Timeout	30.0
 assert-value	config:Media Search:Double Check Interval	2.5
 assert-value	config:Media Search:Warning Threshold	7.5
+assert-value	config:Chat:Input Position	Bottom
+assert-value	config:Chat:Output Mode	Scrolling
 assert-value	config:Chat:Max Lines	7
 assert-value	config:Chat:Input Font	Consolas
+assert-value	config:Chat:Input Font Size	24
+assert-value	config:Chat:Input Font Weight	50
+assert-value	config:Chat:Input Color	#abcdef
 assert-value	config:Chat:Output Font	Cascadia Mono
-assert-value	config:System:Language	pt_BR
+assert-value	config:Chat:Output Font Size	20
+assert-value	config:Chat:Output Font Weight	60
+assert-value	config:Chat:Top Margin	25
+assert-value	config:Chat:Left Margin	20
+assert-value	config:Chat:Bottom Margin	30
+assert-value	config:Chat:OSD Margin	110
+assert-value	config:OSD:Show Slowdown	yes
+assert-value	config:OSD:Notification Timeout	3
+assert-value	config:OSD:Alert Timeout	5
+assert-value	config:OSD:Chat Timeout	7
+assert-value	config:System:Language	pt-br
+assert-value	config:System:Autosave Joins To List	yes
+assert-value	config:System:Force GUI Prompt	yes
 activate	config-command:save
 assert-pending	save-configuration
 assert-value	shell:command:busy	yes

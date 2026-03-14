@@ -107,18 +107,18 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 "expected at least 6 editable configuration text fields after relaunch, found {editable_count}"
             ));
         }
-        for (index, expected_value) in [
-            (2usize, CONFIG_USERNAME_VALUE),
-            (3usize, CONFIG_ROOM_VALUE),
-            (5usize, CONFIG_PLAYER_PATH_VALUE),
+        for (edit_index, expected_value) in [
+            (CONFIG_USERNAME_EDIT_INDEX, CONFIG_USERNAME_VALUE),
+            (CONFIG_ROOM_EDIT_INDEX, CONFIG_ROOM_VALUE),
+            (CONFIG_PLAYER_PATH_EDIT_INDEX, CONFIG_PLAYER_PATH_VALUE),
         ] {
-            wait_for_edit_value_by_index(driver, window, index, expected_value, step_timeout)?;
+            wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
         }
         steps.push("config-reload-persisted".to_owned());
         wait_for_edit_value_by_index(
             driver,
             window,
-            TRUSTED_DOMAINS_EDIT_INDEX,
+            trusted_domains_edit_index(true),
             TRUSTED_DOMAINS_VALUE,
             step_timeout,
         )?;
@@ -192,13 +192,33 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 "expected at least 6 editable configuration text fields after clear-GUI-data, found {editable_count_after_clear}"
             ));
         }
-        for index in [0usize, 1, 2, 3, 5, TRUSTED_DOMAINS_EDIT_INDEX] {
-            let value = driver.get_edit_value_by_index(window, index)?;
+        if editable_count_after_clear + 1 != editable_count {
+            return Err(format!(
+                "expected clear-GUI-data to remove exactly one editable configuration field; before clear={editable_count}, after clear={editable_count_after_clear}"
+            ));
+        }
+        for edit_index in [
+            CONFIG_HOST_EDIT_INDEX,
+            CONFIG_PORT_EDIT_INDEX,
+            CONFIG_USERNAME_EDIT_INDEX,
+            CONFIG_ROOM_EDIT_INDEX,
+            CONFIG_PLAYER_PATH_EDIT_INDEX,
+        ] {
+            let value = driver.get_edit_value_by_index(window, edit_index)?;
             if !value.is_empty() && value != "(unset)" {
                 return Err(format!(
-                    "expected first-run configuration edit [{index}] to be blank after clear-GUI-data, got {value:?}"
+                    "expected first-run configuration edit [{edit_index}] to be blank after clear-GUI-data, got {value:?}"
                 ));
             }
+        }
+        let trusted_domains_value =
+            driver.get_edit_value_by_index(window, trusted_domains_edit_index(false))?;
+        if !trusted_domains_value.is_empty() && trusted_domains_value != "(unset)" {
+            return Err(format!(
+                "expected first-run configuration edit [{}] to be blank after clear-GUI-data, got {:?}",
+                trusted_domains_edit_index(false),
+                trusted_domains_value,
+            ));
         }
         steps.push("clear-gui-data-first-run".to_owned());
 
@@ -281,13 +301,33 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     "expected at least 6 editable configuration text fields on first launch after clear-GUI-data, found {editable_count}"
                 ));
             }
-            for index in [0usize, 1, 2, 3, 5, TRUSTED_DOMAINS_EDIT_INDEX] {
-                let value = driver.get_edit_value_by_index(first_run_window, index)?;
+            if editable_count != editable_count_after_clear {
+                return Err(format!(
+                    "expected first launch after clear-GUI-data to keep the reduced editable-field count; first-launch count={editable_count}, post-clear count={editable_count_after_clear}"
+                ));
+            }
+            for edit_index in [
+                CONFIG_HOST_EDIT_INDEX,
+                CONFIG_PORT_EDIT_INDEX,
+                CONFIG_USERNAME_EDIT_INDEX,
+                CONFIG_ROOM_EDIT_INDEX,
+                CONFIG_PLAYER_PATH_EDIT_INDEX,
+            ] {
+                let value = driver.get_edit_value_by_index(first_run_window, edit_index)?;
                 if !value.is_empty() && value != "(unset)" {
                     return Err(format!(
-                        "expected first-run relaunch configuration edit [{index}] to be blank, got {value:?}"
+                        "expected first-run relaunch configuration edit [{edit_index}] to be blank, got {value:?}"
                     ));
                 }
+            }
+            let trusted_domains_value = driver
+                .get_edit_value_by_index(first_run_window, trusted_domains_edit_index(false))?;
+            if !trusted_domains_value.is_empty() && trusted_domains_value != "(unset)" {
+                return Err(format!(
+                    "expected first-run relaunch configuration edit [{}] to be blank, got {:?}",
+                    trusted_domains_edit_index(false),
+                    trusted_domains_value,
+                ));
             }
             Ok(())
         })();
@@ -427,11 +467,17 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_edit_value_by_index(
                 driver,
                 migration_window,
-                0,
+                CONFIG_HOST_EDIT_INDEX,
                 "gui-only.example",
                 step_timeout,
             )?;
-            wait_for_edit_value_by_index(driver, migration_window, 1, "9002", step_timeout)?;
+            wait_for_edit_value_by_index(
+                driver,
+                migration_window,
+                CONFIG_PORT_EDIT_INDEX,
+                "9002",
+                step_timeout,
+            )?;
             Ok(())
         })();
         if migration_outcome.is_err() {
