@@ -1,4 +1,12 @@
-use super::*;
+#[cfg(target_os = "windows")]
+use std::{thread, time::Duration};
+
+#[cfg(target_os = "windows")]
+use super::{
+    MAIN_WINDOW_CONTROLS_CONTAINER_NAME, MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID,
+    MAIN_WINDOW_LOCAL_READY_BUTTON_NAME, MAIN_WINDOW_ROOM_BROWSER_NAME, SMOKE_WINDOW_HEIGHT,
+    SMOKE_WINDOW_WIDTH, SMOKE_WINDOW_X, SMOKE_WINDOW_Y, bool_label,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeControlKind {

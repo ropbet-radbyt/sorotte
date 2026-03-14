@@ -25,6 +25,7 @@ Manual/local validations (real `mpv`, release packaging) are tracked separately 
 - `README.md`: repo overview and quick commands
 - `PROJECT_STATUS.md`: repo-local audit summary + current priorities
 - `docs/CLIENT_PARITY_AUDIT.md`: current parity audit and remaining work list
+- `docs/PORT_MAINTAINABILITY_PLAN.md`: working maintainability and extraction plan for the Rust port
 - `docs/AGENT_IMPLEMENTATION_GUIDE.md`: implementation workflow and required test matrix for agents
 - `ALPHA_CLI_PREVIEW.md`: Windows/`mpv` CLI alpha packaging and run guide
 

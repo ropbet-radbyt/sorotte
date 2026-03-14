@@ -104,8 +104,11 @@ const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str = "self=yes, ready=yes, con
 const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "self=no, ready=no, controller=no";
 const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str = "self=no, ready=yes, controller=no";
 const MAIN_WINDOW_ROOM_BROWSER_NAME: &str = "Room Browser";
+#[cfg(target_os = "windows")]
 const MAIN_WINDOW_CONTROLS_CONTAINER_NAME: &str = "Controls";
+#[cfg(target_os = "windows")]
 const MAIN_WINDOW_LOCAL_READY_BUTTON_NAME: &str = "Set Ready";
+#[cfg(target_os = "windows")]
 const MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID: &str = "main-window:control:set-ready";
 const MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS: usize = 6;
 #[cfg(target_os = "windows")]
