@@ -100,6 +100,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
+    adapter.runtime.session_mut().set_autoplay_enabled(true);
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -171,6 +172,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
                 if snapshot.room_name == "+room:ABCDEF123456"
                     && snapshot.controlled_room_active
+                    && !snapshot.autoplay_active
         )),
         "new controlled room should still refresh the main-window snapshot"
     );

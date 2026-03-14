@@ -4500,6 +4500,8 @@ impl ClientSession {
                 (new_controlled_room.room_name, new_controlled_room.password)
         {
             let normalized_password = Self::normalize_control_password_legacy_compatible(&password);
+            self.autoplay_enabled = false;
+            self.stop_autoplay_countdown();
             self.remember_control_password_for_room(&room_name, &password);
             self.pending_controlled_room_creation_notifications.push(
                 ControlledRoomCreationNotification::Created {
@@ -6429,6 +6431,35 @@ mod tests {
                 .runtime_actions_for_controller_reidentify_if_needed()
                 .is_empty(),
             "controller reidentify actions should drain after first retrieval"
+        );
+    }
+
+    #[test]
+    fn new_controlled_room_message_resets_autoplay_state_like_python_client() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session.set_autoplay_enabled(true);
+        session.start_autoplay_countdown();
+        assert!(session.autoplay_enabled());
+        assert!(session.autoplay_timer_is_running());
+
+        session
+            .apply_message_json(
+                r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"AB-123-456"}}}"#,
+            )
+            .expect("new controlled room message should apply");
+
+        assert!(
+            !session.autoplay_enabled(),
+            "creating a controlled room should reset autoplay like the Python client"
+        );
+        assert!(
+            !session.autoplay_timer_is_running(),
+            "creating a controlled room should stop any running autoplay countdown"
         );
     }
 

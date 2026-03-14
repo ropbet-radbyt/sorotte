@@ -22,7 +22,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. The main window now exposes a Python-style room/user/file browser with room grouping, per-user metadata/difference cues, hide-empty-room behavior, and runtime-backed room/file/folder/trusted-domain actions, and detached GUI sessions now sustain legacy-server connections with periodic heartbeat state updates even before a player is attached. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and the GUI now covers the Python playlist workflow slice as well: shuffle remaining/entire, undo playlist changes, add/open URL flows, playlist text editing, dedicated load/save dialogs, and playlist context actions are all present. Controlled-room/controller-auth parity is now also runtime-backed in the GUI, including create-controlled-room, manual identify-as-controller, generated-password surfacing, and server-gated set-others-readiness actions. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. The main window now exposes a Python-style room/user/file browser with room grouping, per-user metadata/difference cues, hide-empty-room behavior, and runtime-backed room/file/folder/trusted-domain actions, and detached GUI sessions now sustain legacy-server connections with periodic heartbeat state updates even before a player is attached. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and the GUI now covers the Python playlist workflow slice as well: shuffle remaining/entire, undo playlist changes, add/open URL flows, playlist text editing, dedicated load/save dialogs, and playlist context actions are all present. Controlled-room/controller-auth parity is now also runtime-backed in the GUI, including create-controlled-room, manual identify-as-controller, generated-password surfacing, Python-style autoplay reset on controlled-room creation, and server-gated set-others-readiness actions verified against the live Python peer harness. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
 
 ## Documentation set (current)
 
@@ -31,6 +31,7 @@ These are the Markdown files that should remain in this repo:
 - `README.md` (overview + commands)
 - `PROJECT_STATUS.md` (this audit + priorities)
 - `docs/CLIENT_PARITY_AUDIT.md` (detailed remaining-work list)
+- `docs/PORT_MAINTAINABILITY_PLAN.md` (working maintainability and extraction plan)
 - `docs/AGENT_IMPLEMENTATION_GUIDE.md` (required implementation/test workflow)
 - `ALPHA_CLI_PREVIEW.md` (developer/alpha run and packaging guide)
 
@@ -54,7 +55,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] GUI session keepalive parity against legacy server timeouts, including periodic ping-backed state heartbeats for detached sessions without attached player telemetry.
 - [x] Runtime-backed shared-playlist file opening/import from the GUI, including session playlist replacement and playlist-file import.
 - [x] Python-style playlist workflow parity in the GUI, including shuffle remaining/entire, undo playlist change, add/open URL flows, playlist text editing, dedicated load/save dialogs, and playlist context actions.
-- [x] Controlled-room/controller-auth GUI parity for create-controlled-room, manual identify-as-controller, generated-password surfacing, and server-gated set-others-readiness actions.
+- [x] Controlled-room/controller-auth GUI parity for create-controlled-room, manual identify-as-controller, generated-password surfacing, Python-style autoplay reset on controlled-room creation, and server-gated set-others-readiness actions.
 - [x] Desktop drag-and-drop ingest for detached media-open and shared-playlist import, with semantic and Windows native smoke coverage.
 - [x] Tightened GUI command availability so config-only room/media/playback paths stop looking production-ready.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
@@ -75,7 +76,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
 - [ ] Cross-platform validation beyond the current Windows-oriented GUI workflow.
 - [ ] Expand `syncplay-server` CLI/runtime parity beyond the current alpha slice (remaining gaps include dual-interface binding parity and binary-level operational smoke coverage).
-- [ ] Refactor/maintainability work for very large modules (notably `crates/syncplay-cli/src/main.rs` and `crates/syncplay-client-core/src/lib.rs`) to reduce change risk.
+- [ ] Refactor/maintainability work for very large modules (notably `crates/syncplay-gui/src/app.rs`, still roughly `32.5k` lines but now shedding legacy GUI UI-state persistence into `app_ui_state.rs`, startup/bootstrap support into `app_startup.rs` and `app_startup_support.rs`, shared helper functions into `app_support.rs`, the widget-tree model into `app_widget_tree.rs`, and queued-runtime/native host plumbing into `app_runtime_queue.rs` and `app_native_host.rs`, plus `crates/syncplay-cli/src/main.rs` and `crates/syncplay-client-core/src/lib.rs`) to reduce change risk.
 
 ## Optional/next improvements
 

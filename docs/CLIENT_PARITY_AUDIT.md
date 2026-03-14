@@ -21,7 +21,7 @@
   - `../syncplay/syncplay/ui/GuiConfiguration.py`
   - `../syncplay/syncplay/utils.py`
 - Static comparison of the Rust client implementation:
-  - `crates/syncplay-gui/src/main.rs`
+- `crates/syncplay-gui/src/app.rs`
   - `crates/syncplay-gui/src/remote_services.rs`
   - `crates/syncplay-client-core/src/lib.rs`
   - `crates/syncplay-client-app/src/legacy_settings.rs`
@@ -57,14 +57,14 @@
 - Python playlist workflow parity now includes shuffle remaining, shuffle entire, undo playlist change, add-URL/open-URL flows, playlist text editing, dedicated load/save playlist dialogs, and playlist context actions for opening selected items, opening containing folders, and trusting selected playlist domains.
 - The matching Playback/Advanced/Window menu affordances are runtime-backed, and detached local player/session synchronization no longer leaks hidden session state into the visible shell.
 - TLS prompt, update-check, chat, reconnect, and controlled-room interop coverage are present.
-- Controlled-room/controller-auth parity now includes create-controlled-room UX, generated-password surfacing, manual identify-as-controller flows, runtime-backed controller-auth requests, and set-others-readiness actions when the server advertises support.
+- Controlled-room/controller-auth parity now includes create-controlled-room UX, generated-password surfacing, manual identify-as-controller flows, runtime-backed controller-auth requests, Python-style autoplay reset on controlled-room creation, and set-others-readiness actions when the server advertises support.
 - The client-core still implements some operations the GUI does not fully expose yet, including slash-command routing beyond the current chat box behavior.
 
 ## Remaining Python Client Parity Tasks
 
 ### P1. Port controlled-room and controller-auth UX
 
-Current status: completed. The Rust GUI now matches the Python client for the main controlled-room/controller-auth slice: create-controlled-room UX is present, generated room/password details are surfaced back to the user, manual identify-as-controller requests are runtime-backed, controller-auth retries no longer depend on shell-only toggles, and set-others-readiness is wired from the user browser when supported by the server.
+Current status: completed. The Rust GUI now matches the Python client for the main controlled-room/controller-auth slice: create-controlled-room UX is present, generated room/password details are surfaced back to the user, manual identify-as-controller requests are runtime-backed, controller-auth retries no longer depend on shell-only toggles, controlled-room creation resets autoplay state like Python, and set-others-readiness is wired from the user browser when supported by the server and verified against a live Python peer.
 
 No further assignment is needed here beyond normal regression coverage and smoke-harness stabilization.
 

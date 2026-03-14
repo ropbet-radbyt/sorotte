@@ -460,7 +460,17 @@ fn run_live_python_peer_controlled_room_flow_with_harness(
         true,
         Duration::from_secs(3),
     )?;
-    let peer_snapshot = harness.wait_for_peer_local_controller(false, Duration::from_secs(3))?;
+    harness.wait_for_peer_local_controller(false, Duration::from_secs(3))?;
+
+    request_remote_user_ready(&handle, &mut state, harness.peer_username(), true)?;
+    pump_and_apply(&mut owner, &handle, &mut state);
+    harness.wait_for_peer_local_ready(true, Duration::from_secs(3))?;
+    wait_for_controlled_room_peer_ready_projection(&mut owner, &handle, &mut state, true)?;
+
+    request_remote_user_ready(&handle, &mut state, harness.peer_username(), false)?;
+    pump_and_apply(&mut owner, &handle, &mut state);
+    let peer_snapshot = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
+    wait_for_controlled_room_peer_ready_projection(&mut owner, &handle, &mut state, false)?;
 
     state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
     Ok(LivePythonPeerControlledRoomInteropResult {
@@ -564,6 +574,28 @@ fn request_local_ready(
         )));
     }
     handle.push_request(GuiRuntimeRequest::SetLocalReady(ready));
+    Ok(())
+}
+
+fn request_remote_user_ready(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    username: &str,
+    ready: bool,
+) -> Result<(), LivePythonPeerInteropError> {
+    if !state.apply(GuiShellAction::RequestMainWindowUserReady {
+        username: username.to_owned(),
+        ready,
+    }) {
+        return Err(LivePythonPeerInteropError::Gui(format!(
+            "failed to stage remote readiness change for {username:?}; room={:?}",
+            state.main_window.room_name
+        )));
+    }
+    handle.push_request(GuiRuntimeRequest::SetReadyForUser {
+        username: username.to_owned(),
+        ready,
+    });
     Ok(())
 }
 
@@ -1001,6 +1033,52 @@ fn wait_for_controlled_room_projection(
                 state.main_window.room_name,
                 state.main_window.playback.can_manage_playlist,
                 projected_users
+            )));
+        }
+
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_controlled_room_peer_ready_projection(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SyncplayGuiShellAppState,
+    expected_peer_ready: bool,
+) -> Result<(), LivePythonPeerInteropError> {
+    let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
+    loop {
+        pump_and_apply(owner, handle, state);
+
+        let local_user_present = local_user_controller(state).is_some();
+        let peer_user_present = peer_user_ready(state, LIVE_PYTHON_INTEROP_PEER_USERNAME).is_some();
+        if state.main_window.room_name == LIVE_PYTHON_INTEROP_CONTROLLED_ROOM
+            && local_user_present
+            && peer_user_present
+            && local_user_controller(state) == Some(true)
+            && peer_user_controller(state, LIVE_PYTHON_INTEROP_PEER_USERNAME) == Some(false)
+            && peer_user_ready(state, LIVE_PYTHON_INTEROP_PEER_USERNAME)
+                == Some(expected_peer_ready)
+        {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let projected_users = state
+                .main_window
+                .users
+                .iter()
+                .map(|user| {
+                    format!(
+                        "{}(self={}, ready={}, controller={})",
+                        user.username, user.is_self, user.is_ready, user.is_controller
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python controlled-room readiness projection; expected_peer_ready={expected_peer_ready}, room={:?}, users=[{}]",
+                state.main_window.room_name, projected_users
             )));
         }
 
