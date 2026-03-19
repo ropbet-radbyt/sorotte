@@ -4,14 +4,14 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Audit date
 
-- 2026-03-14
+- 2026-03-19
 
 ## What was verified in this audit
 
 - `cargo fmt --all` passed.
 - `cargo test --workspace` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
-- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`10/10` scenarios).
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`11/11` scenarios).
 - `cargo build -p syncplay-gui --bin syncplay-gui` passed.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000` passed.
 - `cargo test -p syncplay-gui gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config -- --ignored` passed with local `SYNCPLAY_MPV_SMOKE_BIN`.
@@ -22,7 +22,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 
 ## Summary
 
-`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. The configuration dialog now also covers the remaining `mpv`-scope legacy settings slice, including player/startup toggles, multiline room/trusted-domain/media-directory editors, chat appearance controls, and OSD timing/slowdown settings. The main window now exposes a Python-style room/user/file browser with room grouping, per-user metadata/difference cues, hide-empty-room behavior, runtime-backed room/file/folder/trusted-domain actions, and Python-style slash-command handling in the chat box, including local command dispatch, literal slash escaping, and runtime-backed seek/playlist/readiness/controller aliases. Detached GUI sessions now sustain legacy-server connections with periodic heartbeat state updates even before a player is attached. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and the GUI now covers the Python playlist workflow slice as well: shuffle remaining/entire, undo playlist changes, add/open URL flows, playlist text editing, dedicated load/save dialogs, and playlist context actions are all present. Controlled-room/controller-auth parity is now also runtime-backed in the GUI, including create-controlled-room, manual identify-as-controller, generated-password surfacing, Python-style autoplay reset on controlled-room creation, and server-gated set-others-readiness actions verified against the live Python peer harness. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
+`syncplay-rs` is well beyond a skeleton rewrite: it has a verified CLI client, a GUI shell with semantic/native smoke coverage and live Python interop coverage, typed protocol handling, compatibility-focused tests, and a real `mpv` adapter. The project is not yet a full end-user replacement for Syncplay because broader packaging, cross-platform validation, and maintainability work remain, but the default GUI flow now includes GUI-owned `mpv` startup from saved `playerPath` settings, saved per-player arguments, and legacy Syncplay `mpv` OSD/chat behavior without requiring manual IPC environment variables. The configuration dialog now also covers the remaining `mpv`-scope legacy settings slice, including player/startup toggles, multiline room/trusted-domain/media-directory editors, chat appearance controls, and OSD timing/slowdown settings. The main window now exposes a Python-style room/user/file browser with room grouping, per-user metadata/difference cues, hide-empty-room behavior, runtime-backed room/file/folder/trusted-domain actions, and Python-style slash-command handling in the chat box, including local command dispatch, literal slash escaping, and runtime-backed seek/playlist/readiness/controller aliases. Detached GUI sessions now sustain legacy-server connections with periodic heartbeat state updates even before a player is attached. Shared-playlist file opening/import now routes through the real GUI runtime path, desktop drag-and-drop ingest covers both media-open and shared-playlist import flows with semantic and Windows native smoke coverage, and the GUI now covers the Python playlist workflow slice as well: shuffle remaining/entire, undo playlist changes, add/open URL flows, playlist text editing, dedicated load/save dialogs, and playlist context actions are all present. Controlled-room/controller-auth parity is now also runtime-backed in the GUI, including create-controlled-room, manual identify-as-controller, generated-password surfacing, Python-style autoplay reset on controlled-room creation, and server-gated set-others-readiness actions verified against the live Python peer harness. The selected GUI language now also affects runtime notifications, update/public-server service calls, and update-dialog text, with a dedicated non-English semantic scenario in the verification set. Non-`mpv` players are currently deferred behind the remaining GUI parity backlog.
 
 ## Documentation set (current)
 
@@ -60,6 +60,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Controlled-room/controller-auth GUI parity for create-controlled-room, manual identify-as-controller, generated-password surfacing, Python-style autoplay reset on controlled-room creation, and server-gated set-others-readiness actions.
 - [x] Desktop drag-and-drop ingest for detached media-open and shared-playlist import, with semantic and Windows native smoke coverage.
 - [x] Tightened GUI command availability so config-only room/media/playback paths stop looking production-ready.
+- [x] Localized runtime strings and language-sensitive public-server/update-check service calls, with non-English semantic smoke coverage.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
 - [x] Compatibility/interop test infrastructure comparing Rust runtime behavior to captured Python Syncplay traces/scenarios.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
@@ -75,7 +76,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Replace the shell-style main window with the Python room/user/file browser.
 - [x] Close the remaining startup/player-launch parity gaps called out as partial in the compatibility matrix (`playerPath`, `perPlayerArguments`, finite explicit-IPC argument translation subset).
 - [x] Port Python slash-command handling in the GUI chat box.
-- [ ] Localize runtime strings and language-sensitive service calls so the selected GUI language affects runtime notifications, dialogs, and refresh/update requests.
+- [x] Localize runtime strings and language-sensitive service calls so the selected GUI language affects runtime notifications, dialogs, and refresh/update requests.
 - [ ] End-to-end release packaging process (artifacts, versioning, changelog, signing strategy if needed).
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
 - [ ] Cross-platform validation beyond the current Windows-oriented GUI workflow.

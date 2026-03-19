@@ -94,6 +94,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         fn refresh_public_servers(
             &mut self,
             current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             self.state
                 .lock()

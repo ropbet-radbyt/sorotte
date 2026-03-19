@@ -34,6 +34,8 @@ mod render_io;
 mod runtime_bridge;
 #[path = "../app_runtime_detached.rs"]
 mod runtime_detached;
+#[path = "../app_runtime_localization.rs"]
+mod runtime_localization;
 #[path = "../app_runtime_owner.rs"]
 mod runtime_owner;
 #[path = "../app_runtime_pump.rs"]

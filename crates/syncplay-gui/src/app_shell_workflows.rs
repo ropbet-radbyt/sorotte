@@ -1,3 +1,4 @@
+use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
 use super::shell_state::{
     GuiShellModal, GuiShellView, GuiTransientNotification, GuiTransientNotificationLevel,
     MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
@@ -587,6 +588,10 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn push_system_chat_message(&mut self, message: String) {
+        let message = localize_gui_runtime_message_legacy_compatible(
+            &message,
+            Some(self.runtime_language_tag_legacy_compatible()),
+        );
         self.main_window.chat.push(MainWindowChatRow {
             sender: "system".to_owned(),
             message,
@@ -680,6 +685,10 @@ impl SyncplayGuiShellAppState {
         level: GuiTransientNotificationLevel,
         message: String,
     ) {
+        let message = localize_gui_runtime_message_legacy_compatible(
+            &message,
+            Some(self.runtime_language_tag_legacy_compatible()),
+        );
         self.notifications
             .push(GuiTransientNotification { level, message });
         const MAX_TRANSIENT_NOTIFICATIONS: usize = 5;

@@ -188,6 +188,7 @@ pub(super) trait GuiSessionRuntimeAdapter {
     fn refresh_public_servers(
         &mut self,
         current_servers: Vec<(String, String)>,
+        language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String>;
 
     fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String>;
@@ -375,6 +376,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     fn drain_gui_actions(&mut self, state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         let mut actions = Vec::new();
         let mut trailing_actions = Vec::new();
+        let language = Some(state.runtime_language_tag_legacy_compatible());
         if let Err(error) = self.runtime.run_user_change_notifications_if_needed() {
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
@@ -383,7 +385,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         } else {
             for notification in self.runtime.drain_user_change_notifications() {
                 self.note_user_change(notification.clone());
-                if let Some(action) = Self::user_change_action(notification) {
+                if let Some(action) = Self::user_change_action(notification, language) {
                     trailing_actions.push(action);
                 }
             }
@@ -398,7 +400,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 self.runtime
                     .drain_reconnect_notifications()
                     .into_iter()
-                    .flat_map(Self::reconnect_transition_actions),
+                    .flat_map(|notification| {
+                        Self::reconnect_transition_actions(notification, language)
+                    }),
             );
         }
         if let Err(error) = self.runtime.run_reconnect_state_restore_if_needed() {
@@ -429,7 +433,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 self.runtime
                     .drain_reconnect_notifications()
                     .into_iter()
-                    .flat_map(Self::reconnect_transition_actions),
+                    .flat_map(|notification| {
+                        Self::reconnect_transition_actions(notification, language)
+                    }),
             );
         } else {
             self.runtime.drain_reconnect_notifications();
@@ -466,7 +472,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 self.runtime
                     .drain_controller_auth_notifications()
                     .into_iter()
-                    .flat_map(Self::controller_auth_transition_action),
+                    .flat_map(|notification| {
+                        Self::controller_auth_transition_action(notification, language)
+                    }),
             );
         }
         self.sync_autoplay_runtime(&mut actions);
@@ -978,6 +986,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     fn refresh_public_servers(
         &mut self,
         _current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String> {
         if let Some(refreshed_servers) = Self::refreshed_public_server_rows_from_env()? {
             return Ok(refreshed_servers);
@@ -988,7 +997,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
         #[cfg(not(test))]
         {
-            let refreshed_servers = remote_services::fetch_public_servers(Some("en"))?;
+            let refreshed_servers = remote_services::fetch_public_servers(_language)?;
             Ok(Self::normalize_public_server_rows(refreshed_servers))
         }
     }

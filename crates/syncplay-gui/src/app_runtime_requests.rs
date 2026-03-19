@@ -616,8 +616,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     .iter()
                     .map(|row| (row.label.clone(), row.address.clone()))
                     .collect();
+                let language = Some(projected_state.runtime_language_tag_legacy_compatible());
                 let refresh_result = if let Some(session) = self.session.as_mut() {
-                    session.refresh_public_servers(current_servers)
+                    session.refresh_public_servers(current_servers, language)
                 } else if !requested_servers.is_empty() {
                     Ok(
                         GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
@@ -625,7 +626,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         ),
                     )
                 } else {
-                    Self::refresh_public_servers_without_session(current_servers)
+                    Self::refresh_public_servers_without_session(current_servers, language)
                 };
                 match refresh_result {
                         Ok(servers) => Self::push_actions_and_project(

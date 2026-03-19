@@ -1,3 +1,4 @@
+use syncplay_client_app::app_boundary::notifications::user_change_notification_message_localized_legacy_compatible;
 use syncplay_client_core::{
     AutoplayCountdownNotification, ControlledRoomCreationNotification,
     ControllerAuthTransitionNotification, ReconnectTransitionNotification, UserChangeNotification,
@@ -21,45 +22,24 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn user_change_action(
         notification: UserChangeNotification,
+        language: Option<&str>,
     ) -> Option<GuiShellAction> {
-        let message = match notification {
-            UserChangeNotification::Joined {
-                username,
-                room,
-                hide_from_osd,
-            } => (!hide_from_osd).then(|| format!("{username} joined {room}.")),
-            UserChangeNotification::Playing {
-                username,
-                room,
-                file_name,
-                include_room_addendum,
-                hide_from_osd,
-                ..
-            } => {
-                if hide_from_osd {
-                    None
-                } else {
-                    let media_label = file_name.unwrap_or_else(|| "media".to_owned());
-                    let room_addendum = if include_room_addendum {
-                        format!(" in {room}")
-                    } else {
-                        String::new()
-                    };
-                    Some(format!(
-                        "{username} is playing {media_label}{room_addendum}."
-                    ))
-                }
-            }
-            UserChangeNotification::Left {
-                username,
-                hide_from_osd,
-            } => (!hide_from_osd).then(|| format!("{username} left.")),
-        }?;
+        let hide_from_osd = match &notification {
+            UserChangeNotification::Joined { hide_from_osd, .. }
+            | UserChangeNotification::Playing { hide_from_osd, .. }
+            | UserChangeNotification::Left { hide_from_osd, .. } => *hide_from_osd,
+        };
+        if hide_from_osd {
+            return None;
+        }
+        let message =
+            user_change_notification_message_localized_legacy_compatible(&notification, language);
         Some(GuiShellAction::AnnounceSystemChatEvent(message))
     }
 
     pub(in crate::app) fn reconnect_transition_actions(
         notification: ReconnectTransitionNotification,
+        _language: Option<&str>,
     ) -> Vec<GuiShellAction> {
         let (level, message, persist_to_system_chat) = match notification {
             ReconnectTransitionNotification::Attempting {
@@ -162,6 +142,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn controller_auth_transition_action(
         notification: ControllerAuthTransitionNotification,
+        _language: Option<&str>,
     ) -> Vec<GuiShellAction> {
         let (level, message) = match notification {
             ControllerAuthTransitionNotification::Attempting { room } => (

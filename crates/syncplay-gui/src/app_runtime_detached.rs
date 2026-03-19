@@ -65,6 +65,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn refresh_public_servers_without_session(
         _current_servers: Vec<(String, String)>,
+        _language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String> {
         if let Some(refreshed_servers) =
             GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_env()?
@@ -81,7 +82,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         #[cfg(not(test))]
         {
-            let refreshed_servers = remote_services::fetch_public_servers(Some("en"))?;
+            let refreshed_servers = remote_services::fetch_public_servers(_language)?;
             Ok(
                 GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
                     refreshed_servers,

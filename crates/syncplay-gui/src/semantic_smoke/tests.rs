@@ -27,6 +27,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         &[
             "configuration-surface-flow",
             "core-shell-smoke-flow",
+            "localized-runtime-flow",
             "runtime-chat-flow",
             "runtime-transport-churn-flow",
             "drag-and-drop-ingest-flow",
@@ -46,6 +47,11 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         gui_semantic_scenario_script("core-shell-smoke-flow")
             .expect("built-in core shell smoke scenario should expose a script")
             .contains("close-modal")
+    );
+    assert!(
+        gui_semantic_scenario_script("localized-runtime-flow")
+            .expect("localized runtime scenario should expose a script")
+            .contains("config:System:Language\tfalse\tfr")
     );
     assert!(
         gui_semantic_scenario_script("runtime-chat-flow")
@@ -92,7 +98,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         "unknown semantic scenario scripts should not resolve"
     );
     let descriptors = gui_semantic_scenario_descriptors();
-    assert_eq!(descriptors.len(), 10);
+    assert_eq!(descriptors.len(), 11);
     assert_eq!(descriptors[0].name, "configuration-surface-flow");
     assert!(descriptors[0].description.contains("configuration fields"));
     assert!(
@@ -103,43 +109,61 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert_eq!(descriptors[1].name, "core-shell-smoke-flow");
     assert!(descriptors[1].description.contains("non-transport"));
     assert!(descriptors[1].script.contains("clear-notifications"));
-    assert_eq!(descriptors[3].name, "runtime-transport-churn-flow");
+    assert_eq!(descriptors[2].name, "localized-runtime-flow");
     assert!(
-        descriptors[3]
+        descriptors[2]
             .description
-            .contains("startup/post-chat/reconnect")
+            .contains("non-English GUI language")
     );
-    assert!(descriptors[3].script.contains("reconnect-post2.mkv"));
-    assert_eq!(descriptors[4].name, "drag-and-drop-ingest-flow");
+    assert!(
+        descriptors[2]
+            .script
+            .contains("shell:modal:update:message\tSyncplay est a jour")
+    );
+    assert_eq!(descriptors[4].name, "runtime-transport-churn-flow");
     assert!(
         descriptors[4]
             .description
-            .contains("window drops open media")
+            .contains("startup/post-chat/reconnect")
     );
-    assert!(descriptors[4].script.contains("drop-media-files\twindow"));
-    assert_eq!(descriptors[5].name, "playlist-workflow-flow");
-    assert!(descriptors[5].description.contains("playlist editor"));
+    assert!(descriptors[4].script.contains("reconnect-post2.mkv"));
+    assert_eq!(descriptors[5].name, "drag-and-drop-ingest-flow");
     assert!(
         descriptors[5]
+            .description
+            .contains("window drops open media")
+    );
+    assert!(descriptors[5].script.contains("drop-media-files\twindow"));
+    assert_eq!(descriptors[6].name, "playlist-workflow-flow");
+    assert!(descriptors[6].description.contains("playlist editor"));
+    assert!(
+        descriptors[6]
             .script
             .contains("main-window:playlist:add-url")
     );
-    assert_eq!(descriptors[6].name, "persistence-reset-flow");
-    assert!(descriptors[6].description.contains("clear-GUI-data"));
-    assert!(descriptors[6].script.contains("PersistenceRoom"));
-    assert_eq!(descriptors[7].name, "detached-runtime-ownership-flow");
+    assert_eq!(descriptors[7].name, "persistence-reset-flow");
+    assert!(descriptors[7].description.contains("clear-GUI-data"));
+    assert!(descriptors[7].script.contains("PersistenceRoom"));
+    assert_eq!(descriptors[8].name, "detached-runtime-ownership-flow");
     assert!(
-        descriptors[7]
+        descriptors[8]
             .description
             .contains("detached public-server connect")
     );
-    assert!(descriptors[7].script.contains("semantic-user"));
-    assert_eq!(descriptors[8].name, "live-python-peer-connect-flow");
-    assert!(descriptors[8].description.contains("Python reference peer"));
-    assert!(descriptors[8].script.contains("interop-room"));
-    assert_eq!(descriptors[9].name, "live-python-peer-controlled-room-flow");
-    assert!(descriptors[9].description.contains("controlled room"));
-    assert!(descriptors[9].script.contains("+interop-room:447CE7E3548D"));
+    assert!(descriptors[8].script.contains("semantic-user"));
+    assert_eq!(descriptors[9].name, "live-python-peer-connect-flow");
+    assert!(descriptors[9].description.contains("Python reference peer"));
+    assert!(descriptors[9].script.contains("interop-room"));
+    assert_eq!(
+        descriptors[10].name,
+        "live-python-peer-controlled-room-flow"
+    );
+    assert!(descriptors[10].description.contains("controlled room"));
+    assert!(
+        descriptors[10]
+            .script
+            .contains("+interop-room:447CE7E3548D")
+    );
     assert!(
         gui_semantic_scenario_named("missing-scenario").is_none(),
         "unknown semantic scenarios should not resolve"
@@ -320,7 +344,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         run_gui_semantic_scenario_named("missing-scenario")
             .expect_err("unknown scenario should fail")
             .contains(
-                "Available: configuration-surface-flow, core-shell-smoke-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
             )
     );
 }
@@ -356,6 +380,7 @@ fn syncplay_gui_semantic_cli_wrapper_runs_explicit_args() {
         .expect("semantic cli list should produce output");
     assert!(listed.contains("configuration-surface-flow"));
     assert!(listed.contains("core-shell-smoke-flow"));
+    assert!(listed.contains("localized-runtime-flow"));
     assert!(listed.contains("runtime-chat-flow"));
     assert!(listed.contains("runtime-transport-churn-flow"));
     assert!(listed.contains("detached-runtime-ownership-flow"));
@@ -414,6 +439,9 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
     assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
     assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));
     assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the legacy non-transport Windows smoke path\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
+    assert!(described.contains("\"name\":\"localized-runtime-flow\""));
+    assert!(described.contains("\"description\":\"Selects a non-English GUI language, then verifies localized public-server refresh and update-check runtime text.\""));
+    assert!(described.contains("\"script\":\"# Localized runtime and service-call flow\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
     assert!(described.contains("\"name\":\"runtime-transport-churn-flow\""));
     assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
     assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));

@@ -173,6 +173,7 @@ fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_state_restore
                 room_position: 7.5,
                 position_diff_seconds: 2.5,
             },
+            Some("en"),
         ),
         vec![
             GuiShellAction::PushTransientNotification {

@@ -1,0 +1,23 @@
+# Localized runtime and service-call flow
+setting	public-server	Alpha	alpha.example:8999
+setting	public-server	Beta	beta.example:9000
+assert-selected	configuration-root	true
+enter-text	config:System:Language	false	fr
+clear-notifications
+activate	public-servers-root
+assert-selected	public-servers-root	true
+activate	public-servers:command:refresh
+assert-pending	refresh-public-servers
+complete-pending-runtime
+assert-pending	none
+assert-value	shell:notification:1	Serveurs publics actualises: 2 elements.
+clear-notifications
+activate	menus-root
+assert-selected	menus-root	true
+activate	menus:action:4:2
+assert-value	shell:open-modal	update-notice
+assert-value	shell:modal:kind	update-notice
+assert-value	shell:modal:update:message	Syncplay est a jour
+assert-value	shell:notification:0	Syncplay est a jour
+activate	shell:modal:update:dismiss
+assert-value	shell:open-modal	(none)

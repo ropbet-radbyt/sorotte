@@ -14,6 +14,7 @@ fn gui_client_core_chat_session_runtime_adapter_normalizes_public_server_refresh
             ("Invalid".to_owned(), " :9000 ".to_owned()),
             ("IPv6".to_owned(), "[::1]:8999".to_owned()),
         ],
+        Some("fr"),
     )
     .expect("public-server refresh should normalize rows");
 

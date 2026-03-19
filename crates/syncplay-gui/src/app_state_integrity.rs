@@ -8,6 +8,7 @@ use syncplay_client_app::app_boundary::{
 };
 use syncplay_client_core::PrivacyMode;
 
+use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
 use super::shell_state::{
     GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiPendingOperationKind,
     GuiValidationIssue, GuiValidationState, SyncplayGuiShellAppState,
@@ -241,7 +242,11 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn record_action_error(&mut self, message: impl Into<String>) -> bool {
-        self.validation.last_action_error = Some(message.into());
+        let message = message.into();
+        self.validation.last_action_error = Some(localize_gui_runtime_message_legacy_compatible(
+            &message,
+            Some(self.runtime_language_tag_legacy_compatible()),
+        ));
         self.refresh_validation();
         false
     }

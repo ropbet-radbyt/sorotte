@@ -1,6 +1,5 @@
-use syncplay_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
-
 use super::remote_services;
+use super::runtime_localization::localized_update_notice_available_message_legacy_compatible;
 use super::shell_state::{
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellModal,
     GuiTransientNotificationLevel, MainWindowChatRow, SyncplayGuiShellAppState,
@@ -127,8 +126,12 @@ impl SyncplayGuiShellAppState {
         self.menus.update_notice_expected = true;
         self.open_modal = Some(GuiShellModal::UpdateNotice);
         if self.update_check.message.is_none() {
-            self.update_check.message =
-                Some("An update notice is available for this client build.".to_owned());
+            self.update_check.message = Some(
+                localized_update_notice_available_message_legacy_compatible(Some(
+                    self.runtime_language_tag_legacy_compatible(),
+                ))
+                .to_owned(),
+            );
         }
         self.push_system_chat_message("Update notice opened.".to_owned());
         self.push_transient_notification(
@@ -140,13 +143,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn update_check_language(&self) -> String {
-        self.configuration
-            .to_stored_settings()
-            .language
-            .as_deref()
-            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
-            .unwrap_or("en")
-            .to_owned()
+        self.runtime_language_tag_legacy_compatible().to_owned()
     }
 
     pub(super) fn begin_update_check(&mut self, user_initiated: bool) -> bool {

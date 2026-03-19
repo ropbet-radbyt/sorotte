@@ -218,7 +218,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
     );
     assert_eq!(
         actions[1],
-        GuiShellAction::AnnounceSystemChatEvent("bob joined room1.".to_owned())
+        GuiShellAction::AnnounceSystemChatEvent("bob has joined the room: 'room1'".to_owned())
     );
 }
 

@@ -15,6 +15,11 @@ static GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT_NORMALIZED: OnceLock<S
     OnceLock::new();
 const GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_DESCRIPTION: &str =
     "Ports the non-transport Windows smoke path into a platform-neutral shell scenario.";
+const GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_SCRIPT: &str =
+    include_str!("../semantic_scenarios/localized-runtime-flow.txt");
+static GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
+    OnceLock::new();
+const GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_DESCRIPTION: &str = "Selects a non-English GUI language, then verifies localized public-server refresh and update-check runtime text.";
 const GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT: &str =
     include_str!("../semantic_scenarios/runtime-chat-flow.txt");
 static GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
@@ -82,6 +87,10 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
             GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT,
             &GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_SCRIPT_NORMALIZED,
         )),
+        "localized-runtime-flow" => Some(normalized_builtin_script(
+            GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_SCRIPT,
+            &GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_SCRIPT_NORMALIZED,
+        )),
         "runtime-chat-flow" => Some(normalized_builtin_script(
             GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT,
             &GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_SCRIPT_NORMALIZED,
@@ -118,6 +127,7 @@ fn gui_semantic_scenario_description(name: &str) -> Option<&'static str> {
             Some(GUI_SEMANTIC_SCENARIO_CONFIGURATION_SURFACE_FLOW_DESCRIPTION)
         }
         "core-shell-smoke-flow" => Some(GUI_SEMANTIC_SCENARIO_CORE_SHELL_SMOKE_FLOW_DESCRIPTION),
+        "localized-runtime-flow" => Some(GUI_SEMANTIC_SCENARIO_LOCALIZED_RUNTIME_FLOW_DESCRIPTION),
         "runtime-chat-flow" => Some(GUI_SEMANTIC_SCENARIO_RUNTIME_CHAT_FLOW_DESCRIPTION),
         "runtime-transport-churn-flow" => {
             Some(GUI_SEMANTIC_SCENARIO_RUNTIME_TRANSPORT_CHURN_FLOW_DESCRIPTION)
@@ -208,6 +218,15 @@ pub(super) fn gui_semantic_scenario_core_shell_smoke_flow() -> GuiSemanticScenar
     )
 }
 
+pub(super) fn gui_semantic_scenario_localized_runtime_flow() -> GuiSemanticScenario {
+    gui_semantic_scenario_from_builtin_script(
+        "localized-runtime-flow",
+        "localized-runtime-flow",
+        gui_semantic_scenario_script("localized-runtime-flow")
+            .expect("localized runtime semantic scenario script should exist"),
+    )
+}
+
 pub(super) fn gui_semantic_scenario_drag_and_drop_ingest_flow() -> GuiSemanticScenario {
     gui_semantic_scenario_from_builtin_script(
         "drag-and-drop-ingest-flow",
@@ -230,6 +249,7 @@ pub(crate) fn gui_semantic_scenario_names() -> &'static [&'static str] {
     &[
         "configuration-surface-flow",
         "core-shell-smoke-flow",
+        "localized-runtime-flow",
         "runtime-chat-flow",
         "runtime-transport-churn-flow",
         "drag-and-drop-ingest-flow",
@@ -245,6 +265,7 @@ pub(super) fn gui_semantic_scenario_named(name: &str) -> Option<GuiSemanticScena
     match name {
         "configuration-surface-flow" => Some(gui_semantic_scenario_configuration_surface_flow()),
         "core-shell-smoke-flow" => Some(gui_semantic_scenario_core_shell_smoke_flow()),
+        "localized-runtime-flow" => Some(gui_semantic_scenario_localized_runtime_flow()),
         "runtime-chat-flow" => Some(gui_semantic_scenario_runtime_chat_flow()),
         "runtime-transport-churn-flow" => {
             Some(gui_semantic_scenario_runtime_transport_churn_flow())

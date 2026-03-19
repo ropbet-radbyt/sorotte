@@ -13,6 +13,11 @@ use syncplay_client_app::app_boundary::{
 
 use super::LEGACY_GUI_QSETTINGS_STORE_NAMES;
 use super::remote_services;
+use super::runtime_localization::{
+    localized_update_checked_at_line_legacy_compatible,
+    localized_update_dismiss_hint_line_legacy_compatible,
+    localized_update_notice_available_message_legacy_compatible,
+};
 use super::shell_state::{GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
 use super::support::autoplay_threshold_from_settings;
 
@@ -45,19 +50,21 @@ pub(super) struct GuiUpdateCheckState {
 }
 
 impl GuiUpdateCheckState {
-    pub(super) fn body_lines(&self) -> Vec<String> {
+    pub(super) fn body_lines(&self, language: Option<&str>) -> Vec<String> {
         let mut lines = Vec::new();
         if let Some(message) = self.message.as_deref() {
             lines.push(message.to_owned());
         } else {
-            lines.push("An update notice is available for this client build.".to_owned());
+            lines.push(
+                localized_update_notice_available_message_legacy_compatible(language).to_owned(),
+            );
         }
         if let Some(timestamp) = self.last_checked_for_updates.as_deref() {
-            lines.push(format!("Checked at: {timestamp} UTC"));
+            lines.push(localized_update_checked_at_line_legacy_compatible(
+                language, timestamp,
+            ));
         } else {
-            lines.push(
-                "Dismiss it here or trigger another update check from the same modal.".to_owned(),
-            );
+            lines.push(localized_update_dismiss_hint_line_legacy_compatible(language).to_owned());
         }
         lines
     }
