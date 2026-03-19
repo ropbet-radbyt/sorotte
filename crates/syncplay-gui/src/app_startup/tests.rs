@@ -1,7 +1,6 @@
 use super::{
-    GuiAppHost, GuiPersistedUiState, GuiShellAction, GuiTextPreviewHost,
-    GuiTransientNotificationLevel, SyncplayGuiShellAppState, run_gui_host, shell_widget_preview,
-    startup_notice, startup_preview,
+    GuiAppHost, GuiPersistedUiState, GuiShellAction, GuiTextPreviewHost, SyncplayGuiShellAppState,
+    run_gui_host, shell_widget_preview, startup_notice, startup_preview,
 };
 
 use crate::app::GuiShellView;
@@ -152,18 +151,10 @@ fn gui_startup_actions_from_lookup_prefers_file_public_server_source() {
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
-                    .to_owned(),
-            ),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message:
-                    "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
-                        .to_owned(),
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(
+            "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
+                .to_owned(),
+        )]
     );
 }
 
@@ -187,13 +178,7 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_bootstrap() {
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message: expected_message,
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(expected_message)]
     );
 }
 
@@ -215,13 +200,7 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_loopback_bootstrap()
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message: expected_message,
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(expected_message)]
     );
 }
 
@@ -238,18 +217,10 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_defaults() {
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for 127.0.0.1:8999 as gui-user in room gui-demo. Defaults: host=127.0.0.1, port=8999, user=gui-user, room=gui-demo."
-                    .to_owned(),
-            ),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message:
-                    "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for 127.0.0.1:8999 as gui-user in room gui-demo. Defaults: host=127.0.0.1, port=8999, user=gui-user, room=gui-demo."
-                        .to_owned(),
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(
+            "Startup enabled client-core chat TCP via SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP for 127.0.0.1:8999 as gui-user in room gui-demo. Defaults: host=127.0.0.1, port=8999, user=gui-user, room=gui-demo."
+                .to_owned(),
+        )]
     );
 }
 
@@ -274,7 +245,7 @@ fn run_gui_host_with_startup_actions_surfaces_public_server_refresh_source() {
     assert!(preview.contains(
         "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
     ));
-    assert!(preview.contains("[Notifications] count=1"));
+    assert!(preview.contains("[Notifications] count=0"));
 }
 
 #[test]
@@ -307,11 +278,8 @@ fn run_gui_host_with_startup_actions_surfaces_tcp_bootstrap_and_public_server_so
     assert!(preview.contains(
         "Startup loaded 1 public server from SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS_PATH (public-servers.txt)."
     ));
-    assert!(
-        preview
-            .contains("Startup summary: 2 startup notices active. Check system chat for details.")
-    );
-    assert!(preview.contains("[Notifications] count=1"));
+    assert!(!preview.contains("Startup summary:"));
+    assert!(preview.contains("[Notifications] count=0"));
 }
 
 #[test]
@@ -330,13 +298,7 @@ fn gui_startup_actions_from_lookup_reports_config_path_source() {
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(expected_message.clone()),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message: expected_message,
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(expected_message)]
     );
 }
 
@@ -354,23 +316,16 @@ fn gui_startup_actions_from_lookup_reports_player_ipc_source_with_client_precede
 
     assert_eq!(
         actions,
-        vec![
-            GuiShellAction::AnnounceSystemChatEvent(
-                r"Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH (\\.\pipe\syncplay-mpv)."
-                    .to_owned(),
-            ),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message:
-                    r"Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH (\\.\pipe\syncplay-mpv)."
-                        .to_owned(),
-            },
-        ]
+        vec![GuiShellAction::AnnounceSystemChatEvent(
+            r"Startup will try mpv JSON IPC from SYNCPLAY_CLIENT_MPV_IPC_PATH (\\.\pipe\syncplay-mpv)."
+                .to_owned(),
+        )]
     );
 }
 
 #[test]
-fn gui_startup_actions_from_lookup_and_config_path_source_consolidates_multi_message_toasts() {
+fn gui_startup_actions_from_lookup_and_config_path_source_keeps_multi_notice_details_in_system_chat()
+ {
     let actions = super::gui_startup_actions_from_lookup_and_config_path_source(
         |name| match name {
             "SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
@@ -396,11 +351,7 @@ fn gui_startup_actions_from_lookup_and_config_path_source_consolidates_multi_mes
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(notification_messages.len(), 1);
-    assert_eq!(
-        notification_messages[0],
-        "Startup summary: 2 startup notices active. Check system chat for details."
-    );
+    assert!(notification_messages.is_empty());
 }
 
 #[test]
@@ -458,7 +409,7 @@ fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
     );
 
     assert!(preview.contains(expected_message.as_str()));
-    assert!(preview.contains("[Notifications] count=1"));
+    assert!(preview.contains("[Notifications] count=0"));
 }
 
 #[test]
@@ -482,7 +433,7 @@ fn run_gui_host_with_startup_actions_surfaces_player_ipc_source() {
     assert!(preview.contains(
         "Startup will try mpv JSON IPC from SYNCPLAY_MPV_IPC_PATH (/tmp/syncplay-mpv.sock)."
     ));
-    assert!(preview.contains("[Notifications] count=1"));
+    assert!(preview.contains("[Notifications] count=0"));
 }
 
 #[test]

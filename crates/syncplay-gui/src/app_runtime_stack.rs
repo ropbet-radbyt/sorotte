@@ -21,9 +21,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde_json::Value;
 use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 use syncplay_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession, PrivacyMode,
     QueuedRuntimeControl,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
@@ -43,6 +44,13 @@ pub(super) use self::transport::{
     GuiLoopbackSessionTransportDriver, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
     GuiTcpSessionTransportDriver,
 };
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiSessionRoomPlaystate {
+    pub(super) position_seconds: Option<f64>,
+    pub(super) paused: Option<bool>,
+    pub(super) do_seek: Option<bool>,
+}
 
 pub(super) trait GuiSessionRuntimeAdapter {
     fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
@@ -82,6 +90,10 @@ pub(super) trait GuiSessionRuntimeAdapter {
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
         Err("Attached session runtime does not support local readiness changes.".to_owned())
+    }
+
+    fn mark_local_media_opened_not_ready(&mut self) -> Result<bool, String> {
+        Ok(false)
     }
 
     fn set_user_ready(&mut self, _username: String, _ready: bool) -> Result<(), String> {
@@ -171,11 +183,24 @@ pub(super) trait GuiSessionRuntimeAdapter {
         None
     }
 
+    fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
+        None
+    }
+
     fn set_autoplay_enabled(&mut self, _enabled: bool) -> Result<(), String> {
         Ok(())
     }
 
     fn set_autoplay_threshold(&mut self, _threshold: usize) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn publish_local_file_legacy_compatible(
+        &mut self,
+        _file_payload: &Value,
+        _filename_privacy_mode: PrivacyMode,
+        _filesize_privacy_mode: PrivacyMode,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -663,6 +688,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn mark_local_media_opened_not_ready(&mut self) -> Result<bool, String> {
+        self.runtime
+            .run_local_media_opened_not_ready()
+            .map_err(|error| {
+                format!(
+                    "Client-core session runtime local media-open readiness dispatch failed: {error}"
+                )
+            })
+    }
+
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
         match self.runtime.run_set_ready_for_user(username, ready, true) {
             Ok(true) => Ok(()),
@@ -947,6 +982,17 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().local_position_seconds()
     }
 
+    fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
+        self.runtime
+            .session()
+            .current_room_playstate()
+            .map(|playstate| GuiSessionRoomPlaystate {
+                position_seconds: playstate.position,
+                paused: playstate.paused,
+                do_seek: playstate.do_seek,
+            })
+    }
+
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
         self.runtime.session_mut().set_autoplay_enabled(enabled);
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
@@ -974,6 +1020,23 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             recently_advanced,
         );
         Ok(())
+    }
+
+    fn publish_local_file_legacy_compatible(
+        &mut self,
+        file_payload: &Value,
+        filename_privacy_mode: PrivacyMode,
+        filesize_privacy_mode: PrivacyMode,
+    ) -> Result<(), String> {
+        self.runtime
+            .publish_local_file_legacy_compatible(
+                file_payload,
+                filename_privacy_mode,
+                filesize_privacy_mode,
+            )
+            .map_err(|error| {
+                format!("Client-core session runtime local file publish failed: {error}")
+            })
     }
 
     fn connect_public_server(

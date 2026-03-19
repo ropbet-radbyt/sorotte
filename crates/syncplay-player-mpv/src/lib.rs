@@ -1354,6 +1354,7 @@ impl MpvJsonIpcClient {
 
 struct MpvPipeTransport {
     stream: MpvPipeStream,
+    read_buffer: Vec<u8>,
 }
 
 impl MpvPipeTransport {
@@ -1364,6 +1365,7 @@ impl MpvPipeTransport {
             let stream = UnixStream::connect(path)?;
             return Ok(Self {
                 stream: MpvPipeStream::Unix(stream),
+                read_buffer: Vec::new(),
             });
         }
 
@@ -1375,6 +1377,7 @@ impl MpvPipeTransport {
                 .open(path)?;
             return Ok(Self {
                 stream: MpvPipeStream::Windows(stream),
+                read_buffer: Vec::new(),
             });
         }
 
@@ -1399,9 +1402,13 @@ impl MpvJsonIpcTransport for MpvPipeTransport {
     fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
         match &mut self.stream {
             #[cfg(unix)]
-            MpvPipeStream::Unix(stream) => read_line_from_stream(stream, line),
+            MpvPipeStream::Unix(stream) => {
+                read_line_from_stream(stream, &mut self.read_buffer, line)
+            }
             #[cfg(windows)]
-            MpvPipeStream::Windows(stream) => read_line_from_stream(stream, line),
+            MpvPipeStream::Windows(stream) => {
+                read_line_from_stream(stream, &mut self.read_buffer, line)
+            }
         }
     }
 }
@@ -1418,28 +1425,7 @@ fn write_line_to_stream(stream: &mut impl Write, line: &str) -> io::Result<()> {
     stream.flush()
 }
 
-fn read_line_from_stream(stream: &mut impl Read, line: &mut String) -> io::Result<usize> {
-    let mut bytes = Vec::new();
-    loop {
-        let mut one = [0_u8; 1];
-        match stream.read(&mut one) {
-            Ok(0) => {
-                if bytes.is_empty() {
-                    line.clear();
-                    return Ok(0);
-                }
-                break;
-            }
-            Ok(_) => {
-                bytes.push(one[0]);
-                if one[0] == b'\n' {
-                    break;
-                }
-            }
-            Err(err) => return Err(err),
-        }
-    }
-
+fn decode_line_bytes(bytes: Vec<u8>, line: &mut String) -> io::Result<usize> {
     let decoded = String::from_utf8(bytes).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1451,9 +1437,40 @@ fn read_line_from_stream(stream: &mut impl Read, line: &mut String) -> io::Resul
     Ok(line.len())
 }
 
+fn read_line_from_stream(
+    stream: &mut impl Read,
+    read_buffer: &mut Vec<u8>,
+    line: &mut String,
+) -> io::Result<usize> {
+    loop {
+        if let Some(newline_index) = read_buffer.iter().position(|byte| *byte == b'\n') {
+            let remainder = read_buffer.split_off(newline_index + 1);
+            let bytes = std::mem::replace(read_buffer, remainder);
+            return decode_line_bytes(bytes, line);
+        }
+
+        let mut chunk = [0_u8; 8 * 1024];
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                if read_buffer.is_empty() {
+                    line.clear();
+                    return Ok(0);
+                }
+                let bytes = std::mem::take(read_buffer);
+                return decode_line_bytes(bytes, line);
+            }
+            Ok(bytes_read) => read_buffer.extend_from_slice(&chunk[..bytes_read]),
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter, MpvJsonIpcTransport};
+    use super::{
+        LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter, MpvJsonIpcTransport,
+        read_line_from_stream,
+    };
     use serde_json::{Value, json};
     use std::{
         collections::VecDeque,
@@ -1581,6 +1598,47 @@ mod tests {
         assert_eq!(first.duration_seconds, Some(95.5));
         assert_eq!(first.size_bytes, Some(123));
         assert_eq!(adapter.take_local_file_update(), None);
+    }
+
+    #[test]
+    fn buffered_read_line_from_stream_reuses_remaining_bytes_across_calls() {
+        let mut stream = io::Cursor::new(
+            b"{\"request_id\":1,\"error\":\"success\"}\n{\"request_id\":2,\"error\":\"success\"}\n"
+                .to_vec(),
+        );
+        let mut read_buffer = Vec::new();
+        let mut line = String::new();
+
+        let first_bytes =
+            read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("first line");
+        assert_eq!(first_bytes, line.len());
+        assert_eq!(line, "{\"request_id\":1,\"error\":\"success\"}\n");
+
+        let second_bytes =
+            read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("second line");
+        assert_eq!(second_bytes, line.len());
+        assert_eq!(line, "{\"request_id\":2,\"error\":\"success\"}\n");
+
+        let eof_bytes =
+            read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("eof");
+        assert_eq!(eof_bytes, 0);
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn buffered_read_line_from_stream_returns_partial_final_line_on_eof() {
+        let mut stream = io::Cursor::new(b"{\"request_id\":1,\"error\":\"success\"}".to_vec());
+        let mut read_buffer = Vec::new();
+        let mut line = String::new();
+
+        let bytes = read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("line");
+        assert_eq!(bytes, line.len());
+        assert_eq!(line, "{\"request_id\":1,\"error\":\"success\"}");
+
+        let eof_bytes =
+            read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("eof");
+        assert_eq!(eof_bytes, 0);
+        assert!(line.is_empty());
     }
 
     #[test]

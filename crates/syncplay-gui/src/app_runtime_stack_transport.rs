@@ -1,11 +1,13 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+use syncplay_protocol::decode_message_line;
 
 #[allow(dead_code)]
 #[derive(Clone, Default)]
@@ -155,10 +157,72 @@ pub(in super::super) struct GuiTcpSessionTransportDriver {
 }
 
 impl GuiTcpSessionTransportDriver {
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+    const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+    fn normalized_connect_host(host: &str) -> &str {
+        host.strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host)
+    }
+
+    fn ordered_connect_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+        let normalized_host = Self::normalized_connect_host(host).trim();
+        if normalized_host.is_empty() {
+            return Err("Session transport TCP host resolution failed: host was empty.".to_owned());
+        }
+
+        let mut addresses = (normalized_host, port)
+            .to_socket_addrs()
+            .map_err(|error| {
+                format!(
+                    "Session transport TCP address resolution for {normalized_host}:{port} failed: {error}"
+                )
+            })?
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Err(format!(
+                "Session transport TCP address resolution for {normalized_host}:{port} returned no addresses."
+            ));
+        }
+
+        addresses.sort_by_key(|address| match address {
+            SocketAddr::V4(_) => 0_u8,
+            SocketAddr::V6(_) => 1_u8,
+        });
+        addresses.dedup();
+        Ok(addresses)
+    }
+
+    fn connect_stream(host: &str, port: u16) -> Result<TcpStream, String> {
+        let addresses = Self::ordered_connect_addresses(host, port)?;
+        let deadline = Instant::now() + Self::CONNECT_TIMEOUT;
+        let mut failures = Vec::new();
+
+        for address in &addresses {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            let timeout = remaining.min(Self::CONNECT_ATTEMPT_TIMEOUT);
+            match TcpStream::connect_timeout(address, timeout) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => failures.push(format!("{address}: {error}")),
+            }
+        }
+
+        Err(format!(
+            "Session transport TCP connect to {host}:{port} failed after trying {} resolved addresses within {:?}: {}",
+            addresses.len(),
+            Self::CONNECT_TIMEOUT,
+            failures.join("; "),
+        ))
+    }
+
     fn connect(host: &str, port: u16) -> Result<Self, String> {
-        let stream = TcpStream::connect((host, port)).map_err(|error| {
-            format!("Session transport TCP connect to {host}:{port} failed: {error}")
-        })?;
+        let stream = Self::connect_stream(host, port)?;
         stream
             .set_nonblocking(true)
             .map_err(|error| format!("Session transport TCP nonblocking setup failed: {error}"))?;
@@ -274,7 +338,11 @@ impl GuiTcpSessionTransportDriver {
             let line = String::from_utf8(raw_line).map_err(|error| {
                 format!("Session transport TCP received a non-UTF-8 line: {error}")
             })?;
-            complete_lines.push(line);
+            let line = line.trim();
+            if line.is_empty() || decode_message_line(line).is_err() {
+                continue;
+            }
+            complete_lines.push(line.to_owned());
         }
         if !complete_lines.is_empty() {
             transport.push_inbound_protocol_lines(complete_lines);

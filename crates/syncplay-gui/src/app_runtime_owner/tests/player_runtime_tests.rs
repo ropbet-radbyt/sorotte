@@ -53,6 +53,10 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,
+        last_published_local_file: None,
+        pending_attached_media_resolution: None,
+        unresolved_attached_media_target: None,
+        last_applied_attached_room_playstate: None,
         player_position_seconds: None,
         player_paused: None,
         user_offset_seconds: 0.0,
@@ -320,6 +324,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,
+        last_published_local_file: None,
+        pending_attached_media_resolution: None,
+        unresolved_attached_media_target: None,
+        last_applied_attached_room_playstate: None,
         player_position_seconds: None,
         player_paused: None,
         user_offset_seconds: 0.0,
@@ -546,4 +554,150 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             .set_paused_values,
         vec![true, false]
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_resolves_inbound_shared_playlist_media_in_background_and_applies_room_playstate()
+ {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        opened_paths: Vec<String>,
+        set_paused_values: Vec<bool>,
+        set_positions: Vec<f64>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths
+                .push(path.to_owned());
+            Ok(())
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let root = test_temp_root("shared-playlist-background-search");
+    let nested_directory = root.join("nested");
+    std::fs::create_dir_all(&nested_directory)
+        .expect("background shared-playlist search fixture directory should be created");
+    let selected_media_path = nested_directory.join("episode2.mkv");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("background shared-playlist search fixture should be written");
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"bob"}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#.to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":42.0,"paused":false,"doSeek":true,"setBy":"bob"},"ping":{"latencyCalculation":123.0}}}"#
+            .to_owned(),
+    );
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths
+            .is_empty(),
+        "automatic inbound playlist search should not block the first runtime pump"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths
+            .iter()
+            .any(|path| path == selected_media_path.to_string_lossy().as_ref())
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let recorded_state = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        recorded_state
+            .opened_paths
+            .iter()
+            .any(|path| path == selected_media_path.to_string_lossy().as_ref()),
+        "background shared-playlist search should eventually open the selected media"
+    );
+    assert!(
+        recorded_state
+            .set_positions
+            .iter()
+            .any(|position| (*position - 42.0).abs() < f64::EPSILON),
+        "background shared-playlist search should apply the current room seek target"
+    );
+    assert!(
+        recorded_state.set_paused_values.contains(&false),
+        "background shared-playlist search should apply the current room pause state"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

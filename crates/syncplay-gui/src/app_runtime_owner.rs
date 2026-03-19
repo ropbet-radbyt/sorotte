@@ -32,8 +32,9 @@ use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver, GuiOwnedPlayer,
-    GuiPlayerLaunchRuntimeState, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
-    GuiSessionTransportDriver, GuiTcpSessionTransportDriver, GuiTestPlayerAdapter,
+    GuiPlayerLaunchRuntimeState, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
+    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+    GuiTestPlayerAdapter,
 };
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiShellAction, GuiTransientNotificationLevel,
@@ -59,9 +60,18 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,
+    pub(super) last_published_local_file: Option<LocalFileUpdate>,
+    pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
+    pub(super) unresolved_attached_media_target: Option<String>,
+    pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) user_offset_seconds: f64,
+}
+
+pub(super) struct GuiPendingAttachedMediaResolution {
+    pub(super) target: String,
+    pub(super) result_rx: std::sync::mpsc::Receiver<Result<Option<String>, String>>,
 }
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -80,6 +90,10 @@ impl GuiPersistedConfigRuntimeOwner {
             managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
+            last_published_local_file: None,
+            pending_attached_media_resolution: None,
+            unresolved_attached_media_target: None,
+            last_applied_attached_room_playstate: None,
             player_position_seconds: None,
             player_paused: None,
             user_offset_seconds: 0.0,
@@ -115,6 +129,9 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file = None;
         self.player_position_seconds = None;
         self.player_paused = None;
+        self.pending_attached_media_resolution = None;
+        self.unresolved_attached_media_target = None;
+        self.last_applied_attached_room_playstate = None;
     }
 
     fn detach_player(&mut self) {
@@ -517,7 +534,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
         self.emit_gui_actions_to_attached_player(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
-        self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
+        let opened_selected_media =
+            self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
+        self.sync_session_playstate_to_attached_player_impl(opened_selected_media);
     }
 
     fn flush_session_transport_outbound(
@@ -863,22 +882,19 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) {
         self.poll_managed_mpv_process();
-        self.refresh_player_state();
         let mut projected_state = state.clone();
-        if let Err(error) =
-            self.sync_detached_session_preferences_and_player_state(&projected_state)
-        {
-            Self::push_runtime_unavailable(handle, error);
-        }
+        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
         self.drain_player_chat_input(handle, &mut projected_state);
+        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         self.flush_session_transport_outbound(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions(handle, &mut projected_state);
         self.drain_player_chat_input(handle, &mut projected_state);
+        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
             if projected_state.pending_operation.is_none()
@@ -886,23 +902,38 @@ impl GuiPersistedConfigRuntimeOwner {
                 && projected_state.saved_session_connect_target().is_some()
             {
                 self.complete_saved_server_connect_runtime(handle, &mut projected_state, false);
+                self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
                 self.flush_session_transport_outbound(handle, &mut projected_state);
                 self.pump_session_transport_driver(handle, &mut projected_state);
                 self.drain_session_transport_inbound(handle, &mut projected_state);
                 self.drain_session_runtime_actions(handle, &mut projected_state);
                 self.drain_player_chat_input(handle, &mut projected_state);
+                self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
             }
         }
         for request in handle.drain_requests() {
             if !self.handle_runtime_request(handle, &mut projected_state, request) {
                 continue;
             }
+            self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
             self.flush_session_transport_outbound(handle, &mut projected_state);
             self.pump_session_transport_driver(handle, &mut projected_state);
             self.drain_session_transport_inbound(handle, &mut projected_state);
             self.drain_session_runtime_actions(handle, &mut projected_state);
             self.drain_player_chat_input(handle, &mut projected_state);
+            self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         }
         self.sync_player_runtime_state(handle, &projected_state);
+    }
+
+    fn sync_detached_session_runtime_state_or_notify(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        self.refresh_player_state();
+        if let Err(error) = self.sync_detached_session_preferences_and_player_state(state) {
+            Self::push_runtime_unavailable(handle, error);
+        }
     }
 }

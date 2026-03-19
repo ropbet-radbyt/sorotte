@@ -295,6 +295,22 @@ def _chat_message_snapshot(client):
     return list(client.chat_messages)
 
 
+def _file_name_snapshot(file_):
+    if not isinstance(file_, dict):
+        return None
+    name = file_.get("name")
+    if name is None:
+        return None
+    return str(name)
+
+
+def _user_file_name_snapshot(client):
+    users = {client.getUsername(): _file_name_snapshot(client.userlist.currentUser.file)}
+    for username, user in client.userlist._users.items():
+        users[username] = _file_name_snapshot(user.file)
+    return users
+
+
 def _playlist_snapshot(client):
     playlist, _ = client.playlist.snapshot()
     return playlist
@@ -311,8 +327,10 @@ def _emit_client_snapshot(status, client, extra_payload=None):
         "username": client.getUsername(),
         "room": client.getRoom(),
         "localReady": client.userlist.currentUser.isReady(),
+        "fileName": _file_name_snapshot(client.userlist.currentUser.file),
         "localController": client.userlist.currentUser.controller,
         "users": _user_ready_snapshot(client),
+        "userFiles": _user_file_name_snapshot(client),
         "controllers": _user_controller_snapshot(client),
         "playlist": _playlist_snapshot(client),
         "playlistIndex": _playlist_index_snapshot(client),
@@ -339,6 +357,15 @@ def _controller_for_username(client, username):
     if user is None:
         return None
     return user.controller
+
+
+def _file_name_for_username(client, username):
+    if username == client.getUsername():
+        return _file_name_snapshot(client.userlist.currentUser.file)
+    user = client.userlist._users.get(username)
+    if user is None:
+        return None
+    return _file_name_snapshot(user.file)
 
 
 def _wait_for_ready_value(client, getter, expected_ready, timeout_seconds, error_holder):
@@ -385,6 +412,21 @@ def _wait_for_chat_message(
     if error_holder:
         raise RuntimeError(error_holder[0])
     raise RuntimeError("python live peer timed out waiting for the requested chat message")
+
+
+def _wait_for_user_file_name(
+    client, username, expected_file_name, timeout_seconds, error_holder
+):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if error_holder:
+            raise RuntimeError(error_holder[0])
+        if _file_name_for_username(client, username) == expected_file_name:
+            return
+        time.sleep(0.05)
+    if error_holder:
+        raise RuntimeError(error_holder[0])
+    raise RuntimeError("python live peer timed out waiting for the requested user file")
 
 
 def _wait_for_playlist(client, playlist, timeout_seconds, error_holder):
@@ -541,6 +583,31 @@ def _handle_command(client, protocol, command, error_holder):
             "chat-message",
             client,
             {"usernameObserved": username, "message": message},
+        )
+        return
+    if command_name == "wait_for_user_file_name":
+        username = command.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise RuntimeError(
+                "python live peer wait_for_user_file_name command requires a username string"
+            )
+        file_name = command.get("fileName")
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise RuntimeError(
+                "python live peer wait_for_user_file_name command requires a fileName string"
+            )
+        timeout_seconds = float(command.get("timeoutSeconds", 3.0))
+        _wait_for_user_file_name(
+            client,
+            username,
+            file_name,
+            timeout_seconds,
+            error_holder,
+        )
+        _emit_client_snapshot(
+            "user-file",
+            client,
+            {"usernameObserved": username, "fileName": file_name},
         )
         return
     if command_name == "set_playlist":

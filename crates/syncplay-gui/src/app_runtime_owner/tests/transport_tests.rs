@@ -424,6 +424,289 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_transport() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::Duration,
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("test session transport listener should expose a local address");
+    let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("test session transport server should accept one client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("test session transport server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("test session transport server should read one startup hello line");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+            )
+            .expect("test session transport server should write one inbound hello line");
+        stream
+            .write_all(b"\n")
+            .expect("test session transport server should terminate the inbound hello line");
+        hello_ready_tx
+            .send(())
+            .expect("test session transport server should signal hello readiness");
+
+        let mut first_line = String::new();
+        let mut second_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("test session transport server should read one outbound readiness line");
+        reader
+            .read_line(&mut second_line)
+            .expect("test session transport server should read one outbound file line");
+        (first_line, second_line)
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    hello_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("test session transport server should send its hello promptly");
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/movie.mkv".to_owned()],
+        load_into_shared_playlist: false,
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let (ready_line, file_line) = server_thread
+        .join()
+        .expect("test session transport server thread should complete");
+    assert!(ready_line.contains("\"Set\""));
+    assert!(ready_line.contains("\"ready\""));
+    assert!(ready_line.contains("\"isReady\":false"));
+    assert!(file_line.contains("\"Set\""));
+    assert!(file_line.contains("\"file\""));
+    assert!(file_line.contains("\"movie.mkv\""));
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .users
+                .iter()
+                .any(|user| user.username == "alice" && user.is_self && !user.is_ready)
+        },
+        "local open-media not-ready projection over TCP transport",
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_startup_saved_connect_uses_hostname_transport() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("startup hostname transport test should bind");
+    let address = listener
+        .local_addr()
+        .expect("startup hostname transport test should expose a local address");
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("startup hostname transport test should accept one client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("startup hostname transport test should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("startup hostname transport test should read one startup hello line");
+        hello_tx
+            .send(hello_line)
+            .expect("startup hostname transport test should report the hello");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("startup hostname transport test should write one inbound hello line");
+        stream
+            .write_all(b"\r\n")
+            .expect("startup hostname transport test should terminate the inbound hello line");
+        stream
+            .flush()
+            .expect("startup hostname transport test should flush the inbound hello line");
+        release_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("startup hostname transport test should release the server");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("localhost".to_owned()),
+        port: Some(address.port()),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let startup_actions = handle.drain_actions();
+    for action in startup_actions {
+        assert!(state.apply(action));
+    }
+
+    let hello_line = hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup hostname transport test should observe the detached hello");
+    assert!(hello_line.contains("\"Hello\""));
+    assert!(hello_line.contains("\"room\":{\"name\":\"room1\"}"));
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let hello_sync_actions = handle.drain_actions();
+    for action in hello_sync_actions {
+        assert!(state.apply(action));
+    }
+
+    assert_eq!(state.main_window.room_name, "room1");
+    assert!(
+        state
+            .main_window
+            .users
+            .iter()
+            .any(|user| user.username == "alice" && user.is_self),
+        "startup hostname transport should project the connected local user",
+    );
+
+    release_tx
+        .send(())
+        .expect("startup hostname transport test should release the server");
+    server_thread
+        .join()
+        .expect("startup hostname transport test server thread should exit cleanly");
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_over_transport() {
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let startup_actions = handle.drain_actions();
+    for action in startup_actions {
+        assert!(state.apply(action));
+    }
+    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert_eq!(startup_protocol_lines.len(), 1);
+    assert!(startup_protocol_lines[0].contains("\"Hello\""));
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let hello_actions = handle.drain_actions();
+    for action in hello_actions {
+        assert!(state.apply(action));
+    }
+    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec![
+            "C:/Media/episode1.mkv".to_owned(),
+            "C:/Media/episode2.mkv".to_owned(),
+        ],
+        load_into_shared_playlist: true,
+    });
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let open_actions = handle.drain_actions();
+    for action in open_actions.iter().cloned() {
+        assert!(state.apply(action));
+    }
+
+    assert!(
+        open_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if *level == GuiTransientNotificationLevel::Success
+                    && message
+                        == "Opened the first selected media file through the attached test player: C:/Media/episode1.mkv. Ignored 1 additional selections."
+        )),
+        "shared-playlist open should still drive the attached player",
+    );
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .map(|file| file.name.as_str()),
+        Some("episode1.mkv")
+    );
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line
+                .contains(r#""playlistChange":{"files":["episode1.mkv","episode2.mkv"]"#)),
+        "shared-playlist open should publish the room playlist over the detached transport",
+    );
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains(r#""playlistIndex":{"index":0"#)),
+        "shared-playlist open should publish the selected playlist index over the detached transport",
+    );
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains(r#""file":{"name":"episode1.mkv"}"#)),
+        "shared-playlist open should publish the local file metadata over the detached transport",
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     use std::{
         io::{BufRead, BufReader, Write},
@@ -510,6 +793,95 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         "room change over TCP transport",
     );
     assert_eq!(state.main_window.room_name, "room2");
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_server_hello() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::Duration,
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("test session transport listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("test session transport listener should expose a local address");
+    let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("test session transport server should accept one client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("test session transport server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("test session transport server should read one startup hello line");
+        stream
+            .write_all(br#"{"status":"connected"}"#)
+            .expect("test session transport server should write one non-protocol startup line");
+        stream
+            .write_all(b"\n")
+            .expect("test session transport server should terminate the first non-protocol line");
+        stream.write_all(br#"{"phase":"startup"}"#).expect(
+            "test session transport server should write a second non-protocol startup line",
+        );
+        stream
+            .write_all(b"\n")
+            .expect("test session transport server should terminate the second non-protocol line");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+            )
+            .expect("test session transport server should write one inbound hello line");
+        stream
+            .write_all(b"\n")
+            .expect("test session transport server should terminate the inbound hello line");
+        hello_ready_tx
+            .send(())
+            .expect("test session transport server should signal hello readiness");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    hello_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("test session transport server should send its hello promptly");
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "room bootstrap after non-protocol TCP startup lines",
+    );
+
+    assert!(state.main_window.playback.can_set_ready);
+    assert!(
+        !state.notifications.iter().any(|notification| notification
+            .message
+            .contains("Inbound session transport message apply failed")),
+        "non-protocol TCP startup lines should be dropped before session apply"
+    );
+
+    server_thread
+        .join()
+        .expect("test session transport server thread should complete");
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use serde_json::{Map, Value};
 use syncplay_client_app::app_boundary::{
     persistence::upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     state::{
@@ -7,6 +8,8 @@ use syncplay_client_app::app_boundary::{
         stored_client_settings_runtime_snapshot_legacy_compatible,
     },
 };
+use syncplay_client_core::PrivacyMode;
+use syncplay_player_api::LocalFileUpdate;
 
 #[cfg(not(test))]
 use super::remote_services;
@@ -47,6 +50,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 )?,
             ));
             self.session_projects_to_shell = false;
+            self.last_published_local_file = None;
         }
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
@@ -55,16 +59,56 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(())
     }
 
+    fn local_file_payload_legacy_compatible(local_file: Option<&LocalFileUpdate>) -> Value {
+        let mut payload = Map::new();
+        let Some(local_file) = local_file else {
+            return Value::Object(payload);
+        };
+
+        payload.insert("name".to_owned(), Value::String(local_file.name.clone()));
+        if let Some(duration_seconds) = local_file.duration_seconds {
+            payload.insert("duration".to_owned(), Value::from(duration_seconds));
+        }
+        if let Some(size_bytes) = local_file.size_bytes {
+            payload.insert("size".to_owned(), Value::from(size_bytes));
+        }
+        if let Some(path) = local_file.path.as_ref() {
+            payload.insert("path".to_owned(), Value::String(path.clone()));
+        }
+        Value::Object(payload)
+    }
+
     pub(super) fn sync_detached_session_preferences_and_player_state(
         &mut self,
         state: &SyncplayGuiShellAppState,
     ) -> Result<(), String> {
+        let runtime_settings = Self::detached_runtime_settings_for_state(state);
+        let filename_privacy_mode = runtime_settings
+            .settings
+            .filename_privacy_mode
+            .unwrap_or(PrivacyMode::SendRaw);
+        let filesize_privacy_mode = runtime_settings
+            .settings
+            .filesize_privacy_mode
+            .unwrap_or(PrivacyMode::SendRaw);
+        let player_local_file = self.player_local_file.clone();
+        let file_publish_pending = player_local_file != self.last_published_local_file;
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
         session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
         session.set_autoplay_enabled(state.main_window.autoplay_active)?;
         session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
+        if file_publish_pending {
+            let file_payload =
+                Self::local_file_payload_legacy_compatible(player_local_file.as_ref());
+            session.publish_local_file_legacy_compatible(
+                &file_payload,
+                filename_privacy_mode,
+                filesize_privacy_mode,
+            )?;
+            self.last_published_local_file = player_local_file;
+        }
         Ok(())
     }
 
@@ -405,6 +449,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_projects_to_shell = true;
         self.session_default_room = Some(default_room);
         self.pending_room_change_request = None;
+        self.last_published_local_file = None;
+        self.pending_attached_media_resolution = None;
+        self.unresolved_attached_media_target = None;
+        self.last_applied_attached_room_playstate = None;
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
         }
@@ -434,6 +482,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_transport_driver = None;
         self.session_default_room = None;
         self.pending_room_change_request = None;
+        self.last_published_local_file = None;
+        self.pending_attached_media_resolution = None;
+        self.unresolved_attached_media_target = None;
+        self.last_applied_attached_room_playstate = None;
 
         let mut actions = self.sessionless_projection_actions(projected_state);
         actions.push(GuiShellAction::CompleteSessionDisconnect);

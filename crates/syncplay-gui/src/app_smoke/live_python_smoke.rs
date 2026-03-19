@@ -110,6 +110,74 @@ fn gui_persisted_config_runtime_owner_projects_live_python_peer_detached_connect
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_projects_live_python_peer_startup_saved_connect_interop() {
+    let result = match live_python_interop::run_live_python_peer_startup_saved_connect_flow() {
+        Ok(result) => result,
+        Err(error) if live_python_interop::live_python_interop_prerequisites_missing(&error) => {
+            eprintln!(
+                "live Python GUI startup saved-connect test skipped due to missing local prerequisites"
+            );
+            return;
+        }
+        Err(error) => {
+            panic!("live Python GUI startup saved-connect flow should succeed, got: {error}")
+        }
+    };
+
+    assert_eq!(
+        result.room_name,
+        live_python_interop::LIVE_PYTHON_INTEROP_ROOM
+    );
+    assert!(result.local_user_present);
+    assert!(result.peer_user_present);
+    assert!(!result.local_user_ready);
+    assert!(!result.peer_user_ready);
+    assert!(result.widget_count > 0);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_projects_live_python_peer_shared_playlist_open_interop() {
+    let result = match live_python_interop::run_live_python_peer_shared_playlist_open_flow() {
+        Ok(result) => result,
+        Err(error) if live_python_interop::live_python_interop_prerequisites_missing(&error) => {
+            eprintln!(
+                "live Python GUI shared-playlist open test skipped due to missing local prerequisites"
+            );
+            return;
+        }
+        Err(error) => {
+            panic!("live Python GUI shared-playlist open flow should succeed, got: {error}")
+        }
+    };
+
+    assert_eq!(
+        result.room_name,
+        live_python_interop::LIVE_PYTHON_INTEROP_ROOM
+    );
+    assert_eq!(
+        result.gui_playlist,
+        vec![
+            live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE.to_owned(),
+            live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO.to_owned(),
+        ]
+    );
+    assert_eq!(result.gui_playlist_index, Some(0));
+    assert_eq!(
+        result.peer_playlist,
+        vec![
+            live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE.to_owned(),
+            live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO.to_owned(),
+        ]
+    );
+    assert_eq!(result.peer_playlist_index, Some(0));
+    assert_eq!(
+        result.peer_observed_local_file_name.as_deref(),
+        Some(live_python_interop::LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE)
+    );
+    assert!(result.widget_count > 0);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_projects_live_python_peer_controlled_room_interop() {
     let result = match live_python_interop::run_live_python_peer_controlled_room_flow() {
         Ok(result) => result,

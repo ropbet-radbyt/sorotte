@@ -16,7 +16,7 @@ use super::native_host::GuiEframeNativeHost;
 use super::native_host::GuiTextPreviewHost;
 use super::remote_services;
 use super::runtime_stack::GuiClientCoreChatSessionRuntimeAdapter;
-use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
+use super::shell_state::{GuiShellAction, SyncplayGuiShellAppState};
 use super::startup_support::{
     GuiStartupConfigPathSource, GuiStartupPlayerIpcSource, GuiStartupPublicServerSource,
     env_trimmed, gui_client_core_chat_loopback_bootstrap_from_lookup,
@@ -325,26 +325,10 @@ where
 }
 
 fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellAction> {
-    if messages.is_empty() {
-        return Vec::new();
-    }
-    let summary_message = if messages.len() == 1 {
-        messages[0].clone()
-    } else {
-        format!(
-            "Startup summary: {} startup notices active. Check system chat for details.",
-            messages.len()
-        )
-    };
-    let mut actions = messages
+    messages
         .into_iter()
         .map(GuiShellAction::AnnounceSystemChatEvent)
-        .collect::<Vec<_>>();
-    actions.push(GuiShellAction::PushTransientNotification {
-        level: GuiTransientNotificationLevel::Info,
-        message: summary_message,
-    });
-    actions
+        .collect()
 }
 
 fn gui_startup_remote_actions(settings: &StoredClientSettingsMvp) -> Vec<GuiShellAction> {

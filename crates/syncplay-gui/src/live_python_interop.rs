@@ -9,9 +9,9 @@ use syncplay_compat::{
 };
 
 use super::{
-    GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle,
-    GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction, GuiShellView,
-    StoredClientSettingsMvp, SyncplayGuiShellAppState,
+    GuiOwnedPlayer, GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner,
+    GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction,
+    GuiShellView, GuiTestPlayerAdapter, StoredClientSettingsMvp, SyncplayGuiShellAppState,
 };
 
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
@@ -27,6 +27,10 @@ pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_RECONNECT_CHAT_MESSAGE: &str = "hello
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_RECONNECT_CHAT_MESSAGE: &str = "hello again from python";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_ONE: &str = "C:/Media/gui-open-1.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_TWO: &str = "C:/Media/gui-open-2.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE: &str = "gui-open-1.mkv";
+pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO: &str = "gui-open-2.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_TIMEOUT: Duration = Duration::from_secs(6);
@@ -72,6 +76,17 @@ pub(crate) struct LivePythonPeerDetachedConnectInteropResult {
     pub peer_user_present: bool,
     pub local_user_ready: bool,
     pub peer_user_ready: bool,
+    pub widget_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LivePythonPeerSharedPlaylistOpenInteropResult {
+    pub room_name: String,
+    pub gui_playlist: Vec<String>,
+    pub gui_playlist_index: Option<usize>,
+    pub peer_playlist: Vec<String>,
+    pub peer_playlist_index: Option<usize>,
+    pub peer_observed_local_file_name: Option<String>,
     pub widget_count: usize,
 }
 
@@ -148,6 +163,38 @@ pub(crate) fn run_live_python_peer_detached_public_server_connect_flow()
     )?;
     let outcome =
         run_live_python_peer_detached_public_server_connect_flow_with_harness(&mut harness);
+    let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
+    match (outcome, shutdown_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(_shutdown_error)) => Err(error),
+    }
+}
+
+pub(crate) fn run_live_python_peer_startup_saved_connect_flow()
+-> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
+    let mut harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_ROOM,
+    )?;
+    let outcome = run_live_python_peer_startup_saved_connect_flow_with_harness(&mut harness);
+    let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
+    match (outcome, shutdown_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(_shutdown_error)) => Err(error),
+    }
+}
+
+pub(crate) fn run_live_python_peer_shared_playlist_open_flow()
+-> Result<LivePythonPeerSharedPlaylistOpenInteropResult, LivePythonPeerInteropError> {
+    let mut harness = LegacyServerPythonPeerHarness::spawn(
+        LIVE_PYTHON_INTEROP_PEER_USERNAME,
+        LIVE_PYTHON_INTEROP_ROOM,
+    )?;
+    let outcome = run_live_python_peer_shared_playlist_open_flow_with_harness(&mut harness);
     let shutdown_result = harness.shutdown().map_err(LivePythonPeerInteropError::from);
     match (outcome, shutdown_result) {
         (Ok(result), Ok(())) => Ok(result),
@@ -546,6 +593,144 @@ fn run_live_python_peer_detached_public_server_connect_flow_with_harness(
     })
 }
 
+fn run_live_python_peer_startup_saved_connect_flow_with_harness(
+    harness: &mut LegacyServerPythonPeerHarness,
+) -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("localhost".to_owned()),
+        port: Some(harness.port()),
+        username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
+        room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
+        shared_playlist_enabled: Some(true),
+        chat_input_enabled: Some(true),
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    wait_for_projected_room_projection(
+        &mut owner,
+        &handle,
+        &mut state,
+        LIVE_PYTHON_INTEROP_ROOM,
+        false,
+    )?;
+    harness.start_peer_connected()?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
+    wait_for_sustained_connection_presence(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION,
+    )?;
+
+    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    Ok(LivePythonPeerDetachedConnectInteropResult {
+        room_name: state.main_window.room_name.clone(),
+        local_user_present: local_user_ready(&state).is_some(),
+        peer_user_present: peer_user_ready(&state, harness.peer_username()).is_some(),
+        local_user_ready: local_user_ready(&state).unwrap_or(false),
+        peer_user_ready: peer_user_ready(&state, harness.peer_username()).unwrap_or(false),
+        widget_count: state.shell_widget_tree().node_count(),
+    })
+}
+
+fn run_live_python_peer_shared_playlist_open_flow_with_harness(
+    harness: &mut LegacyServerPythonPeerHarness,
+) -> Result<LivePythonPeerSharedPlaylistOpenInteropResult, LivePythonPeerInteropError> {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime(
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+            LIVE_PYTHON_INTEROP_ROOM,
+            harness.address(),
+        )
+        .map_err(LivePythonPeerInteropError::Gui)?;
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
+        room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        chat_input_enabled: Some(true),
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let startup_deadline = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < startup_deadline {
+        pump_and_apply(&mut owner, &handle, &mut state);
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
+    harness.start_peer_connected()?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_presence(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        Duration::from_secs(3),
+    )?;
+    wait_for_playlist_controls(&mut owner, &handle, &mut state)?;
+    request_local_ready(&handle, &mut state, true)?;
+    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        true,
+        Duration::from_secs(3),
+    )?;
+
+    let expected_playlist = vec![
+        LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE.to_owned(),
+        LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_TWO.to_owned(),
+    ];
+    request_local_shared_playlist_open(
+        &handle,
+        &[
+            LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_ONE,
+            LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_PATH_TWO,
+        ],
+    );
+    wait_for_projected_playlist(&mut owner, &handle, &mut state, &expected_playlist, Some(0))?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_playlist(harness, &expected_playlist, Duration::from_secs(3))?;
+    wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        false,
+        Duration::from_secs(3),
+    )?;
+    let peer_snapshot = wait_for_peer_observed_user_file_name(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE,
+        Duration::from_secs(3),
+    )?;
+
+    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    Ok(LivePythonPeerSharedPlaylistOpenInteropResult {
+        room_name: state.main_window.room_name.clone(),
+        gui_playlist: gui_playlist(&state),
+        gui_playlist_index: state.selection.selected_main_window_playlist,
+        peer_playlist: peer_snapshot.playlist,
+        peer_playlist_index: peer_snapshot.playlist_index,
+        peer_observed_local_file_name: peer_snapshot
+            .observed_user_file_names
+            .get(LIVE_PYTHON_INTEROP_LOCAL_USERNAME)
+            .cloned()
+            .flatten(),
+        widget_count: state.shell_widget_tree().node_count(),
+    })
+}
+
 fn pump_and_apply(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
@@ -670,6 +855,13 @@ fn request_local_playlist_remove_selected(
     Ok(())
 }
 
+fn request_local_shared_playlist_open(handle: &GuiQueuedRuntimeBridgeHandle, paths: &[&str]) {
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: paths.iter().map(|path| (*path).to_owned()).collect(),
+        load_into_shared_playlist: true,
+    });
+}
+
 fn request_local_chat_send(
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SyncplayGuiShellAppState,
@@ -717,6 +909,17 @@ fn wait_for_peer_observed_chat_message(
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_chat_message(username, message, timeout)
+        .map_err(LivePythonPeerInteropError::from)
+}
+
+fn wait_for_peer_observed_user_file_name(
+    harness: &mut LegacyServerPythonPeerHarness,
+    username: &str,
+    file_name: &str,
+    timeout: Duration,
+) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+    harness
+        .wait_for_peer_observed_user_file_name(username, file_name, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 

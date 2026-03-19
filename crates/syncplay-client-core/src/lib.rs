@@ -1194,6 +1194,15 @@ where
             .map(|_| sent)
     }
 
+    pub fn run_local_media_opened_not_ready(&mut self) -> Result<bool, PlayerError> {
+        let actions = self
+            .session
+            .runtime_actions_for_local_media_opened_not_ready();
+        let sent = !actions.is_empty();
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+            .map(|_| sent)
+    }
+
     pub fn run_request_controller_auth(
         &mut self,
         room: impl Into<String>,
@@ -2406,6 +2415,21 @@ impl ClientSession {
         }]
     }
 
+    pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
+        if self.server_readiness_supported != Some(true) {
+            return Vec::new();
+        }
+        let Some(username) = self.username.clone() else {
+            return Vec::new();
+        };
+
+        self.set_user_ready_state(&username, Some(false));
+        vec![ClientRuntimeAction::SetReady {
+            ready: false,
+            manually_initiated: false,
+        }]
+    }
+
     pub fn room_playlist(&self, room_name: &str) -> Option<&RoomPlaylistView> {
         self.room_playlists.get(room_name)
     }
@@ -3360,10 +3384,18 @@ impl ClientSession {
     }
 
     pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
-        self.username
-            .as_deref()
-            .and_then(|username| self.user_room(username))
+        let Some(username) = self.username.as_deref() else {
+            return default_room.to_owned();
+        };
+        if let Some(room_name) = self
+            .user_room(username)
             .filter(|room_name| !room_name.is_empty())
+            .filter(|room_name| Self::is_controlled_room_name(room_name))
+        {
+            return room_name.to_owned();
+        }
+        self.user_file_name(username)
+            .filter(|file_name| !file_name.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| default_room.to_owned())
     }
@@ -9512,6 +9544,60 @@ mod tests {
         assert_eq!(session.user_file_name("alice"), None);
         assert_eq!(session.user_file_size("alice"), None);
         assert_eq!(session.user_file_duration("alice"), None);
+    }
+
+    #[test]
+    fn local_media_open_marks_local_user_not_ready_when_readiness_is_supported() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+
+        let actions = session.runtime_actions_for_local_media_opened_not_ready();
+
+        assert_eq!(
+            actions,
+            vec![ClientRuntimeAction::SetReady {
+                ready: false,
+                manually_initiated: false,
+            }]
+        );
+        assert_eq!(session.user_ready("alice"), Some(false));
+    }
+
+    #[test]
+    fn client_runtime_local_media_open_dispatches_not_ready_protocol_message() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_local_media_opened_not_ready()
+                .expect("local media open should dispatch readiness")
+        );
+        assert_eq!(runtime.session().user_ready("alice"), Some(false));
+
+        let (_, _player, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued local-media-open action to emit Set message");
+        };
+        let ready = set_message
+            .set
+            .ready
+            .as_ref()
+            .expect("Set message should include ready payload");
+        assert!(!ready.is_ready);
+        assert_eq!(ready.manually_initiated, Some(false));
     }
 
     #[test]

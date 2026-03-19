@@ -65,8 +65,10 @@ pub struct LegacyPythonPeerSnapshot {
     pub username: String,
     pub room: String,
     pub local_ready: Option<bool>,
+    pub local_file_name: Option<String>,
     pub local_controller: Option<bool>,
     pub observed_users: BTreeMap<String, Option<bool>>,
+    pub observed_user_file_names: BTreeMap<String, Option<String>>,
     pub observed_user_controllers: BTreeMap<String, Option<bool>>,
     pub playlist: Vec<String>,
     pub playlist_index: Option<usize>,
@@ -1481,6 +1483,23 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
+    pub fn wait_for_peer_observed_user_file_name(
+        &mut self,
+        username: &str,
+        file_name: &str,
+        timeout: Duration,
+    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+        self.ensure_peer_connected()?;
+        self.send_peer_command(&json!({
+            "command": "wait_for_user_file_name",
+            "username": username,
+            "fileName": file_name,
+            "timeoutSeconds": timeout.as_secs_f64(),
+        }))?;
+        let status = self.wait_for_peer_status(timeout, "user-file")?;
+        Self::parse_peer_snapshot(&status)
+    }
+
     pub fn set_peer_playlist(
         &mut self,
         files: &[String],
@@ -1810,6 +1829,7 @@ impl LegacyServerPythonPeerHarness {
             | Some("user-ready")
             | Some("chat-command-sent")
             | Some("chat-message")
+            | Some("user-file")
             | Some("playlist-command-sent")
             | Some("playlist-index-command-sent")
             | Some("playlist")
@@ -1860,6 +1880,14 @@ impl LegacyServerPythonPeerHarness {
                 ))
             })?;
         let local_ready = status.get("localReady").and_then(Value::as_bool);
+        let local_file_name = match status.get("fileName") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(value.as_str().map(str::to_owned).ok_or_else(|| {
+                InteropError::InvalidPythonBatchResponse(format!(
+                    "python live peer status included a malformed local file name: {value}"
+                ))
+            })?),
+        };
         let local_controller = status.get("localController").and_then(Value::as_bool);
         let observed_users = status
             .get("users")
@@ -1870,6 +1898,26 @@ impl LegacyServerPythonPeerHarness {
                     .map(|(username, ready)| (username.clone(), ready.as_bool()))
                     .collect::<BTreeMap<_, _>>()
             })
+            .unwrap_or_default();
+        let observed_user_file_names = status
+            .get("userFiles")
+            .and_then(Value::as_object)
+            .map(|users| {
+                users
+                    .iter()
+                    .map(|(username, file_name)| {
+                        let file_name = match file_name {
+                            Value::Null => Ok(None),
+                            Value::String(file_name) => Ok(Some(file_name.clone())),
+                            other => Err(InteropError::InvalidPythonBatchResponse(format!(
+                                "python live peer status included a malformed user file name for {username}: {other}"
+                            ))),
+                        }?;
+                        Ok((username.clone(), file_name))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, InteropError>>()
+            })
+            .transpose()?
             .unwrap_or_default();
         let observed_user_controllers = status
             .get("controllers")
@@ -1951,8 +1999,10 @@ impl LegacyServerPythonPeerHarness {
             username,
             room,
             local_ready,
+            local_file_name,
             local_controller,
             observed_users,
+            observed_user_file_names,
             observed_user_controllers,
             playlist,
             playlist_index,

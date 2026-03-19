@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, path::Path, process::Command};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc::{self, TryRecvError},
+};
 
 use syncplay_player_api::PlayerAdapter;
 use syncplay_player_mpv::LegacySyncplayOsdKind;
@@ -11,7 +16,7 @@ use super::super::shell_state::{
     browser_is_url,
 };
 use super::super::support::normalized_editable_text;
-use super::GuiPersistedConfigRuntimeOwner;
+use super::{GuiPendingAttachedMediaResolution, GuiPersistedConfigRuntimeOwner};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn open_media_unavailable_message_impl(&self, selected_paths: &[String]) -> String {
@@ -212,6 +217,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     Some(Self::placeholder_local_file_for_path(&selected_path));
                 self.player_position_seconds = Some(0.0);
                 self.refresh_player_state_impl();
+                if let Some(session) = self.session.as_mut() {
+                    let _ = session.mark_local_media_opened_not_ready();
+                }
                 if paths.len() == 1 {
                     Ok(format!(
                         "Opened media file through the attached {player_name} player: {selected_path}."
@@ -280,6 +288,209 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
+    fn automatic_media_search_root_key(path: &Path) -> String {
+        let key = path.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        }
+    }
+
+    fn quick_existing_media_target_path(target: &Path) -> Option<String> {
+        target
+            .is_file()
+            .then(|| target.to_string_lossy().into_owned())
+    }
+
+    fn quick_resolve_main_window_user_media_target(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> Result<Option<String>, String> {
+        let Some(target) = normalized_editable_text(target) else {
+            return Ok(None);
+        };
+        if browser_is_url(&target) {
+            return Ok(Some(target.to_owned()));
+        }
+
+        let target_path = Path::new(&target);
+        if let Some(path) = Self::quick_existing_media_target_path(target_path) {
+            return Ok(Some(path));
+        }
+
+        let target_file_name = target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+
+        if let Some(local_path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+        {
+            let local_path = Path::new(local_path);
+            let matches_local_file = local_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(&target));
+            if matches_local_file && local_path.is_file() {
+                return Ok(Some(local_path.to_string_lossy().into_owned()));
+            }
+            if let Some(parent) = local_path.parent() {
+                if let Some(path) = Self::quick_existing_media_target_path(&parent.join(&target)) {
+                    return Ok(Some(path));
+                }
+                if let Some(file_name) = target_file_name
+                    && let Some(path) =
+                        Self::quick_existing_media_target_path(&parent.join(file_name))
+                {
+                    return Ok(Some(path));
+                }
+            }
+        }
+
+        let settings = state.configuration.to_stored_settings();
+        for directory in settings.media_search_directories.unwrap_or_default() {
+            let trimmed = directory.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let root = Path::new(trimmed);
+            if let Some(path) = Self::quick_existing_media_target_path(&root.join(&target)) {
+                return Ok(Some(path));
+            }
+            if let Some(file_name) = target_file_name
+                && let Some(path) = Self::quick_existing_media_target_path(&root.join(file_name))
+            {
+                return Ok(Some(path));
+            }
+        }
+        Ok(None)
+    }
+
+    fn automatic_media_search_roots_for_target(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        let mut push_root = |path: &Path| {
+            if !path.is_dir() {
+                return;
+            }
+            let key = Self::automatic_media_search_root_key(path);
+            if seen.insert(key) {
+                roots.push(path.to_path_buf());
+            }
+        };
+
+        if let Some(local_path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            .map(PathBuf::from)
+            && let Some(parent) = local_path.parent()
+        {
+            push_root(parent);
+        }
+
+        let settings = state.configuration.to_stored_settings();
+        for directory in settings.media_search_directories.unwrap_or_default() {
+            let trimmed = directory.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            push_root(Path::new(trimmed));
+        }
+
+        roots
+    }
+
+    fn queue_attached_media_resolution(
+        &mut self,
+        target_file_name: String,
+        search_roots: Vec<PathBuf>,
+    ) {
+        let (result_tx, result_rx) = mpsc::channel();
+        let search_target_file_name = target_file_name.clone();
+        std::thread::spawn(move || {
+            for root in search_roots {
+                match GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
+                    &search_target_file_name,
+                    &root,
+                ) {
+                    Ok(Some(found_path)) => {
+                        let _ = result_tx.send(Ok(Some(found_path)));
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = result_tx.send(Err(error));
+                        return;
+                    }
+                }
+            }
+            let _ = result_tx.send(Ok(None));
+        });
+        self.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+            target: target_file_name,
+            result_rx,
+        });
+        self.unresolved_attached_media_target = None;
+    }
+
+    fn resolve_main_window_user_media_target_for_automatic_sync(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> Result<Option<String>, String> {
+        let Some(target) = normalized_editable_text(target) else {
+            return Ok(None);
+        };
+        if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
+            self.pending_attached_media_resolution = None;
+            self.unresolved_attached_media_target = None;
+            return Ok(Some(path));
+        }
+
+        if self.unresolved_attached_media_target.as_deref() == Some(target.as_str()) {
+            return Ok(None);
+        }
+
+        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
+            if pending_resolution.target == target {
+                match pending_resolution.result_rx.try_recv() {
+                    Ok(Ok(found_path)) => {
+                        self.unresolved_attached_media_target =
+                            found_path.as_ref().map_or(Some(target.clone()), |_| None);
+                        return Ok(found_path);
+                    }
+                    Ok(Err(error)) => return Err(error),
+                    Err(TryRecvError::Empty) => {
+                        self.pending_attached_media_resolution = Some(pending_resolution);
+                        return Ok(None);
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        return Err(format!(
+                            "Automatic media resolution for '{target}' terminated unexpectedly."
+                        ));
+                    }
+                }
+            }
+        }
+
+        let search_roots = self.automatic_media_search_roots_for_target(state);
+        if search_roots.is_empty() {
+            return Ok(None);
+        }
+        self.queue_attached_media_resolution(target.clone(), search_roots);
+        Ok(None)
+    }
+
     fn resolve_main_window_user_media_target(
         &self,
         state: &SyncplayGuiShellAppState,
@@ -341,26 +552,95 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn sync_selected_shared_playlist_media_to_attached_player_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
-    ) {
+    ) -> bool {
         let Some(target) = Self::selected_shared_playlist_target(state) else {
-            return;
+            self.pending_attached_media_resolution = None;
+            self.unresolved_attached_media_target = None;
+            return false;
         };
 
         self.ensure_configured_player_attached();
         if self.player.is_none() {
-            return;
+            self.pending_attached_media_resolution = None;
+            return false;
         }
 
-        let resolved_target = match self.resolve_main_window_user_media_target(state, &target) {
-            Ok(Some(path)) => path,
-            Ok(None) | Err(_) => return,
-        };
+        let resolved_target =
+            match self.resolve_main_window_user_media_target_for_automatic_sync(state, &target) {
+                Ok(Some(path)) => path,
+                Ok(None) | Err(_) => return false,
+            };
         if self.current_player_matches_media_target(&resolved_target) {
-            return;
+            return false;
         }
 
         let player_paths = [resolved_target];
-        let _ = self.open_media_files_through_attached_player_result_impl(&player_paths);
+        self.open_media_files_through_attached_player_result_impl(&player_paths)
+            .is_some_and(|result| result.is_ok())
+    }
+
+    pub(super) fn sync_session_playstate_to_attached_player_impl(&mut self, force: bool) {
+        self.ensure_configured_player_attached();
+        let Some(player) = self.player.as_mut() else {
+            self.last_applied_attached_room_playstate = None;
+            return;
+        };
+        let Some(playstate) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playstate())
+        else {
+            self.last_applied_attached_room_playstate = None;
+            return;
+        };
+        if !force && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate) {
+            return;
+        }
+
+        let mut state_changed = false;
+        if let Some(position_seconds) = playstate.position_seconds
+            && (force || playstate.do_seek == Some(true))
+            && (force
+                || self
+                    .player_position_seconds
+                    .map(|current_position_seconds| {
+                        (current_position_seconds - position_seconds).abs() > f64::EPSILON
+                    })
+                    .unwrap_or(true))
+        {
+            match player.set_position(position_seconds) {
+                Ok(()) => {
+                    self.player_position_seconds = Some(position_seconds);
+                    state_changed = true;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to sync session playback position to the attached player: {error}"
+                    );
+                }
+            }
+        }
+
+        if let Some(paused) = playstate.paused
+            && (force || self.player_paused != Some(paused))
+        {
+            match player.set_paused(paused) {
+                Ok(()) => {
+                    self.player_paused = Some(paused);
+                    state_changed = true;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to sync session playback pause state to the attached player: {error}"
+                    );
+                }
+            }
+        }
+
+        self.last_applied_attached_room_playstate = Some(playstate);
+        if state_changed {
+            self.refresh_player_state_impl();
+        }
     }
 
     pub(super) fn open_main_window_user_media_runtime_impl(
