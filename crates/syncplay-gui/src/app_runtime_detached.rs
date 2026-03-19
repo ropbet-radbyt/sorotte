@@ -1,7 +1,11 @@
 use std::path::Path;
 
-use syncplay_client_app::app_boundary::state::{
-    StoredClientSettingsRuntimeSnapshot, stored_client_settings_runtime_snapshot_legacy_compatible,
+use syncplay_client_app::app_boundary::{
+    persistence::upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    state::{
+        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
+        stored_client_settings_runtime_snapshot_legacy_compatible,
+    },
 };
 
 #[cfg(not(test))]
@@ -13,10 +17,11 @@ use super::runtime_stack::{
     GuiTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    GuiCommandRuntimeSnapshot, GuiShellAction, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SyncplayGuiShellAppState,
+    GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction,
+    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState,
 };
+use super::startup_support::env_trimmed;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
@@ -294,12 +299,54 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
+    pub(super) fn save_configuration_for_connect_runtime(
+        &mut self,
+        projected_state: &SyncplayGuiShellAppState,
+    ) -> Result<Option<StoredClientSettingsMvp>, String> {
+        if !projected_state.pending_saved_server_connect_saves_configuration {
+            return Ok(None);
+        }
+
+        let settings = projected_state.configuration.to_stored_settings();
+        if let Some(path) = self.config_path.as_ref() {
+            upsert_syncplay_ini_stored_client_settings_mvp_at_path(path, &settings)
+                .map_err(|error| format!("Configuration save failed: {error}"))?;
+        }
+        self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), false);
+        Ok(Some(settings))
+    }
+
     pub(super) fn complete_saved_server_connect_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
         clear_pending: bool,
     ) {
+        match self.save_configuration_for_connect_runtime(projected_state) {
+            Ok(Some(settings)) => {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                        GuiSavedConfigurationRuntimeSnapshot { settings },
+                    )],
+                );
+            }
+            Ok(None) => {}
+            Err(message) => {
+                if clear_pending {
+                    self.clear_pending_operation_with_runtime_error(
+                        handle,
+                        projected_state,
+                        message,
+                    );
+                } else {
+                    Self::push_runtime_error_notification(handle, projected_state, message);
+                }
+                return;
+            }
+        }
+
         let Some(target) = projected_state.saved_session_connect_target() else {
             let message =
                 "Configured server connect requires a saved host and a valid port.".to_owned();

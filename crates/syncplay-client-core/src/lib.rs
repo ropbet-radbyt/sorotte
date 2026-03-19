@@ -3362,8 +3362,8 @@ impl ClientSession {
     pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
         self.username
             .as_deref()
-            .and_then(|username| self.user_file_name(username))
-            .filter(|file_name| !file_name.is_empty())
+            .and_then(|username| self.user_room(username))
+            .filter(|room_name| !room_name.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| default_room.to_owned())
     }
@@ -16559,5 +16559,25 @@ mod tests {
             ]
         );
         assert!(runtime.drain_autoplay_notifications().is_empty());
+    }
+
+    #[test]
+    fn local_room_command_target_with_legacy_fallback_prefers_local_room_over_file_name() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"default-room"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"+Test:77F8DA30FB3E"},"file":{"name":"episode1.mkv"}}}}}"#,
+            )
+            .expect("local user update should apply");
+
+        assert_eq!(
+            session.local_room_command_target_with_legacy_fallback("fallback-room"),
+            "+Test:77F8DA30FB3E"
+        );
     }
 }

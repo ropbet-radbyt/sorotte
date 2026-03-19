@@ -17,6 +17,10 @@ use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let mut shell_settings = settings.clone();
+        shell_settings.room = stored_client_settings_runtime_snapshot_legacy_compatible(settings)
+            .settings
+            .room;
         let mut state = Self {
             active_view: GuiShellView::Configuration,
             open_modal: None,
@@ -25,6 +29,7 @@ impl SyncplayGuiShellAppState {
             runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
             commands: GuiCommandAvailabilityState::default(),
             pending_operation: None,
+            pending_saved_server_connect_saves_configuration: false,
             outgoing_chat_message: None,
             new_main_window_user_draft: String::new(),
             new_playlist_entry_draft: String::new(),
@@ -45,12 +50,12 @@ impl SyncplayGuiShellAppState {
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,
             playlist_shuffle_nonce: 0,
-            saved_configuration: settings.clone(),
-            configuration: FirstRunConfigurationDialogDraft::from_stored_settings(settings),
-            main_window: MainWindowShellState::from_stored_settings(settings),
-            menus: MenuDialogShellState::from_stored_settings(settings),
-            public_servers: PublicServerBrowserShellState::from_stored_settings(settings),
-            media_search: MediaSearchWorkflowShellState::from_stored_settings(settings),
+            saved_configuration: shell_settings.clone(),
+            configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
+            main_window: MainWindowShellState::from_stored_settings(&shell_settings),
+            menus: MenuDialogShellState::from_stored_settings(&shell_settings),
+            public_servers: PublicServerBrowserShellState::from_stored_settings(&shell_settings),
+            media_search: MediaSearchWorkflowShellState::from_stored_settings(&shell_settings),
         };
         state.default_selection_from_surfaces();
         state.apply_selection_to_surfaces();

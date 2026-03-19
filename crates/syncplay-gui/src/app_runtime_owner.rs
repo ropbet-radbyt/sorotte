@@ -255,7 +255,7 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
-    fn sync_player_from_lookup_and_settings<F>(
+    pub(super) fn sync_player_from_lookup_and_settings<F>(
         &mut self,
         lookup: &F,
         settings: Option<&StoredClientSettingsMvp>,
@@ -517,6 +517,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
         self.emit_gui_actions_to_attached_player(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
+        self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
     }
 
     fn flush_session_transport_outbound(
@@ -686,7 +687,12 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
 
-        match session.set_room_with_legacy_fallback(default_room) {
+        let room_change_result = if default_room.trim().is_empty() {
+            session.set_room_with_legacy_fallback(default_room)
+        } else {
+            session.set_room(default_room)
+        };
+        match room_change_result {
             Ok(()) => {
                 self.pending_room_change_request =
                     Some(GuiPendingRoomChangeRequest::ReturnToDefault { previous_room });

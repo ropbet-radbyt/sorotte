@@ -83,6 +83,11 @@ impl SyncplayGuiShellAppState {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
+        if self.active_view == GuiShellView::Configuration && !self.validation.issues.is_empty() {
+            return self.record_action_error(
+                "Configuration connect is unavailable while validation issues remain.",
+            );
+        }
         if !self.commands.can_connect_saved_server {
             return self.record_action_error(
                 "Configured server connect requires a saved host and a valid port.",
@@ -93,6 +98,8 @@ impl SyncplayGuiShellAppState {
                 "Configured server connect requires a saved host and a valid port.",
             );
         };
+        self.pending_saved_server_connect_saves_configuration =
+            self.active_view == GuiShellView::Configuration;
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ConnectSavedServer,
         });
@@ -115,11 +122,13 @@ impl SyncplayGuiShellAppState {
         }
         let Some(target) = self.saved_session_connect_target() else {
             self.pending_operation = None;
+            self.pending_saved_server_connect_saves_configuration = false;
             return self.record_action_error(
                 "Configured server connect requires a saved host and a valid port.",
             );
         };
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.active_view = GuiShellView::MainWindow;
         self.push_system_chat_message(format!(
             "Connected to configured server: {}.",
@@ -144,6 +153,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configured server connect canceled.".to_owned(),

@@ -145,6 +145,9 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = snapshot
             .pending_operation
             .map(|kind| GuiPendingOperationState { kind });
+        if snapshot.pending_operation != Some(GuiPendingOperationKind::ConnectSavedServer) {
+            self.pending_saved_server_connect_saves_configuration = false;
+        }
         let baseline_command_availability = self.command_availability_without_runtime_override();
         self.runtime_command_availability_override =
             GuiCommandAvailabilityRuntimeOverride::from_baseline_and_snapshot(
@@ -582,6 +585,7 @@ impl SyncplayGuiShellAppState {
 
         self.saved_configuration = settings;
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_system_chat_message("Configuration saved.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
@@ -625,6 +629,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.resync_from_settings(settings.clone());
         self.saved_configuration = settings;
         self.push_system_chat_message("Configuration reset to the last saved state.".to_owned());
@@ -683,6 +688,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.resync_from_settings(settings.clone());
         self.saved_configuration = settings;
         self.push_system_chat_message("Configuration snapshot loaded.".to_owned());
@@ -721,6 +727,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.reset_to_first_run_state(StoredClientSettingsMvp::default());
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,
             "GUI data cleared. First-run configuration restored.".to_owned(),
@@ -743,6 +750,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Clear GUI data canceled.".to_owned(),
@@ -761,6 +769,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configuration reload canceled.".to_owned(),
@@ -779,6 +788,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
+        self.pending_saved_server_connect_saves_configuration = false;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,
             "Configuration save canceled.".to_owned(),

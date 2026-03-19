@@ -293,3 +293,37 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
     assert!(state.main_window.playback.can_set_ready);
     assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
 }
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_reconciles_inbound_state_through_runtime() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    GuiSessionRuntimeAdapter::sync_local_playback_telemetry(&mut adapter, Some(false), Some(12.0))
+        .expect("local playback telemetry should sync");
+
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"},"ping":{"latencyCalculation":123.0}}}"#,
+        )
+        .expect("inbound state should reconcile through client runtime");
+
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconciled state response should encode");
+    assert_eq!(outbound_lines.len(), 1);
+    assert!(outbound_lines[0].contains("\"State\""));
+    assert!(outbound_lines[0].contains("\"position\":12.0"));
+    assert!(outbound_lines[0].contains("\"paused\":false"));
+    assert!(outbound_lines[0].contains("\"latencyCalculation\":123.0"));
+}

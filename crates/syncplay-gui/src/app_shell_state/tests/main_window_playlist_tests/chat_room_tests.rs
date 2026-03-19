@@ -172,6 +172,25 @@ fn gui_shell_app_state_handles_text_edits_and_room_switches() {
 }
 
 #[test]
+fn gui_shell_app_state_normalizes_bare_controlled_room_names_from_saved_settings() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        room: Some("Test:77F8DA30FB3E".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert_eq!(
+        state.configuration.to_stored_settings().room.as_deref(),
+        Some("+Test:77F8DA30FB3E")
+    );
+    assert_eq!(
+        state.saved_configuration.room.as_deref(),
+        Some("+Test:77F8DA30FB3E")
+    );
+    assert_eq!(state.main_window.room_name, "+Test:77F8DA30FB3E");
+    assert!(state.main_window.controlled_room_active);
+}
+
+#[test]
 fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("+room:ABCDEF123456".to_owned()),

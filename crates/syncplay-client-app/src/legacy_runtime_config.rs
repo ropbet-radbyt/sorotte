@@ -110,32 +110,62 @@ pub fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
     (host_value.to_owned(), None)
 }
 
-pub fn normalize_controlled_room_input_legacy_compatible(room: String) -> (String, Option<String>) {
-    if !room.starts_with('+') {
-        return (room, None);
-    }
-
-    let mut parts = room.split(':');
-    let Some(base_name) = parts.next() else {
-        return (room, None);
-    };
-    let Some(hash_suffix) = parts.next() else {
-        return (room, None);
-    };
-    let Some(password) = parts.next() else {
-        return (room, None);
-    };
-
+fn normalize_controlled_room_password_legacy_compatible(password: &str) -> Option<String> {
     let normalized_password = password
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect::<String>()
         .to_ascii_uppercase();
-    let canonical_room = format!("{base_name}:{hash_suffix}");
-    if normalized_password.is_empty() {
+    (!normalized_password.is_empty()).then_some(normalized_password)
+}
+
+fn canonical_controlled_room_name_legacy_compatible(
+    base_name: &str,
+    hash_suffix: &str,
+) -> Option<String> {
+    let base_name = base_name.trim();
+    let hash_suffix = hash_suffix.trim();
+    if base_name.is_empty()
+        || hash_suffix.len() != 12
+        || !hash_suffix.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+
+    let base_name = if base_name.starts_with('+') {
+        base_name.to_owned()
+    } else {
+        format!("+{base_name}")
+    };
+    Some(format!("{base_name}:{hash_suffix}"))
+}
+
+pub fn normalize_controlled_room_input_legacy_compatible(room: String) -> (String, Option<String>) {
+    let mut parts = room.rsplitn(3, ':');
+    let trailing = parts.next();
+    let middle = parts.next();
+    let leading = parts.next();
+    if let (Some(password), Some(hash_suffix), Some(base_name)) = (trailing, middle, leading)
+        && let Some(canonical_room) =
+            canonical_controlled_room_name_legacy_compatible(base_name, hash_suffix)
+    {
+        return (
+            canonical_room,
+            normalize_controlled_room_password_legacy_compatible(password),
+        );
+    }
+
+    let mut parts = room.rsplitn(2, ':');
+    let hash_suffix = parts.next();
+    let base_name = parts.next();
+    if let (Some(hash_suffix), Some(base_name)) = (hash_suffix, base_name)
+        && let Some(canonical_room) =
+            canonical_controlled_room_name_legacy_compatible(base_name, hash_suffix)
+    {
         return (canonical_room, None);
     }
-    (canonical_room, Some(normalized_password))
+
+    (room, None)
 }
 
 pub fn stored_client_settings_runtime_snapshot_legacy_compatible(
@@ -369,6 +399,19 @@ mod tests {
         assert_eq!(
             normalize_controlled_room_input_legacy_compatible("room1".to_owned()),
             ("room1".to_owned(), None)
+        );
+        assert_eq!(
+            normalize_controlled_room_input_legacy_compatible("room:ABCDEF123456".to_owned()),
+            ("+room:ABCDEF123456".to_owned(), None)
+        );
+        assert_eq!(
+            normalize_controlled_room_input_legacy_compatible(
+                "room:ABCDEF123456:ab-123-456".to_owned()
+            ),
+            (
+                "+room:ABCDEF123456".to_owned(),
+                Some("AB-123-456".to_owned())
+            )
         );
     }
 

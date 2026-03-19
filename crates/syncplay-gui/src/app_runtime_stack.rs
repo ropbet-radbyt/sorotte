@@ -27,6 +27,7 @@ use syncplay_client_core::{
     QueuedRuntimeControl,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
+use syncplay_protocol::{ProtocolMessage, decode_message_line};
 
 use self::player::GuiNoopClientRuntimePlayer;
 #[cfg(not(test))]
@@ -365,10 +366,23 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .apply_message_json(json_line)
-            .map_err(|error| format!("Inbound client-session message apply failed: {error}"))
+        let message = decode_message_line(json_line)
+            .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
+        match message {
+            ProtocolMessage::State(state_message) => {
+                let _ = self
+                    .runtime
+                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                        state_message.state,
+                    );
+                Ok(())
+            }
+            other => self
+                .runtime
+                .session_mut()
+                .apply_protocol_message(other)
+                .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
+        }
     }
 }
 

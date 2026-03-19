@@ -36,7 +36,8 @@
 - The Rust client-core is still ahead of the Rust GUI overall, but the GUI now also covers the last high-visibility language/runtime gap from the previous audit: runtime notifications, update/public-server service calls, and update-dialog text now honor the selected GUI language.
 - The default `mpv`-backed GUI startup path is no longer blocked on manual environment setup. Saved `playerPath` plus `perPlayerArguments` now drive a GUI-owned `mpv` launch, legacy Syncplay `mpv` OSD/chat settings are applied, GUI notifications/chat are mirrored into `mpv`, and the GUI owns relaunch/failure handling for that path.
 - The configuration dialog now covers the remaining `mpv`-scope legacy settings from the Python client, including player/startup toggles, multiline room/trusted-domain/media-directory editing, chat appearance settings, and OSD timing controls.
-- The biggest remaining parity blocker is now that only `mpv` is represented as a first-class Rust player backend today.
+- Configuration-surface `Connect` now matches the Python startup-confirm handoff for the `mpv`-first scope: it saves the draft, reuses the managed-player startup path, joins the selected room, and lands in the main window through the existing detached connect runtime.
+- Additional player backend parity remains the main explicitly deferred client-parity question after that `mpv`-first GUI lifecycle slice.
 
 ## What No Longer Needs Assignment
 
@@ -45,7 +46,7 @@
 - Legacy Syncplay `mpv` UI settings now apply in both explicit-IPC attach mode and GUI-owned startup, including chat input/output and timeout-backed OSD behavior.
 - GUI chat/system notifications now forward into attached `mpv` via the legacy OSD/chat path, and `mpv` chat input now routes back into the GUI session runtime.
 - GUI-owned `mpv` lifecycle is managed across startup, save/reload/reset, on-demand reopen, and unexpected process exit reporting.
-- Saved host/port settings can drive a real GUI connect/disconnect flow, including startup auto-connect.
+- Saved host/port settings can drive a real GUI connect/disconnect flow, including saved-config startup auto-connect.
 - Room join and return-to-default flows are runtime-backed over a real session.
 - Detached GUI sessions now keep legacy-server connections alive with periodic `State.ping` heartbeats, so a successful join no longer drops after the initial timeout window.
 - Shared-playlist import/open now routes through the real runtime owner instead of stopping at shell projection.
@@ -64,7 +65,7 @@
 
 ## Remaining Python Client Parity Tasks
 
-### P2. Additional player backend parity
+### P1. Additional player backend parity
 
 Current status: the Rust workspace only has a first-class `mpv` backend. The Python client supports `mpv`, `mpvnet`, `MPC-HC`, `MPC-BE`, `VLC`, `MPlayer`, `IINA`, and `Memento`.
 
@@ -78,7 +79,8 @@ Work to assign:
 
 ## Practical Assignment Order
 
-1. Revisit additional player backends only after the current `mpv`-first parity scope is no longer the primary blocker.
+1. Keep the Python-style config-confirm startup handoff treated as done for the `mpv`-first GUI scope.
+2. Revisit additional player backends only if the product target expands beyond the current `mpv`-first milestone.
 
 ## Outside Strict Python-Client Feature Parity
 

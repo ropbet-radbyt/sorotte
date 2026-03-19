@@ -3376,6 +3376,7 @@ dependencies = [
  "syncplay-compat",
  "syncplay-player-api",
  "syncplay-player-mpv",
+ "syncplay-protocol",
  "windows 0.61.3",
  "windows-sys 0.61.2",
 ]

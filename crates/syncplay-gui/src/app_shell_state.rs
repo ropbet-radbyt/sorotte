@@ -164,6 +164,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride,
     pub(super) commands: GuiCommandAvailabilityState,
     pub(super) pending_operation: Option<GuiPendingOperationState>,
+    pub(super) pending_saved_server_connect_saves_configuration: bool,
     pub(super) outgoing_chat_message: Option<String>,
     pub(super) new_main_window_user_draft: String,
     pub(super) new_playlist_entry_draft: String,

@@ -668,10 +668,24 @@ impl GuiPersistedConfigRuntimeOwner {
                                         handle,
                                         projected_state,
                                     );
-                                    self.open_media_files_through_attached_player(
-                                        handle,
-                                        vec![path],
-                                    );
+                                    if self.current_player_matches_media_target(&path) {
+                                        let player_name = self
+                                            .player
+                                            .as_ref()
+                                            .map(|player| player.name())
+                                            .unwrap_or("player");
+                                        Self::push_player_success(
+                                            handle,
+                                            format!(
+                                                "Opened media file through the attached {player_name} player: {path}."
+                                            ),
+                                        );
+                                    } else {
+                                        self.open_media_files_through_attached_player(
+                                            handle,
+                                            vec![path],
+                                        );
+                                    }
                                 }
                                 found_path => Self::push_actions_and_project(
                                     handle,

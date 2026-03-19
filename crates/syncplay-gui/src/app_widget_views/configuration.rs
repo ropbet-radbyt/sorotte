@@ -76,7 +76,7 @@ impl SyncplayGuiShellAppState {
                     self.saved_session_connect_button_label(),
                     GuiWidgetKind::Button,
                     None,
-                    self.commands.can_connect_saved_server,
+                    self.commands.can_connect_saved_server && self.validation.issues.is_empty(),
                     false,
                 ),
                 GuiWidgetNode::leaf(

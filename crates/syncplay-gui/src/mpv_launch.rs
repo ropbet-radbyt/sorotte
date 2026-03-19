@@ -136,14 +136,7 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     if let Some(parent) = config.program.parent() {
         command.current_dir(parent);
     }
-    command
-        .arg("--pause")
-        .arg("--force-window=no")
-        .arg("--idle=yes")
-        .arg(format!("--input-ipc-server={ipc_path}"));
-    if !config.extra_args.is_empty() {
-        command.args(&config.extra_args);
-    }
+    command.args(managed_mpv_launch_args(&ipc_path, &config.extra_args));
 
     let child = command
         .stdout(Stdio::null())
@@ -168,6 +161,19 @@ pub(crate) fn spawn_managed_mpv_and_attach(
             )
         })?;
     Ok((adapter, guard))
+}
+
+fn managed_mpv_launch_args(ipc_path: &str, extra_args: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "--pause".to_owned(),
+        "--force-window=yes".to_owned(),
+        "--idle=yes".to_owned(),
+        "--keep-open=always".to_owned(),
+        "--keep-open-pause=yes".to_owned(),
+        format!("--input-ipc-server={ipc_path}"),
+    ];
+    args.extend(extra_args.iter().cloned());
+    args
 }
 
 pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
@@ -503,7 +509,7 @@ mod tests {
 
     use super::{
         LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvSettingsDecision,
-        legacy_syncplayintf_script_source_with_chat_input_bridge,
+        legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
     use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
@@ -577,5 +583,26 @@ mod tests {
 
         assert!(once.contains(LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER));
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn managed_mpv_launch_args_open_a_visible_idle_window_before_extra_args() {
+        let args = managed_mpv_launch_args(
+            r"\\.\pipe\syncplay-rust-gui-mpv-test",
+            &["--profile=syncplay".to_owned()],
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--pause".to_owned(),
+                "--force-window=yes".to_owned(),
+                "--idle=yes".to_owned(),
+                "--keep-open=always".to_owned(),
+                "--keep-open-pause=yes".to_owned(),
+                r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
+                "--profile=syncplay".to_owned(),
+            ]
+        );
     }
 }

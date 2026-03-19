@@ -241,6 +241,45 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn selected_shared_playlist_target(state: &SyncplayGuiShellAppState) -> Option<String> {
+        if !state.main_window.shared_playlist_enabled {
+            return None;
+        }
+
+        state
+            .selection
+            .selected_main_window_playlist
+            .and_then(|index| state.main_window.playlist.get(index))
+            .and_then(|target| normalized_editable_text(&target.label))
+    }
+
+    pub(super) fn current_player_matches_media_target(&self, target: &str) -> bool {
+        let Some(local_file) = self.player_local_file.as_ref() else {
+            return false;
+        };
+
+        if let Some(path) = local_file.path.as_deref() {
+            if (cfg!(windows) && path.eq_ignore_ascii_case(target))
+                || (!cfg!(windows) && path == target)
+            {
+                return true;
+            }
+        }
+
+        let target_name = if browser_is_url(target) {
+            Some(target)
+        } else {
+            Path::new(target).file_name().and_then(|name| name.to_str())
+        };
+        target_name.is_some_and(|target_name| {
+            if cfg!(windows) {
+                local_file.name.eq_ignore_ascii_case(target_name)
+            } else {
+                local_file.name == target_name
+            }
+        })
+    }
+
     fn resolve_main_window_user_media_target(
         &self,
         state: &SyncplayGuiShellAppState,
@@ -297,6 +336,31 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         Ok(None)
+    }
+
+    pub(super) fn sync_selected_shared_playlist_media_to_attached_player_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let Some(target) = Self::selected_shared_playlist_target(state) else {
+            return;
+        };
+
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return;
+        }
+
+        let resolved_target = match self.resolve_main_window_user_media_target(state, &target) {
+            Ok(Some(path)) => path,
+            Ok(None) | Err(_) => return,
+        };
+        if self.current_player_matches_media_target(&resolved_target) {
+            return;
+        }
+
+        let player_paths = [resolved_target];
+        let _ = self.open_media_files_through_attached_player_result_impl(&player_paths);
     }
 
     pub(super) fn open_main_window_user_media_runtime_impl(

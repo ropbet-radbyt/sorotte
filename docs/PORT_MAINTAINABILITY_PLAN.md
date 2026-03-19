@@ -4,45 +4,90 @@ Working plan for keeping the Rust port shippable while finishing client parity.
 
 ## Independent evaluation
 
-- Audit date: 2026-03-14
-- Last updated: 2026-03-14
+- Audit date: 2026-03-19
+- Last updated: 2026-03-19
+- Verification performed for this reassessment:
+  - `cargo test -p syncplay-gui` (`270` passed, `1` ignored local `mpv` smoke)
+  - `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json`
+    (`11/11` scenarios)
+  - Static comparison of `../syncplay/syncplay/ui/gui.py` and
+    `../syncplay/syncplay/ui/GuiConfiguration.py`
+  - Spot checks of Rust GUI renderer, persistence, runtime-owner, and live-Python interop paths
 
 ## Verdict
 
-The recent GUI maintainability work was worthwhile. In the current tree:
+The maintainability round for the GUI app layer can stay closed. The useful work has already
+happened:
 
-- `syncplay-gui` is still library-first,
-- `src/main.rs` is still a thin launcher,
+- `syncplay-gui` is library-first,
+- `src/main.rs` is thin,
 - `app_tests.rs` is gone,
 - area-owned GUI test modules now exist,
-- `src/app/mod.rs` now owns the GUI router instead of a flat `app.rs` path table,
-- `src/semantic_smoke/` now owns parser, catalog, CLI, and code-driven smoke submodules,
-- and broad `use super::*;` imports no longer appear in production GUI modules.
+- `src/app/mod.rs` owns the GUI router instead of a flat `app.rs` path table,
+- `src/semantic_smoke/` owns parser, catalog, CLI, and code-driven smoke submodules,
+- and the remaining large GUI files are tooling or local hotspots rather than crate-global dumping
+  grounds.
 
-The library/app side of the GUI maintainability round can now be called done. The remaining GUI
-maintainability risk is no longer the app tree itself; it sits in specialized tooling and harness
-code:
+With non-`mpv` player backends explicitly deferred, the Rust GUI is no longer a maintainability
+problem, but it is not yet fully at the end of the valuable Python-GUI delta work. The current
+tree has test-backed coverage for the configuration surface, runtime-backed main-window
+playback/chat/room flows, shared playlist workflows, public-server browsing, missing-media search,
+controlled-room/controller-auth flows, localized update/public-server service calls, reconnect
+behavior, persistence, drag-and-drop ingest, and live Python interop.
 
-- `src/bin/syncplay-gui-native-smoke.rs` is no longer a single 6275-line tooling monolith and is
-  now a 1161-line root helper layer,
-- `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` is now 930 lines with
-  scenario-owned submodules ranging from 51 to 800 lines,
-- `src/bin/syncplay-gui-native-smoke/platform_driver.rs` is still 1598 lines and remains the only
-  native-smoke production file above the soft cap,
-- `src/live_python_interop.rs` is still a specialized interop harness sitting at the split range,
-- and the largest remaining GUI test files are area-owned local hotspots rather than crate-global
-  dumping grounds.
+The remaining GUI delta now looks like a short polish tail:
 
-That is valuable progress. Do not keep splitting app/library files just to satisfy this plan. If
-more GUI maintainability work happens next, point it at the native smoke platform driver or the
-shared native-smoke helper layer, or leave the GUI app layer alone and move back to parity work.
+- the About, Help, and TLS certificate flows exist but are still simpler than the Python desktop
+  dialogs,
+- the configuration surface still treats `Player Path` as text entry instead of Python-style
+  browse/icon discovery UX,
+- and legacy main-window size/position persistence is not ported.
+
+That means app-tree maintainability churn should stay closed, and the GUI can be treated as
+effectively done for the `mpv`-first scope unless the team decides the optional desktop polish
+matters for release. Do not reopen broad internal refactors; keep any remaining work narrow and
+behavior-led.
 
 ## Scope
 
-- Keep using the upstream Python client as the behavioral oracle.
+- Keep using the upstream Python client as the behavioral oracle for GUI behavior.
 - Keep `mpv` as the active parity target.
-- Improve maintainability without pausing parity work indefinitely.
-- Prefer changes that make future review, testing, and agent-driven work more targeted.
+- Explicitly defer additional player backends; do not let them block the GUI assessment in this
+  plan.
+- Treat the remaining non-player GUI delta as optional polish unless it clearly improves release
+  readiness.
+- Prefer changes that keep review, testing, and agent-driven work targeted.
+
+## Python GUI delta checkpoint
+
+### Covered in the Rust GUI today
+
+- Configuration surface parity includes player/startup toggles, room/trusted-domain/media-
+  directory editing, chat appearance settings, OSD timing controls, save/reload/reset, and
+  connect-from-saved-config flows.
+- Main-window parity includes room/user/file browser state, connect/disconnect/reconnect flows,
+  play/pause/seek/undo/offset controls, readiness/autoplay, chat, hide-empty-room behavior, and
+  persisted playback/autoplay visibility.
+- Shared-playlist parity includes add/open URL, add files, load/save playlist dialogs, text
+  editing, shuffle remaining/entire, undo, drag-and-drop ingest, open-selected,
+  open-containing-folder, and trust-domain actions.
+- Runtime/service parity includes public-server browse/refresh/connect, missing-media search,
+  localized update checks, TLS prompt handling, controlled-room/controller-auth flows,
+  reconnect/state-restore behavior, and live-Python interop coverage.
+- Startup lifecycle parity now includes the Python-style configuration-confirm handoff for the
+  `mpv`-first scope: configuration-surface `Connect` persists the draft, syncs the managed-player
+  startup path, joins the configured room, and switches into the main window through the existing
+  detached connect runtime.
+
+### Remaining GUI-only delta worth doing only if asked
+
+- Rich About/help/TLS dialog fidelity: Python exposes version/license/dependencies and certificate
+  metadata; Rust currently exposes simpler modal flows.
+- Player-path browse UX: Python offers browse/autodetect/icon feedback for player selection; Rust
+  currently keeps `Player Path` and `Player Arguments` as editable controls without that richer
+  discovery layer.
+- Main-window desktop persistence: Python persists window size and position; Rust currently
+  persists view/toggle/cache state but not geometry.
 
 ## Current measured hotspots
 
@@ -111,6 +156,8 @@ tooling binary is visible in the figures. Non-GUI crate figures below are carrie
   all tooling behavior in one file.
 - `src/app/testing/support.rs` now provides a shared fixture and harness seam for GUI tests.
 - The GUI has semantic and Python-interop coverage rather than only narrow unit tests.
+- The 2026-03-19 reassessment passed `cargo test -p syncplay-gui` and the semantic suite without
+  finding a new `mpv`-scope blocker.
 - The repository already has stable smoke commands for semantic and native GUI validation.
 
 ### Main risks
@@ -124,6 +171,8 @@ tooling binary is visible in the figures. Non-GUI crate figures below are carrie
   unrelated behavior.
 - `app_runtime_owner/tests/transport_tests.rs`, `app_shell_state/tests/runtime_snapshot_tests/configuration_runtime_tests.rs`,
   and `app_render_egui/tests.rs` now contain the next local test files to watch.
+- The remaining GUI delta against Python is now mostly optional desktop polish: richer
+  About/help/TLS dialogs, player-path browse UX, and window geometry persistence.
 - `syncplay-cli/src/main.rs` and `syncplay-client-core/src/lib.rs` remain large enough to dominate
   change risk outside the GUI.
 - The plan should now describe measured state and decisions, not continue growing as a progress log.
@@ -293,16 +342,17 @@ mod tests;
 
 ### Immediate action for the GUI crate
 
-The old `app_tests.rs` action is done. The next test-maintainability action is to split the new
-largest local hotspots before they become the next dumping grounds. The first split should be:
+No new GUI-crate maintainability action is required today. Keep the current split module/test
+layout stable and only split local hotspots when real feature work expands them again.
 
-- keep `app_runtime_owner/tests/` split into area-owned modules rather than recombining it
-- keep `app_runtime_stack/tests/` split into area-owned modules rather than recombining it
-- keep `app_smoke/` split into scenario-owned smoke modules rather than recombining it
-- continued subdivision inside `app_shell_state/tests/` whenever a local file crosses the test-size
-  threshold
-- continued use of `app/testing/support.rs` for temp roots, fake bridges, pump helpers, and shared
-  assertions
+If more GUI work is opened intentionally, prefer one of these small, explicit targets:
+
+- optional polish parity: richer About/help/TLS dialogs,
+- optional polish parity: player-path browse/autodetect/icon UX,
+- conditional maintainability: split `platform_driver.rs` only if more Windows/UIA logic lands
+  there,
+- and continued subdivision inside `app_shell_state/tests/` only when a local file crosses the
+  test-size threshold.
 
 ## Working order
 
@@ -384,20 +434,20 @@ Definition of done:
 - `lib.rs` becomes a small crate-wiring layer.
 - Session state and runtime orchestration no longer live in one file.
 
-### 4. Resume parity slices in the highest-risk GUI areas
+### 4. Only take optional `mpv`-first GUI polish if it is explicitly wanted
 
-Priority order after the next GUI extraction round:
+Priority order:
 
-1. GUI slash-command handling
-2. Configuration dialog completion
-3. Runtime localization and language-sensitive service calls
-4. Explicit decision on whether non-`mpv` backends remain deferred or are reopened
+1. Rich About/help/TLS dialog fidelity
+2. Player-path browse/autodetect/icon UX
+3. Main-window geometry persistence
+4. Revisit additional player backends only when the scope is deliberately reopened
 
 Execution rule:
 
 - Use the Python client as the reference behavior.
-- Add the lowest-sensible failing test first.
-- If a slice touches a still-large module, extract before or during the feature change.
+- Add the narrowest failing test or smoke assertion first.
+- Do not reopen broad maintainability extractions in `src/app/` just to land these polish items.
 
 ### 5. Improve agent-facing ergonomics
 
@@ -442,10 +492,17 @@ Execution rule:
 - [x] Keep the documented full GUI smoke gate for semantic, native, and real-`mpv` coverage.
 - [ ] Add `crates/syncplay-cli/src/lib.rs` and reduce `main.rs` to entrypoint code.
 - [ ] Split `crates/syncplay-client-core/src/lib.rs` into runtime/session-focused modules.
-- [ ] Implement GUI slash-command handling using `syncplay-client-app` command planning.
-- [ ] Finish missing configuration dialog controls.
-- [ ] Localize runtime strings and language-sensitive service calls.
-- [ ] Decide and document whether additional player backends remain deferred after `mpv`.
+- [x] Implement GUI slash-command handling using `syncplay-client-app` command planning.
+- [x] Finish missing configuration dialog controls.
+- [x] Localize runtime strings and language-sensitive service calls.
+- [x] Decide and document that additional player backends remain deferred after `mpv` in this
+      plan.
+- [x] Port Python-style config-confirm startup handoff so confirming settings also saves the draft,
+      starts the saved session, and reuses the existing managed-player startup path.
+- [ ] Port richer Python-style About/help/TLS dialog details only if release UX requires them.
+- [ ] Add Python-style player-path browse/icon/autodetect UX only if text-entry configuration
+      proves insufficient.
+- [ ] Port legacy main-window size/position persistence only if users miss that desktop behavior.
 
 ## Validation expectations
 
@@ -487,6 +544,10 @@ This plan is succeeding if:
 - parity work lands in smaller vertical slices,
 - tests stay green through extractions,
 - and future audits focus more on behavior gaps than on codebase navigability.
+
+For the GUI specifically, this plan is succeeding if the remaining discussion is about optional
+desktop polish or explicitly deferred player backends rather than broad app-tree churn or missing
+`mpv`-scope session, playlist, chat, configuration, or service behavior.
 
 The current GUI app/library maintainability round is done:
 

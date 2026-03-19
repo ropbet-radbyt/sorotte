@@ -2,8 +2,8 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
-    GuiRuntimeRequest, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
-    SyncplayGuiShellAppState,
+    GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
+    GuiTransientNotificationLevel, SyncplayGuiShellAppState,
 };
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -160,4 +160,57 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
     );
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(runtime.actions_for_pending_cancel(&state).is_empty());
+}
+
+#[test]
+fn gui_preview_runtime_bridge_saves_configuration_before_config_view_connect_completion() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut runtime = GuiPreviewRuntimeBridge;
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Connection",
+        label: "Room",
+        value: "room2".to_owned(),
+    }));
+    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
+    assert!(state.pending_saved_server_connect_saves_configuration);
+    assert_eq!(
+        runtime.actions_for_pending_completion(&state),
+        vec![
+            GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                GuiSavedConfigurationRuntimeSnapshot {
+                    settings: state.configuration.to_stored_settings(),
+                },
+            ),
+            GuiShellAction::CompleteSavedServerConnect,
+        ]
+    );
+}
+
+#[test]
+fn gui_preview_runtime_bridge_keeps_main_window_connect_as_plain_connect_completion() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut runtime = GuiPreviewRuntimeBridge;
+
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
+    assert!(!state.pending_saved_server_connect_saves_configuration);
+    assert_eq!(
+        runtime.actions_for_pending_completion(&state),
+        vec![GuiShellAction::CompleteSavedServerConnect]
+    );
 }

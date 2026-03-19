@@ -184,6 +184,153 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    let root = test_temp_root("config-connect-saves-before-connect");
+    let config_path = root.join("syncplay.ini");
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+        &config_path,
+        &StoredClientSettingsMvp {
+            host: Some("old.example".to_owned()),
+            port: Some(8999),
+            username: Some("alice".to_owned()),
+            room: Some("old-room".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    )
+    .expect("initial syncplay config should be written");
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("config connect test should bind a TCP listener");
+    let address = listener
+        .local_addr()
+        .expect("config connect test listener should expose an address");
+    let connect_host = address.ip().to_string();
+    let connect_port = address.port();
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("config connect test should accept a GUI connection");
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .expect("config connect test stream should clone"),
+        );
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("config connect test should read the GUI hello");
+        hello_tx
+            .send(hello_line)
+            .expect("config connect test should report the hello");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room2"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("config connect test should write the server hello");
+        stream
+            .write_all(b"\r\n")
+            .expect("config connect test should terminate the server hello");
+        stream
+            .flush()
+            .expect("config connect test should flush the server hello");
+        release_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("config connect test should release the server");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some(connect_host.clone()),
+        port: Some(connect_port),
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Connection",
+        label: "Room",
+        value: "room2".to_owned(),
+    }));
+    assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
+    assert!(state.pending_saved_server_connect_saves_configuration);
+
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ConnectSavedServer,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let connect_actions = handle.drain_actions();
+
+    assert!(
+        connect_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(snapshot)
+                if snapshot.settings.room.as_deref() == Some("room2")
+                    && snapshot.settings.host.as_deref() == Some(connect_host.as_str())
+                    && snapshot.settings.port == Some(connect_port)
+        )),
+        "config-view connect should project the saved configuration before connect completion",
+    );
+    assert!(
+        connect_actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompleteSavedServerConnect)),
+        "config-view connect should still finish through the normal saved-server connect action",
+    );
+
+    for action in &connect_actions {
+        assert!(state.apply(action.clone()));
+    }
+    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert!(state.pending_operation.is_none());
+    assert!(!state.pending_saved_server_connect_saves_configuration);
+    assert_eq!(state.saved_configuration.room.as_deref(), Some("room2"));
+    assert_eq!(
+        state.saved_configuration.host.as_deref(),
+        Some(connect_host.as_str())
+    );
+    assert_eq!(state.saved_configuration.port, Some(connect_port));
+
+    let persisted_settings = load_syncplay_ini_stored_client_settings_mvp_from_path(&config_path)
+        .expect("config connect should leave a readable syncplay.ini")
+        .expect("config connect should persist settings");
+    assert_eq!(persisted_settings.room.as_deref(), Some("room2"));
+    assert_eq!(
+        persisted_settings.host.as_deref(),
+        Some(connect_host.as_str())
+    );
+    assert_eq!(persisted_settings.port, Some(connect_port));
+
+    let hello_line = hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("config connect test should observe a GUI hello");
+    assert!(
+        hello_line.contains("\"room\":{\"name\":\"room2\"}"),
+        "config connect should send the updated room in the detached hello: {hello_line}",
+    );
+
+    release_tx
+        .send(())
+        .expect("config connect test should release the server");
+    server_thread
+        .join()
+        .expect("config connect test server thread should exit cleanly");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect() {
     use std::{
         io::{BufRead, BufReader, Write},
@@ -806,6 +953,29 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
     assert!(outbound_protocol_lines[0].contains(canonical_room));
     assert!(outbound_protocol_lines[0].contains("\"AB-123-456\""));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_normalizes_bare_controlled_room_input_on_startup() {
+    let room_input = "Test:77F8DA30FB3E";
+    let canonical_room = "+Test:77F8DA30FB3E";
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", room_input)
+        .expect("client-core chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some(room_input.to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+
+    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert_eq!(startup_protocol_lines.len(), 1);
+    assert!(startup_protocol_lines[0].contains("\"Hello\""));
+    assert!(startup_protocol_lines[0].contains(canonical_room));
 }
 
 #[test]

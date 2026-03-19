@@ -10,8 +10,8 @@ use super::render_io::GuiDroppedFilesRequest;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
-    GuiPendingOperationKind, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
-    SyncplayGuiShellAppState,
+    GuiPendingOperationKind, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
+    GuiTransientNotificationLevel, SyncplayGuiShellAppState,
 };
 use super::support::format_offset_command;
 
@@ -305,6 +305,22 @@ impl GuiPreviewRuntimeBridge {
     pub(super) fn preview_pending_completion_actions(
         state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
+        if state.pending_saved_server_connect_saves_configuration
+            && state
+                .pending_operation
+                .as_ref()
+                .is_some_and(|pending| pending.kind == GuiPendingOperationKind::ConnectSavedServer)
+        {
+            return vec![
+                GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                    GuiSavedConfigurationRuntimeSnapshot {
+                        settings: state.configuration.to_stored_settings(),
+                    },
+                ),
+                GuiShellAction::CompleteSavedServerConnect,
+            ];
+        }
+
         GuiPendingCompletionRequest::from_state(state)
             .map(GuiPendingCompletionRequest::into_action)
             .into_iter()
@@ -577,6 +593,18 @@ impl GuiRuntimeRequest {
                 } else {
                     vec![GuiShellAction::AnnouncePlaybackPaused]
                 }
+            }
+            Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
+                if state.pending_saved_server_connect_saves_configuration =>
+            {
+                vec![
+                    GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
+                        GuiSavedConfigurationRuntimeSnapshot {
+                            settings: state.configuration.to_stored_settings(),
+                        },
+                    ),
+                    GuiShellAction::CompleteSavedServerConnect,
+                ]
             }
             _ => self.preview_actions(),
         }

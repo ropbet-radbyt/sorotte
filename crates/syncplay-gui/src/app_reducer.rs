@@ -95,6 +95,7 @@ impl SyncplayGuiShellAppState {
                     return self
                         .record_action_error("Another GUI operation is already in progress.");
                 }
+                self.pending_saved_server_connect_saves_configuration = false;
                 self.pending_operation = Some(GuiPendingOperationState { kind });
                 self.clear_action_error_and_refresh();
                 true
@@ -107,6 +108,7 @@ impl SyncplayGuiShellAppState {
                     self.outgoing_chat_message = None;
                 }
                 self.pending_operation = None;
+                self.pending_saved_server_connect_saves_configuration = false;
                 self.clear_action_error_and_refresh();
                 true
             }
