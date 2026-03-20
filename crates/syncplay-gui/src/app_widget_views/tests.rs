@@ -2,7 +2,7 @@ use super::GuiWidgetRenderer;
 
 use crate::app::{
     GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind,
-    GuiWidgetNode, SyncplayGuiShellAppState,
+    GuiWidgetNode, MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
@@ -104,6 +104,14 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(room_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(room_input.value.as_deref(), Some("Lounge"));
     assert!(!room_input.enabled);
+    let room_control = tree
+        .find("main-window:room-control")
+        .expect("room-control status should exist in widget tree");
+    assert_eq!(room_control.kind, GuiWidgetKind::Status);
+    assert_eq!(
+        room_control.value.as_deref(),
+        Some("Unavailable: no active server session.")
+    );
 
     let playlist = tree
         .find("main-window:playlist:1")
@@ -128,6 +136,28 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
     assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
+}
+
+#[test]
+fn gui_shell_app_state_projects_runtime_room_control_status_into_main_window_widget_tree() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("+room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.room_name = "+room1".to_owned();
+    snapshot.controlled_room_active = true;
+    snapshot.room_control_status = "Not granted by server: room controls are locked.".to_owned();
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:room-control")
+            .and_then(|node| node.value.as_deref()),
+        Some("Not granted by server: room controls are locked.")
+    );
 }
 
 #[test]

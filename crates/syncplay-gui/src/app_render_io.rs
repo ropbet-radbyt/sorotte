@@ -24,7 +24,7 @@ impl GuiDroppedFilesTarget {
     }
 
     pub(super) fn load_into_shared_playlist(self, state: &SyncplayGuiShellAppState) -> bool {
-        matches!(self, Self::Playlist) && state.shared_playlist_drop_target_available()
+        matches!(self, Self::Playlist) || state.playlist_backed_media_opens_preferred()
     }
 }
 
@@ -48,6 +48,12 @@ impl GuiWidgetEguiRenderer {
             .collect::<Vec<_>>();
         if paths.is_empty() {
             return None;
+        }
+        if state.playlist_backed_media_opens_preferred() {
+            return Some(GuiDroppedFilesRequest {
+                target: GuiDroppedFilesTarget::Playlist,
+                paths,
+            });
         }
         let hovered_playlist_target = playlist_drop_target_hovered
             || playlist_drop_target_rect

@@ -92,7 +92,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         handle.drain_requests(),
         vec![GuiRuntimeRequest::OpenMediaFiles {
             paths: vec!["C:/Media/movie.mkv".to_owned()],
-            load_into_shared_playlist: false,
+            load_into_shared_playlist: true,
         }]
     );
 

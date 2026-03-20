@@ -8,6 +8,10 @@ use super::shell_state::{
 use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
+    pub(super) fn playlist_backed_media_opens_preferred(&self) -> bool {
+        true
+    }
+
     pub(super) fn shared_playlist_events_enabled(&self) -> bool {
         self.main_window.shared_playlist_enabled
     }
@@ -19,7 +23,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn shared_playlist_drop_target_available(&self) -> bool {
-        self.shared_playlist_events_enabled() && self.main_window.playback.can_manage_playlist
+        self.playlist_backed_media_opens_preferred()
     }
 
     pub(super) fn ensure_shared_playlist_event_allowed(&mut self) -> bool {

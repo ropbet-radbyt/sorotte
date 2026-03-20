@@ -427,6 +427,7 @@ impl SyncplayGuiShellAppState {
 
         self.main_window = MainWindowShellState {
             room_name,
+            room_control_status: snapshot.room_control_status,
             shared_playlist_enabled: snapshot.shared_playlist_enabled,
             controlled_room_active: snapshot.controlled_room_active,
             hide_empty_rooms: snapshot.hide_empty_rooms,

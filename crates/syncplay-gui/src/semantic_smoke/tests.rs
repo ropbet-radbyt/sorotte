@@ -131,7 +131,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         descriptors[5]
             .description
-            .contains("window drops open media")
+            .contains("window drops ingest shared-playlist media")
     );
     assert!(descriptors[5].script.contains("drop-media-files\twindow"));
     assert_eq!(descriptors[6].name, "playlist-workflow-flow");

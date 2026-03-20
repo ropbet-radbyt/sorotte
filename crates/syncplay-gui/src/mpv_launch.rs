@@ -6,6 +6,7 @@ use std::{
 };
 
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
+use syncplay_player_api::PlayerAdapter;
 use syncplay_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
@@ -101,6 +102,9 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
     player
         .configure_legacy_syncplay_ui_settings(ui_settings.clone())
         .map_err(|error| format!("failed to configure mpv OSD/chat settings: {error}"))?;
+    player
+        .set_option_string("drag-and-drop", "no")
+        .map_err(|error| format!("failed to disable mpv drag-and-drop handling: {error}"))?;
 
     if (ui_settings.chat_output_enabled || ui_settings.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path()
@@ -170,6 +174,7 @@ fn managed_mpv_launch_args(ipc_path: &str, extra_args: &[String]) -> Vec<String>
         "--idle=yes".to_owned(),
         "--keep-open=always".to_owned(),
         "--keep-open-pause=yes".to_owned(),
+        "--drag-and-drop=no".to_owned(),
         format!("--input-ipc-server={ipc_path}"),
     ];
     args.extend(extra_args.iter().cloned());
@@ -600,6 +605,7 @@ mod tests {
                 "--idle=yes".to_owned(),
                 "--keep-open=always".to_owned(),
                 "--keep-open-pause=yes".to_owned(),
+                "--drag-and-drop=no".to_owned(),
                 r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]

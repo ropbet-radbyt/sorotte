@@ -44,6 +44,15 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
         )),
         "controller reidentify should persist the attempt message in system chat"
     );
+    assert!(
+        hello_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
+                if snapshot.room_control_status
+                    == "Not granted by server: room controls are locked."
+        )),
+        "controlled-room hello should surface that server control has not been granted yet"
+    );
     for action in hello_actions {
         assert!(state.apply(action));
     }
@@ -76,6 +85,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
             action,
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)
                 if snapshot.controlled_room_active
+                    && snapshot.room_control_status
+                        == "Granted by server: you control this room."
                     && snapshot.users.iter().any(|user| {
                         user.username == "alice" && user.is_self && user.is_controller
                     })

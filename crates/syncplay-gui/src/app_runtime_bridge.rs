@@ -42,7 +42,11 @@ pub(super) trait GuiNativeRuntimeBridge {
         state: &SyncplayGuiShellAppState,
         paths: Vec<String>,
     ) -> Vec<GuiShellAction> {
-        self.actions_for_open_media_files(state, paths, state.shared_playlist_events_enabled())
+        self.actions_for_open_media_files(
+            state,
+            paths,
+            state.playlist_backed_media_opens_preferred(),
+        )
     }
 
     fn actions_for_dropped_files(
@@ -354,11 +358,14 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
 
     fn actions_for_open_media_files(
         &mut self,
-        _state: &SyncplayGuiShellAppState,
+        state: &SyncplayGuiShellAppState,
         paths: Vec<String>,
         load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
-        Self::preview_open_media_file_actions(paths, load_into_shared_playlist)
+        Self::preview_open_media_file_actions(
+            paths,
+            load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
+        )
     }
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
@@ -381,10 +388,13 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
 
     fn actions_for_main_window_user_media_open(
         &mut self,
-        _state: &SyncplayGuiShellAppState,
+        state: &SyncplayGuiShellAppState,
         target: String,
     ) -> Vec<GuiShellAction> {
-        Self::preview_open_media_file_actions(vec![target], false)
+        Self::preview_open_media_file_actions(
+            vec![target],
+            state.playlist_backed_media_opens_preferred(),
+        )
     }
 
     fn actions_for_main_window_user_folder_open(
@@ -557,6 +567,19 @@ impl GuiRuntimeRequest {
         state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
         match self {
+            Self::OpenMediaFiles {
+                paths,
+                load_into_shared_playlist,
+            } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                paths.clone(),
+                *load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
+            ),
+            Self::OpenMainWindowUserMedia(target) => {
+                GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                    vec![target.clone()],
+                    state.playlist_backed_media_opens_preferred(),
+                )
+            }
             Self::SendChatMessage(message) => {
                 let sender = state
                     .main_window

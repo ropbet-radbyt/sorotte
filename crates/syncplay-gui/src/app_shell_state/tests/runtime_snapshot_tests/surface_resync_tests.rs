@@ -19,7 +19,7 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
             .find("shell:quick:open-media-file")
             .is_some_and(|node| !node.enabled)
     );
-    assert!(!GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));
+    assert!(GuiDroppedFilesTarget::Playlist.load_into_shared_playlist(&state));
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {

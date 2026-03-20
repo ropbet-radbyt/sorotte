@@ -41,13 +41,7 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         ),
         vec![
             GuiShellAction::SwitchView(GuiShellView::MainWindow),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Info,
-                message: "Media file selected: C:/Media/movie.mkv.".to_owned(),
-            },
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Media file selected: C:/Media/movie.mkv.".to_owned(),
-            ),
+            GuiShellAction::AnnounceSharedPlaylistLoaded(vec!["movie.mkv".to_owned()]),
         ]
     );
     assert_eq!(

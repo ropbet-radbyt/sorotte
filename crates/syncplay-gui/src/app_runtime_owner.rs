@@ -11,7 +11,15 @@ mod projection;
 #[path = "app_runtime_requests.rs"]
 mod requests;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use syncplay_client_app::app_boundary::{
     persistence::{
@@ -61,6 +69,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
+    pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
+    pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
     pub(super) unresolved_attached_media_target: Option<String>,
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
@@ -69,9 +79,21 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) user_offset_seconds: f64,
 }
 
+pub(super) struct GuiAttachedMediaSearchIndex {
+    pub(super) roots: Vec<String>,
+    pub(super) paths_by_name: HashMap<String, String>,
+}
+
+pub(super) enum GuiAttachedMediaSearchBuildStatus {
+    Completed(GuiAttachedMediaSearchIndex),
+    Cancelled,
+    Failed(String),
+}
+
 pub(super) struct GuiPendingAttachedMediaResolution {
-    pub(super) target: String,
-    pub(super) result_rx: std::sync::mpsc::Receiver<Result<Option<String>, String>>,
+    pub(super) roots: Vec<String>,
+    pub(super) cancel_flag: Arc<AtomicBool>,
+    pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
 }
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -91,6 +113,8 @@ impl GuiPersistedConfigRuntimeOwner {
             player_unavailability_reason: None,
             player_local_file: None,
             last_published_local_file: None,
+            attached_media_search_index: None,
+            attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
             unresolved_attached_media_target: None,
             last_applied_attached_room_playstate: None,
@@ -113,7 +137,7 @@ impl GuiPersistedConfigRuntimeOwner {
     {
         let mut owner = Self::with_config_path(config_path);
         let startup_settings = owner.load_startup_player_settings_from_config_path();
-        owner.sync_player_from_lookup_and_settings(lookup, startup_settings.as_ref(), false);
+        owner.configure_startup_player_from_lookup_and_settings(lookup, startup_settings.as_ref());
         owner
     }
 
@@ -125,10 +149,68 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
+    fn startup_player_unavailability_reason(
+        launch_state: &GuiPlayerLaunchRuntimeState,
+    ) -> Option<String> {
+        if let Some(reason) = launch_state.default_unavailability_reason() {
+            return Some(reason);
+        }
+        let GuiPlayerLaunchRuntimeState::ManagedMpv(config) = launch_state else {
+            return None;
+        };
+        let program = &config.program;
+        let requires_existing_file = program.is_absolute()
+            || program
+                .to_string_lossy()
+                .chars()
+                .any(|character| matches!(character, '/' | '\\'));
+        if requires_existing_file && !program.is_file() {
+            return Some(format!(
+                "GUI-owned mpv launch failed from saved player path '{}': managed mpv binary does not exist: {}",
+                config.requested_player_path,
+                program.display()
+            ));
+        }
+        None
+    }
+
+    fn configure_startup_player_from_lookup_and_settings<F>(
+        &mut self,
+        lookup: &F,
+        settings: Option<&StoredClientSettingsMvp>,
+    ) where
+        F: Fn(&str) -> Option<String>,
+    {
+        let launch_state =
+            match Self::configured_player_launch_state_from_lookup_and_settings(lookup, settings) {
+                Ok(state) => state,
+                Err(error) => {
+                    self.detach_player();
+                    self.player_launch_state = GuiPlayerLaunchRuntimeState::None;
+                    self.player_unavailability_reason = Some(error);
+                    return;
+                }
+            };
+        if matches!(launch_state, GuiPlayerLaunchRuntimeState::TestPlayer) {
+            self.attach_player_from_launch_state(launch_state);
+            return;
+        }
+        self.detach_player();
+        self.player_launch_state = launch_state.clone();
+        self.player_unavailability_reason =
+            Self::startup_player_unavailability_reason(&launch_state);
+    }
+
     fn clear_player_runtime_cache(&mut self) {
         self.player_local_file = None;
         self.player_position_seconds = None;
         self.player_paused = None;
+        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
+            pending_resolution
+                .cancel_flag
+                .store(true, Ordering::Relaxed);
+        }
+        self.attached_media_search_next_retry_at = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.last_applied_attached_room_playstate = None;
@@ -307,14 +389,18 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.player.is_some() {
             return;
         }
-        match self.player_launch_state.clone() {
-            GuiPlayerLaunchRuntimeState::TestPlayer
-            | GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { .. }
-            | GuiPlayerLaunchRuntimeState::ManagedMpv(_) => {
-                self.attach_player_from_launch_state(self.player_launch_state.clone());
-            }
-            GuiPlayerLaunchRuntimeState::None
-            | GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
+        if self.player_launch_state.can_attach_on_demand() {
+            self.attach_player_from_launch_state(self.player_launch_state.clone());
+        }
+    }
+
+    pub(super) fn player_runtime_available_for_actions(&self) -> bool {
+        self.player.is_some() || self.player_launch_state.can_attach_on_demand()
+    }
+
+    fn ensure_configured_player_attached_for_active_session(&mut self) {
+        if self.session_active() {
+            self.ensure_configured_player_attached();
         }
     }
 
@@ -536,7 +622,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
         let opened_selected_media =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
-        self.sync_session_playstate_to_attached_player_impl(opened_selected_media);
+        self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
     }
 
     fn flush_session_transport_outbound(
@@ -797,9 +883,10 @@ impl GuiPersistedConfigRuntimeOwner {
     fn open_media_files_through_shared_playlist_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
         paths: Vec<String>,
     ) {
-        self.open_media_files_through_shared_playlist_runtime_impl(handle, paths)
+        self.open_media_files_through_shared_playlist_runtime_impl(handle, projected_state, paths)
     }
 
     fn emit_gui_actions_to_attached_player(&mut self, actions: &[GuiShellAction]) {
@@ -865,7 +952,10 @@ impl Default for GuiPersistedConfigRuntimeOwner {
         let mut owner = Self::with_config_path_and_startup_player(
             resolve_syncplay_gui_config_path_legacy_compatible(),
         );
-        if owner.player.is_none() && owner.player_unavailability_reason.is_none() {
+        if owner.player.is_none()
+            && owner.player_unavailability_reason.is_none()
+            && !owner.player_launch_state.can_attach_on_demand()
+        {
             owner.player_unavailability_reason = Some(
                 "Set playerPath to mpv in GUI settings, or set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
                     .to_owned(),
@@ -923,6 +1013,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.drain_player_chat_input(handle, &mut projected_state);
             self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         }
+        self.ensure_configured_player_attached_for_active_session();
         self.sync_player_runtime_state(handle, &projected_state);
     }
 

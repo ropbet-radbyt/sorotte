@@ -119,6 +119,14 @@ impl SyncplayGuiShellAppState {
                 true,
                 false,
             ),
+            GuiWidgetNode::leaf(
+                "main-window:room-control",
+                "Room Control",
+                GuiWidgetKind::Status,
+                Some(self.main_window.room_control_status.clone()),
+                true,
+                false,
+            ),
             GuiWidgetNode::branch(
                 "main-window:room-actions",
                 "Room Actions",

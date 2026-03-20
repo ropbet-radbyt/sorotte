@@ -83,3 +83,32 @@ fn gui_persisted_config_runtime_owner_uses_saved_player_path_for_managed_mpv_lau
 
     let _ = std::fs::remove_file(config_path);
 }
+
+#[test]
+fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active_session() {
+    let (mut owner, _session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+            Some(PathBuf::from("C:/Config/syncplay.ini")),
+            &|name| match name {
+                "SYNCPLAY_GUI_ENABLE_TEST_PLAYER" => Some("true".to_owned()),
+                _ => None,
+            },
+        )
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    owner.player = None;
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+
+    assert_eq!(
+        owner.player.as_ref().map(|player| player.name()),
+        Some("test"),
+        "active session pumps should auto-attach the configured player runtime"
+    );
+}

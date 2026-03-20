@@ -9,6 +9,21 @@ use super::super::support::normalized_editable_text;
 use super::GuiClientCoreChatSessionRuntimeAdapter;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
+    fn room_control_status_for_runtime_snapshot(&self, controlled_room_active: bool) -> String {
+        let session = self.runtime.session();
+        if session.server_chat_supported().is_none() {
+            return MainWindowShellState::room_control_status_waiting_for_server();
+        }
+        if !controlled_room_active {
+            return MainWindowShellState::room_control_status_uncontrolled_room();
+        }
+        if session.local_can_control().unwrap_or(false) {
+            MainWindowShellState::room_control_status_granted()
+        } else {
+            MainWindowShellState::room_control_status_locked()
+        }
+    }
+
     pub(super) fn shared_playlist_control_available(&self) -> bool {
         self.runtime.session().local_can_control().unwrap_or(false)
     }
@@ -105,6 +120,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let session = self.runtime.session();
         let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         snapshot.room_name = baseline_main_window.room_name.clone();
+        snapshot.room_control_status = baseline_main_window.room_control_status.clone();
         snapshot.shared_playlist_enabled = baseline_main_window.shared_playlist_enabled;
         snapshot.controlled_room_active = baseline_main_window.controlled_room_active;
         snapshot.hide_empty_rooms = state.main_window.hide_empty_rooms;
@@ -164,7 +180,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             snapshot.rooms = self.session_runtime_rooms(state);
             snapshot.users = self.session_runtime_users(state);
         }
-        if let Some(playlist) = session.current_room_playlist() {
+        snapshot.room_control_status =
+            self.room_control_status_for_runtime_snapshot(snapshot.controlled_room_active);
+        if let Some(playlist) = self.projected_current_room_playlist() {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
         }
@@ -202,9 +220,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn session_playlist_selection_index(&self, playlist_len: usize) -> Option<usize> {
-        self.runtime
-            .session()
-            .current_room_playlist()
+        self.projected_current_room_playlist()
             .and_then(|playlist| playlist.index)
             .and_then(|index| usize::try_from(index).ok())
             .filter(|&index| index < playlist_len)

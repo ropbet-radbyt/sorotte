@@ -21,8 +21,8 @@ use super::runtime_stack::{
 };
 use super::shell_state::{
     GuiCommandRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState,
+    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, MainWindowShellState,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 use super::startup_support::env_trimmed;
 
@@ -244,18 +244,21 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> MainWindowRuntimeSnapshot {
         let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
-        let player_attached = self.player.is_some();
-        snapshot.can_toggle_pause = player_attached;
-        snapshot.can_seek = player_attached;
+        snapshot.room_control_status = MainWindowShellState::room_control_status_without_session();
+        let player_runtime_available = self.player_runtime_available_for_actions();
+        snapshot.can_toggle_pause = player_runtime_available;
+        snapshot.can_seek = player_runtime_available;
         snapshot.can_undo_seek = false;
-        snapshot.can_set_offset = player_attached;
+        snapshot.can_set_offset = player_runtime_available;
         snapshot.can_toggle_autoplay = true;
         snapshot.can_adjust_autoplay_threshold = true;
-        snapshot.can_manage_playlist = player_attached && snapshot.shared_playlist_enabled;
+        snapshot.can_manage_playlist = player_runtime_available && snapshot.shared_playlist_enabled;
         if !snapshot.shared_playlist_enabled {
             snapshot.playlist = self.player_local_file_playlist_entries();
         }
-        if player_attached && let Some(paused) = self.player_paused {
+        if self.player.is_some()
+            && let Some(paused) = self.player_paused
+        {
             snapshot.playback_paused = paused;
         }
         snapshot.autoplay_countdown_seconds = None;

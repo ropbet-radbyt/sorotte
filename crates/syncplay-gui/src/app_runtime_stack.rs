@@ -25,7 +25,7 @@ use serde_json::Value;
 use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession, PrivacyMode,
-    QueuedRuntimeControl,
+    QueuedRuntimeControl, RoomPlaylistView,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_protocol::{ProtocolMessage, decode_message_line};
@@ -229,6 +229,7 @@ pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     next_state_sync_heartbeat_at: Option<Instant>,
     next_autoplay_tick_at: Option<Instant>,
     tracked_remote_usernames: BTreeSet<String>,
+    optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
 
 #[allow(dead_code)]
@@ -267,6 +268,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
             tracked_remote_usernames: BTreeSet::new(),
+            optimistic_room_playlist: None,
         })
     }
 
@@ -296,6 +298,70 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
         self.tracked_remote_usernames.clear();
+        self.optimistic_room_playlist = None;
+    }
+
+    fn current_room_name(&self) -> Option<&str> {
+        self.runtime
+            .session()
+            .room
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(super) fn projected_current_room_playlist(&self) -> Option<&RoomPlaylistView> {
+        if let Some(playlist) = self.runtime.session().current_room_playlist() {
+            return Some(playlist);
+        }
+        let current_room = self.current_room_name()?;
+        self.optimistic_room_playlist
+            .as_ref()
+            .and_then(|(room_name, playlist)| (room_name == current_room).then_some(playlist))
+    }
+
+    fn sync_optimistic_room_playlist(&mut self) {
+        if self.runtime.session().current_room_playlist().is_some() {
+            self.optimistic_room_playlist = None;
+            return;
+        }
+
+        let current_room = self.current_room_name();
+        if self
+            .optimistic_room_playlist
+            .as_ref()
+            .is_some_and(|(room_name, _)| Some(room_name.as_str()) != current_room)
+        {
+            self.optimistic_room_playlist = None;
+        }
+    }
+
+    fn set_optimistic_current_room_playlist(
+        &mut self,
+        files: Vec<String>,
+        selected_index: Option<usize>,
+    ) {
+        let Some(room_name) = self.current_room_name().map(str::to_owned) else {
+            self.optimistic_room_playlist = None;
+            return;
+        };
+
+        let index = if files.is_empty() {
+            None
+        } else {
+            selected_index
+                .filter(|index| *index < files.len())
+                .and_then(|index| i64::try_from(index).ok())
+                .or(Some(0))
+        };
+        self.optimistic_room_playlist = Some((
+            room_name,
+            RoomPlaylistView {
+                files,
+                index,
+                set_by: Some(self.username.clone()),
+            },
+        ));
     }
 
     fn queue_periodic_state_sync_heartbeat_if_due(&mut self) {
@@ -393,7 +459,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
         let message = decode_message_line(json_line)
             .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
-        match message {
+        let result = match message {
             ProtocolMessage::State(state_message) => {
                 let _ = self
                     .runtime
@@ -407,7 +473,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .session_mut()
                 .apply_protocol_message(other)
                 .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
-        }
+        };
+        self.sync_optimistic_room_playlist();
+        result
     }
 }
 
@@ -849,8 +917,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> Result<(), String> {
-        match self.runtime.run_replace_playlist(files, selected_index) {
-            Ok(true) => Ok(()),
+        match self
+            .runtime
+            .run_replace_playlist(files.clone(), selected_index)
+        {
+            Ok(true) => {
+                self.set_optimistic_current_room_playlist(files, selected_index);
+                Ok(())
+            }
             Ok(false) => {
                 if !self.shared_playlist_control_available() {
                     Err(

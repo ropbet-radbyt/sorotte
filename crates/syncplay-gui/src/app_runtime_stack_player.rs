@@ -215,6 +215,13 @@ impl GuiPlayerLaunchRuntimeState {
         }
     }
 
+    pub(in super::super) fn can_attach_on_demand(&self) -> bool {
+        matches!(
+            self,
+            Self::TestPlayer | Self::ExplicitMpvIpc { .. } | Self::ManagedMpv(_)
+        )
+    }
+
     pub(in super::super) fn can_apply_mpv_ui_settings_in_place(&self, next: &Self) -> bool {
         match (self, next) {
             (

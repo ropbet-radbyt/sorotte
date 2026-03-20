@@ -36,11 +36,11 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         vec![
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,
-                message: "Opening media requires a playback runtime connection; the selected file was not opened."
+                message: "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
                     .to_owned(),
             },
             GuiShellAction::AnnounceSystemChatEvent(
-                "Opening media requires a playback runtime connection; the selected file was not opened."
+                "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
                     .to_owned(),
             ),
         ]
@@ -101,6 +101,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
             },
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "(no room joined)".to_owned(),
+                room_control_status: "Unavailable: no active server session.".to_owned(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: vec![browser_runtime_user(
@@ -643,6 +644,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         vec![
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "room1".to_owned(),
+                room_control_status: "Pending: waiting for server room state.".to_owned(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: vec![browser_runtime_user("alice", "room1", true, false, false)],
@@ -715,6 +717,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         vec![
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "room1".to_owned(),
+                room_control_status: "Not required: current room is not controlled.".to_owned(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: vec![browser_runtime_user("alice", "room1", true, false, false)],

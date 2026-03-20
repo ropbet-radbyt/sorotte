@@ -20,6 +20,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         vec![
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "room1".to_owned(),
+                room_control_status: "Pending: waiting for server room state.".to_owned(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: vec![browser_runtime_user("alice", "room1", true, false, false)],
@@ -94,6 +95,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         vec![
             GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
                 room_name: "room1".to_owned(),
+                room_control_status: "Not required: current room is not controlled.".to_owned(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: vec![browser_runtime_user("alice", "room1", true, false, false)],
@@ -462,15 +464,15 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
             .send(())
             .expect("test session transport server should signal hello readiness");
 
-        let mut first_line = String::new();
-        let mut second_line = String::new();
-        reader
-            .read_line(&mut first_line)
-            .expect("test session transport server should read one outbound readiness line");
-        reader
-            .read_line(&mut second_line)
-            .expect("test session transport server should read one outbound file line");
-        (first_line, second_line)
+        let mut outbound_lines = Vec::new();
+        for _ in 0..4 {
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .expect("test session transport server should read one outbound media-open line");
+            outbound_lines.push(line);
+        }
+        outbound_lines
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -498,9 +500,17 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let (ready_line, file_line) = server_thread
+    let outbound_lines = server_thread
         .join()
         .expect("test session transport server thread should complete");
+    let ready_line = outbound_lines
+        .iter()
+        .find(|line| line.contains("\"ready\""))
+        .expect("media open should emit an outbound readiness update");
+    let file_line = outbound_lines
+        .iter()
+        .find(|line| line.contains("\"file\""))
+        .expect("media open should emit an outbound file update");
     assert!(ready_line.contains("\"Set\""));
     assert!(ready_line.contains("\"ready\""));
     assert!(ready_line.contains("\"isReady\":false"));
@@ -671,10 +681,9 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
             action,
             GuiShellAction::PushTransientNotification { level, message }
                 if *level == GuiTransientNotificationLevel::Success
-                    && message
-                        == "Opened the first selected media file through the attached test player: C:/Media/episode1.mkv. Ignored 1 additional selections."
+                    && message == "Loaded 2 selected media entries into the shared playlist."
         )),
-        "shared-playlist open should still drive the attached player",
+        "shared-playlist open should report playlist-backed success",
     );
     assert_eq!(
         owner

@@ -260,6 +260,68 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_before_server_echo()
+{
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+
+    GuiSessionRuntimeAdapter::replace_playlist(
+        &mut adapter,
+        vec!["episode1.mkv".to_owned()],
+        Some(0),
+    )
+    .expect("playlist replace should dispatch");
+
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    assert_eq!(actions.len(), 3);
+    let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
+        panic!("local playlist replace should project a main-window runtime snapshot");
+    };
+    assert!(snapshot.shared_playlist_enabled);
+    assert_eq!(snapshot.playlist, vec!["episode1.mkv".to_owned()]);
+    let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction) = &actions[1] else {
+        panic!("local playlist replace should project a playlist selection");
+    };
+    assert_eq!(interaction.selection.selected_main_window_playlist, Some(0));
+    let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
+        panic!("local playlist replace should surface playlist menu availability");
+    };
+    assert_eq!(
+        menu_snapshot.action_overrides,
+        vec![
+            MenuActionRuntimeOverride {
+                section_title: "Window",
+                action_label: "Show Playlist",
+                enabled: true,
+            },
+            MenuActionRuntimeOverride {
+                section_title: "Playback",
+                action_label: "Playlist Actions",
+                enabled: true,
+            },
+        ]
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when_session_has_no_playstate()
  {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -290,6 +352,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     expected_snapshot.playback_paused = false;
     expected_snapshot.can_set_others_ready = true;
+    expected_snapshot.room_control_status =
+        "Not required: current room is not controlled.".to_owned();
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
     assert_eq!(
         actions,
@@ -345,6 +409,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     let mut expected_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     expected_snapshot.autoplay_active = false;
     expected_snapshot.can_set_others_ready = true;
+    expected_snapshot.room_control_status =
+        "Not required: current room is not controlled.".to_owned();
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
     assert_eq!(
         actions,

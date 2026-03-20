@@ -39,6 +39,8 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
         player_attached: bool,
     ) -> GuiCommandAvailabilityState {
+        let player_runtime_available =
+            player_attached || self.player_runtime_available_for_actions();
         let settings = state.configuration.to_stored_settings();
         let busy = state.pending_operation.is_some();
         let command_availability = GuiCommandAvailabilityState {
@@ -50,7 +52,7 @@ impl GuiPersistedConfigRuntimeOwner {
             can_connect_public_server: !busy && state.public_servers.can_connect,
             can_refresh_public_servers: !busy && state.public_servers.can_refresh,
             can_search_missing_media: !busy && state.media_search.can_search_missing_media,
-            can_toggle_pause: !busy && player_attached,
+            can_toggle_pause: !busy && player_runtime_available,
             can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
         };
         if let Some(session) = self.session.as_ref() {
@@ -79,21 +81,22 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) {
         let player_attached = self.player.is_some();
+        let player_runtime_available = self.player_runtime_available_for_actions();
 
         let mut desired_main_window =
             MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         let mut main_window_changed = false;
 
-        if desired_main_window.can_toggle_pause != player_attached {
-            desired_main_window.can_toggle_pause = player_attached;
+        if desired_main_window.can_toggle_pause != player_runtime_available {
+            desired_main_window.can_toggle_pause = player_runtime_available;
             main_window_changed = true;
         }
-        if desired_main_window.can_seek != player_attached {
-            desired_main_window.can_seek = player_attached;
+        if desired_main_window.can_seek != player_runtime_available {
+            desired_main_window.can_seek = player_runtime_available;
             main_window_changed = true;
         }
-        if desired_main_window.can_set_offset != player_attached {
-            desired_main_window.can_set_offset = player_attached;
+        if desired_main_window.can_set_offset != player_runtime_available {
+            desired_main_window.can_set_offset = player_runtime_available;
             main_window_changed = true;
         }
         let can_manage_playlist = self
@@ -102,7 +105,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|session| {
                 desired_main_window.shared_playlist_enabled && session.playlist_control_available()
             })
-            .unwrap_or(player_attached && desired_main_window.shared_playlist_enabled);
+            .unwrap_or(player_runtime_available && desired_main_window.shared_playlist_enabled);
         if desired_main_window.can_manage_playlist != can_manage_playlist {
             desired_main_window.can_manage_playlist = can_manage_playlist;
             main_window_changed = true;

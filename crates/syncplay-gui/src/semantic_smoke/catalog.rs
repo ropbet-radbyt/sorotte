@@ -35,7 +35,7 @@ const GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT: &str =
     include_str!("../semantic_scenarios/drag-and-drop-ingest-flow.txt");
 static GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =
     OnceLock::new();
-const GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_DESCRIPTION: &str = "Exercises desktop dropped-file routing so window drops open media while playlist-surface drops ingest shared-playlist media and playlist files.";
+const GUI_SEMANTIC_SCENARIO_DRAG_AND_DROP_INGEST_FLOW_DESCRIPTION: &str = "Exercises desktop dropped-file routing so window drops ingest shared-playlist media by default while playlist-surface drops keep playlist ingest and playlist-file import behavior.";
 const GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT: &str =
     include_str!("../semantic_scenarios/playlist-workflow-flow.txt");
 static GUI_SEMANTIC_SCENARIO_PLAYLIST_WORKFLOW_FLOW_SCRIPT_NORMALIZED: OnceLock<String> =

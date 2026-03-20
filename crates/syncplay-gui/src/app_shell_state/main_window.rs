@@ -55,6 +55,7 @@ pub(in crate::app) struct MainWindowPlaybackControls {
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) room_name: String,
+    pub(in crate::app) room_control_status: String,
     pub(in crate::app) shared_playlist_enabled: bool,
     pub(in crate::app) controlled_room_active: bool,
     pub(in crate::app) hide_empty_rooms: bool,
@@ -106,6 +107,7 @@ pub(in crate::app) struct MainWindowRuntimeChatSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) room_name: String,
+    pub(in crate::app) room_control_status: String,
     pub(in crate::app) shared_playlist_enabled: bool,
     pub(in crate::app) controlled_room_active: bool,
     pub(in crate::app) hide_empty_rooms: bool,
@@ -135,6 +137,7 @@ impl Default for MainWindowRuntimeSnapshot {
     fn default() -> Self {
         Self {
             room_name: String::new(),
+            room_control_status: String::new(),
             shared_playlist_enabled: false,
             controlled_room_active: false,
             hide_empty_rooms: false,
@@ -166,6 +169,7 @@ impl MainWindowRuntimeSnapshot {
     pub(in crate::app) fn from_shell_state(state: &MainWindowShellState) -> Self {
         Self {
             room_name: state.room_name.clone(),
+            room_control_status: state.room_control_status.clone(),
             shared_playlist_enabled: state.shared_playlist_enabled,
             controlled_room_active: state.controlled_room_active,
             hide_empty_rooms: state.hide_empty_rooms,

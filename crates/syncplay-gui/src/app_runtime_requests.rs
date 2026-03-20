@@ -34,7 +34,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 paths,
                 load_into_shared_playlist: true,
             } => {
-                self.open_media_files_through_shared_playlist_runtime(handle, paths);
+                self.open_media_files_through_shared_playlist_runtime(
+                    handle,
+                    projected_state,
+                    paths,
+                );
             }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
@@ -42,6 +46,14 @@ impl GuiPersistedConfigRuntimeOwner {
             } => {
                 if paths.is_empty() {
                     return false;
+                }
+                if projected_state.playlist_backed_media_opens_preferred() {
+                    self.open_media_files_through_shared_playlist_runtime(
+                        handle,
+                        projected_state,
+                        paths,
+                    );
+                    return true;
                 }
                 self.ensure_configured_player_attached();
                 if self.player.is_some() {

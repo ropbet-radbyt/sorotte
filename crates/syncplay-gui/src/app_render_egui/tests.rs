@@ -189,7 +189,32 @@ fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_
 }
 
 #[test]
-fn gui_widget_egui_renderer_falls_back_to_window_target_when_shared_playlist_drop_is_unavailable() {
+fn gui_widget_egui_renderer_defaults_shared_playlist_drops_to_playlist_target() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
+        &state,
+        false,
+        None,
+        None,
+        vec![egui::DroppedFile {
+            path: Some(PathBuf::from("C:/Media/episode2.mkv")),
+            ..Default::default()
+        }],
+    )
+    .expect("dropped-file request should be derived");
+
+    assert_eq!(
+        request.target,
+        GuiDroppedFilesTarget::Playlist,
+        "shared-playlist-enabled media drops should default to playlist ingest"
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_defaults_drops_to_playlist_target_when_shared_playlist_is_disabled() {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
         &state,
@@ -205,8 +230,8 @@ fn gui_widget_egui_renderer_falls_back_to_window_target_when_shared_playlist_dro
 
     assert_eq!(
         request.target,
-        GuiDroppedFilesTarget::Window,
-        "non-shared-playlist drops should fall back to the generic window open path"
+        GuiDroppedFilesTarget::Playlist,
+        "media drops should default to playlist ingest even when the legacy shared-playlist toggle is off"
     );
 }
 

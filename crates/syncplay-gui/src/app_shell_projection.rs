@@ -338,6 +338,26 @@ impl GuiRoomHistoryEditSessionState {
 }
 
 impl MainWindowShellState {
+    pub(super) fn room_control_status_without_session() -> String {
+        "Unavailable: no active server session.".to_owned()
+    }
+
+    pub(super) fn room_control_status_waiting_for_server() -> String {
+        "Pending: waiting for server room state.".to_owned()
+    }
+
+    pub(super) fn room_control_status_uncontrolled_room() -> String {
+        "Not required: current room is not controlled.".to_owned()
+    }
+
+    pub(super) fn room_control_status_granted() -> String {
+        "Granted by server: you control this room.".to_owned()
+    }
+
+    pub(super) fn room_control_status_locked() -> String {
+        "Not granted by server: room controls are locked.".to_owned()
+    }
+
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let room_name = settings
             .room
@@ -366,6 +386,7 @@ impl MainWindowShellState {
 
         Self {
             room_name: room_name.clone(),
+            room_control_status: Self::room_control_status_without_session(),
             shared_playlist_enabled,
             controlled_room_active,
             hide_empty_rooms: false,
@@ -431,6 +452,7 @@ impl MainWindowShellState {
                 bool_label(self.shared_playlist_enabled),
                 bool_label(self.controlled_room_active),
             ),
+            format!("Room Control: {}", self.room_control_status),
             format!(
                 "Browser: hide_empty_rooms={}, rooms={}",
                 bool_label(self.hide_empty_rooms),

@@ -23,6 +23,11 @@ impl SyncplayGuiShellAppState {
         {
             self.main_window.room_name = current_snapshot.room_name.clone();
         }
+        if preserve_connected_room_surface
+            || current_snapshot.room_control_status != previous_baseline.room_control_status
+        {
+            self.main_window.room_control_status = current_snapshot.room_control_status.clone();
+        }
         if current_snapshot.shared_playlist_enabled != previous_baseline.shared_playlist_enabled {
             self.main_window.shared_playlist_enabled = current_snapshot.shared_playlist_enabled;
         }

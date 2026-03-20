@@ -1,8 +1,13 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{self, TryRecvError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, TryRecvError},
+    },
+    time::{Duration, Instant},
 };
 
 use syncplay_player_api::PlayerAdapter;
@@ -12,11 +17,17 @@ use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{GuiClientCoreChatSessionRuntimeAdapter, GuiOwnedPlayer};
 use super::super::shell_state::{
-    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
-    browser_is_url,
+    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
+    SyncplayGuiShellAppState, browser_is_url,
 };
 use super::super::support::normalized_editable_text;
-use super::{GuiPendingAttachedMediaResolution, GuiPersistedConfigRuntimeOwner};
+use super::{
+    GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
+    GuiPendingAttachedMediaResolution, GuiPersistedConfigRuntimeOwner,
+};
+
+const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
+const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn open_media_unavailable_message_impl(&self, selected_paths: &[String]) -> String {
@@ -58,6 +69,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn shared_playlist_session_unavailable_message_impl(&self) -> String {
         "Shared playlist updates require a session runtime connection; the selected media was not added to the room playlist."
+            .to_owned()
+    }
+
+    pub(super) fn shared_playlist_control_unavailable_message_impl(&self) -> String {
+        "Shared playlist control is unavailable for the active room; the selected media was not added to the room playlist or opened in the attached player."
             .to_owned()
     }
 
@@ -371,10 +387,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(None)
     }
 
-    fn automatic_media_search_roots_for_target(
-        &self,
-        state: &SyncplayGuiShellAppState,
-    ) -> Vec<PathBuf> {
+    fn automatic_media_search_roots(&self, state: &SyncplayGuiShellAppState) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         let mut seen = BTreeSet::new();
 
@@ -410,37 +423,148 @@ impl GuiPersistedConfigRuntimeOwner {
         roots
     }
 
-    fn queue_attached_media_resolution(
+    fn automatic_media_search_root_keys(search_roots: &[PathBuf]) -> Vec<String> {
+        search_roots
+            .iter()
+            .map(|path| Self::automatic_media_search_root_key(path))
+            .collect()
+    }
+
+    fn positive_duration_from_seconds_or_default(
+        value: Option<f64>,
+        default_seconds: f64,
+    ) -> Duration {
+        let seconds = value.unwrap_or(default_seconds);
+        if !seconds.is_finite() || seconds <= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(seconds)
+        }
+    }
+
+    fn automatic_media_search_timeout(state: &SyncplayGuiShellAppState) -> Duration {
+        let settings = state.configuration.to_stored_settings();
+        Self::positive_duration_from_seconds_or_default(
+            settings.folder_search_timeout_seconds,
+            LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
+        )
+    }
+
+    fn automatic_media_search_retry_interval(state: &SyncplayGuiShellAppState) -> Duration {
+        let settings = state.configuration.to_stored_settings();
+        Self::positive_duration_from_seconds_or_default(
+            settings.folder_search_double_check_interval_seconds,
+            LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT,
+        )
+    }
+
+    fn attached_media_search_retry_due(&self) -> bool {
+        match self.attached_media_search_next_retry_at {
+            Some(deadline) => Instant::now() >= deadline,
+            None => true,
+        }
+    }
+
+    fn cancel_pending_attached_media_search_index_build_impl(&mut self) {
+        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
+            pending_resolution
+                .cancel_flag
+                .store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn cached_missing_media_target_path(
+        index: &GuiAttachedMediaSearchIndex,
+        target: &str,
+    ) -> Option<String> {
+        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(target)
+            .and_then(|key| index.paths_by_name.get(&key).cloned())
+    }
+
+    fn poll_attached_media_search_index_build(
         &mut self,
-        target_file_name: String,
+        roots: &[String],
+        retry_interval: Duration,
+    ) -> Result<bool, String> {
+        let Some(pending_resolution) = self.pending_attached_media_resolution.take() else {
+            return Ok(false);
+        };
+        if pending_resolution.roots != roots {
+            pending_resolution
+                .cancel_flag
+                .store(true, Ordering::Relaxed);
+            return Ok(false);
+        }
+
+        match pending_resolution.result_rx.try_recv() {
+            Ok(GuiAttachedMediaSearchBuildStatus::Completed(index)) => {
+                self.attached_media_search_index = Some(index);
+                self.attached_media_search_next_retry_at = None;
+                Ok(false)
+            }
+            Ok(GuiAttachedMediaSearchBuildStatus::Cancelled) => Ok(false),
+            Ok(GuiAttachedMediaSearchBuildStatus::Failed(error)) => {
+                self.attached_media_search_next_retry_at = Some(Instant::now() + retry_interval);
+                Err(error)
+            }
+            Err(TryRecvError::Empty) => {
+                self.pending_attached_media_resolution = Some(pending_resolution);
+                Ok(true)
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.attached_media_search_next_retry_at = Some(Instant::now() + retry_interval);
+                Err("Automatic media indexing terminated unexpectedly.".to_owned())
+            }
+        }
+    }
+
+    fn queue_attached_media_search_index_build(
+        &mut self,
         search_roots: Vec<PathBuf>,
+        roots: Vec<String>,
+        search_timeout: Duration,
     ) {
         let (result_tx, result_rx) = mpsc::channel();
-        let search_target_file_name = target_file_name.clone();
+        let result_roots = roots.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let worker_cancel_flag = cancel_flag.clone();
         std::thread::spawn(move || {
+            let mut paths_by_name = HashMap::new();
+            let deadline = Some(Instant::now() + search_timeout);
             for root in search_roots {
-                match GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
-                    &search_target_file_name,
+                match GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path(
+                    &mut paths_by_name,
                     &root,
+                    deadline,
+                    worker_cancel_flag.as_ref(),
                 ) {
-                    Ok(Some(found_path)) => {
-                        let _ = result_tx.send(Ok(Some(found_path)));
-                        return;
-                    }
-                    Ok(None) => {}
+                    Ok(()) => {}
                     Err(error) => {
-                        let _ = result_tx.send(Err(error));
+                        let status = if worker_cancel_flag.load(Ordering::Relaxed) {
+                            GuiAttachedMediaSearchBuildStatus::Cancelled
+                        } else {
+                            GuiAttachedMediaSearchBuildStatus::Failed(error)
+                        };
+                        let _ = result_tx.send(status);
                         return;
                     }
                 }
             }
-            let _ = result_tx.send(Ok(None));
+            let status = if worker_cancel_flag.load(Ordering::Relaxed) {
+                GuiAttachedMediaSearchBuildStatus::Cancelled
+            } else {
+                GuiAttachedMediaSearchBuildStatus::Completed(GuiAttachedMediaSearchIndex {
+                    roots: result_roots,
+                    paths_by_name,
+                })
+            };
+            let _ = result_tx.send(status);
         });
         self.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
-            target: target_file_name,
+            roots,
+            cancel_flag,
             result_rx,
         });
-        self.unresolved_attached_media_target = None;
     }
 
     fn resolve_main_window_user_media_target_for_automatic_sync(
@@ -451,43 +575,57 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(target) = normalized_editable_text(target) else {
             return Ok(None);
         };
+        if self.unresolved_attached_media_target.as_deref() != Some(target.as_str()) {
+            self.attached_media_search_next_retry_at = None;
+        }
         if let Some(path) = self.quick_resolve_main_window_user_media_target(state, &target)? {
-            self.pending_attached_media_resolution = None;
+            self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
             return Ok(Some(path));
         }
 
-        if self.unresolved_attached_media_target.as_deref() == Some(target.as_str()) {
-            return Ok(None);
-        }
-
-        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
-            if pending_resolution.target == target {
-                match pending_resolution.result_rx.try_recv() {
-                    Ok(Ok(found_path)) => {
-                        self.unresolved_attached_media_target =
-                            found_path.as_ref().map_or(Some(target.clone()), |_| None);
-                        return Ok(found_path);
-                    }
-                    Ok(Err(error)) => return Err(error),
-                    Err(TryRecvError::Empty) => {
-                        self.pending_attached_media_resolution = Some(pending_resolution);
-                        return Ok(None);
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        return Err(format!(
-                            "Automatic media resolution for '{target}' terminated unexpectedly."
-                        ));
-                    }
-                }
-            }
-        }
-
-        let search_roots = self.automatic_media_search_roots_for_target(state);
+        let search_roots = self.automatic_media_search_roots(state);
         if search_roots.is_empty() {
+            self.cancel_pending_attached_media_search_index_build_impl();
             return Ok(None);
         }
-        self.queue_attached_media_resolution(target.clone(), search_roots);
+        let roots = Self::automatic_media_search_root_keys(&search_roots);
+        let retry_interval = Self::automatic_media_search_retry_interval(state);
+        let build_pending = self.poll_attached_media_search_index_build(&roots, retry_interval)?;
+        if let Some(found_path) = self
+            .attached_media_search_index
+            .as_ref()
+            .filter(|index| index.roots == roots)
+            .and_then(|index| Self::cached_missing_media_target_path(index, &target))
+        {
+            self.cancel_pending_attached_media_search_index_build_impl();
+            self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
+            return Ok(Some(found_path));
+        }
+        let matching_index_available = self
+            .attached_media_search_index
+            .as_ref()
+            .is_some_and(|index| index.roots == roots);
+        self.unresolved_attached_media_target = Some(target);
+        if build_pending {
+            return Ok(None);
+        }
+        if !self.attached_media_search_retry_due() {
+            return Ok(None);
+        }
+        if matching_index_available && self.attached_media_search_next_retry_at.is_none() {
+            self.attached_media_search_next_retry_at = Some(Instant::now() + retry_interval);
+            return Ok(None);
+        }
+
+        self.attached_media_search_next_retry_at = None;
+        self.queue_attached_media_search_index_build(
+            search_roots,
+            roots,
+            Self::automatic_media_search_timeout(state),
+        );
         Ok(None)
     }
 
@@ -531,6 +669,17 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
+        let search_roots = self.automatic_media_search_roots(state);
+        let search_root_keys = Self::automatic_media_search_root_keys(&search_roots);
+        if let Some(found_path) = self
+            .attached_media_search_index
+            .as_ref()
+            .filter(|index| index.roots == search_root_keys)
+            .and_then(|index| Self::cached_missing_media_target_path(index, &target))
+        {
+            return Ok(Some(found_path));
+        }
+
         let settings = state.configuration.to_stored_settings();
         for directory in settings.media_search_directories.unwrap_or_default() {
             let trimmed = directory.trim();
@@ -554,33 +703,84 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> bool {
         let Some(target) = Self::selected_shared_playlist_target(state) else {
-            self.pending_attached_media_resolution = None;
+            self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
             return false;
         };
-
-        self.ensure_configured_player_attached();
-        if self.player.is_none() {
-            self.pending_attached_media_resolution = None;
-            return false;
-        }
 
         let resolved_target =
             match self.resolve_main_window_user_media_target_for_automatic_sync(state, &target) {
                 Ok(Some(path)) => path,
                 Ok(None) | Err(_) => return false,
             };
+
+        self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return false;
+        }
         if self.current_player_matches_media_target(&resolved_target) {
+            self.cancel_pending_attached_media_search_index_build_impl();
+            self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
             return false;
         }
 
         let player_paths = [resolved_target];
-        self.open_media_files_through_attached_player_result_impl(&player_paths)
-            .is_some_and(|result| result.is_ok())
+        let opened = self
+            .open_media_files_through_attached_player_result_impl(&player_paths)
+            .is_some_and(|result| result.is_ok());
+        if opened {
+            self.cancel_pending_attached_media_search_index_build_impl();
+            self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
+        }
+        opened
     }
 
-    pub(super) fn sync_session_playstate_to_attached_player_impl(&mut self, force: bool) {
+    fn open_selected_playlist_media_path_through_attached_player_impl(
+        &mut self,
+        player_paths: &[String],
+    ) -> bool {
+        let Some(selected_path) = player_paths.first() else {
+            return false;
+        };
+
         self.ensure_configured_player_attached();
+        if self.player.is_none() {
+            return false;
+        }
+        if self.current_player_matches_media_target(selected_path) {
+            self.cancel_pending_attached_media_search_index_build_impl();
+            self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
+            return false;
+        }
+
+        let player_paths = [selected_path.clone()];
+        let opened = self
+            .open_media_files_through_attached_player_result_impl(&player_paths)
+            .is_some_and(|result| result.is_ok());
+        if opened {
+            self.cancel_pending_attached_media_search_index_build_impl();
+            self.unresolved_attached_media_target = None;
+            self.attached_media_search_next_retry_at = None;
+        }
+        opened
+    }
+
+    pub(super) fn sync_session_playstate_to_attached_player_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        force: bool,
+    ) {
+        if Self::selected_shared_playlist_target(state)
+            .as_deref()
+            .is_some_and(|target| !self.current_player_matches_media_target(target))
+        {
+            self.last_applied_attached_room_playstate = None;
+            return;
+        }
         let Some(player) = self.player.as_mut() else {
             self.last_applied_attached_room_playstate = None;
             return;
@@ -673,6 +873,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             };
 
+        if projected_state.playlist_backed_media_opens_preferred() {
+            self.open_media_files_through_shared_playlist_runtime_impl(
+                handle,
+                projected_state,
+                vec![resolved_target],
+            );
+            return;
+        }
+
         self.ensure_configured_player_attached();
         if self.player.is_some() {
             self.open_media_files_through_attached_player_impl(handle, vec![resolved_target]);
@@ -682,6 +891,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.open_media_unavailable_message_impl(&[resolved_target]),
             );
         }
+    }
+
+    fn project_loaded_shared_playlist_into_state(
+        projected_state: &mut SyncplayGuiShellAppState,
+        entries: Vec<String>,
+    ) -> bool {
+        let entries = SyncplayGuiShellAppState::normalize_shared_playlist_entries(entries);
+        projected_state.main_window.shared_playlist_enabled = true;
+        projected_state.remember_shared_playlist_undo_snapshot_if_changed(&entries);
+        projected_state
+            .apply_shared_playlist_entries(entries.clone(), (!entries.is_empty()).then_some(0));
+        true
     }
 
     fn open_system_file_browser_for_path(path: &Path) -> Result<(), String> {
@@ -767,9 +988,9 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn open_media_files_through_shared_playlist_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
         paths: Vec<String>,
     ) {
-        self.ensure_configured_player_attached();
         let selected_paths = paths
             .into_iter()
             .filter_map(|path| normalized_editable_text(&path))
@@ -787,48 +1008,75 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             };
 
-        let player_result = dispatch.player_paths.as_ref().and_then(|player_paths| {
-            self.open_media_files_through_attached_player_result_impl(player_paths)
-        });
-
         if self.session.is_none() {
-            match player_result {
-                Some(Ok(message)) => {
-                    let warning = self.shared_playlist_session_unavailable_message_impl();
-                    handle.push_actions([
-                        GuiShellAction::SwitchView(GuiShellView::MainWindow),
-                        GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Success,
-                            message: message.clone(),
-                        },
-                        GuiShellAction::AnnounceSystemChatEvent(message),
-                        GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Warning,
-                            message: warning.clone(),
-                        },
-                        GuiShellAction::AnnounceSystemChatEvent(warning),
-                    ]);
-                }
-                Some(Err(message)) => {
-                    let warning = self.shared_playlist_session_unavailable_message_impl();
-                    handle.push_actions([
-                        GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Warning,
-                            message: warning.clone(),
-                        },
-                        GuiShellAction::AnnounceSystemChatEvent(warning),
-                        GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Error,
-                            message: message.clone(),
-                        },
-                        GuiShellAction::AnnounceSystemChatEvent(message),
-                    ]);
-                }
-                None => Self::push_runtime_unavailable(
+            self.ensure_configured_player_attached();
+            if self.player.is_none() {
+                Self::push_runtime_unavailable(
                     handle,
                     self.shared_playlist_open_unavailable_message_impl(&selected_paths),
-                ),
+                );
+                return;
             }
+
+            if !Self::project_loaded_shared_playlist_into_state(
+                projected_state,
+                dispatch.playlist_entries.clone(),
+            ) {
+                Self::push_runtime_unavailable(
+                    handle,
+                    self.shared_playlist_open_unavailable_message_impl(&selected_paths),
+                );
+                return;
+            }
+            Self::push_actions_and_project(
+                handle,
+                projected_state,
+                vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                    MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                )],
+            );
+
+            let opened_selected_media =
+                dispatch
+                    .player_paths
+                    .as_deref()
+                    .is_some_and(|player_paths| {
+                        self.open_selected_playlist_media_path_through_attached_player_impl(
+                            player_paths,
+                        )
+                    });
+            self.sync_session_playstate_to_attached_player_impl(
+                projected_state,
+                opened_selected_media,
+            );
+
+            let success_message = Self::shared_playlist_open_success_message(&dispatch);
+            let warning = self.shared_playlist_session_unavailable_message_impl();
+            handle.push_actions([
+                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Success,
+                    message: success_message.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(success_message),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message: warning.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(warning),
+            ]);
+            return;
+        }
+
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.playlist_control_available())
+        {
+            Self::push_runtime_unavailable(
+                handle,
+                self.shared_playlist_control_unavailable_message_impl(),
+            );
             return;
         }
 
@@ -841,36 +1089,35 @@ impl GuiPersistedConfigRuntimeOwner {
                 (!dispatch.playlist_entries.is_empty()).then_some(0),
             );
         let session_success = session_result.is_ok();
-        let player_success = player_result.as_ref().is_some_and(Result::is_ok);
+        let opened_selected_media = if session_success
+            && Self::project_loaded_shared_playlist_into_state(
+                projected_state,
+                dispatch.playlist_entries.clone(),
+            ) {
+            dispatch
+                .player_paths
+                .as_deref()
+                .is_some_and(|player_paths| {
+                    self.open_selected_playlist_media_path_through_attached_player_impl(
+                        player_paths,
+                    )
+                })
+        } else {
+            false
+        };
+        self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
 
         let mut actions = Vec::new();
-        if session_success || player_success {
+        if session_success {
             actions.push(GuiShellAction::SwitchView(GuiShellView::MainWindow));
         }
-        if session_success && !player_success {
+        if session_success {
             let message = Self::shared_playlist_open_success_message(&dispatch);
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: message.clone(),
             });
             actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-        }
-        match player_result {
-            Some(Ok(message)) => {
-                actions.push(GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Success,
-                    message: message.clone(),
-                });
-                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-            }
-            Some(Err(message)) => {
-                actions.push(GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: message.clone(),
-                });
-                actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-            }
-            None => {}
         }
         if let Err(error) = session_result {
             actions.push(GuiShellAction::PushTransientNotification {
