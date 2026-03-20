@@ -12,6 +12,8 @@ mod launcher;
 mod local_command_dispatch;
 #[path = "../app_main_window_workflows.rs"]
 mod main_window_workflows;
+#[path = "../app_media_search_cache.rs"]
+mod media_search_cache;
 #[path = "../app_media_workflows.rs"]
 mod media_workflows;
 #[path = "../mpv_launch.rs"]
@@ -85,7 +87,12 @@ use self::runtime_bridge::{
     GuiQueuedRuntimeOwner, GuiRuntimeRequest,
 };
 #[allow(unused_imports)]
-use self::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use self::runtime_owner::{
+    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildStatus,
+    GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
+    GuiAttachedMediaSearchRootRefreshResult, GuiPendingAttachedMediaResolution,
+    GuiPersistedConfigRuntimeOwner,
+};
 use self::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 #[allow(unused_imports)]
 use self::runtime_stack::{

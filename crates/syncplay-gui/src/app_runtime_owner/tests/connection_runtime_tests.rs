@@ -545,16 +545,29 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
     let actions = handle.drain_actions();
     let found_path_text = found_path.to_string_lossy().into_owned();
     let expected_message = format!("Missing media found: {found_path_text}.");
-    assert_eq!(
-        actions,
-        vec![GuiShellAction::CompleteMissingMediaSearch(Some(
+    assert!(
+        actions.contains(&GuiShellAction::CompleteMissingMediaSearch(Some(
             found_path_text.clone(),
-        ))]
+        ))),
+        "detached missing-media search should complete with the discovered path"
+    );
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(snapshot)
+                if snapshot.active
+                    && snapshot
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.starts_with("Indexing media 1/1: "))
+        )),
+        "detached missing-media search should surface the background media-index refresh status"
     );
     for action in actions {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
+    assert!(state.media_index_status.active);
     assert_eq!(
         state
             .notifications
@@ -814,25 +827,38 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
         }
     }
 
-    let unique_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "syncplay-gui-owner-missing-media-search-{}-{unique_suffix}",
-        std::process::id()
-    ));
+    let root = test_temp_root("owner-missing-media-search-cache");
+    let config_path = root.join("syncplay.ini");
     let nested = root.join("nested");
     let found_path = nested.join("episode2.mkv");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&nested)
         .expect("test missing-media search directory tree should be created");
     std::fs::write(&found_path, b"test").expect("test missing-media search file should be written");
+    let built_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_millis() as u64;
+    crate::app::media_search_cache::persist_media_search_root_index_at_root(
+        &root,
+        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV1 {
+            version: 1,
+            root_key: crate::app::media_search_cache::normalized_media_search_root_key(&root),
+            root_path: root.to_string_lossy().into_owned(),
+            built_at_unix_ms,
+            candidates_by_name: std::collections::HashMap::from([(
+                "episode2.mkv".to_owned(),
+                vec!["nested\\episode2.mkv".to_owned()],
+            )]),
+        },
+    )
+    .expect("persisted missing-media cache fixture should be written");
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
 
-    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
-        .expect("client-core chat runtime owner should bootstrap");
+    let (mut owner, session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+            .with_client_core_chat_session_runtime("alice", "room1")
+            .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -914,6 +940,17 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
         vec![found_path_text]
+    );
+    assert!(
+        owner
+            .attached_media_search_index
+            .as_ref()
+            .is_some_and(|index| {
+                index.root_indexes_by_key.contains_key(
+                    &crate::app::media_search_cache::normalized_media_search_root_key(&root),
+                )
+            }),
+        "explicit missing-media search should resolve through the preloaded persisted root index before any later root warming occurs"
     );
 
     let _ = std::fs::remove_dir_all(&root);

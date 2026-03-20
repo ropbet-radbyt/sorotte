@@ -76,10 +76,13 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn sync_player_runtime_state(
-        &self,
+        &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         state: &SyncplayGuiShellAppState,
     ) {
+        let _ = self.poll_attached_media_search_index_build(
+            Self::automatic_media_search_retry_interval(state),
+        );
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();
 
@@ -132,6 +135,15 @@ impl GuiPersistedConfigRuntimeOwner {
         if main_window_changed {
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 desired_main_window,
+            ));
+        }
+
+        let desired_media_index_status = self.media_index_runtime_snapshot_impl();
+        if state.media_index_status.active != desired_media_index_status.active
+            || state.media_index_status.message != desired_media_index_status.message
+        {
+            handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+                desired_media_index_status,
             ));
         }
 

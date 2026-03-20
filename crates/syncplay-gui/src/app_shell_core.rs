@@ -50,6 +50,7 @@ impl SyncplayGuiShellAppState {
             last_media_dialog_directory: None,
             playlist_undo_snapshot: None,
             playlist_shuffle_nonce: 0,
+            media_index_status: Default::default(),
             saved_configuration: shell_settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
             main_window: MainWindowShellState::from_stored_settings(&shell_settings),

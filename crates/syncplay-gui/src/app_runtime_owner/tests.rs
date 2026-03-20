@@ -7,8 +7,11 @@ use crate::app::testing::support::{
     pump_and_apply_runtime_owner_actions_until, test_temp_root,
 };
 use crate::app::{
-    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiInteractionRuntimeSnapshot,
-    GuiLaunchMode, GuiOwnedPlayer, GuiPendingCompletionRequest, GuiPendingOperationKind,
+    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildStatus,
+    GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
+    GuiAttachedMediaSearchRootRefreshResult, GuiCommandAvailabilityState,
+    GuiCommandRuntimeSnapshot, GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiOwnedPlayer,
+    GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
     GuiPersistedUiState, GuiPlayerLaunchRuntimeState, GuiQueuedRuntimeBridgeHandle,
     GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiSessionRuntimeAdapter, GuiShellAction,
     GuiShellView, GuiTestPlayerAdapter, GuiTransientNotificationLevel,

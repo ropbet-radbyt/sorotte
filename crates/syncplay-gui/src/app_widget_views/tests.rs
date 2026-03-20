@@ -1,8 +1,9 @@
 use super::GuiWidgetRenderer;
 
 use crate::app::{
-    GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind,
-    GuiWidgetNode, MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
+    GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeSnapshot,
+    SyncplayGuiShellAppState,
 };
 
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
@@ -304,6 +305,15 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         .expect("open modal status should exist");
     assert_eq!(open_modal.value.as_deref(), Some("update-notice"));
 
+    let media_index_active = tree
+        .find("shell:media-index-active")
+        .expect("media-index active status should exist");
+    assert_eq!(media_index_active.value.as_deref(), Some("no"));
+    let media_index_status = tree
+        .find("shell:media-index-status")
+        .expect("media-index status should exist");
+    assert_eq!(media_index_status.value.as_deref(), Some("(idle)"));
+
     let modal_kind = tree
         .find("shell:modal:kind")
         .expect("modal kind status should exist");
@@ -339,6 +349,33 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         .find("public-servers-root")
         .expect("public server subtree should exist");
     assert!(public_servers.selected);
+}
+
+#[test]
+fn gui_shell_app_state_projects_media_index_status_into_shell_widget_tree() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+            GuiMediaIndexRuntimeSnapshot {
+                active: true,
+                message: Some("Indexing media 1/2: 14 folders, 2048 files (Anime)".to_owned()),
+            },
+        ))
+    );
+
+    let tree = state.shell_widget_tree();
+    assert_eq!(
+        tree.find("shell:media-index-active")
+            .and_then(|node| node.value.as_deref()),
+        Some("yes")
+    );
+    assert_eq!(
+        tree.find("shell:media-index-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("Indexing media 1/2: 14 folders, 2048 files (Anime)")
+    );
 }
 
 #[test]

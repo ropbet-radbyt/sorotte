@@ -110,32 +110,78 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         })
     }
 
-    fn record_missing_media_index_entry(paths_by_name: &mut HashMap<String, String>, path: &Path) {
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            return;
-        };
+    fn record_missing_media_index_candidate(
+        candidates_by_name: &mut HashMap<String, Vec<String>>,
+        file_name: &str,
+        relative_path: &Path,
+    ) {
         let Some(key) = Self::missing_media_file_name_lookup_key(file_name) else {
             return;
         };
-        paths_by_name
+        let relative_path = relative_path.to_string_lossy().into_owned();
+        if relative_path.trim().is_empty() {
+            return;
+        }
+        candidates_by_name
             .entry(key)
-            .or_insert_with(|| path.to_string_lossy().into_owned());
+            .or_default()
+            .push(relative_path);
+    }
+
+    fn record_missing_media_index_file_entry(
+        candidates_by_name: &mut HashMap<String, Vec<String>>,
+        path: &Path,
+    ) {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        Self::record_missing_media_index_candidate(
+            candidates_by_name,
+            file_name,
+            Path::new(file_name),
+        );
     }
 
     fn record_missing_media_index_directory_entry(
-        paths_by_name: &mut HashMap<String, String>,
+        candidates_by_name: &mut HashMap<String, Vec<String>>,
+        root: &Path,
         directory: &Path,
         file_name: &OsStr,
     ) {
         let Some(file_name) = file_name.to_str() else {
             return;
         };
-        let Some(key) = Self::missing_media_file_name_lookup_key(file_name) else {
+        let relative_path = match directory.strip_prefix(root) {
+            Ok(relative_directory) if !relative_directory.as_os_str().is_empty() => {
+                relative_directory.join(file_name)
+            }
+            _ => Path::new(file_name).to_path_buf(),
+        };
+        if relative_path.as_os_str().is_empty() {
             return;
         };
-        if let std::collections::hash_map::Entry::Vacant(entry) = paths_by_name.entry(key) {
-            entry.insert(directory.join(file_name).to_string_lossy().into_owned());
-        }
+        Self::record_missing_media_index_candidate(candidates_by_name, file_name, &relative_path);
+    }
+
+    fn sort_missing_media_index_candidates(candidates: &mut Vec<String>) {
+        candidates.retain(|candidate| !candidate.trim().is_empty());
+        candidates.sort_by_key(|candidate| {
+            let normalized = candidate.replace('\\', "/");
+            let depth = Path::new(candidate).components().count();
+            let lexical = if cfg!(windows) {
+                normalized.to_ascii_lowercase()
+            } else {
+                normalized
+            };
+            (depth, lexical)
+        });
+        candidates.dedup_by(|left, right| {
+            if cfg!(windows) {
+                left.eq_ignore_ascii_case(right)
+            } else {
+                left == right
+            }
+        });
     }
 
     fn visit_missing_media_directory_entries<F>(
@@ -258,12 +304,21 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    pub(in crate::app) fn build_missing_media_file_name_index_for_path(
-        paths_by_name: &mut HashMap<String, String>,
+    pub(in crate::app) fn build_missing_media_file_name_index_for_path_with_progress<F>(
         path: &Path,
         deadline: Option<Instant>,
         cancel_flag: &AtomicBool,
-    ) -> Result<(), String> {
+        report_progress: &mut F,
+    ) -> Result<HashMap<String, Vec<String>>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        let mut candidates_by_name = HashMap::new();
+        let mut scanned_directories = 0usize;
+        let mut indexed_files = 0usize;
+        let mut last_reported_directories = 0usize;
+        let mut last_reported_files = 0usize;
+        report_progress(0, 0);
         if cancel_flag.load(Ordering::Relaxed) {
             return Err("Client-core session runtime canceled missing-media indexing.".to_owned());
         }
@@ -271,12 +326,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             return Err("Client-core session runtime missing-media indexing timed out.".to_owned());
         }
         if path.is_file() {
-            Self::record_missing_media_index_entry(paths_by_name, path);
-            return Ok(());
+            Self::record_missing_media_index_file_entry(&mut candidates_by_name, path);
+            report_progress(0, usize::from(!candidates_by_name.is_empty()));
+            return Ok(candidates_by_name);
         }
 
         if !path.is_dir() {
-            return Ok(());
+            return Ok(candidates_by_name);
         }
 
         let mut pending_directories = vec![path.to_path_buf()];
@@ -308,10 +364,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                         return true;
                     }
                     Self::record_missing_media_index_directory_entry(
-                        paths_by_name,
+                        &mut candidates_by_name,
+                        path,
                         &directory,
                         file_name,
                     );
+                    indexed_files += 1;
+                    if indexed_files.saturating_sub(last_reported_files) >= 128 {
+                        report_progress(scanned_directories, indexed_files);
+                        last_reported_directories = scanned_directories;
+                        last_reported_files = indexed_files;
+                    }
                     true
                 },
             )
@@ -321,6 +384,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     "during missing-media indexing",
                 )
             })?;
+            scanned_directories += 1;
+            if scanned_directories != last_reported_directories
+                || indexed_files != last_reported_files
+            {
+                report_progress(scanned_directories, indexed_files);
+                last_reported_directories = scanned_directories;
+                last_reported_files = indexed_files;
+            }
             if cancel_flag.load(Ordering::Relaxed) {
                 return Err(
                     "Client-core session runtime canceled missing-media indexing.".to_owned(),
@@ -332,7 +403,24 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 );
             }
         }
-        Ok(())
+        for candidates in candidates_by_name.values_mut() {
+            Self::sort_missing_media_index_candidates(candidates);
+        }
+        candidates_by_name.retain(|_, candidates| !candidates.is_empty());
+        Ok(candidates_by_name)
+    }
+
+    pub(in crate::app) fn build_missing_media_file_name_index_for_path(
+        path: &Path,
+        deadline: Option<Instant>,
+        cancel_flag: &AtomicBool,
+    ) -> Result<HashMap<String, Vec<String>>, String> {
+        Self::build_missing_media_file_name_index_for_path_with_progress(
+            path,
+            deadline,
+            cancel_flag,
+            &mut |_, _| {},
+        )
     }
 
     pub(in crate::app) fn search_path_for_missing_media_target(

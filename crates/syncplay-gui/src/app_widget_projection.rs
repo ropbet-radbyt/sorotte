@@ -208,6 +208,7 @@ impl SyncplayGuiShellAppState {
     ) {
         let preserved_main_window_runtime_snapshot =
             MainWindowRuntimeSnapshot::from_shell_state(&self.main_window);
+        let preserved_media_index_status = self.media_index_status.clone();
         let settings = self.configuration.to_stored_settings();
         let preserved_public_server_rows = (previous_settings.public_servers
             == settings.public_servers)
@@ -257,6 +258,7 @@ impl SyncplayGuiShellAppState {
         if let Some(runtime_flags) = preserved_media_search_flags {
             self.media_search.apply_runtime_flags(runtime_flags);
         }
+        self.media_index_status = preserved_media_index_status;
         self.normalize_runtime_menu_action_overrides_for_settings(&settings);
         self.sync_dialog_menu_actions_from_runtime_state();
         self.normalize_selection();
@@ -299,6 +301,7 @@ impl SyncplayGuiShellAppState {
         let last_action_error = self.validation.last_action_error.clone();
         let playlist_undo_snapshot = self.playlist_undo_snapshot.clone();
         let playlist_shuffle_nonce = self.playlist_shuffle_nonce;
+        let media_index_status = self.media_index_status.clone();
         let saved_configuration = self.saved_configuration.clone();
         let tls_prompt_expected = self.menus.tls_prompt_expected;
         let update_notice_expected = self.menus.update_notice_expected;
@@ -347,6 +350,7 @@ impl SyncplayGuiShellAppState {
         self.last_media_dialog_directory = last_media_dialog_directory;
         self.playlist_undo_snapshot = playlist_undo_snapshot;
         self.playlist_shuffle_nonce = playlist_shuffle_nonce;
+        self.media_index_status = media_index_status;
         self.saved_configuration = saved_configuration;
         if preserve_tls_prompt_expected {
             self.menus.tls_prompt_expected = tls_prompt_expected;

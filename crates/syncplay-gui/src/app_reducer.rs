@@ -57,6 +57,9 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::ApplyGuiCommandRuntimeSnapshot(snapshot) => {
                 self.apply_gui_command_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(snapshot) => {
+                self.apply_gui_media_index_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => {
                 self.apply_gui_interaction_runtime_snapshot(snapshot)
             }

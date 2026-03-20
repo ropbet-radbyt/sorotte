@@ -102,6 +102,18 @@ pub(super) struct PublicServerBrowserShellState {
     pub(super) can_add_custom_server: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct GuiMediaIndexStatusState {
+    pub(super) active: bool,
+    pub(super) message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct GuiMediaIndexRuntimeSnapshot {
+    pub(super) active: bool,
+    pub(super) message: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PublicServerBrowserRuntimeFlags {
     pub(super) can_connect: bool,
@@ -185,6 +197,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) last_media_dialog_directory: Option<String>,
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,
     pub(super) playlist_shuffle_nonce: u64,
+    pub(super) media_index_status: GuiMediaIndexStatusState,
     pub(super) saved_configuration: StoredClientSettingsMvp,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
     pub(super) main_window: MainWindowShellState,
@@ -603,6 +616,7 @@ pub(super) enum GuiShellAction {
     ApplyGuiFeedbackRuntimeSnapshot(GuiFeedbackRuntimeSnapshot),
     ApplyGuiErrorRuntimeSnapshot(GuiErrorRuntimeSnapshot),
     ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot),
+    ApplyGuiMediaIndexRuntimeSnapshot(GuiMediaIndexRuntimeSnapshot),
     ApplyGuiInteractionRuntimeSnapshot(GuiInteractionRuntimeSnapshot),
     ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot),
     ApplyGuiConfigurationDraftRuntimeSnapshot(GuiConfigurationDraftRuntimeSnapshot),

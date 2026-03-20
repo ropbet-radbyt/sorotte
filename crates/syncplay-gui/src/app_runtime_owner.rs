@@ -12,7 +12,7 @@ mod projection;
 mod requests;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -31,6 +31,7 @@ use syncplay_client_app::app_boundary::{
 use syncplay_player_api::LocalFileUpdate;
 use syncplay_player_mpv::MpvAdapter;
 
+use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
     ManagedMpvProcessGuard, ManagedMpvSettingsDecision,
@@ -72,6 +73,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
+    pub(super) attached_media_search_progress: Option<GuiAttachedMediaSearchBuildProgress>,
     pub(super) unresolved_attached_media_target: Option<String>,
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
     pub(super) player_position_seconds: Option<f64>,
@@ -81,19 +83,60 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
 
 pub(super) struct GuiAttachedMediaSearchIndex {
     pub(super) roots: Vec<String>,
-    pub(super) paths_by_name: HashMap<String, String>,
+    pub(super) root_indexes_by_key: HashMap<String, GuiAttachedMediaSearchRootIndex>,
+    pub(super) roots_requiring_refresh: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiAttachedMediaSearchRootIndex {
+    pub(super) root_key: String,
+    pub(super) root_path: PathBuf,
+    pub(super) built_at_unix_ms: u64,
+    pub(super) candidates_by_name: HashMap<String, Vec<String>>,
+}
+
+pub(super) struct GuiAttachedMediaSearchRootRefreshResult {
+    pub(super) root_key: String,
+    pub(super) index: Option<GuiAttachedMediaSearchRootIndex>,
+    pub(super) error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiAttachedMediaSearchBuildProgress {
+    pub(super) total_roots: usize,
+    pub(super) completed_roots: usize,
+    pub(super) current_root_key: String,
+    pub(super) current_root_path: PathBuf,
+    pub(super) scanned_directories: usize,
+    pub(super) indexed_files: usize,
 }
 
 pub(super) enum GuiAttachedMediaSearchBuildStatus {
-    Completed(GuiAttachedMediaSearchIndex),
+    Progress(GuiAttachedMediaSearchBuildProgress),
+    Completed(Vec<GuiAttachedMediaSearchRootRefreshResult>),
     Cancelled,
-    Failed(String),
 }
 
 pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) roots: Vec<String>,
     pub(super) cancel_flag: Arc<AtomicBool>,
     pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
+}
+
+impl Drop for GuiPendingAttachedMediaResolution {
+    fn drop(&mut self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+}
+
+impl GuiAttachedMediaSearchIndex {
+    pub(super) fn new(roots: Vec<String>) -> Self {
+        Self {
+            roots,
+            root_indexes_by_key: HashMap::new(),
+            roots_requiring_refresh: BTreeSet::new(),
+        }
+    }
 }
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -116,6 +159,7 @@ impl GuiPersistedConfigRuntimeOwner {
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
+            attached_media_search_progress: None,
             unresolved_attached_media_target: None,
             last_applied_attached_room_playstate: None,
             player_position_seconds: None,
@@ -212,6 +256,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         self.attached_media_search_next_retry_at = None;
         self.pending_attached_media_resolution = None;
+        self.attached_media_search_progress = None;
         self.unresolved_attached_media_target = None;
         self.last_applied_attached_room_playstate = None;
     }
@@ -447,6 +492,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         if let Some(root) = self.legacy_gui_qsettings_root() {
             clear_legacy_gui_qsettings_files_at_root(&root)?;
+            clear_persisted_media_search_cache_at_root(&root)?;
         }
         self.session = None;
         self.session_projects_to_shell = false;

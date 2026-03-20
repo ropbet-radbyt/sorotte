@@ -12,7 +12,6 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         sent_chat_messages: Vec<String>,
         connect_requests: Vec<Option<(String, String)>>,
         refresh_requests: Vec<Vec<(String, String)>>,
-        search_requests: Vec<Vec<String>>,
     }
 
     struct RecordingSessionRuntimeAdapter {
@@ -107,18 +106,25 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             )])
         }
 
+        fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+            Ok("found.mkv".to_owned())
+        }
+
         fn search_missing_media(
             &mut self,
-            directories: Vec<String>,
+            _directories: Vec<String>,
         ) -> Result<Option<String>, String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .search_requests
-                .push(directories);
-            Ok(Some("C:/Media/found.mkv".to_owned()))
+            Err("owner-side missing-media resolution should be used instead".to_owned())
         }
     }
+
+    let media_root = test_temp_root("session-runtime-missing-media");
+    let nested_media_root = media_root.join("nested");
+    std::fs::create_dir_all(&nested_media_root)
+        .expect("session-runtime missing-media fixture directory should be created");
+    let found_media_path = nested_media_root.join("found.mkv");
+    std::fs::write(&found_media_path, b"test")
+        .expect("session-runtime missing-media fixture should be written");
 
     let session_state =
         std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
@@ -131,7 +137,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
-        media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
+        media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         ..StoredClientSettingsMvp::default()
     });
     let mut inbound_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -309,21 +315,27 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     assert_eq!(
         search_actions,
         vec![GuiShellAction::CompleteMissingMediaSearch(Some(
-            "C:/Media/found.mkv".to_owned(),
+            found_media_path.to_string_lossy().into_owned(),
         ))]
     );
     for action in search_actions {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
+    let expected_missing_media_message = format!(
+        "Missing media found: {}.",
+        found_media_path.to_string_lossy()
+    );
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),
-        Some("Missing media found: C:/Media/found.mkv.")
+        Some(expected_missing_media_message.as_str())
     );
 
     handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert!(handle.drain_actions().is_empty());
+
+    let _ = std::fs::remove_dir_all(&media_root);
 
     handle.push_request(GuiRuntimeRequest::SetReadyForUser {
         username: "bob".to_owned(),
@@ -364,8 +376,6 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         session_state.refresh_requests,
         vec![vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]]
     );
-    assert_eq!(
-        session_state.search_requests,
-        vec![vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]]
-    );
+
+    let _ = std::fs::remove_dir_all(&media_root);
 }

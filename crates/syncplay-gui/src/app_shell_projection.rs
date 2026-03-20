@@ -4,14 +4,15 @@ use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiControlledRoomCreateSessionState,
     GuiControllerAuthEditSessionState, GuiFocusedConfigurationControlState,
-    GuiMainWindowUserEditSessionState, GuiPendingOperationState, GuiPlaylistTextEditSessionState,
-    GuiPublicServerEditSessionState, GuiRoomHistoryEditSessionState, GuiSelectionState,
-    GuiShellModal, GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState,
-    GuiValidationState, MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow,
-    MainWindowRoomRow, MainWindowShellState, MainWindowUserRow, MediaSearchDirectoryRow,
-    MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState, MenuActionShellItem,
-    MenuDialogShellState, MenuSectionShellState, PublicServerBrowserRow,
-    PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState, SyncplayGuiShellAppState,
+    GuiMainWindowUserEditSessionState, GuiMediaIndexStatusState, GuiPendingOperationState,
+    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
+    GuiRoomHistoryEditSessionState, GuiSelectionState, GuiShellModal, GuiTextEditSessionState,
+    GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState, MainWindowChatRow,
+    MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowShellState,
+    MainWindowUserRow, MediaSearchDirectoryRow, MediaSearchWorkflowRuntimeFlags,
+    MediaSearchWorkflowShellState, MenuActionShellItem, MenuDialogShellState,
+    MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
+    PublicServerBrowserShellState, SyncplayGuiShellAppState,
 };
 use super::support::{
     autoplay_threshold_from_settings, bool_label, optional_index_text, optional_seconds_text,
@@ -271,6 +272,16 @@ impl GuiMainWindowUserEditSessionState {
 impl GuiTransientNotification {
     fn render_line(&self) -> String {
         format!("- {}: {}", self.level.label(), self.message)
+    }
+}
+
+impl GuiMediaIndexStatusState {
+    pub(super) fn render_lines(&self) -> Vec<String> {
+        vec![format!(
+            "[Media Index] active={}, message={}",
+            bool_label(self.active),
+            self.message.as_deref().unwrap_or("(idle)")
+        )]
     }
 }
 
@@ -898,6 +909,7 @@ impl SyncplayGuiShellAppState {
             "[Chat Send] pending_message={}",
             self.outgoing_chat_message.as_deref().unwrap_or("(none)")
         ));
+        lines.extend(self.media_index_status.render_lines());
         lines.extend(
             self.focused_configuration_control
                 .as_ref()

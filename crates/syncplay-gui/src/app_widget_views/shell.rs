@@ -222,6 +222,27 @@ impl SyncplayGuiShellAppState {
                     true,
                     false,
                 ),
+                GuiWidgetNode::leaf(
+                    "shell:media-index-active",
+                    "Media Index Active",
+                    GuiWidgetKind::Status,
+                    Some(bool_label(self.media_index_status.active).to_owned()),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:media-index-status",
+                    "Media Index Status",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.media_index_status
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "(idle)".to_owned()),
+                    ),
+                    true,
+                    false,
+                ),
                 self.shell_modal_widget_tree(),
                 self.quick_actions_widget_tree(),
                 self.command_status_widget_tree(),

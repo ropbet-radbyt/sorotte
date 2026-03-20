@@ -165,6 +165,14 @@ impl GuiWidgetEguiRenderer {
             .find("shell:pending-operation")
             .and_then(|node| node.value.as_deref())
             .unwrap_or("(none)");
+        let media_index_active = root
+            .find("shell:media-index-active")
+            .and_then(|node| node.value.as_deref())
+            .is_some_and(|value| matches!(value, "yes" | "true"));
+        let media_index_status = root
+            .find("shell:media-index-status")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(idle)");
         egui::TopBottomPanel::bottom("syncplay-native-status-bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Syncplay GUI");
@@ -174,6 +182,11 @@ impl GuiWidgetEguiRenderer {
                 ui.label(format!("modal: {open_modal}"));
                 ui.separator();
                 ui.label(format!("pending: {pending_operation}"));
+                if media_index_active {
+                    ui.separator();
+                    ui.add(egui::Spinner::new());
+                    ui.label(media_index_status);
+                }
                 if Self::should_show_manual_pending_controls(
                     pending_operation,
                     show_manual_pending_controls,

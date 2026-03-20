@@ -217,6 +217,10 @@ pub(super) trait GuiSessionRuntimeAdapter {
         language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String>;
 
+    fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+        Err("Attached session runtime does not expose a missing-media search target.".to_owned())
+    }
+
     fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String>;
 }
 
@@ -1151,6 +1155,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             let refreshed_servers = remote_services::fetch_public_servers(_language)?;
             Ok(Self::normalize_public_server_rows(refreshed_servers))
         }
+    }
+
+    fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+        GuiClientCoreChatSessionRuntimeAdapter::missing_media_search_target_file_name(self)
     }
 
     fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String> {

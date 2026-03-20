@@ -5,8 +5,8 @@ use super::shell_state::{
     GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
     GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
     GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
-    GuiMainWindowUserEditSessionState, GuiPendingOperationKind, GuiPendingOperationState,
-    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
+    GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot, GuiPendingOperationKind,
+    GuiPendingOperationState, GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
     GuiRoomHistoryEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiShellView,
     GuiTextEditSessionState, GuiTransientNotification, GuiTransientNotificationLevel,
     GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
@@ -155,6 +155,31 @@ impl SyncplayGuiShellAppState {
                 &command_availability,
             );
         self.sync_playback_menu_actions_from_runtime_state(can_toggle_pause);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_gui_media_index_runtime_snapshot(
+        &mut self,
+        snapshot: GuiMediaIndexRuntimeSnapshot,
+    ) -> bool {
+        let message = if snapshot.active {
+            let Some(message) = snapshot
+                .message
+                .as_deref()
+                .and_then(normalized_editable_text)
+            else {
+                return self.record_action_error(
+                    "GUI media-index runtime snapshots must include a non-empty message while indexing is active.",
+                );
+            };
+            Some(message)
+        } else {
+            None
+        };
+
+        self.media_index_status.active = snapshot.active;
+        self.media_index_status.message = message;
         self.clear_action_error_and_refresh();
         true
     }

@@ -658,16 +658,15 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::SearchMissingMedia,
             ) => {
-                let directories = projected_state
-                    .media_search
-                    .directories
-                    .iter()
-                    .map(|row| row.path.clone())
-                    .collect();
-                let search_result = if let Some(session) = self.session.as_mut() {
-                    session.search_missing_media(directories)
+                let target_file_name = if let Some(session) = self.session.as_ref() {
+                    session.missing_media_search_target_file_name()
                 } else {
-                    self.search_missing_media_without_session(projected_state, directories)
+                    self.detached_missing_media_target_file_name(projected_state)
+                };
+                let search_result = match target_file_name {
+                    Ok(target_file_name) => self
+                        .resolve_main_window_user_media_target(projected_state, &target_file_name),
+                    Err(error) => Err(error),
                 };
                 match search_result {
                         Ok(found_path) => {

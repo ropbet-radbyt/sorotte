@@ -85,6 +85,22 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
         },
     )
     .expect("GUI state should be written");
+    crate::app::media_search_cache::persist_media_search_root_index_at_root(
+        &root,
+        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV1 {
+            version: 1,
+            root_key: crate::app::media_search_cache::normalized_media_search_root_key(
+                std::path::Path::new("C:/Media"),
+            ),
+            root_path: "C:/Media".to_owned(),
+            built_at_unix_ms: 1,
+            candidates_by_name: std::collections::HashMap::from([(
+                "episode1.mkv".to_owned(),
+                vec!["Season 1\\episode1.mkv".to_owned()],
+            )]),
+        },
+    )
+    .expect("media-search cache should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -109,6 +125,10 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
             "clear-GUI-data should remove legacy GUI state store {store_name}"
         );
     }
+    assert!(
+        !crate::app::media_search_cache::persisted_media_search_cache_dir_at_root(&root).exists(),
+        "clear-GUI-data should remove the persisted media-search cache"
+    );
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.active_view, GuiShellView::Configuration);
     assert_eq!(
