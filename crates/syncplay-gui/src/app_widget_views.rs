@@ -8,7 +8,7 @@ use super::shell_state::{
     browser_domain_from_url, browser_is_url, browser_uri_is_trusted,
 };
 use super::support::{bool_label, normalized_editable_text, optional_seconds_text};
-use super::widget_tree::{GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer};
+use super::widget_tree::{GuiLayoutMode, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer};
 
 #[path = "app_widget_views/configuration.rs"]
 mod configuration;

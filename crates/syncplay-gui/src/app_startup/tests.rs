@@ -58,13 +58,13 @@ fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
     assert!(!preview.contains("[Widget Tree]"));
     assert!(preview.contains("- Syncplay GUI [panel] id=shell-root"));
     assert!(preview.contains(
-        "  - Configuration [panel] id=configuration-root, enabled=yes, selected=yes, value=(none)"
+        "  - Configuration [layout] id=configuration-root, enabled=yes, selected=yes, value=(none)"
     ));
     assert!(preview.contains(
         "    - Host [text-input] id=config:Connection:Host, enabled=yes, selected=no, value=(unset)"
     ));
     assert!(preview.contains(
-        "  - Main Window [panel] id=main-window-root, enabled=yes, selected=no, value=(none)"
+        "  - Main Window [layout] id=main-window-root, enabled=yes, selected=no, value=(none)"
     ));
 }
 

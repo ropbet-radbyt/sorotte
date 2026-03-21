@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::render_io::GuiDroppedFilesRequest;
 use super::shell_state::{GuiShellAction, GuiShellModal, SyncplayGuiShellAppState};
-use super::widget_tree::{GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer};
+use super::widget_tree::{GuiLayoutMode, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer};
 
 #[cfg(test)]
 #[path = "app_render_egui/tests.rs"]
@@ -27,6 +27,21 @@ pub(super) struct GuiWidgetEguiRenderer {
 pub(super) enum GuiPlaybackPromptKind {
     Seek,
     Offset,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiResponsiveColumnsPlan {
+    pub(super) column_count: usize,
+    pub(super) row_count: usize,
+    pub(super) column_width: f32,
+    pub(super) rows: Vec<Vec<GuiResponsiveColumnsPlanEntry>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GuiResponsiveColumnsPlanEntry {
+    pub(super) child_index: usize,
+    pub(super) column: usize,
+    pub(super) span: usize,
 }
 
 impl GuiWidgetEguiRenderer {
@@ -217,7 +232,9 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         egui::SidePanel::left("syncplay-native-navigation")
-            .default_width(240.0)
+            .default_width(200.0)
+            .min_width(180.0)
+            .max_width(280.0)
             .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("Surfaces");
@@ -335,8 +352,12 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         match node.kind {
+            GuiWidgetKind::Layout => self.render_layout(ui, node, state),
             GuiWidgetKind::Panel => {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
+                    if let Some(min_content_height) = node.min_content_height {
+                        ui.set_min_height(min_content_height);
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(&node.label);
                         if node.selected {
@@ -353,6 +374,9 @@ impl GuiWidgetEguiRenderer {
             }
             GuiWidgetKind::List => {
                 let response = egui::Frame::group(ui.style()).show(ui, |ui| {
+                    if let Some(min_content_height) = node.min_content_height {
+                        ui.set_min_height(min_content_height);
+                    }
                     ui.strong(&node.label);
                     if node.children.is_empty() {
                         ui.label("No items.");
@@ -371,6 +395,158 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    fn render_layout(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let Some(layout_mode) = node.layout_mode else {
+            for child in &node.children {
+                self.render_node(ui, child, state);
+            }
+            return;
+        };
+        match layout_mode {
+            GuiLayoutMode::Stack => {
+                for child in &node.children {
+                    self.render_node(ui, child, state);
+                }
+            }
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width,
+                max_columns,
+            } => {
+                let plan = Self::plan_responsive_columns(
+                    ui.available_width(),
+                    12.0,
+                    min_column_width,
+                    max_columns,
+                    node.children.iter().map(|child| child.column_span),
+                );
+                for (row_index, row) in plan.rows.iter().enumerate() {
+                    ui.horizontal_top(|ui| {
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = 0.0;
+                        ui.spacing_mut().item_spacing = spacing;
+                        let mut current_column = 0usize;
+                        for entry in row {
+                            if entry.column > current_column {
+                                let spacer_columns = entry.column - current_column;
+                                let spacer_width = (spacer_columns as f32 * plan.column_width)
+                                    + ((spacer_columns.saturating_sub(1)) as f32 * 12.0);
+                                ui.add_space(spacer_width + 12.0);
+                            }
+                            let child_width = (entry.span as f32 * plan.column_width)
+                                + ((entry.span.saturating_sub(1)) as f32 * 12.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(child_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(child_width);
+                                    self.render_node(ui, &node.children[entry.child_index], state);
+                                },
+                            );
+                            current_column = entry.column + entry.span;
+                            if current_column < plan.column_count {
+                                ui.add_space(12.0);
+                            }
+                        }
+                    });
+                    if row_index + 1 < plan.row_count {
+                        ui.add_space(12.0);
+                    }
+                }
+            }
+            GuiLayoutMode::FormGrid {
+                label_width,
+                min_field_width,
+            } => {
+                let stacked = (ui.available_width() - label_width) < min_field_width;
+                for child in &node.children {
+                    if stacked {
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&child.label).strong());
+                            self.render_field_control(ui, child, state, true);
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [label_width, 0.0],
+                                egui::Label::new(egui::RichText::new(&child.label).strong()),
+                            );
+                            self.render_field_control(ui, child, state, true);
+                        });
+                    }
+                }
+            }
+            GuiLayoutMode::KeyValueGrid { min_pair_width } => {
+                let plan = Self::plan_responsive_columns(
+                    ui.available_width(),
+                    12.0,
+                    min_pair_width,
+                    2,
+                    node.children.iter().map(|_| 1usize),
+                );
+                for (row_index, row) in plan.rows.iter().enumerate() {
+                    ui.horizontal_top(|ui| {
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = 0.0;
+                        ui.spacing_mut().item_spacing = spacing;
+                        for (entry_index, entry) in row.iter().enumerate() {
+                            let child_width = plan.column_width;
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(child_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(child_width);
+                                    self.render_key_value_item(
+                                        ui,
+                                        &node.children[entry.child_index],
+                                        state,
+                                    );
+                                },
+                            );
+                            if entry_index + 1 < row.len() {
+                                ui.add_space(12.0);
+                            }
+                        }
+                    });
+                    if row_index + 1 < plan.row_count {
+                        ui.add_space(8.0);
+                    }
+                }
+            }
+            GuiLayoutMode::ButtonWrap { min_button_width } => {
+                let buttons_per_row = ((ui.available_width() + 12.0) / (min_button_width + 12.0))
+                    .floor()
+                    .max(1.0) as usize;
+                for chunk in node.children.chunks(buttons_per_row) {
+                    let row_button_width = ((ui.available_width()
+                        - (12.0 * (chunk.len().saturating_sub(1)) as f32))
+                        / chunk.len() as f32)
+                        .max(0.0);
+                    ui.horizontal_top(|ui| {
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = 12.0;
+                        ui.spacing_mut().item_spacing = spacing;
+                        for child in chunk {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(row_button_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(row_button_width);
+                                    self.render_button_like(ui, child, state);
+                                },
+                            );
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
+            }
+        }
+    }
+
     fn render_leaf(
         &mut self,
         ui: &mut egui::Ui,
@@ -378,6 +554,7 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         match node.kind {
+            GuiWidgetKind::Layout => {}
             GuiWidgetKind::TextInput
             | GuiWidgetKind::TextArea
             | GuiWidgetKind::PasswordInput
@@ -399,25 +576,7 @@ impl GuiWidgetEguiRenderer {
                     self.actions.push(action);
                 }
             }
-            GuiWidgetKind::Button => {
-                if ui
-                    .add_enabled(node.enabled, egui::Button::new(Self::display_text(node)))
-                    .clicked()
-                {
-                    if node.id == "shell:quick:open-media-file"
-                        || Self::is_open_media_file_menu_action(state, node)
-                    {
-                        self.selected_media_files = Self::pick_media_files(state);
-                    } else if Self::is_exit_menu_action(state, node) {
-                        self.close_requested = true;
-                    } else if let Some(actions) = Self::direct_menu_actions(state, node) {
-                        self.actions.extend(actions);
-                    } else {
-                        self.actions
-                            .extend(Self::actions_for_clicked_button(state, node));
-                    }
-                }
-            }
+            GuiWidgetKind::Button => self.render_button_like(ui, node, state),
             GuiWidgetKind::ListItem => {
                 ui.add_enabled_ui(node.enabled, |ui| {
                     if ui
@@ -456,7 +615,7 @@ impl GuiWidgetEguiRenderer {
                 node.enabled,
                 egui::TextEdit::singleline(&mut value)
                     .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
-                    .desired_width(260.0),
+                    .desired_width(ui.available_width().max(120.0)),
             );
             let submitted =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -484,7 +643,7 @@ impl GuiWidgetEguiRenderer {
             let response = ui.add_enabled(
                 node.enabled,
                 egui::TextEdit::multiline(&mut value)
-                    .desired_width(360.0)
+                    .desired_width(ui.available_width().max(160.0))
                     .desired_rows(6),
             );
             if let Some(actions) =
@@ -510,7 +669,7 @@ impl GuiWidgetEguiRenderer {
             ui.add_enabled_ui(node.enabled, |ui| {
                 egui::ComboBox::from_id_salt(&node.id)
                     .selected_text(if value.is_empty() { "(unset)" } else { &value })
-                    .width(260.0)
+                    .width(ui.available_width().max(120.0))
                     .show_ui(ui, |ui| {
                         for option in &options {
                             ui.selectable_value(&mut value, option.clone(), option);
@@ -523,6 +682,221 @@ impl GuiWidgetEguiRenderer {
                 Self::actions_for_text_input_node(state, node, &value, true, false)
         {
             self.actions.extend(actions);
+        }
+    }
+
+    pub(super) fn plan_responsive_columns<I>(
+        available_width: f32,
+        gap: f32,
+        min_column_width: f32,
+        max_columns: usize,
+        spans: I,
+    ) -> GuiResponsiveColumnsPlan
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let max_columns = max_columns.max(1);
+        let min_column_width = min_column_width.max(1.0);
+        let available_width = available_width.max(min_column_width);
+        let column_count = (((available_width + gap) / (min_column_width + gap)).floor() as usize)
+            .clamp(1, max_columns);
+        let column_width = ((available_width - (gap * (column_count.saturating_sub(1)) as f32))
+            / column_count as f32)
+            .max(0.0);
+        let mut rows: Vec<Vec<GuiResponsiveColumnsPlanEntry>> = Vec::new();
+        let mut current_row: Vec<GuiResponsiveColumnsPlanEntry> = Vec::new();
+        let mut current_column = 0usize;
+
+        for (child_index, requested_span) in spans.into_iter().enumerate() {
+            let span = requested_span.max(1).min(column_count);
+            if !current_row.is_empty() && (current_column + span > column_count) {
+                rows.push(current_row);
+                current_row = Vec::new();
+                current_column = 0;
+            }
+            current_row.push(GuiResponsiveColumnsPlanEntry {
+                child_index,
+                column: current_column,
+                span,
+            });
+            current_column += span;
+            if current_column >= column_count {
+                rows.push(current_row);
+                current_row = Vec::new();
+                current_column = 0;
+            }
+        }
+
+        if !current_row.is_empty() {
+            rows.push(current_row);
+        }
+
+        GuiResponsiveColumnsPlan {
+            column_count,
+            row_count: rows.len(),
+            column_width,
+            rows,
+        }
+    }
+
+    fn render_key_value_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        match node.kind {
+            GuiWidgetKind::Status | GuiWidgetKind::ReadOnly => {
+                if Self::should_render_combined_status_label(node) {
+                    ui.label(Self::display_text(node));
+                } else {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&node.label).strong());
+                        ui.label(node.value.as_deref().unwrap_or("(none)"));
+                    });
+                }
+            }
+            _ => self.render_node(ui, node, state),
+        }
+    }
+
+    fn render_field_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        omit_label: bool,
+    ) {
+        match node.kind {
+            GuiWidgetKind::TextInput
+            | GuiWidgetKind::PasswordInput
+            | GuiWidgetKind::NumericInput => {
+                let mut value = node.value.clone().unwrap_or_else(|| "(none)".to_owned());
+                if !omit_label {
+                    ui.label(&node.label);
+                }
+                let response = ui.add_enabled(
+                    node.enabled,
+                    egui::TextEdit::singleline(&mut value)
+                        .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
+                        .desired_width(ui.available_width().max(120.0)),
+                );
+                let submitted =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if let Some(actions) = Self::actions_for_text_input_node(
+                    state,
+                    node,
+                    &value,
+                    response.changed(),
+                    submitted,
+                ) {
+                    self.actions.extend(actions);
+                }
+            }
+            GuiWidgetKind::TextArea => {
+                let mut value = node.value.clone().unwrap_or_default();
+                if !omit_label {
+                    ui.label(&node.label);
+                }
+                let response = ui.add_enabled(
+                    node.enabled,
+                    egui::TextEdit::multiline(&mut value)
+                        .desired_width(ui.available_width().max(160.0))
+                        .desired_rows(6),
+                );
+                if let Some(actions) = Self::actions_for_text_input_node(
+                    state,
+                    node,
+                    &value,
+                    response.changed(),
+                    false,
+                ) {
+                    self.actions.extend(actions);
+                }
+            }
+            GuiWidgetKind::Select => {
+                let mut value = node.value.clone().unwrap_or_default();
+                let previous = value.clone();
+                let options = Self::configuration_select_options_for_node(state, node)
+                    .unwrap_or_else(|| vec![previous.clone()]);
+                if !omit_label {
+                    ui.label(&node.label);
+                }
+                ui.add_enabled_ui(node.enabled, |ui| {
+                    egui::ComboBox::from_id_salt(&node.id)
+                        .selected_text(if value.is_empty() { "(unset)" } else { &value })
+                        .width(ui.available_width().max(120.0))
+                        .show_ui(ui, |ui| {
+                            for option in &options {
+                                ui.selectable_value(&mut value, option.clone(), option);
+                            }
+                        });
+                });
+                if value != previous
+                    && let Some(actions) =
+                        Self::actions_for_text_input_node(state, node, &value, true, false)
+                {
+                    self.actions.extend(actions);
+                }
+            }
+            GuiWidgetKind::Checkbox => {
+                let mut checked = matches!(node.value.as_deref(), Some("yes" | "true"));
+                let checkbox_label = if omit_label { "" } else { &node.label };
+                let response = ui.add_enabled(
+                    node.enabled,
+                    egui::Checkbox::new(&mut checked, checkbox_label),
+                );
+                if response.changed()
+                    && let Some(action) = Self::action_for_checkbox_node(state, node, checked)
+                {
+                    self.actions.push(action);
+                }
+            }
+            GuiWidgetKind::Button => self.render_button_like(ui, node, state),
+            GuiWidgetKind::ReadOnly | GuiWidgetKind::Status => {
+                if omit_label {
+                    ui.label(node.value.as_deref().unwrap_or("(none)"));
+                } else {
+                    self.render_leaf(ui, node, state);
+                }
+            }
+            GuiWidgetKind::Layout
+            | GuiWidgetKind::Panel
+            | GuiWidgetKind::List
+            | GuiWidgetKind::ListItem => {
+                self.render_node(ui, node, state);
+            }
+        }
+    }
+
+    fn render_button_like(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let mut clicked = false;
+        ui.add_enabled_ui(node.enabled, |ui| {
+            clicked = ui
+                .add_sized(
+                    [ui.available_width().max(0.0), 0.0],
+                    egui::Button::new(Self::display_text(node)),
+                )
+                .clicked();
+        });
+        if clicked {
+            if node.id == "shell:quick:open-media-file"
+                || Self::is_open_media_file_menu_action(state, node)
+            {
+                self.selected_media_files = Self::pick_media_files(state);
+            } else if Self::is_exit_menu_action(state, node) {
+                self.close_requested = true;
+            } else if let Some(actions) = Self::direct_menu_actions(state, node) {
+                self.actions.extend(actions);
+            } else {
+                self.actions
+                    .extend(Self::actions_for_clicked_button(state, node));
+            }
         }
     }
 

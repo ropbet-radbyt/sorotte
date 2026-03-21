@@ -1,4 +1,4 @@
-use super::GuiWidgetRenderer;
+use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::{
     GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
@@ -276,6 +276,124 @@ fn gui_shell_app_state_projects_public_server_and_media_search_widget_trees() {
         .find("media-search:timing:warning-threshold")
         .expect("media-search warning-threshold timing status should exist");
     assert_eq!(warning_timing.value.as_deref(), Some("7.50s"));
+}
+
+#[test]
+fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
+        media_search_directories: Some(vec!["C:/Media".to_owned()]),
+        shared_playlist_enabled: Some(true),
+        player_path: Some("mpv".to_owned()),
+        chat_input_enabled: Some(true),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "One".to_owned(),
+            "Two".to_owned(),
+        ]))
+    );
+
+    let configuration = state.configuration_widget_tree();
+    assert_eq!(configuration.kind, GuiWidgetKind::Layout);
+    assert_eq!(configuration.layout_mode, Some(GuiLayoutMode::Stack));
+    let section_grid = configuration.find("configuration:sections").unwrap();
+    assert_eq!(section_grid.kind, GuiWidgetKind::Layout);
+    assert_eq!(
+        section_grid.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 420.0,
+            max_columns: 3,
+        })
+    );
+    let connection_section = configuration.find("config-section:Connection").unwrap();
+    assert_eq!(connection_section.column_span, 2);
+
+    let main_window = state.main_window_widget_tree();
+    assert_eq!(main_window.kind, GuiWidgetKind::Layout);
+    assert_eq!(main_window.layout_mode, Some(GuiLayoutMode::Stack));
+    let top_region = main_window.find("main-window:top-region").unwrap();
+    assert_eq!(
+        top_region.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 360.0,
+            max_columns: 3,
+        })
+    );
+    let summary_column = main_window.find("main-window:summary-column").unwrap();
+    assert_eq!(summary_column.kind, GuiWidgetKind::Layout);
+    let browser = main_window.find("main-window:browser").unwrap();
+    assert_eq!(browser.min_content_height, Some(300.0));
+    let playlist = main_window.find("main-window:playlist").unwrap();
+    assert_eq!(playlist.min_content_height, Some(220.0));
+    let chat = main_window.find("main-window:chat").unwrap();
+    assert_eq!(chat.min_content_height, Some(180.0));
+    let chat_panel = main_window.find("main-window:chat-panel").unwrap();
+    assert_eq!(chat_panel.kind, GuiWidgetKind::Panel);
+
+    let top_region_children: Vec<_> = top_region
+        .children
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    assert_eq!(
+        top_region_children,
+        vec![
+            "main-window:summary-column",
+            "main-window:browser",
+            "main-window:playlist-column",
+        ]
+    );
+
+    let public_servers = state.public_server_widget_tree();
+    assert_eq!(public_servers.kind, GuiWidgetKind::Layout);
+    let public_content = public_servers.find("public-servers:content").unwrap();
+    assert_eq!(
+        public_content.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 360.0,
+            max_columns: 2,
+        })
+    );
+
+    let media_search = state.media_search_widget_tree();
+    assert_eq!(media_search.kind, GuiWidgetKind::Layout);
+    let media_content = media_search.find("media-search:content").unwrap();
+    assert_eq!(
+        media_content.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 360.0,
+            max_columns: 2,
+        })
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_single_main_window_editor_as_full_width_row() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
+
+    let tree = state.main_window_widget_tree();
+    let editors = tree
+        .find("main-window:editors")
+        .expect("main window editors should exist when an editor is active");
+    assert_eq!(editors.kind, GuiWidgetKind::Layout);
+    assert_eq!(
+        editors.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 420.0,
+            max_columns: 2,
+        })
+    );
+    assert_eq!(editors.children.len(), 1);
+    assert_eq!(editors.children[0].id, "main-window:media-url-edit");
+    assert_eq!(editors.children[0].column_span, 2);
 }
 
 #[test]

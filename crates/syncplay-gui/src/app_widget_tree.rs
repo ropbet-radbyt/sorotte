@@ -2,8 +2,28 @@
 #[path = "app_widget_tree/tests.rs"]
 mod tests;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum GuiLayoutMode {
+    Stack,
+    ResponsiveColumns {
+        min_column_width: f32,
+        max_columns: usize,
+    },
+    FormGrid {
+        label_width: f32,
+        min_field_width: f32,
+    },
+    KeyValueGrid {
+        min_pair_width: f32,
+    },
+    ButtonWrap {
+        min_button_width: f32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiWidgetKind {
+    Layout,
     Panel,
     TextInput,
     TextArea,
@@ -22,6 +42,7 @@ impl GuiWidgetKind {
     #[cfg(test)]
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::Layout => "layout",
             Self::Panel => "panel",
             Self::TextInput => "text-input",
             Self::TextArea => "text-area",
@@ -38,7 +59,7 @@ impl GuiWidgetKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct GuiWidgetNode {
     pub(super) id: String,
     pub(super) label: String,
@@ -46,6 +67,9 @@ pub(super) struct GuiWidgetNode {
     pub(super) value: Option<String>,
     pub(super) enabled: bool,
     pub(super) selected: bool,
+    pub(super) layout_mode: Option<GuiLayoutMode>,
+    pub(super) column_span: usize,
+    pub(super) min_content_height: Option<f32>,
     pub(super) children: Vec<GuiWidgetNode>,
 }
 
@@ -65,6 +89,9 @@ impl GuiWidgetNode {
             value,
             enabled,
             selected,
+            layout_mode: None,
+            column_span: 1,
+            min_content_height: None,
             children: Vec::new(),
         }
     }
@@ -82,8 +109,41 @@ impl GuiWidgetNode {
             value: None,
             enabled: true,
             selected: false,
+            layout_mode: None,
+            column_span: 1,
+            min_content_height: None,
             children,
         }
+    }
+
+    pub(super) fn layout(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        mode: GuiLayoutMode,
+        children: Vec<GuiWidgetNode>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            kind: GuiWidgetKind::Layout,
+            value: None,
+            enabled: true,
+            selected: false,
+            layout_mode: Some(mode),
+            column_span: 1,
+            min_content_height: None,
+            children,
+        }
+    }
+
+    pub(super) fn with_span(mut self, column_span: usize) -> Self {
+        self.column_span = column_span.max(1);
+        self
+    }
+
+    pub(super) fn with_min_content_height(mut self, min_content_height: f32) -> Self {
+        self.min_content_height = Some(min_content_height.max(0.0));
+        self
     }
 
     pub(super) fn find(&self, id: &str) -> Option<&Self> {

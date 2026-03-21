@@ -9,7 +9,7 @@ impl SyncplayGuiShellAppState {
             .player_path
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-        let mut children =
+        let section_cards =
             self.configuration
                 .sections
                 .iter()
@@ -47,80 +47,112 @@ impl SyncplayGuiShellAppState {
                                 focused,
                             )
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
 
-                    GuiWidgetNode::branch(
+                    let panel = GuiWidgetNode::branch(
                         format!("config-section:{}", section.title),
                         section.title,
                         GuiWidgetKind::Panel,
-                        controls,
-                    )
+                        vec![GuiWidgetNode::layout(
+                            format!("config-section:{}:form", section.title),
+                            format!("{} Form", section.title),
+                            GuiLayoutMode::FormGrid {
+                                label_width: 160.0,
+                                min_field_width: 220.0,
+                            },
+                            controls,
+                        )],
+                    );
+                    if section.title == "Connection" {
+                        panel.with_span(2)
+                    } else {
+                        panel
+                    }
                 })
                 .collect::<Vec<_>>();
 
-        children.push(GuiWidgetNode::branch(
-            "config-commands",
-            "Commands",
-            GuiWidgetKind::Panel,
-            vec![
-                GuiWidgetNode::leaf(
-                    "config-command:edit-room-history",
-                    "Edit Room History",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.pending_operation.is_none(),
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:connect",
-                    self.saved_session_connect_button_label(),
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_connect_saved_server && self.validation.issues.is_empty(),
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:disconnect",
-                    "Disconnect",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_disconnect_session,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:save",
-                    "Save",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_save_configuration,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:reset",
-                    "Reset",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_reset_configuration,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:reload",
-                    "Reload",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_reload_configuration,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-command:clear-gui-data",
-                    "Clear GUI Data",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.pending_operation.is_none(),
-                    false,
-                ),
-            ],
-        ));
+        let mut children = vec![
+            GuiWidgetNode::branch(
+                "config-commands",
+                "Commands",
+                GuiWidgetKind::Panel,
+                vec![GuiWidgetNode::layout(
+                    "config-commands:buttons",
+                    "Command Buttons",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "config-command:edit-room-history",
+                            "Edit Room History",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none(),
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:connect",
+                            self.saved_session_connect_button_label(),
+                            GuiWidgetKind::Button,
+                            None,
+                            self.commands.can_connect_saved_server
+                                && self.validation.issues.is_empty(),
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:disconnect",
+                            "Disconnect",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.commands.can_disconnect_session,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:save",
+                            "Save",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.commands.can_save_configuration,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:reset",
+                            "Reset",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.commands.can_reset_configuration,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:reload",
+                            "Reload",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.commands.can_reload_configuration,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-command:clear-gui-data",
+                            "Clear GUI Data",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none(),
+                            false,
+                        ),
+                    ],
+                )],
+            ),
+            GuiWidgetNode::layout(
+                "configuration:sections",
+                "Configuration Sections",
+                GuiLayoutMode::ResponsiveColumns {
+                    min_column_width: 420.0,
+                    max_columns: 3,
+                },
+                section_cards,
+            ),
+        ];
 
         if let Some(session) = &self.room_history_edit_session {
             children.push(GuiWidgetNode::branch(
@@ -136,30 +168,39 @@ impl SyncplayGuiShellAppState {
                         self.pending_operation.is_none(),
                         false,
                     ),
-                    GuiWidgetNode::leaf(
-                        "room-history:edit:commit",
-                        "Save Room History",
-                        GuiWidgetKind::Button,
-                        None,
-                        session.is_dirty,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "room-history:edit:cancel",
-                        "Cancel Room History Edit",
-                        GuiWidgetKind::Button,
-                        None,
-                        true,
-                        false,
+                    GuiWidgetNode::layout(
+                        "room-history:edit:actions",
+                        "Room History Actions",
+                        GuiLayoutMode::ButtonWrap {
+                            min_button_width: 140.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "room-history:edit:commit",
+                                "Save Room History",
+                                GuiWidgetKind::Button,
+                                None,
+                                session.is_dirty,
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "room-history:edit:cancel",
+                                "Cancel Room History Edit",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                false,
+                            ),
+                        ],
                     ),
                 ],
             ));
         }
 
-        GuiWidgetNode::branch(
+        GuiWidgetNode::layout(
             "configuration-root",
             "Configuration",
-            GuiWidgetKind::Panel,
+            GuiLayoutMode::Stack,
             children,
         )
     }

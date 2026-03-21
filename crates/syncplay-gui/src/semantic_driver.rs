@@ -636,9 +636,11 @@ impl GuiSemanticDriver {
     fn activate_widget(&mut self, widget_id: &str) -> Result<(), String> {
         let widget = self.widget(widget_id)?;
         let actions = match widget.kind {
-            GuiWidgetKind::Panel => GuiWidgetEguiRenderer::action_for_surface_node(&widget)
-                .into_iter()
-                .collect::<Vec<_>>(),
+            GuiWidgetKind::Layout | GuiWidgetKind::Panel => {
+                GuiWidgetEguiRenderer::action_for_surface_node(&widget)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            }
             GuiWidgetKind::Checkbox => {
                 let next_value = widget.value.as_deref() != Some("yes");
                 GuiWidgetEguiRenderer::action_for_checkbox_node(&self.state, &widget, next_value)
