@@ -708,9 +708,17 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         "shared-playlist open should publish the selected playlist index over the detached transport",
     );
     assert!(
-        outbound_protocol_lines
-            .iter()
-            .any(|line| line.contains(r#""file":{"name":"episode1.mkv"}"#)),
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
+                return false;
+            };
+            file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
+                && file.get("duration").and_then(serde_json::Value::as_f64) == Some(0.0)
+                && file.get("size").and_then(serde_json::Value::as_i64) == Some(0)
+        }),
         "shared-playlist open should publish the local file metadata over the detached transport",
     );
 }

@@ -2370,6 +2370,9 @@ impl ClientSession {
 
         let mut sanitized = file_map.clone();
         sanitized.remove("path");
+        let has_file_metadata = file_map.contains_key("name")
+            || file_map.contains_key("duration")
+            || file_map.contains_key("size");
 
         if let Some(name_value) = file_map.get("name") {
             let sanitized_name =
@@ -2379,9 +2382,21 @@ impl ClientSession {
             }
         }
 
-        if let Some(size_value) = file_map.get("size") {
+        if has_file_metadata {
+            let duration_value = file_map
+                .get("duration")
+                .and_then(Value::as_f64)
+                .map(Value::from)
+                .unwrap_or_else(|| Value::from(0.0));
+            sanitized.insert("duration".to_owned(), duration_value);
+
+            let size_value = file_map
+                .get("size")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .unwrap_or_else(|| Value::from(0));
             let sanitized_size =
-                Self::filesize_with_privacy_mode_legacy_like(size_value, filesize_privacy_mode);
+                Self::filesize_with_privacy_mode_legacy_like(&size_value, filesize_privacy_mode);
             if let Some(sanitized_size) = sanitized_size {
                 sanitized.insert("size".to_owned(), sanitized_size);
             }
@@ -9454,6 +9469,69 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missing_metadata() {
+        let payload = json!({
+            "name": "movie.mkv",
+            "path": "C:/media/movie.mkv",
+            "extra": "keep-me"
+        });
+
+        let raw = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+            &payload,
+            PrivacyMode::SendRaw,
+            PrivacyMode::SendRaw,
+        )
+        .expect("raw mode should return sanitized payload");
+        assert_eq!(
+            raw,
+            json!({
+                "name": "movie.mkv",
+                "size": 0,
+                "duration": 0.0,
+                "extra": "keep-me"
+            })
+        );
+
+        let hashed = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+            &payload,
+            PrivacyMode::SendHashed,
+            PrivacyMode::SendHashed,
+        )
+        .expect("hashed mode should return sanitized payload");
+        let hashed_name = ClientSession::filename_with_privacy_mode_legacy_like(
+            &json!("movie.mkv"),
+            PrivacyMode::SendHashed,
+        )
+        .expect("hashed filename should be available");
+        let hashed_zero_size = ClientSession::hash_filesize_for_compare("0");
+        assert_eq!(
+            hashed,
+            json!({
+                "name": hashed_name,
+                "size": hashed_zero_size,
+                "duration": 0.0,
+                "extra": "keep-me"
+            })
+        );
+
+        let hidden = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+            &payload,
+            PrivacyMode::DoNotSend,
+            PrivacyMode::DoNotSend,
+        )
+        .expect("hidden mode should return sanitized payload");
+        assert_eq!(
+            hidden,
+            json!({
+                "name": PRIVACY_HIDDEN_FILENAME,
+                "size": 0,
+                "duration": 0.0,
+                "extra": "keep-me"
+            })
+        );
+    }
+
+    #[test]
     fn privacy_mode_from_legacy_name_maps_expected_modes() {
         assert_eq!(
             PrivacyMode::from_legacy_name("SendRaw"),
@@ -10105,6 +10183,61 @@ mod tests {
         assert_eq!(file.name.as_deref(), Some("a9858cb4803c"));
         assert_eq!(file.duration, Some(95.5));
         assert_eq!(file.size.as_ref(), Some(&json!(0)));
+        assert!(file.path.is_none());
+    }
+
+    #[test]
+    fn client_runtime_publish_pending_local_file_update_without_metadata_uses_legacy_safe_defaults()
+    {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        let player = RecordingPlayer {
+            pending_local_file_update: Some(
+                LocalFileUpdate::new("movie.mkv").with_path("C:/media/movie.mkv"),
+            ),
+            ..Default::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let published = runtime
+            .publish_pending_local_file_update_legacy_compatible(
+                PrivacyMode::SendRaw,
+                PrivacyMode::SendHashed,
+            )
+            .expect("pending local file update should publish");
+        assert!(published);
+
+        let (session, player, control) = runtime.into_parts();
+        assert_eq!(player.paused, None);
+        assert_eq!(session.user_has_file("alice"), Some(true));
+        assert_eq!(session.user_file_name("alice"), Some("movie.mkv"));
+        assert_eq!(
+            session.user_file_size("alice"),
+            Some(&json!(ClientSession::hash_filesize_for_compare("0")))
+        );
+        assert_eq!(session.user_file_duration("alice"), Some(&json!(0.0)));
+
+        assert_eq!(control.outbound_messages().len(), 1);
+        let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.file protocol message");
+        };
+        let file = set_message
+            .set
+            .file
+            .as_ref()
+            .expect("queued message should include file payload");
+        assert_eq!(file.name.as_deref(), Some("movie.mkv"));
+        assert_eq!(file.duration, Some(0.0));
+        assert_eq!(
+            file.size.as_ref(),
+            Some(&json!(ClientSession::hash_filesize_for_compare("0")))
+        );
         assert!(file.path.is_none());
     }
 
