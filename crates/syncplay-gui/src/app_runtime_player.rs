@@ -14,9 +14,8 @@ use syncplay_player_api::PlayerAdapter;
 use syncplay_player_mpv::LegacySyncplayOsdKind;
 
 use super::super::media_search_cache::{
-    PersistedMediaSearchRootIndexV1, current_unix_time_millis,
-    load_persisted_media_search_root_index_at_root, normalized_media_search_root_key,
-    persist_media_search_root_index_at_root,
+    current_unix_time_millis, load_persisted_media_search_root_index_at_root,
+    normalized_media_search_root_key, persist_media_search_root_index_borrowed_at_root,
 };
 use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
@@ -598,18 +597,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.sync_attached_media_search_build_state_from_index(&state_roots);
     }
 
-    fn persisted_media_search_root_index_from_runtime_index(
-        root_index: &GuiAttachedMediaSearchRootIndex,
-    ) -> PersistedMediaSearchRootIndexV1 {
-        PersistedMediaSearchRootIndexV1 {
-            version: 1,
-            root_key: root_index.root_key.clone(),
-            root_path: root_index.root_path.to_string_lossy().into_owned(),
-            built_at_unix_ms: root_index.built_at_unix_ms,
-            candidates_by_name: root_index.candidates_by_name.clone(),
-        }
-    }
-
     fn load_persisted_attached_media_search_index(
         &self,
         search_roots: &[PathBuf],
@@ -865,12 +852,13 @@ impl GuiPersistedConfigRuntimeOwner {
                                 candidates_by_name,
                             };
                             if let Some(cache_root) = cache_root.as_ref() {
-                                let persisted =
-                                    Self::persisted_media_search_root_index_from_runtime_index(
-                                        &root_index,
-                                    );
-                                let _ =
-                                    persist_media_search_root_index_at_root(cache_root, &persisted);
+                                let _ = persist_media_search_root_index_borrowed_at_root(
+                                    cache_root,
+                                    &root_index.root_key,
+                                    &root_index.root_path,
+                                    root_index.built_at_unix_ms,
+                                    &root_index.candidates_by_name,
+                                );
                             }
                             GuiAttachedMediaSearchRootRefreshResult {
                                 root_key,

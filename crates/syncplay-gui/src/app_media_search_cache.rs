@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -16,6 +17,15 @@ pub(super) struct PersistedMediaSearchRootIndexV1 {
     pub(super) root_path: String,
     pub(super) built_at_unix_ms: u64,
     pub(super) candidates_by_name: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct PersistedMediaSearchRootIndexV1Ref<'a> {
+    version: u32,
+    root_key: &'a str,
+    root_path: Cow<'a, str>,
+    built_at_unix_ms: u64,
+    candidates_by_name: &'a HashMap<String, Vec<String>>,
 }
 
 pub(super) fn normalized_media_search_root_key(path: &Path) -> String {
@@ -230,17 +240,46 @@ pub(super) fn persist_media_search_root_index_at_root(
     gui_root: &Path,
     index: &PersistedMediaSearchRootIndexV1,
 ) -> Result<(), String> {
-    let root_key = normalized_media_search_root_key(Path::new(&index.root_path));
-    if index.version != PERSISTED_MEDIA_SEARCH_ROOT_INDEX_VERSION || index.root_key != root_key {
+    if index.version != PERSISTED_MEDIA_SEARCH_ROOT_INDEX_VERSION {
         return Err(
             "persisted media-search cache write rejected inconsistent root metadata.".to_owned(),
         );
     }
-    let path = persisted_media_search_root_index_path_at_root(gui_root, &root_key);
-    let contents = serde_json::to_vec(index).map_err(|error| {
+    persist_media_search_root_index_borrowed_at_root(
+        gui_root,
+        &index.root_key,
+        Path::new(&index.root_path),
+        index.built_at_unix_ms,
+        &index.candidates_by_name,
+    )
+}
+
+pub(super) fn persist_media_search_root_index_borrowed_at_root<'a>(
+    gui_root: &Path,
+    root_key: &'a str,
+    root_path: &'a Path,
+    built_at_unix_ms: u64,
+    candidates_by_name: &'a HashMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let normalized_root_key = normalized_media_search_root_key(root_path);
+    if root_key != normalized_root_key {
+        return Err(
+            "persisted media-search cache write rejected inconsistent root metadata.".to_owned(),
+        );
+    }
+    let path = persisted_media_search_root_index_path_at_root(gui_root, root_key);
+    let root_path_string = root_path.to_string_lossy();
+    let contents = serde_json::to_vec(&PersistedMediaSearchRootIndexV1Ref {
+        version: PERSISTED_MEDIA_SEARCH_ROOT_INDEX_VERSION,
+        root_key,
+        root_path: root_path_string,
+        built_at_unix_ms,
+        candidates_by_name,
+    })
+    .map_err(|error| {
         format!(
             "failed encoding persisted media-search root index '{}': {error}",
-            index.root_path
+            root_path.display()
         )
     })?;
     write_file_atomically(&path, &contents)
@@ -298,6 +337,48 @@ mod tests {
         assert_eq!(loaded.root_key, index.root_key);
         assert_eq!(loaded.root_path, index.root_path);
         assert_eq!(loaded.built_at_unix_ms, index.built_at_unix_ms);
+        assert_eq!(
+            loaded
+                .candidates_by_name
+                .get("episode1.mkv")
+                .cloned()
+                .unwrap_or_default(),
+            vec![
+                "episode1.mkv".to_owned(),
+                "season-1\\episode1.mkv".to_owned()
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn borrowed_persisted_media_search_root_index_round_trips() {
+        let root = test_temp_root("media-search-cache-borrowed-roundtrip");
+        let media_root = root.join("Media");
+        let candidates_by_name = HashMap::from([(
+            "episode1.mkv".to_owned(),
+            vec![
+                "season-1\\episode1.mkv".to_owned(),
+                "season-1\\episode1.mkv".to_owned(),
+                "episode1.mkv".to_owned(),
+            ],
+        )]);
+
+        persist_media_search_root_index_borrowed_at_root(
+            &root,
+            &normalized_media_search_root_key(&media_root),
+            &media_root,
+            1234,
+            &candidates_by_name,
+        )
+        .expect("borrowed persisted media-search index should be written");
+
+        let loaded = load_persisted_media_search_root_index_at_root(&root, &media_root)
+            .expect("borrowed persisted media-search index should load")
+            .expect("borrowed persisted media-search index should exist");
+
+        assert_eq!(loaded.built_at_unix_ms, 1234);
         assert_eq!(
             loaded
                 .candidates_by_name

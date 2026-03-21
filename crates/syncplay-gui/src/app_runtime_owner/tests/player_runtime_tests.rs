@@ -266,8 +266,9 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         .playback_updates
         .push(syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let paused_actions = handle.drain_actions();
     assert_eq!(
-        handle.drain_actions(),
+        paused_actions,
         vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
             MainWindowRuntimeSnapshot {
                 room_name: "(no room joined)".to_owned(),
@@ -295,6 +296,15 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                 ..Default::default()
             },
         )]
+    );
+    for action in paused_actions {
+        assert!(state.apply(action));
+    }
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    assert!(
+        handle.drain_actions().is_empty(),
+        "idle runtime pumps should not emit redundant player projection actions"
     );
 }
 

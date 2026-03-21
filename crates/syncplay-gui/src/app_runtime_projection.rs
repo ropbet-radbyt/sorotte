@@ -6,11 +6,24 @@ use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::shell_state::{
     GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiShellAction,
     MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SyncplayGuiShellAppState,
+    MenuSectionShellState, SyncplayGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn menu_action_enabled(
+        section: Option<&MenuSectionShellState>,
+        action_label: &str,
+    ) -> Option<bool> {
+        section.and_then(|section| {
+            section
+                .actions
+                .iter()
+                .find(|action| action.label == action_label)
+                .map(|action| action.enabled)
+        })
+    }
+
     fn format_local_file_playlist_entry(local_file: &LocalFileUpdate) -> String {
         let mut details = Vec::new();
         if let Some(duration_seconds) = local_file.duration_seconds {
@@ -85,54 +98,51 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         let player_attached = self.player.is_some();
         let player_runtime_available = self.player_runtime_available_for_actions();
-
-        let mut desired_main_window =
-            MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
-        let mut main_window_changed = false;
-
-        if desired_main_window.can_toggle_pause != player_runtime_available {
-            desired_main_window.can_toggle_pause = player_runtime_available;
-            main_window_changed = true;
-        }
-        if desired_main_window.can_seek != player_runtime_available {
-            desired_main_window.can_seek = player_runtime_available;
-            main_window_changed = true;
-        }
-        if desired_main_window.can_set_offset != player_runtime_available {
-            desired_main_window.can_set_offset = player_runtime_available;
-            main_window_changed = true;
-        }
         let can_manage_playlist = self
             .session
             .as_ref()
             .map(|session| {
-                desired_main_window.shared_playlist_enabled && session.playlist_control_available()
+                state.main_window.shared_playlist_enabled && session.playlist_control_available()
             })
-            .unwrap_or(player_runtime_available && desired_main_window.shared_playlist_enabled);
-        if desired_main_window.can_manage_playlist != can_manage_playlist {
-            desired_main_window.can_manage_playlist = can_manage_playlist;
-            main_window_changed = true;
-        }
-        if !desired_main_window.shared_playlist_enabled {
-            let desired_playlist = self.player_local_file_playlist_entries_impl();
-            if desired_main_window.playlist != desired_playlist {
-                desired_main_window.playlist = desired_playlist;
-                main_window_changed = true;
-            }
-        }
-        if player_attached
-            && let Some(paused) = self.player_paused
-            && desired_main_window.playback_paused != paused
-        {
-            desired_main_window.playback_paused = paused;
-            main_window_changed = true;
-        }
-        if (desired_main_window.user_offset_seconds - self.user_offset_seconds).abs() > f64::EPSILON
-        {
-            desired_main_window.user_offset_seconds = self.user_offset_seconds;
-            main_window_changed = true;
-        }
+            .unwrap_or(player_runtime_available && state.main_window.shared_playlist_enabled);
+        let desired_playlist = if state.main_window.shared_playlist_enabled {
+            None
+        } else {
+            let playlist = self.player_local_file_playlist_entries_impl();
+            let playlist_matches = state.main_window.playlist.len() == playlist.len()
+                && state
+                    .main_window
+                    .playlist
+                    .iter()
+                    .zip(playlist.iter())
+                    .all(|(current, desired)| current.label == *desired);
+            (!playlist_matches).then_some(playlist)
+        };
+        let desired_paused = player_attached.then_some(self.player_paused).flatten();
+        let main_window_changed = state.main_window.playback.can_toggle_pause
+            != player_runtime_available
+            || state.main_window.playback.can_seek != player_runtime_available
+            || state.main_window.playback.can_set_offset != player_runtime_available
+            || state.main_window.playback.can_manage_playlist != can_manage_playlist
+            || desired_playlist.is_some()
+            || desired_paused.is_some_and(|paused| state.main_window.playback_paused != paused)
+            || (state.main_window.user_offset_seconds - self.user_offset_seconds).abs()
+                > f64::EPSILON;
+
         if main_window_changed {
+            let mut desired_main_window =
+                MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+            desired_main_window.can_toggle_pause = player_runtime_available;
+            desired_main_window.can_seek = player_runtime_available;
+            desired_main_window.can_set_offset = player_runtime_available;
+            desired_main_window.can_manage_playlist = can_manage_playlist;
+            if let Some(desired_playlist) = desired_playlist {
+                desired_main_window.playlist = desired_playlist;
+            }
+            if let Some(paused) = desired_paused {
+                desired_main_window.playback_paused = paused;
+            }
+            desired_main_window.user_offset_seconds = self.user_offset_seconds;
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 desired_main_window,
             ));
@@ -147,6 +157,16 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
+        let playback_section = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Playback");
+        let advanced_section = state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Advanced");
         let mut action_overrides = Vec::new();
         for (action_label, enabled) in [
             ("Play", player_attached),
@@ -168,18 +188,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .unwrap_or(player_attached && state.main_window.shared_playlist_enabled),
             ),
         ] {
-            let current_enabled = state
-                .menus
-                .sections
-                .iter()
-                .find(|section| section.title == "Playback")
-                .and_then(|section| {
-                    section
-                        .actions
-                        .iter()
-                        .find(|action| action.label == action_label)
-                })
-                .map(|action| action.enabled);
+            let current_enabled = Self::menu_action_enabled(playback_section, action_label);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
                 action_overrides.push(MenuActionRuntimeOverride {
                     section_title: "Playback",
@@ -188,18 +197,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 });
             }
         }
-        let current_offset_enabled = state
-            .menus
-            .sections
-            .iter()
-            .find(|section| section.title == "Advanced")
-            .and_then(|section| {
-                section
-                    .actions
-                    .iter()
-                    .find(|action| action.label == "Set Offset")
-            })
-            .map(|action| action.enabled);
+        let current_offset_enabled = Self::menu_action_enabled(advanced_section, "Set Offset");
         let desired_offset_enabled = state.pending_operation.is_none() && player_attached;
         if current_offset_enabled
             .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
