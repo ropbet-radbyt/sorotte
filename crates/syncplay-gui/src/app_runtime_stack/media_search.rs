@@ -1,8 +1,11 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -184,6 +187,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         });
     }
 
+    pub(in crate::app) fn configured_missing_media_parallelism() -> usize {
+        std::env::var("SYNCPLAY_GUI_MEDIA_INDEX_WORKERS")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value != 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|parallelism| parallelism.get())
+                    .unwrap_or(1)
+            })
+    }
+
     fn visit_missing_media_directory_entries<F>(
         directory: &Path,
         mut visitor: F,
@@ -304,7 +319,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    pub(in crate::app) fn build_missing_media_file_name_index_for_path_with_progress<F>(
+    fn build_missing_media_file_name_index_for_path_sequential<F>(
         path: &Path,
         deadline: Option<Instant>,
         cancel_flag: &AtomicBool,
@@ -408,6 +423,275 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         candidates_by_name.retain(|_, candidates| !candidates.is_empty());
         Ok(candidates_by_name)
+    }
+
+    fn merge_missing_media_index_candidates(
+        target: &mut HashMap<String, Vec<String>>,
+        mut source: HashMap<String, Vec<String>>,
+    ) {
+        for (key, mut candidates) in source.drain() {
+            target.entry(key).or_default().append(&mut candidates);
+        }
+    }
+
+    fn build_missing_media_file_name_index_for_path_parallel<F>(
+        path: &Path,
+        deadline: Option<Instant>,
+        cancel_flag: &AtomicBool,
+        worker_count: usize,
+        report_progress: &mut F,
+    ) -> Result<HashMap<String, Vec<String>>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        struct SharedState {
+            pending_directories: Vec<PathBuf>,
+            in_flight_directories: usize,
+            scanned_directories: usize,
+            indexed_files: usize,
+            candidates_by_name: HashMap<String, Vec<String>>,
+            error: Option<String>,
+            finished: bool,
+        }
+
+        let shared = Arc::new((
+            Mutex::new(SharedState {
+                pending_directories: vec![path.to_path_buf()],
+                in_flight_directories: 0,
+                scanned_directories: 0,
+                indexed_files: 0,
+                candidates_by_name: HashMap::new(),
+                error: None,
+                finished: false,
+            }),
+            Condvar::new(),
+        ));
+        let root_path = path.to_path_buf();
+        report_progress(0, 0);
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let shared = Arc::clone(&shared);
+                let root_path = root_path.clone();
+                scope.spawn(move || {
+                    loop {
+                        let directory = {
+                            let (state_lock, state_changed) = &*shared;
+                            let mut state = state_lock
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            loop {
+                                if state.finished {
+                                    return;
+                                }
+                                if cancel_flag.load(Ordering::Relaxed) {
+                                    state.error = Some(
+                                    "Client-core session runtime canceled missing-media indexing."
+                                        .to_owned(),
+                                );
+                                    state.finished = true;
+                                    state_changed.notify_all();
+                                    return;
+                                }
+                                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                    state.error = Some(
+                                    "Client-core session runtime missing-media indexing timed out."
+                                        .to_owned(),
+                                );
+                                    state.finished = true;
+                                    state_changed.notify_all();
+                                    return;
+                                }
+                                if let Some(directory) = state.pending_directories.pop() {
+                                    state.in_flight_directories += 1;
+                                    break directory;
+                                }
+                                if state.in_flight_directories == 0 {
+                                    state.finished = true;
+                                    state_changed.notify_all();
+                                    return;
+                                }
+                                state = state_changed
+                                    .wait(state)
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            }
+                        };
+
+                        let mut local_candidates = HashMap::new();
+                        let mut discovered_directories = Vec::new();
+                        let mut indexed_files = 0usize;
+                        let scan_result = Self::visit_missing_media_directory_entries(
+                            &directory,
+                            |file_name, is_dir, is_file| {
+                                if cancel_flag.load(Ordering::Relaxed) {
+                                    return false;
+                                }
+                                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                    return false;
+                                }
+                                if is_dir {
+                                    discovered_directories.push(directory.join(file_name));
+                                    return true;
+                                }
+                                if !is_file {
+                                    return true;
+                                }
+                                Self::record_missing_media_index_directory_entry(
+                                    &mut local_candidates,
+                                    &root_path,
+                                    &directory,
+                                    file_name,
+                                );
+                                indexed_files += 1;
+                                true
+                            },
+                        )
+                        .map_err(|error| {
+                            error.replace(
+                                "during missing-media search",
+                                "during missing-media indexing",
+                            )
+                        });
+
+                        {
+                            let (state_lock, state_changed) = &*shared;
+                            let mut state = state_lock
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            state.in_flight_directories =
+                                state.in_flight_directories.saturating_sub(1);
+
+                            if cancel_flag.load(Ordering::Relaxed) {
+                                state.error = Some(
+                                    "Client-core session runtime canceled missing-media indexing."
+                                        .to_owned(),
+                                );
+                                state.finished = true;
+                                state_changed.notify_all();
+                                return;
+                            }
+                            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                state.error = Some(
+                                    "Client-core session runtime missing-media indexing timed out."
+                                        .to_owned(),
+                                );
+                                state.finished = true;
+                                state_changed.notify_all();
+                                return;
+                            }
+
+                            match scan_result {
+                                Ok(()) => {
+                                    Self::merge_missing_media_index_candidates(
+                                        &mut state.candidates_by_name,
+                                        local_candidates,
+                                    );
+                                    state.pending_directories.extend(discovered_directories);
+                                    state.scanned_directories += 1;
+                                    state.indexed_files += indexed_files;
+                                    if state.pending_directories.is_empty()
+                                        && state.in_flight_directories == 0
+                                    {
+                                        state.finished = true;
+                                    }
+                                    state_changed.notify_all();
+                                }
+                                Err(error) => {
+                                    state.error = Some(error);
+                                    state.finished = true;
+                                    state_changed.notify_all();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            let (state_lock, state_changed) = &*shared;
+            let mut state = state_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut last_reported_directories = 0usize;
+            let mut last_reported_files = 0usize;
+            loop {
+                if state.scanned_directories != last_reported_directories
+                    || state.indexed_files != last_reported_files
+                {
+                    last_reported_directories = state.scanned_directories;
+                    last_reported_files = state.indexed_files;
+                    report_progress(last_reported_directories, last_reported_files);
+                }
+                if state.finished {
+                    break;
+                }
+                state = state_changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        });
+
+        let (state_lock, _) = &*shared;
+        let mut state = state_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(error) = state.error.take() {
+            return Err(error);
+        }
+        for candidates in state.candidates_by_name.values_mut() {
+            Self::sort_missing_media_index_candidates(candidates);
+        }
+        state
+            .candidates_by_name
+            .retain(|_, candidates| !candidates.is_empty());
+        Ok(std::mem::take(&mut state.candidates_by_name))
+    }
+
+    pub(in crate::app) fn build_missing_media_file_name_index_for_path_with_progress_and_workers<
+        F,
+    >(
+        path: &Path,
+        deadline: Option<Instant>,
+        cancel_flag: &AtomicBool,
+        worker_count: usize,
+        report_progress: &mut F,
+    ) -> Result<HashMap<String, Vec<String>>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        let worker_count = worker_count.max(1);
+        if worker_count == 1 || path.is_file() || !path.is_dir() {
+            return Self::build_missing_media_file_name_index_for_path_sequential(
+                path,
+                deadline,
+                cancel_flag,
+                report_progress,
+            );
+        }
+        Self::build_missing_media_file_name_index_for_path_parallel(
+            path,
+            deadline,
+            cancel_flag,
+            worker_count,
+            report_progress,
+        )
+    }
+
+    pub(in crate::app) fn build_missing_media_file_name_index_for_path_with_progress<F>(
+        path: &Path,
+        deadline: Option<Instant>,
+        cancel_flag: &AtomicBool,
+        report_progress: &mut F,
+    ) -> Result<HashMap<String, Vec<String>>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        Self::build_missing_media_file_name_index_for_path_with_progress_and_workers(
+            path,
+            deadline,
+            cancel_flag,
+            Self::configured_missing_media_parallelism(),
+            report_progress,
+        )
     }
 
     pub(in crate::app) fn build_missing_media_file_name_index_for_path(

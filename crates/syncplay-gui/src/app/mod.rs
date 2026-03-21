@@ -88,10 +88,10 @@ use self::runtime_bridge::{
 };
 #[allow(unused_imports)]
 use self::runtime_owner::{
-    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildStatus,
-    GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
-    GuiAttachedMediaSearchRootRefreshResult, GuiPendingAttachedMediaResolution,
-    GuiPersistedConfigRuntimeOwner,
+    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
+    GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
+    GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult, GuiMediaIndexJobId,
+    GuiPendingAttachedMediaResolution, GuiPersistedConfigRuntimeOwner,
 };
 use self::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 #[allow(unused_imports)]

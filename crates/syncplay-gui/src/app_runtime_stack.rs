@@ -52,7 +52,7 @@ pub(super) struct GuiSessionRoomPlaystate {
     pub(super) do_seek: Option<bool>,
 }
 
-pub(super) trait GuiSessionRuntimeAdapter {
+pub(super) trait GuiSessionRuntimeAdapter: Send {
     fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         Vec::new()
     }

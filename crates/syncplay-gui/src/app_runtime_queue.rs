@@ -4,7 +4,9 @@ mod tests;
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex, Weak},
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use syncplay_client_app::app_boundary::commands::LocalOffsetCommand;
@@ -21,10 +23,71 @@ use super::support::normalized_editable_text;
 pub(super) struct GuiQueuedRuntimeBridgeHandle {
     queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
     queued_requests: Arc<Mutex<VecDeque<GuiRuntimeRequest>>>,
+    repaint_notifier: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    threaded_runtime_owner: Arc<Mutex<Option<Weak<GuiThreadedRuntimeOwnerShared>>>>,
 }
 
 #[allow(dead_code)]
 impl GuiQueuedRuntimeBridgeHandle {
+    pub(super) fn set_repaint_notifier<F>(&self, notifier: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let mut repaint_notifier = self
+            .repaint_notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *repaint_notifier = Some(Arc::new(notifier));
+    }
+
+    pub(super) fn clear_repaint_notifier(&self) {
+        let mut repaint_notifier = self
+            .repaint_notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *repaint_notifier = None;
+    }
+
+    fn set_threaded_runtime_owner(&self, owner: &Arc<GuiThreadedRuntimeOwnerShared>) {
+        let mut threaded_runtime_owner = self
+            .threaded_runtime_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *threaded_runtime_owner = Some(Arc::downgrade(owner));
+    }
+
+    fn notify_threaded_runtime_owner(&self) {
+        let shared = self
+            .threaded_runtime_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let Some(shared) = shared else {
+            return;
+        };
+        {
+            let mut shared_state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            shared_state.runtime_wake_revision = shared_state.runtime_wake_revision.wrapping_add(1);
+        }
+        shared.wake.notify_one();
+    }
+
+    fn notify_repaint(&self) {
+        let repaint_notifier = self
+            .repaint_notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(repaint_notifier) = repaint_notifier else {
+            return;
+        };
+        repaint_notifier();
+    }
+
     pub(super) fn push_action(&self, action: GuiShellAction) {
         self.push_actions([action]);
     }
@@ -37,7 +100,13 @@ impl GuiQueuedRuntimeBridgeHandle {
             .queued_actions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_len = queue.len();
         queue.extend(actions);
+        let queued_actions = queue.len().saturating_sub(previous_len);
+        drop(queue);
+        if queued_actions != 0 {
+            self.notify_repaint();
+        }
     }
 
     pub(super) fn drain_actions(&self) -> Vec<GuiShellAction> {
@@ -60,7 +129,13 @@ impl GuiQueuedRuntimeBridgeHandle {
             .queued_requests
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_len = queue.len();
         queue.extend(requests);
+        let queued_requests = queue.len().saturating_sub(previous_len);
+        drop(queue);
+        if queued_requests != 0 {
+            self.notify_threaded_runtime_owner();
+        }
     }
 
     pub(super) fn drain_requests(&self) -> Vec<GuiRuntimeRequest> {
@@ -364,5 +439,153 @@ where
 {
     fn pump(&mut self, state: &SyncplayGuiShellAppState) {
         self.owner.pump(&self.handle, state);
+    }
+}
+
+#[derive(Default)]
+struct GuiThreadedRuntimeOwnerSharedState {
+    latest_state: Option<Arc<SyncplayGuiShellAppState>>,
+    latest_state_revision: u64,
+    runtime_wake_revision: u64,
+    stop_requested: bool,
+}
+
+#[derive(Default)]
+struct GuiThreadedRuntimeOwnerShared {
+    state: Mutex<GuiThreadedRuntimeOwnerSharedState>,
+    wake: Condvar,
+}
+
+pub(super) struct GuiThreadedRuntimeOwnerPump {
+    last_submitted_state: Option<Arc<SyncplayGuiShellAppState>>,
+    shared: Arc<GuiThreadedRuntimeOwnerShared>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl GuiThreadedRuntimeOwnerPump {
+    const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    pub(super) fn new<TOwner>(handle: GuiQueuedRuntimeBridgeHandle, owner: TOwner) -> Self
+    where
+        TOwner: GuiQueuedRuntimeOwner + Send + 'static,
+    {
+        Self::new_with_poll_interval(handle, owner, Self::DEFAULT_POLL_INTERVAL)
+    }
+
+    pub(super) fn new_with_poll_interval<TOwner>(
+        handle: GuiQueuedRuntimeBridgeHandle,
+        owner: TOwner,
+        poll_interval: Duration,
+    ) -> Self
+    where
+        TOwner: GuiQueuedRuntimeOwner + Send + 'static,
+    {
+        let shared = Arc::new(GuiThreadedRuntimeOwnerShared::default());
+        handle.set_threaded_runtime_owner(&shared);
+        let worker_shared = shared.clone();
+        let worker = thread::Builder::new()
+            .name("syncplay-gui-runtime".to_owned())
+            .spawn(move || {
+                Self::run_worker_loop(handle, owner, worker_shared, poll_interval);
+            })
+            .expect("failed to spawn syncplay GUI runtime thread");
+        Self {
+            last_submitted_state: None,
+            shared,
+            worker: Some(worker),
+        }
+    }
+
+    fn run_worker_loop<TOwner>(
+        handle: GuiQueuedRuntimeBridgeHandle,
+        mut owner: TOwner,
+        shared: Arc<GuiThreadedRuntimeOwnerShared>,
+        poll_interval: Duration,
+    ) where
+        TOwner: GuiQueuedRuntimeOwner,
+    {
+        let mut latest_state = None;
+        let mut latest_revision = 0_u64;
+        let mut latest_runtime_wake_revision = 0_u64;
+
+        loop {
+            let mut timed_out = false;
+            let mut shared_state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            loop {
+                if shared_state.stop_requested {
+                    return;
+                }
+                if shared_state.latest_state_revision != latest_revision {
+                    latest_revision = shared_state.latest_state_revision;
+                    latest_state = shared_state.latest_state.clone();
+                }
+                if shared_state.runtime_wake_revision != latest_runtime_wake_revision || timed_out {
+                    latest_runtime_wake_revision = shared_state.runtime_wake_revision;
+                    break;
+                }
+                if latest_state.is_some() {
+                    let (next_shared_state, timeout) = shared
+                        .wake
+                        .wait_timeout(shared_state, poll_interval)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    shared_state = next_shared_state;
+                    timed_out = timeout.timed_out();
+                    continue;
+                }
+                shared_state = shared
+                    .wake
+                    .wait(shared_state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+
+            drop(shared_state);
+
+            if let Some(state) = latest_state.as_ref() {
+                owner.pump(&handle, state);
+            }
+        }
+    }
+}
+
+impl GuiNativeRuntimePump for GuiThreadedRuntimeOwnerPump {
+    fn pump(&mut self, state: &SyncplayGuiShellAppState) {
+        let state_changed = self.last_submitted_state.as_deref() != Some(state);
+        let mut shared_state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state_changed {
+            let snapshot = Arc::new(state.clone());
+            self.last_submitted_state = Some(snapshot.clone());
+            shared_state.latest_state = Some(snapshot);
+            shared_state.latest_state_revision = shared_state.latest_state_revision.wrapping_add(1);
+        }
+        shared_state.runtime_wake_revision = shared_state.runtime_wake_revision.wrapping_add(1);
+        drop(shared_state);
+        self.shared.wake.notify_one();
+    }
+}
+
+impl Drop for GuiThreadedRuntimeOwnerPump {
+    fn drop(&mut self) {
+        {
+            let mut shared_state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            shared_state.stop_requested = true;
+        }
+        self.shared.wake.notify_all();
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() {
+                eprintln!("syncplay-gui runtime thread panicked during shutdown");
+            }
+        }
     }
 }

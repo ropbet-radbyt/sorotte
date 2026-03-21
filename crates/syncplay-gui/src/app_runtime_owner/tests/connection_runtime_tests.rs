@@ -542,15 +542,9 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
         GuiPendingCompletionRequest::SearchMissingMedia,
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let actions = handle.drain_actions();
+    let mut actions = handle.drain_actions();
     let found_path_text = found_path.to_string_lossy().into_owned();
     let expected_message = format!("Missing media found: {found_path_text}.");
-    assert!(
-        actions.contains(&GuiShellAction::CompleteMissingMediaSearch(Some(
-            found_path_text.clone(),
-        ))),
-        "detached missing-media search should complete with the discovered path"
-    );
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -563,11 +557,51 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
         )),
         "detached missing-media search should surface the background media-index refresh status"
     );
-    for action in actions {
+    assert!(
+        !actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompleteMissingMediaSearch(_))),
+        "detached missing-media search should remain pending until the background index completes"
+    );
+    for action in actions.drain(..) {
         assert!(state.apply(action));
     }
-    assert!(state.pending_operation.is_none());
     assert!(state.media_index_status.active);
+    assert_eq!(
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::SearchMissingMedia)
+    );
+
+    let search_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut completion_actions = Vec::new();
+    while completion_actions.is_empty() {
+        assert!(
+            std::time::Instant::now() < search_deadline,
+            "timed out waiting for detached missing-media search completion"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        actions = handle.drain_actions();
+        completion_actions = actions
+            .iter()
+            .filter(|action| matches!(action, GuiShellAction::CompleteMissingMediaSearch(_)))
+            .cloned()
+            .collect();
+        for action in actions {
+            assert!(state.apply(action));
+        }
+    }
+
+    assert_eq!(
+        completion_actions,
+        vec![GuiShellAction::CompleteMissingMediaSearch(Some(
+            found_path_text.clone(),
+        ))]
+    );
+    assert!(state.pending_operation.is_none());
     assert_eq!(
         state
             .notifications

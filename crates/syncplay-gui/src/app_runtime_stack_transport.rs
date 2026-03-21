@@ -72,7 +72,7 @@ impl GuiQueuedSessionTransportHandle {
     }
 }
 
-pub(in super::super) trait GuiSessionTransportDriver {
+pub(in super::super) trait GuiSessionTransportDriver: Send {
     fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String>;
 }
 

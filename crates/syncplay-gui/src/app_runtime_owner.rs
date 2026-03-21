@@ -15,7 +15,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -57,10 +57,10 @@ use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
-    pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter>>,
+    pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
-    pub(super) session_transport_driver: Option<Box<dyn GuiSessionTransportDriver>>,
+    pub(super) session_transport_driver: Option<Box<dyn GuiSessionTransportDriver + Send>>,
     pub(super) session_default_room: Option<String>,
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     pub(super) startup_saved_connect_attempted: bool,
@@ -74,7 +74,13 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
     pub(super) pending_attached_media_resolution: Option<GuiPendingAttachedMediaResolution>,
     pub(super) attached_media_search_progress: Option<GuiAttachedMediaSearchBuildProgress>,
+    pub(super) attached_media_search_progress_updated_at: Option<Instant>,
+    pub(super) attached_media_search_build_state: GuiAttachedMediaSearchBuildState,
+    pub(super) attached_media_search_build_roots: Vec<String>,
+    pub(super) attached_media_search_job_sequence: u64,
+    pub(super) attached_media_search_index_revision: u64,
     pub(super) unresolved_attached_media_target: Option<String>,
+    pub(super) last_attached_media_resolution_trigger: Option<GuiAutomaticMediaResolutionTrigger>,
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
@@ -111,15 +117,45 @@ pub(super) struct GuiAttachedMediaSearchBuildProgress {
     pub(super) indexed_files: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct GuiMediaIndexJobId(pub(super) u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiAttachedMediaSearchBuildState {
+    Idle,
+    Queued,
+    Building,
+    Ready,
+    Stale,
+    Failed,
+}
+
 pub(super) enum GuiAttachedMediaSearchBuildStatus {
-    Progress(GuiAttachedMediaSearchBuildProgress),
     Completed(Vec<GuiAttachedMediaSearchRootRefreshResult>),
     Cancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GuiUserMediaTargetResolution {
+    Resolved(String),
+    Pending,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiAutomaticMediaResolutionTrigger {
+    pub(super) target: String,
+    pub(super) roots: Vec<String>,
+    pub(super) current_player_path: Option<String>,
+    pub(super) index_revision: u64,
+    pub(super) retry_due: bool,
+}
+
 pub(super) struct GuiPendingAttachedMediaResolution {
+    pub(super) job_id: GuiMediaIndexJobId,
     pub(super) roots: Vec<String>,
     pub(super) cancel_flag: Arc<AtomicBool>,
+    pub(super) latest_progress: Arc<Mutex<Option<GuiAttachedMediaSearchBuildProgress>>>,
     pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
 }
 
@@ -160,7 +196,13 @@ impl GuiPersistedConfigRuntimeOwner {
             attached_media_search_next_retry_at: None,
             pending_attached_media_resolution: None,
             attached_media_search_progress: None,
+            attached_media_search_progress_updated_at: None,
+            attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
+            attached_media_search_build_roots: Vec::new(),
+            attached_media_search_job_sequence: 0,
+            attached_media_search_index_revision: 0,
             unresolved_attached_media_target: None,
+            last_attached_media_resolution_trigger: None,
             last_applied_attached_room_playstate: None,
             player_position_seconds: None,
             player_paused: None,
@@ -257,7 +299,11 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_media_search_next_retry_at = None;
         self.pending_attached_media_resolution = None;
         self.attached_media_search_progress = None;
+        self.attached_media_search_progress_updated_at = None;
+        self.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Idle;
+        self.attached_media_search_build_roots.clear();
         self.unresolved_attached_media_target = None;
+        self.last_attached_media_resolution_trigger = None;
         self.last_applied_attached_room_playstate = None;
     }
 
@@ -504,7 +550,7 @@ impl GuiPersistedConfigRuntimeOwner {
     #[allow(dead_code)]
     pub(super) fn with_session_runtime(
         mut self,
-        session: Box<dyn GuiSessionRuntimeAdapter>,
+        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
     ) -> Self {
         self.session = Some(session);
         self.session_projects_to_shell = true;
@@ -528,7 +574,7 @@ impl GuiPersistedConfigRuntimeOwner {
     #[allow(dead_code)]
     fn with_session_transport_driver(
         mut self,
-        session_transport_driver: Box<dyn GuiSessionTransportDriver>,
+        session_transport_driver: Box<dyn GuiSessionTransportDriver + Send>,
     ) -> Self {
         self.session_transport_driver = Some(session_transport_driver);
         self

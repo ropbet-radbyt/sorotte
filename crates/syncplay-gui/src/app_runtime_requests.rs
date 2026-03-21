@@ -20,7 +20,7 @@ use super::super::shell_state::{
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::normalized_editable_text;
-use super::GuiPersistedConfigRuntimeOwner;
+use super::{GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_runtime_request(
@@ -559,8 +559,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 let replacement_transport_driver = selected_server
                     .as_ref()
                     .map(|(_label, address)| {
-                        GuiTcpSessionTransportDriver::connect_from_host_arg(address)
-                            .map(|driver| Box::new(driver) as Box<dyn GuiSessionTransportDriver>)
+                        GuiTcpSessionTransportDriver::connect_from_host_arg(address).map(|driver| {
+                            Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>
+                        })
                     })
                     .transpose();
                 let replacement_transport_driver = match replacement_transport_driver {
@@ -669,9 +670,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     Err(error) => Err(error),
                 };
                 match search_result {
-                        Ok(found_path) => {
-                            let found_path =
-                                found_path.and_then(|path| normalized_editable_text(&path));
+                        Ok(result) => {
+                            let found_path = match result {
+                                GuiUserMediaTargetResolution::Resolved(path) => {
+                                    normalized_editable_text(&path)
+                                }
+                                GuiUserMediaTargetResolution::Pending => return true,
+                                GuiUserMediaTargetResolution::Missing => None,
+                            };
                             self.ensure_configured_player_attached();
                             match found_path {
                                 Some(path) if self.player.is_some() => {

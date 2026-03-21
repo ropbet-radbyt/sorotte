@@ -1,10 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, TryRecvError},
     },
     time::{Duration, Instant},
@@ -25,16 +25,19 @@ use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState, browser_is_url,
 };
+use super::super::startup_support::env_trimmed;
 use super::super::support::normalized_editable_text;
 use super::{
-    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildStatus,
-    GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex,
-    GuiAttachedMediaSearchRootRefreshResult, GuiPendingAttachedMediaResolution,
-    GuiPersistedConfigRuntimeOwner,
+    GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
+    GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
+    GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
+    GuiAutomaticMediaResolutionTrigger, GuiMediaIndexJobId, GuiPendingAttachedMediaResolution,
+    GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution,
 };
 
 const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
+const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn open_media_unavailable_message_impl(&self, selected_paths: &[String]) -> String {
@@ -428,6 +431,108 @@ impl GuiPersistedConfigRuntimeOwner {
             .collect()
     }
 
+    fn next_attached_media_search_job_id(&mut self) -> GuiMediaIndexJobId {
+        self.attached_media_search_job_sequence =
+            self.attached_media_search_job_sequence.wrapping_add(1);
+        GuiMediaIndexJobId(self.attached_media_search_job_sequence)
+    }
+
+    fn media_index_progress_interval() -> Duration {
+        env_trimmed("SYNCPLAY_GUI_MEDIA_INDEX_PROGRESS_INTERVAL_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value != 0)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| Duration::from_millis(MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT))
+    }
+
+    fn set_attached_media_search_build_state(
+        &mut self,
+        roots: &[String],
+        state: GuiAttachedMediaSearchBuildState,
+    ) {
+        self.attached_media_search_build_state = state;
+        if matches!(state, GuiAttachedMediaSearchBuildState::Idle) {
+            self.attached_media_search_build_roots.clear();
+        } else {
+            self.attached_media_search_build_roots = roots.to_vec();
+        }
+    }
+
+    fn sync_attached_media_search_build_state_from_index(&mut self, roots: &[String]) {
+        if self.pending_attached_media_resolution.is_some() {
+            return;
+        }
+        let state = match self
+            .attached_media_search_index
+            .as_ref()
+            .filter(|index| index.roots == roots)
+        {
+            Some(index) if index.roots_requiring_refresh.is_empty() => {
+                GuiAttachedMediaSearchBuildState::Ready
+            }
+            Some(_) => GuiAttachedMediaSearchBuildState::Stale,
+            None if roots.is_empty() => GuiAttachedMediaSearchBuildState::Idle,
+            None => GuiAttachedMediaSearchBuildState::Stale,
+        };
+        self.set_attached_media_search_build_state(roots, state);
+    }
+
+    fn current_player_media_path(&self) -> Option<String> {
+        self.player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone())
+    }
+
+    fn automatic_media_resolution_trigger(
+        &self,
+        target: &str,
+        roots: &[String],
+    ) -> GuiAutomaticMediaResolutionTrigger {
+        GuiAutomaticMediaResolutionTrigger {
+            target: target.to_owned(),
+            roots: roots.to_vec(),
+            current_player_path: self.current_player_media_path(),
+            index_revision: self.attached_media_search_index_revision,
+            retry_due: self.attached_media_search_retry_due(),
+        }
+    }
+
+    fn should_rerun_automatic_media_resolution(
+        &self,
+        trigger: &GuiAutomaticMediaResolutionTrigger,
+    ) -> bool {
+        self.last_attached_media_resolution_trigger.as_ref() != Some(trigger)
+    }
+
+    fn maybe_publish_attached_media_search_progress(
+        &mut self,
+        progress: GuiAttachedMediaSearchBuildProgress,
+    ) {
+        let now = Instant::now();
+        let should_publish_immediately =
+            self.attached_media_search_progress
+                .as_ref()
+                .is_none_or(|current| {
+                    current.total_roots != progress.total_roots
+                        || current.completed_roots != progress.completed_roots
+                        || current.current_root_key != progress.current_root_key
+                });
+        let should_publish = should_publish_immediately
+            || self
+                .attached_media_search_progress_updated_at
+                .is_none_or(|updated_at| {
+                    now.duration_since(updated_at) >= Self::media_index_progress_interval()
+                });
+        if !should_publish {
+            return;
+        }
+        if self.attached_media_search_progress.as_ref() == Some(&progress) {
+            return;
+        }
+        self.attached_media_search_progress = Some(progress);
+        self.attached_media_search_progress_updated_at = Some(now);
+    }
+
     fn positive_duration_from_seconds_or_default(
         value: Option<f64>,
         default_seconds: f64,
@@ -474,12 +579,23 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn cancel_pending_attached_media_search_index_build_impl(&mut self) {
-        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
-            pending_resolution
-                .cancel_flag
-                .store(true, Ordering::Relaxed);
-        }
+        let pending_roots =
+            if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
+                pending_resolution
+                    .cancel_flag
+                    .store(true, Ordering::Relaxed);
+                pending_resolution.roots.clone()
+            } else {
+                Vec::new()
+            };
         self.attached_media_search_progress = None;
+        self.attached_media_search_progress_updated_at = None;
+        let state_roots = if pending_roots.is_empty() {
+            self.attached_media_search_build_roots.clone()
+        } else {
+            pending_roots
+        };
+        self.sync_attached_media_search_build_state_from_index(&state_roots);
     }
 
     fn persisted_media_search_root_index_from_runtime_index(
@@ -547,6 +663,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .is_some_and(|index| index.roots == roots)
         {
+            self.sync_attached_media_search_build_state_from_index(roots);
             return;
         }
         self.cancel_pending_attached_media_search_index_build_impl();
@@ -556,6 +673,7 @@ impl GuiPersistedConfigRuntimeOwner {
             roots,
             retry_interval,
         ));
+        self.sync_attached_media_search_build_state_from_index(roots);
     }
 
     fn normalized_media_search_path_key(path: &Path) -> String {
@@ -668,6 +786,121 @@ impl GuiPersistedConfigRuntimeOwner {
         GuiMediaIndexRuntimeSnapshot::default()
     }
 
+    fn build_attached_media_search_roots_in_parallel(
+        search_roots: Vec<PathBuf>,
+        cache_root: Option<PathBuf>,
+        cancel_flag: Arc<AtomicBool>,
+        latest_progress: Arc<Mutex<Option<GuiAttachedMediaSearchBuildProgress>>>,
+        deadline: Option<Instant>,
+    ) -> Vec<GuiAttachedMediaSearchRootRefreshResult> {
+        let total_roots = search_roots.len();
+        let total_workers =
+            GuiClientCoreChatSessionRuntimeAdapter::configured_missing_media_parallelism().max(1);
+        let root_worker_count = total_roots.min(total_workers).max(1);
+        let per_root_worker_count = (total_workers / root_worker_count).max(1);
+        let pending_roots = Arc::new(Mutex::new(
+            search_roots
+                .into_iter()
+                .enumerate()
+                .collect::<VecDeque<(usize, PathBuf)>>(),
+        ));
+        let completed_roots = Arc::new(AtomicUsize::new(0));
+        let results = Arc::new(Mutex::new(Vec::<(
+            usize,
+            GuiAttachedMediaSearchRootRefreshResult,
+        )>::new()));
+
+        std::thread::scope(|scope| {
+            for _ in 0..root_worker_count {
+                let pending_roots = Arc::clone(&pending_roots);
+                let completed_roots = Arc::clone(&completed_roots);
+                let results = Arc::clone(&results);
+                let latest_progress = Arc::clone(&latest_progress);
+                let cache_root = cache_root.clone();
+                let cancel_flag = Arc::clone(&cancel_flag);
+                scope.spawn(move || loop {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let Some((root_order, root)) = pending_roots
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .pop_front()
+                    else {
+                        return;
+                    };
+
+                    let root_key = normalized_media_search_root_key(&root);
+                    let root_path = root.clone();
+                    let mut report_progress = |scanned_directories: usize, indexed_files: usize| {
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let progress = GuiAttachedMediaSearchBuildProgress {
+                            total_roots,
+                            completed_roots: completed_roots.load(Ordering::Relaxed),
+                            current_root_key: root_key.clone(),
+                            current_root_path: root_path.clone(),
+                            scanned_directories,
+                            indexed_files,
+                        };
+                        let mut latest = latest_progress
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *latest = Some(progress);
+                    };
+
+                    let result = match GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path_with_progress_and_workers(
+                        &root,
+                        deadline,
+                        cancel_flag.as_ref(),
+                        per_root_worker_count,
+                        &mut report_progress,
+                    ) {
+                        Ok(candidates_by_name) => {
+                            let root_index = GuiAttachedMediaSearchRootIndex {
+                                root_key: root_key.clone(),
+                                root_path: root.clone(),
+                                built_at_unix_ms: current_unix_time_millis(),
+                                candidates_by_name,
+                            };
+                            if let Some(cache_root) = cache_root.as_ref() {
+                                let persisted =
+                                    Self::persisted_media_search_root_index_from_runtime_index(
+                                        &root_index,
+                                    );
+                                let _ =
+                                    persist_media_search_root_index_at_root(cache_root, &persisted);
+                            }
+                            GuiAttachedMediaSearchRootRefreshResult {
+                                root_key,
+                                index: Some(root_index),
+                                error: None,
+                            }
+                        }
+                        Err(error) => GuiAttachedMediaSearchRootRefreshResult {
+                            root_key,
+                            index: None,
+                            error: Some(error),
+                        },
+                    };
+
+                    results
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((root_order, result));
+                    completed_roots.fetch_add(1, Ordering::Relaxed);
+                });
+            }
+        });
+
+        let mut results = results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        results.sort_by_key(|(root_order, _)| *root_order);
+        results.drain(..).map(|(_, result)| result).collect()
+    }
+
     pub(super) fn poll_attached_media_search_index_build(
         &mut self,
         retry_interval: Duration,
@@ -676,60 +909,102 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         };
         let roots = pending_resolution.roots.clone();
+        if let Some(progress) = pending_resolution
+            .latest_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            self.set_attached_media_search_build_state(
+                &roots,
+                GuiAttachedMediaSearchBuildState::Building,
+            );
+            self.maybe_publish_attached_media_search_progress(progress);
+        }
 
-        loop {
-            match pending_resolution.result_rx.try_recv() {
-                Ok(GuiAttachedMediaSearchBuildStatus::Progress(progress)) => {
-                    self.attached_media_search_progress = Some(progress);
-                }
-                Ok(GuiAttachedMediaSearchBuildStatus::Completed(results)) => {
-                    let index = self
-                        .attached_media_search_index
-                        .get_or_insert_with(|| GuiAttachedMediaSearchIndex::new(roots.clone()));
-                    let mut refresh_retry_required = false;
-                    index.roots = roots.clone();
-                    for result in results {
-                        match result.index {
-                            Some(root_index) => {
-                                index
-                                    .root_indexes_by_key
-                                    .insert(result.root_key.clone(), root_index);
-                                index.roots_requiring_refresh.remove(&result.root_key);
-                            }
-                            None => {
-                                index
-                                    .roots_requiring_refresh
-                                    .insert(result.root_key.clone());
-                                if result.error.is_some() {
-                                    refresh_retry_required = true;
-                                }
+        match pending_resolution.result_rx.try_recv() {
+            Ok(GuiAttachedMediaSearchBuildStatus::Completed(results)) => {
+                let index = self
+                    .attached_media_search_index
+                    .get_or_insert_with(|| GuiAttachedMediaSearchIndex::new(roots.clone()));
+                let mut refresh_retry_required = false;
+                index.roots = roots.clone();
+                for result in results {
+                    match result.index {
+                        Some(root_index) => {
+                            index
+                                .root_indexes_by_key
+                                .insert(result.root_key.clone(), root_index);
+                            index.roots_requiring_refresh.remove(&result.root_key);
+                        }
+                        None => {
+                            index
+                                .roots_requiring_refresh
+                                .insert(result.root_key.clone());
+                            if result.error.is_some() {
+                                refresh_retry_required = true;
                             }
                         }
                     }
-                    self.attached_media_search_progress = None;
-                    self.attached_media_search_next_retry_at =
-                        refresh_retry_required.then_some(Instant::now() + retry_interval);
-                    return false;
                 }
-                Ok(GuiAttachedMediaSearchBuildStatus::Cancelled) => {
-                    self.attached_media_search_progress = None;
-                    return false;
-                }
-                Err(TryRecvError::Empty) => {
-                    self.pending_attached_media_resolution = Some(pending_resolution);
-                    return true;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    if let Some(index) = self.attached_media_search_index.as_mut()
-                        && index.roots == roots
-                    {
-                        index.roots_requiring_refresh.extend(roots.iter().cloned());
+                self.attached_media_search_progress = None;
+                self.attached_media_search_progress_updated_at = None;
+                self.attached_media_search_index_revision =
+                    self.attached_media_search_index_revision.wrapping_add(1);
+                self.attached_media_search_next_retry_at =
+                    refresh_retry_required.then_some(Instant::now() + retry_interval);
+                let next_state = if refresh_retry_required {
+                    if index.root_indexes_by_key.is_empty() {
+                        GuiAttachedMediaSearchBuildState::Failed
+                    } else {
+                        GuiAttachedMediaSearchBuildState::Stale
                     }
-                    self.attached_media_search_progress = None;
-                    self.attached_media_search_next_retry_at =
-                        Some(Instant::now() + retry_interval);
-                    return false;
+                } else {
+                    GuiAttachedMediaSearchBuildState::Ready
+                };
+                self.set_attached_media_search_build_state(&roots, next_state);
+                false
+            }
+            Ok(GuiAttachedMediaSearchBuildStatus::Cancelled) => {
+                self.attached_media_search_progress = None;
+                self.attached_media_search_progress_updated_at = None;
+                self.sync_attached_media_search_build_state_from_index(&roots);
+                false
+            }
+            Err(TryRecvError::Empty) => {
+                if self.attached_media_search_progress.is_some() {
+                    self.set_attached_media_search_build_state(
+                        &roots,
+                        GuiAttachedMediaSearchBuildState::Building,
+                    );
                 }
+                self.pending_attached_media_resolution = Some(pending_resolution);
+                true
+            }
+            Err(TryRecvError::Disconnected) => {
+                let has_cached_index = if let Some(index) =
+                    self.attached_media_search_index.as_mut()
+                    && index.roots == roots
+                {
+                    index.roots_requiring_refresh.extend(roots.iter().cloned());
+                    !index.root_indexes_by_key.is_empty()
+                } else {
+                    false
+                };
+                self.attached_media_search_progress = None;
+                self.attached_media_search_progress_updated_at = None;
+                self.attached_media_search_index_revision =
+                    self.attached_media_search_index_revision.wrapping_add(1);
+                self.attached_media_search_next_retry_at = Some(Instant::now() + retry_interval);
+                self.set_attached_media_search_build_state(
+                    &roots,
+                    if has_cached_index {
+                        GuiAttachedMediaSearchBuildState::Stale
+                    } else {
+                        GuiAttachedMediaSearchBuildState::Failed
+                    },
+                );
+                false
             }
         }
     }
@@ -742,83 +1017,47 @@ impl GuiPersistedConfigRuntimeOwner {
     ) {
         if search_roots.is_empty() {
             self.attached_media_search_progress = None;
+            self.attached_media_search_progress_updated_at = None;
+            self.set_attached_media_search_build_state(
+                &roots,
+                GuiAttachedMediaSearchBuildState::Idle,
+            );
             return;
         }
         let (result_tx, result_rx) = mpsc::channel();
         let cache_root = self.legacy_gui_qsettings_root();
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        let worker_cancel_flag = cancel_flag.clone();
-        self.attached_media_search_progress =
-            search_roots
-                .first()
-                .map(|root| GuiAttachedMediaSearchBuildProgress {
+        let latest_progress = Arc::new(Mutex::new(None));
+        let job_id = self.next_attached_media_search_job_id();
+        if let Some(root) = search_roots.first() {
+            self.maybe_publish_attached_media_search_progress(
+                GuiAttachedMediaSearchBuildProgress {
                     total_roots: search_roots.len(),
                     completed_roots: 0,
                     current_root_key: normalized_media_search_root_key(root),
                     current_root_path: root.clone(),
                     scanned_directories: 0,
                     indexed_files: 0,
-                });
+                },
+            );
+        }
+        self.set_attached_media_search_build_state(
+            &roots,
+            GuiAttachedMediaSearchBuildState::Queued,
+        );
+        let worker_cancel_flag = Arc::clone(&cancel_flag);
+        let worker_latest_progress = Arc::clone(&latest_progress);
+        let status_cancel_flag = Arc::clone(&cancel_flag);
         std::thread::spawn(move || {
             let deadline = Some(Instant::now() + search_timeout);
-            let mut results = Vec::new();
-            let total_roots = search_roots.len();
-            for (completed_roots, root) in search_roots.into_iter().enumerate() {
-                let root_key = normalized_media_search_root_key(&root);
-                let root_path = root.clone();
-                let mut report_progress = |scanned_directories: usize, indexed_files: usize| {
-                    let _ = result_tx.send(GuiAttachedMediaSearchBuildStatus::Progress(
-                        GuiAttachedMediaSearchBuildProgress {
-                            total_roots,
-                            completed_roots,
-                            current_root_key: root_key.clone(),
-                            current_root_path: root_path.clone(),
-                            scanned_directories,
-                            indexed_files,
-                        },
-                    ));
-                };
-                report_progress(0, 0);
-                match GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path_with_progress(
-                    &root,
-                    deadline,
-                    worker_cancel_flag.as_ref(),
-                    &mut report_progress,
-                ) {
-                    Ok(candidates_by_name) => {
-                        let root_index = GuiAttachedMediaSearchRootIndex {
-                            root_key: root_key.clone(),
-                            root_path: root.clone(),
-                            built_at_unix_ms: current_unix_time_millis(),
-                            candidates_by_name,
-                        };
-                        if let Some(cache_root) = cache_root.as_ref() {
-                            let persisted =
-                                Self::persisted_media_search_root_index_from_runtime_index(
-                                    &root_index,
-                                );
-                            let _ = persist_media_search_root_index_at_root(cache_root, &persisted);
-                        }
-                        results.push(GuiAttachedMediaSearchRootRefreshResult {
-                            root_key,
-                            index: Some(root_index),
-                            error: None,
-                        });
-                    }
-                    Err(error) => {
-                        if worker_cancel_flag.load(Ordering::Relaxed) {
-                            let _ = result_tx.send(GuiAttachedMediaSearchBuildStatus::Cancelled);
-                            return;
-                        }
-                        results.push(GuiAttachedMediaSearchRootRefreshResult {
-                            root_key: normalized_media_search_root_key(&root),
-                            index: None,
-                            error: Some(error),
-                        });
-                    }
-                }
-            }
-            let status = if worker_cancel_flag.load(Ordering::Relaxed) {
+            let results = Self::build_attached_media_search_roots_in_parallel(
+                search_roots,
+                cache_root,
+                worker_cancel_flag,
+                worker_latest_progress,
+                deadline,
+            );
+            let status = if status_cancel_flag.load(Ordering::Relaxed) {
                 GuiAttachedMediaSearchBuildStatus::Cancelled
             } else {
                 GuiAttachedMediaSearchBuildStatus::Completed(results)
@@ -826,8 +1065,10 @@ impl GuiPersistedConfigRuntimeOwner {
             let _ = result_tx.send(status);
         });
         self.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+            job_id,
             roots,
             cancel_flag,
+            latest_progress,
             result_rx,
         });
     }
@@ -893,15 +1134,17 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
-    fn resolve_main_window_user_media_target_for_automatic_sync(
+    fn resolve_main_window_user_media_target_from_index(
         &mut self,
         state: &SyncplayGuiShellAppState,
         target: &str,
-    ) -> Result<Option<String>, String> {
+        reset_retry_on_target_change: bool,
+    ) -> Result<GuiUserMediaTargetResolution, String> {
         let Some(target) = normalized_editable_text(target) else {
-            return Ok(None);
+            return Ok(GuiUserMediaTargetResolution::Missing);
         };
-        if self.unresolved_attached_media_target.as_deref() != Some(target.as_str())
+        if reset_retry_on_target_change
+            && self.unresolved_attached_media_target.as_deref() != Some(target.as_str())
             && !self.attached_media_search_refresh_pending()
         {
             self.attached_media_search_next_retry_at = None;
@@ -934,13 +1177,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
             self.unresolved_attached_media_target = None;
-            return Ok(Some(path));
+            return Ok(GuiUserMediaTargetResolution::Resolved(path));
         }
 
         if search_roots.is_empty() {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.attached_media_search_index = None;
-            return Ok(None);
+            self.set_attached_media_search_build_state(
+                &roots,
+                GuiAttachedMediaSearchBuildState::Idle,
+            );
+            return Ok(GuiUserMediaTargetResolution::Missing);
         }
         self.ensure_loaded_attached_media_search_index(&search_roots, &roots, retry_interval);
         let build_pending = self.poll_attached_media_search_index_build(retry_interval);
@@ -960,86 +1207,40 @@ impl GuiPersistedConfigRuntimeOwner {
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
             }
-            return Ok(Some(found_path));
+            return Ok(GuiUserMediaTargetResolution::Resolved(found_path));
         }
         self.unresolved_attached_media_target = Some(target);
-        if build_pending {
-            return Ok(None);
+        let queued_refresh = if build_pending {
+            false
+        } else {
+            self.queue_attached_media_search_refresh_if_needed(
+                &search_roots,
+                &roots,
+                retry_interval,
+                Self::automatic_media_search_timeout(state),
+            )
+        };
+        if build_pending || queued_refresh || self.attached_media_search_refresh_pending() {
+            Ok(GuiUserMediaTargetResolution::Pending)
+        } else {
+            Ok(GuiUserMediaTargetResolution::Missing)
         }
-        let _ = self.queue_attached_media_search_refresh_if_needed(
-            &search_roots,
-            &roots,
-            retry_interval,
-            Self::automatic_media_search_timeout(state),
-        );
-        Ok(None)
+    }
+
+    fn resolve_main_window_user_media_target_for_automatic_sync(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> Result<GuiUserMediaTargetResolution, String> {
+        self.resolve_main_window_user_media_target_from_index(state, target, true)
     }
 
     pub(super) fn resolve_main_window_user_media_target(
         &mut self,
         state: &SyncplayGuiShellAppState,
         target: &str,
-    ) -> Result<Option<String>, String> {
-        let Some(target) = normalized_editable_text(target) else {
-            return Ok(None);
-        };
-        if browser_is_url(&target) {
-            return Ok(Some(target.to_owned()));
-        }
-
-        let target_path = Path::new(&target);
-        if target_path.is_file() {
-            return Ok(Some(target.to_owned()));
-        }
-
-        if let Some(local_path) = self
-            .player_local_file
-            .as_ref()
-            .and_then(|file| file.path.as_deref())
-        {
-            let local_path = Path::new(local_path);
-            let matches_local_file = local_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case(&target));
-            if matches_local_file && local_path.is_file() {
-                return Ok(Some(local_path.to_string_lossy().into_owned()));
-            }
-        }
-
-        let search_roots = self.automatic_media_search_roots(state);
-        let search_root_keys = Self::automatic_media_search_root_keys(&search_roots);
-        let retry_interval = Self::automatic_media_search_retry_interval(state);
-        self.ensure_loaded_attached_media_search_index(
-            &search_roots,
-            &search_root_keys,
-            retry_interval,
-        );
-        let _ = self.poll_attached_media_search_index_build(retry_interval);
-        if let Some(found_path) = self
-            .attached_media_search_index
-            .as_ref()
-            .filter(|index| index.roots == search_root_keys)
-            .and_then(|index| self.cached_missing_media_target_path(index, &target))
-        {
-            return Ok(Some(found_path));
-        }
-        let _ = self.queue_attached_media_search_refresh_if_needed(
-            &search_roots,
-            &search_root_keys,
-            retry_interval,
-            Self::automatic_media_search_timeout(state),
-        );
-        for directory in search_roots {
-            if let Some(found_path) =
-                GuiClientCoreChatSessionRuntimeAdapter::search_path_for_missing_media_target(
-                    &target, &directory,
-                )?
-            {
-                return Ok(Some(found_path));
-            }
-        }
-        Ok(None)
+    ) -> Result<GuiUserMediaTargetResolution, String> {
+        self.resolve_main_window_user_media_target_from_index(state, target, false)
     }
 
     pub(super) fn sync_selected_shared_playlist_media_to_attached_player_impl(
@@ -1047,17 +1248,29 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> bool {
         let Some(target) = Self::selected_shared_playlist_target(state) else {
-            self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
-            self.attached_media_search_next_retry_at = None;
+            if !self.attached_media_search_refresh_pending() {
+                self.attached_media_search_next_retry_at = None;
+            }
+            self.last_attached_media_resolution_trigger = None;
             return false;
         };
 
-        let resolved_target =
-            match self.resolve_main_window_user_media_target_for_automatic_sync(state, &target) {
-                Ok(Some(path)) => path,
-                Ok(None) | Err(_) => return false,
-            };
+        let search_roots = self.automatic_media_search_roots(state);
+        let roots = Self::automatic_media_search_root_keys(&search_roots);
+        let trigger = self.automatic_media_resolution_trigger(&target, &roots);
+        if !self.should_rerun_automatic_media_resolution(&trigger) {
+            return false;
+        }
+        self.last_attached_media_resolution_trigger = Some(trigger);
+
+        let resolved_target = match self
+            .resolve_main_window_user_media_target_for_automatic_sync(state, &target)
+        {
+            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
+            Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
+            | Err(_) => return false,
+        };
 
         self.ensure_configured_player_attached();
         if self.player.is_none() {
@@ -1198,26 +1411,38 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(target) = normalized_editable_text(&target) else {
             return;
         };
-        let resolved_target =
-            match self.resolve_main_window_user_media_target(projected_state, &target) {
-                Ok(Some(path)) => path,
-                Ok(None) => {
-                    Self::push_runtime_error_notification(
-                        handle,
-                        projected_state,
-                        format!("Could not find a local path for user media: {target}."),
-                    );
-                    return;
-                }
-                Err(error) => {
-                    Self::push_runtime_error_notification(
-                        handle,
-                        projected_state,
-                        format!("Resolving user media '{target}' failed: {error}"),
-                    );
-                    return;
-                }
-            };
+        let resolved_target = match self
+            .resolve_main_window_user_media_target(projected_state, &target)
+        {
+            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
+            Ok(GuiUserMediaTargetResolution::Pending) => {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: format!("Indexing media library to resolve user media: {target}."),
+                    }],
+                );
+                return;
+            }
+            Ok(GuiUserMediaTargetResolution::Missing) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!("Could not find a local path for user media: {target}."),
+                );
+                return;
+            }
+            Err(error) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!("Resolving user media '{target}' failed: {error}"),
+                );
+                return;
+            }
+        };
 
         if projected_state.playlist_backed_media_opens_preferred() {
             self.open_media_files_through_shared_playlist_runtime_impl(
@@ -1296,26 +1521,40 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(target) = normalized_editable_text(&target) else {
             return;
         };
-        let resolved_target =
-            match self.resolve_main_window_user_media_target(projected_state, &target) {
-                Ok(Some(path)) => path,
-                Ok(None) => {
-                    Self::push_runtime_error_notification(
-                        handle,
-                        projected_state,
-                        format!("Could not find a local path for user media: {target}."),
-                    );
-                    return;
-                }
-                Err(error) => {
-                    Self::push_runtime_error_notification(
-                        handle,
-                        projected_state,
-                        format!("Resolving user media '{target}' failed: {error}"),
-                    );
-                    return;
-                }
-            };
+        let resolved_target = match self
+            .resolve_main_window_user_media_target(projected_state, &target)
+        {
+            Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
+            Ok(GuiUserMediaTargetResolution::Pending) => {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: format!(
+                            "Indexing media library to resolve a local path for user media: {target}."
+                        ),
+                    }],
+                );
+                return;
+            }
+            Ok(GuiUserMediaTargetResolution::Missing) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!("Could not find a local path for user media: {target}."),
+                );
+                return;
+            }
+            Err(error) => {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    format!("Resolving user media '{target}' failed: {error}"),
+                );
+                return;
+            }
+        };
 
         if browser_is_url(&resolved_target) {
             Self::push_runtime_error_notification(

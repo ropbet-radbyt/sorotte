@@ -1,10 +1,22 @@
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use super::{GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiQueuedRuntimeBridge};
 
 use crate::app::{
-    GuiPendingCompletionRequest, GuiPendingOperationKind, GuiRuntimeRequest, GuiShellAction,
-    GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
-    native_host::GuiEframeNativeHost, runtime_bridge::GuiPreviewRuntimeOwner,
-    runtime_queue::GuiQueuedRuntimeOwnerPump,
+    GuiPendingCompletionRequest, GuiPendingOperationKind, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
+    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    native_host::GuiEframeNativeHost,
+    runtime_bridge::GuiPreviewRuntimeOwner,
+    runtime_queue::{
+        GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwnerPump, GuiThreadedRuntimeOwnerPump,
+    },
 };
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -226,5 +238,144 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
             GuiShellAction::CompleteLocalChatSend,
             GuiShellAction::CancelPendingOperation,
         ]
+    );
+}
+
+fn wait_for_runtime_actions(
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    timeout: Duration,
+) -> Vec<GuiShellAction> {
+    let started_at = Instant::now();
+    loop {
+        let actions = handle.drain_actions();
+        if !actions.is_empty() {
+            return actions;
+        }
+        assert!(
+            started_at.elapsed() < timeout,
+            "timed out waiting for threaded runtime actions",
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waiting_for_poll_timeout()
+{
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+        handle.clone(),
+        GuiPreviewRuntimeOwner,
+        Duration::from_secs(30),
+    );
+
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    handle.push_request(GuiRuntimeRequest::SeekOffset(3.5));
+
+    assert_eq!(
+        wait_for_runtime_actions(&handle, Duration::from_millis(250)),
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Seek requested: 3.5 seconds.".to_owned(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent("Seek requested: 3.5 seconds.".to_owned(),),
+        ]
+    );
+}
+
+#[test]
+fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
+    struct DropAwareRuntimeOwner {
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropAwareRuntimeOwner {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl GuiQueuedRuntimeOwner for DropAwareRuntimeOwner {
+        fn pump(
+            &mut self,
+            _handle: &GuiQueuedRuntimeBridgeHandle,
+            _state: &SyncplayGuiShellAppState,
+        ) {
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+        GuiQueuedRuntimeBridgeHandle::default(),
+        DropAwareRuntimeOwner {
+            dropped: dropped.clone(),
+        },
+        Duration::from_millis(10),
+    );
+
+    drop(threaded_pump);
+
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "threaded runtime owner should be dropped after the worker shuts down",
+    );
+}
+
+#[test]
+fn gui_threaded_runtime_owner_pump_reuses_identical_state_snapshots() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+        GuiQueuedRuntimeBridgeHandle::default(),
+        GuiPreviewRuntimeOwner,
+        Duration::from_secs(30),
+    );
+
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    let first_snapshot = threaded_pump
+        .last_submitted_state
+        .clone()
+        .expect("first pump should submit a state snapshot");
+
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    let second_snapshot = threaded_pump
+        .last_submitted_state
+        .clone()
+        .expect("second pump should keep a state snapshot");
+
+    assert!(
+        Arc::ptr_eq(&first_snapshot, &second_snapshot),
+        "identical UI state submissions should reuse the existing runtime snapshot",
+    );
+}
+
+#[test]
+fn gui_queued_runtime_bridge_handle_notifies_repaint_for_runtime_actions_only() {
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let repaint_notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    handle.set_repaint_notifier({
+        let repaint_notifications = repaint_notifications.clone();
+        move || {
+            repaint_notifications.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    handle.push_action(GuiShellAction::AnnounceSystemChatEvent(
+        "Runtime callback applied.".to_owned(),
+    ));
+    handle.push_request(GuiRuntimeRequest::SeekOffset(1.0));
+    handle.push_actions(Vec::<GuiShellAction>::new());
+
+    assert_eq!(
+        repaint_notifications.load(Ordering::SeqCst),
+        1,
+        "only runtime actions should trigger a repaint notification",
     );
 }

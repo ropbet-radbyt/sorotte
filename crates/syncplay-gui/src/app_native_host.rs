@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use syncplay_client_app::app_boundary::commands::{
@@ -18,7 +15,7 @@ use super::runtime_bridge::{
 };
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::{
-    GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwnerPump,
+    GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiThreadedRuntimeOwnerPump,
 };
 use super::runtime_stack::GuiQueuedSessionTransportHandle;
 use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
@@ -37,6 +34,7 @@ pub(super) struct GuiNativeApp {
     state: SyncplayGuiShellAppState,
     runtime: Box<dyn GuiNativeRuntimeBridge>,
     runtime_pump: Box<dyn GuiNativeRuntimePump>,
+    runtime_repaint_handle: Option<GuiQueuedRuntimeBridgeHandle>,
     gui_state_root: Option<PathBuf>,
     test_drop_request: Option<GuiDroppedFilesRequest>,
     playback_prompt: Option<GuiPlaybackPromptKind>,
@@ -44,15 +42,20 @@ pub(super) struct GuiNativeApp {
     playback_prompt_error: Option<String>,
 }
 
-const GUI_NATIVE_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
 impl GuiNativeApp {
     pub(super) fn new(
-        _creation_context: &eframe::CreationContext<'_>,
+        creation_context: &eframe::CreationContext<'_>,
         state: SyncplayGuiShellAppState,
         runtime: Box<dyn GuiNativeRuntimeBridge>,
         runtime_pump: Box<dyn GuiNativeRuntimePump>,
+        runtime_repaint_handle: Option<GuiQueuedRuntimeBridgeHandle>,
     ) -> Self {
+        if let Some(handle) = runtime_repaint_handle.as_ref() {
+            let repaint_context = creation_context.egui_ctx.clone();
+            handle.set_repaint_notifier(move || {
+                repaint_context.request_repaint();
+            });
+        }
         let test_drop_request = match Self::test_drop_request_from_lookup(&env_trimmed) {
             Ok(request) => request,
             Err(error) => {
@@ -64,6 +67,7 @@ impl GuiNativeApp {
             state,
             runtime,
             runtime_pump,
+            runtime_repaint_handle,
             gui_state_root: syncplay_gui_qsettings_root_from_env(),
             test_drop_request,
             playback_prompt: None,
@@ -660,7 +664,6 @@ impl eframe::App for GuiNativeApp {
         if close_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        ctx.request_repaint_after(GUI_NATIVE_RUNTIME_POLL_INTERVAL);
         if state_changed
             || requested_playback_prompt.is_some()
             || playback_prompt_state_changed
@@ -674,6 +677,9 @@ impl eframe::App for GuiNativeApp {
 
 impl Drop for GuiNativeApp {
     fn drop(&mut self) {
+        if let Some(handle) = self.runtime_repaint_handle.as_ref() {
+            handle.clear_repaint_notifier();
+        }
         let Some(root) = self.gui_state_root.as_deref() else {
             return;
         };
@@ -687,6 +693,7 @@ impl Drop for GuiNativeApp {
 pub(super) struct GuiEframeNativeHost {
     runtime: Option<Box<dyn GuiNativeRuntimeBridge>>,
     runtime_pump: Option<Box<dyn GuiNativeRuntimePump>>,
+    runtime_repaint_handle: Option<GuiQueuedRuntimeBridgeHandle>,
 }
 
 impl GuiEframeNativeHost {
@@ -708,6 +715,7 @@ impl GuiEframeNativeHost {
         Self {
             runtime: Some(runtime),
             runtime_pump: Some(runtime_pump),
+            runtime_repaint_handle: None,
         }
     }
 
@@ -720,14 +728,17 @@ impl GuiEframeNativeHost {
         owner: TOwner,
     ) -> Self
     where
-        TOwner: GuiQueuedRuntimeOwner + 'static,
+        TOwner: GuiQueuedRuntimeOwner + Send + 'static,
     {
         let (runtime, handle) =
             GuiQueuedRuntimeBridge::new_with_manual_pending_controls(show_manual_pending_controls);
-        Self::with_runtime_and_pump(
+        let repaint_handle = handle.clone();
+        let mut host = Self::with_runtime_and_pump(
             Box::new(runtime),
-            Box::new(GuiQueuedRuntimeOwnerPump::new(handle, owner)),
-        )
+            Box::new(GuiThreadedRuntimeOwnerPump::new(handle, owner)),
+        );
+        host.runtime_repaint_handle = Some(repaint_handle);
+        host
     }
 
     pub(super) fn with_queued_preview_runtime_for_config_path(
@@ -808,7 +819,9 @@ impl GuiEframeNativeHost {
     #[allow(dead_code)]
     pub(super) fn with_queued_runtime() -> (Self, GuiQueuedRuntimeBridgeHandle) {
         let (runtime, handle) = GuiQueuedRuntimeBridge::new();
-        (Self::with_runtime(Box::new(runtime)), handle)
+        let mut host = Self::with_runtime(Box::new(runtime));
+        host.runtime_repaint_handle = Some(handle.clone());
+        (host, handle)
     }
 }
 
@@ -830,6 +843,7 @@ impl GuiAppHost for GuiEframeNativeHost {
             .runtime_pump
             .take()
             .unwrap_or_else(|| Box::<GuiNoopRuntimePump>::default());
+        let runtime_repaint_handle = self.runtime_repaint_handle.take();
         eframe::run_native(
             "Syncplay GUI",
             Self::native_options(),
@@ -839,6 +853,7 @@ impl GuiAppHost for GuiEframeNativeHost {
                     state,
                     runtime,
                     runtime_pump,
+                    runtime_repaint_handle,
                 )))
             }),
         )

@@ -312,13 +312,45 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let search_actions = handle.drain_actions();
+    let mut search_completion_actions = search_actions
+        .iter()
+        .filter(|action| matches!(action, GuiShellAction::CompleteMissingMediaSearch(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let _ = search_actions;
+    assert!(
+        search_completion_actions.is_empty(),
+        "missing-media search should stay pending until the background index completes"
+    );
     assert_eq!(
-        search_actions,
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::SearchMissingMedia)
+    );
+    let search_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while search_completion_actions.is_empty() {
+        assert!(
+            std::time::Instant::now() < search_deadline,
+            "timed out waiting for background missing-media search completion"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia,
+        ));
+        GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+        let actions = handle.drain_actions();
+        search_completion_actions = actions
+            .iter()
+            .filter(|action| matches!(action, GuiShellAction::CompleteMissingMediaSearch(_)))
+            .cloned()
+            .collect();
+    }
+    assert_eq!(
+        search_completion_actions,
         vec![GuiShellAction::CompleteMissingMediaSearch(Some(
             found_media_path.to_string_lossy().into_owned(),
         ))]
     );
-    for action in search_actions {
+    for action in search_completion_actions {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());

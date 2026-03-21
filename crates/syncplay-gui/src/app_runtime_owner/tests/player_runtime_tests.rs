@@ -86,7 +86,13 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
         attached_media_search_progress: None,
+        attached_media_search_progress_updated_at: None,
+        attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
+        attached_media_search_build_roots: Vec::new(),
+        attached_media_search_job_sequence: 0,
+        attached_media_search_index_revision: 0,
         unresolved_attached_media_target: None,
+        last_attached_media_resolution_trigger: None,
         last_applied_attached_room_playstate: None,
         player_position_seconds: None,
         player_paused: None,
@@ -363,7 +369,13 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         attached_media_search_next_retry_at: None,
         pending_attached_media_resolution: None,
         attached_media_search_progress: None,
+        attached_media_search_progress_updated_at: None,
+        attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
+        attached_media_search_build_roots: Vec::new(),
+        attached_media_search_job_sequence: 0,
+        attached_media_search_index_revision: 0,
         unresolved_attached_media_target: None,
+        last_attached_media_resolution_trigger: None,
         last_applied_attached_room_playstate: None,
         player_position_seconds: None,
         player_paused: None,
@@ -1345,8 +1357,10 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
         ]))
         .expect("partial-refresh result fixture should be queued");
     owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        job_id: GuiMediaIndexJobId(1),
         roots: vec![good_key.clone(), bad_key.clone()],
         cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
         result_rx,
     });
     session_transport.push_inbound_protocol_lines([
@@ -1387,23 +1401,25 @@ fn gui_persisted_config_runtime_owner_projects_media_index_progress_into_shell_s
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(None));
     owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        job_id: GuiMediaIndexJobId(2),
         roots: vec!["c:/media/anime".to_owned(), "d:/archive".to_owned()],
         cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: latest_progress.clone(),
         result_rx,
     });
-    result_tx
-        .send(GuiAttachedMediaSearchBuildStatus::Progress(
-            GuiAttachedMediaSearchBuildProgress {
-                total_roots: 2,
-                completed_roots: 0,
-                current_root_key: "c:/media/anime".to_owned(),
-                current_root_path: PathBuf::from("C:/Media/Anime"),
-                scanned_directories: 14,
-                indexed_files: 2048,
-            },
-        ))
-        .expect("media-index progress fixture should be queued");
+    *latest_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(GuiAttachedMediaSearchBuildProgress {
+            total_roots: 2,
+            completed_roots: 0,
+            current_root_key: "c:/media/anime".to_owned(),
+            current_root_path: PathBuf::from("C:/Media/Anime"),
+            scanned_directories: 14,
+            indexed_files: 2048,
+        });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1411,6 +1427,91 @@ fn gui_persisted_config_runtime_owner_projects_media_index_progress_into_shell_s
     assert_eq!(
         state.media_index_status.message.as_deref(),
         Some("Indexing media 1/2: 14 folders, 2048 files (Anime)")
+    );
+
+    result_tx
+        .send(GuiAttachedMediaSearchBuildStatus::Cancelled)
+        .expect("media-index cancel fixture should be queued");
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(!state.media_index_status.active);
+    assert_eq!(state.media_index_status.message, None);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_coalesces_latest_media_index_progress_per_pump() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(None));
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        job_id: GuiMediaIndexJobId(3),
+        roots: vec!["c:/media/anime".to_owned(), "d:/archive".to_owned()],
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress: latest_progress.clone(),
+        result_rx,
+    });
+
+    *latest_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(GuiAttachedMediaSearchBuildProgress {
+            total_roots: 2,
+            completed_roots: 0,
+            current_root_key: "c:/media/anime".to_owned(),
+            current_root_path: PathBuf::from("C:/Media/Anime"),
+            scanned_directories: 32,
+            indexed_files: 4096,
+        });
+    *latest_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(GuiAttachedMediaSearchBuildProgress {
+            total_roots: 2,
+            completed_roots: 0,
+            current_root_key: "c:/media/anime".to_owned(),
+            current_root_path: PathBuf::from("C:/Media/Anime"),
+            scanned_directories: 64,
+            indexed_files: 8192,
+        });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.media_index_status.message.as_deref(),
+        Some("Indexing media 1/2: 64 folders, 8192 files (Anime)")
+    );
+
+    *latest_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(GuiAttachedMediaSearchBuildProgress {
+            total_roots: 2,
+            completed_roots: 1,
+            current_root_key: "d:/archive".to_owned(),
+            current_root_path: PathBuf::from("D:/Archive"),
+            scanned_directories: 8,
+            indexed_files: 512,
+        });
+    *latest_progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(GuiAttachedMediaSearchBuildProgress {
+            total_roots: 2,
+            completed_roots: 1,
+            current_root_key: "d:/archive".to_owned(),
+            current_root_path: PathBuf::from("D:/Archive"),
+            scanned_directories: 12,
+            indexed_files: 768,
+        });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        state.media_index_status.message.as_deref(),
+        Some("Indexing media 2/2: 12 folders, 768 files (Archive)")
     );
 
     result_tx

@@ -92,7 +92,7 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 pub(in super::super) enum GuiOwnedPlayer {
     Test(GuiTestPlayerAdapter),
     Mpv(Box<MpvAdapter>),
-    Custom(Box<dyn PlayerAdapter>),
+    Custom(Box<dyn PlayerAdapter + Send>),
 }
 
 impl GuiOwnedPlayer {
