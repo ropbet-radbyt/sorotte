@@ -42,12 +42,17 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.session.is_none() {
             let runtime_settings = Self::detached_runtime_settings_for_state(state);
             self.session_default_room = runtime_settings.settings.room.clone();
+            let dont_slow_down_with_me = runtime_settings
+                .settings
+                .dont_slow_down_with_me
+                .unwrap_or(false);
             self.session = Some(Box::new(
                 GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
                     runtime_settings.settings.username.unwrap_or_default(),
                     runtime_settings.settings.room.unwrap_or_default(),
                     runtime_settings.controlled_room_password_override,
-                )?,
+                )?
+                .with_dont_slow_down_with_me(dont_slow_down_with_me),
             ));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
@@ -425,12 +430,17 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         };
         let default_room = target.room.clone();
+        let dont_slow_down_with_me = projected_state
+            .configuration
+            .to_stored_settings()
+            .dont_slow_down_with_me
+            .unwrap_or(false);
         let session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,
             target.room,
             target.controlled_room_password_override,
         ) {
-            Ok(session) => session,
+            Ok(session) => session.with_dont_slow_down_with_me(dont_slow_down_with_me),
             Err(error) => {
                 let message = format!(
                     "Configured server connect through the detached session runtime failed: {error}"

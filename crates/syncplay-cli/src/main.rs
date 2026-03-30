@@ -5075,6 +5075,7 @@ fn apply_connected_session_inbound_message_legacy_compatible(
     line: &str,
     decoded_inbound_message: Option<&ProtocolMessage>,
     now_seconds: f64,
+    dont_slow_down_with_me: bool,
     plan: ConnectedSessionInboundApplyPlan,
 ) -> anyhow::Result<bool> {
     if plan.reconcile_inbound_state
@@ -5082,6 +5083,7 @@ fn apply_connected_session_inbound_message_legacy_compatible(
     {
         let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
             state_message.state.clone(),
+            dont_slow_down_with_me,
         );
     }
     if plan.apply_message_json_at {
@@ -5197,6 +5199,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
             ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
                 let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
                     StatePayload::new(),
+                    dont_slow_down_with_me,
                 );
             }
             ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => {
@@ -5322,6 +5325,7 @@ where
             inbound_message_line,
             decoded_inbound_message,
             now_seconds,
+            dont_slow_down_with_me,
             inbound_apply,
         )?;
     }

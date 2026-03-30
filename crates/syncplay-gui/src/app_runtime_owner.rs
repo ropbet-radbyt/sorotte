@@ -597,12 +597,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 room: Some(room.clone()),
                 ..StoredClientSettingsMvp::default()
             });
+        let dont_slow_down_with_me = runtime_settings
+            .settings
+            .dont_slow_down_with_me
+            .unwrap_or(false);
         let session = Box::new(
             GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
                 runtime_settings.settings.username.unwrap_or_default(),
                 runtime_settings.settings.room.unwrap_or_default(),
                 runtime_settings.controlled_room_password_override,
-            )?,
+            )?
+            .with_dont_slow_down_with_me(dont_slow_down_with_me),
         );
         let session_transport = GuiQueuedSessionTransportHandle::default();
         Ok((

@@ -247,6 +247,7 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
 pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     username: String,
     baseline_room: String,
+    dont_slow_down_with_me: bool,
     pub(super) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
     next_state_sync_heartbeat_at: Option<Instant>,
@@ -282,6 +283,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(Self {
             username,
             baseline_room: room,
+            dont_slow_down_with_me: false,
             runtime: ClientRuntime::new(
                 session,
                 GuiNoopClientRuntimePlayer,
@@ -293,6 +295,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             tracked_remote_usernames: BTreeSet::new(),
             optimistic_room_playlist: None,
         })
+    }
+
+    pub(super) fn with_dont_slow_down_with_me(mut self, enabled: bool) -> Self {
+        self.dont_slow_down_with_me = enabled;
+        self
     }
 
     fn hello_json(username: &str, room: &str) -> String {
@@ -404,7 +411,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
         let _ = self
             .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible();
+            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me);
         self.next_state_sync_heartbeat_at = Some(now + Self::STATE_SYNC_HEARTBEAT_INTERVAL);
     }
 
@@ -488,6 +495,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     .runtime
                     .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
                         state_message.state,
+                        self.dont_slow_down_with_me,
                     );
                 Ok(())
             }
@@ -1107,10 +1115,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn note_local_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
-        self.runtime.session_mut().begin_local_playlist_index_reset_intent(
-            pause_before_sync,
-            system_time_seconds(),
-        );
+        self.runtime
+            .session_mut()
+            .begin_local_playlist_index_reset_intent(pause_before_sync, system_time_seconds());
     }
 
     fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {

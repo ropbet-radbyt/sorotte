@@ -841,10 +841,7 @@ where
         }
     }
 
-    fn finalize_local_playlist_index_switch_if_needed(
-        &mut self,
-        actions: &[ClientRuntimeAction],
-    ) {
+    fn finalize_local_playlist_index_switch_if_needed(&mut self, actions: &[ClientRuntimeAction]) {
         if !actions
             .iter()
             .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
@@ -855,15 +852,15 @@ where
         let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
         self.session
             .begin_local_playlist_index_reset_intent(true, now_seconds);
-        self.session
-            .apply_player_playback_telemetry_update(
-                &PlayerPlaybackTelemetryUpdate::default()
-                    .with_paused(true)
-                    .with_position_seconds(0.0),
-            );
-        self.control.send_state(StatePayload::new().with_playstate(
-            PlaystatePayload::new().with_position(0.0).with_paused(true),
-        ));
+        self.session.apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(0.0),
+        );
+        self.control.send_state(
+            StatePayload::new()
+                .with_playstate(PlaystatePayload::new().with_position(0.0).with_paused(true)),
+        );
     }
 
     pub fn session(&self) -> &ClientSession {
@@ -1167,14 +1164,16 @@ where
             return Ok(());
         };
 
-        let actions = self.session.runtime_actions_for_desync_correction_against_room_playstate(
-            room_playstate,
-            now_seconds,
-            local_position,
-            local_can_control,
-            dont_slow_down_with_me,
-            speed_supported,
-        );
+        let actions = self
+            .session
+            .runtime_actions_for_desync_correction_against_room_playstate(
+                room_playstate,
+                now_seconds,
+                local_position,
+                local_can_control,
+                dont_slow_down_with_me,
+                speed_supported,
+            );
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }
 
@@ -1499,9 +1498,26 @@ impl<P> ClientRuntime<P, QueuedRuntimeControl>
 where
     P: PlayerAdapter,
 {
+    fn outbound_state_sync_position_seconds(
+        &self,
+        now_seconds: f64,
+        dont_slow_down_with_me: bool,
+    ) -> Option<f64> {
+        let local_position = self.session.local_position?;
+        if !dont_slow_down_with_me {
+            return Some(local_position);
+        }
+
+        self.session
+            .current_room_playstate_at(now_seconds)
+            .and_then(|playstate| playstate.position)
+            .or(Some(local_position))
+    }
+
     pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
         &mut self,
         inbound_state: StatePayload,
+        dont_slow_down_with_me: bool,
     ) -> bool {
         self.ping_metrics_legacy_compatible
             .observe_inbound_state(&inbound_state);
@@ -1510,6 +1526,7 @@ where
             self.ping_metrics_legacy_compatible
                 .client_latency_calculation_now(),
             self.ping_metrics_legacy_compatible.client_rtt_seconds(),
+            dont_slow_down_with_me,
         )
     }
 
@@ -1518,12 +1535,15 @@ where
         inbound_state: StatePayload,
         client_latency_calculation: f64,
         client_rtt: f64,
+        dont_slow_down_with_me: bool,
     ) -> bool {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
 
-        let (Some(local_position), Some(local_paused)) =
-            (self.session.local_position, self.session.local_paused)
-        else {
+        let (Some(local_position), Some(local_paused)) = (
+            self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
+            self.session.local_paused,
+        ) else {
             self.session.apply_state(inbound_state);
             return false;
         };
@@ -1541,21 +1561,26 @@ where
         true
     }
 
-    pub fn run_state_sync_heartbeat_legacy_ping_compatible(&mut self) -> bool {
+    pub fn run_state_sync_heartbeat_legacy_ping_compatible(
+        &mut self,
+        dont_slow_down_with_me: bool,
+    ) -> bool {
         if self.session.server_chat_supported().is_none() {
             return false;
         }
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
 
         let client_latency_calculation = self
             .ping_metrics_legacy_compatible
             .client_latency_calculation_now();
         let client_rtt = self.ping_metrics_legacy_compatible.client_rtt_seconds();
 
-        let outbound_state = if let (Some(local_position), Some(local_paused)) =
-            (self.session.local_position, self.session.local_paused)
-        {
+        let outbound_state = if let (Some(local_position), Some(local_paused)) = (
+            self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
+            self.session.local_paused,
+        ) {
             self.session.reconcile_state_and_build_response(
                 StatePayload::new(),
                 local_position,
@@ -1946,7 +1971,8 @@ impl ClientSession {
     }
 
     pub fn has_pending_playlist_index_reset_intent(&self) -> bool {
-        self.pending_playlist_index_reset_pause_before_sync.is_some()
+        self.pending_playlist_index_reset_pause_before_sync
+            .is_some()
     }
 
     fn clear_reconnect_state_restore_validation_state(&mut self) {
@@ -2579,7 +2605,10 @@ impl ClientSession {
     pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {
         let room_name = self.room.as_deref()?;
         let mut playstate = self.room_playstates.get(room_name)?.clone();
-        let updated_at_seconds = self.room_playstate_updated_at_seconds.get(room_name).copied();
+        let updated_at_seconds = self
+            .room_playstate_updated_at_seconds
+            .get(room_name)
+            .copied();
         if playstate.paused == Some(false)
             && let (Some(position), Some(updated_at_seconds)) =
                 (playstate.position, updated_at_seconds)
@@ -4976,9 +5005,7 @@ impl ClientSession {
         if let Some(paused) = playstate.paused {
             room_playstate.paused = Some(paused);
         }
-        if let Some(do_seek) = playstate.do_seek {
-            room_playstate.do_seek = Some(do_seek);
-        }
+        room_playstate.do_seek = Some(playstate.do_seek.unwrap_or(false));
         room_playstate.set_by = playstate.set_by;
         self.room_playstate_updated_at_seconds
             .insert(room_key, updated_at_seconds);
@@ -5009,12 +5036,14 @@ impl ClientSession {
         local_paused: bool,
         local_position: f64,
     ) -> (bool, bool) {
-        let global_paused = self
-            .current_room_playstate()
+        let global_playstate =
+            self.current_room_playstate_at(unix_wall_clock_time_seconds_legacy_compatible());
+        let global_paused = global_playstate
+            .as_ref()
             .and_then(|playstate| playstate.paused)
             .unwrap_or(true);
-        let global_position = self
-            .current_room_playstate()
+        let global_position = global_playstate
+            .as_ref()
             .and_then(|playstate| playstate.position)
             .unwrap_or(0.0);
         let player_paused = self.local_paused.unwrap_or(global_paused);
@@ -7223,8 +7252,8 @@ mod tests {
             .apply_message_json_at(
                 r#"{"Set":{"playlistIndex":{"index":2,"user":"bob"}}}"#,
                 20.0,
-        )
-        .expect("remote playlist index should apply");
+            )
+            .expect("remote playlist index should apply");
         assert!(!session.recently_advanced(20.1));
     }
 
@@ -7487,6 +7516,66 @@ mod tests {
         assert!(
             !seeked,
             "smooth playback progress should not be classified as a seek when it remains close to the last local telemetry position"
+        );
+    }
+
+    #[test]
+    fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(0.0),
+                paused: Some(false),
+                do_seek: Some(false),
+                set_by: Some("bob".to_owned()),
+            },
+        );
+        session.room_playstate_updated_at_seconds.insert(
+            "room1".to_owned(),
+            unix_wall_clock_time_seconds_legacy_compatible() - 1.15,
+        );
+        session.local_position = Some(0.0);
+        session.local_paused = Some(false);
+
+        let (pause_change, seeked) = session.determine_local_state_change(false, 1.2);
+
+        assert!(!pause_change);
+        assert!(
+            !seeked,
+            "seek detection should compare against the room position at the current time instead of the stale stored snapshot"
+        );
+    }
+
+    #[test]
+    fn inbound_room_playstate_without_do_seek_clears_stale_seek_flag() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":42.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("seek state should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":43.0,"paused":false,"setBy":"bob"}}}"#,
+            )
+            .expect("ordinary state should apply");
+
+        let playstate = session
+            .current_room_playstate()
+            .expect("room playstate should exist");
+        assert_eq!(playstate.position, Some(43.0));
+        assert_eq!(playstate.paused, Some(false));
+        assert_eq!(
+            playstate.do_seek,
+            Some(false),
+            "ordinary state updates should clear prior doSeek markers instead of leaving them sticky"
         );
     }
 
@@ -10997,6 +11086,7 @@ mod tests {
                 .with_ping(PingPayload::new().with_latency_calculation(42.0)),
             100.0,
             0.25,
+            false,
         );
 
         assert!(sent, "state sync should emit after telemetry is available");
@@ -11088,6 +11178,7 @@ mod tests {
                 .with_ping(
                     PingPayload::new().with_latency_calculation(inbound_latency_calculation),
                 ),
+            false,
         );
 
         assert!(
@@ -11139,7 +11230,7 @@ mod tests {
         let mut runtime = ClientRuntime::new(session, player, control);
 
         assert!(
-            runtime.run_state_sync_heartbeat_legacy_ping_compatible(),
+            runtime.run_state_sync_heartbeat_legacy_ping_compatible(false),
             "heartbeat should queue a ping-only state after hello even without local playback telemetry"
         );
         assert_eq!(
@@ -11167,6 +11258,65 @@ mod tests {
         assert!(
             ping.client_rtt.is_some(),
             "heartbeat should include clientRtt even without local playback telemetry"
+        );
+    }
+
+    #[test]
+    fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down_with_me_is_enabled()
+     {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#,
+            )
+            .expect("room state should apply");
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        session
+            .room_playstate_updated_at_seconds
+            .insert("room1".to_owned(), now_seconds - 2.0);
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(15.0)
+                    .with_paused(false),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime.run_state_sync_heartbeat_legacy_ping_compatible(true),
+            "heartbeat should emit state while the session is active"
+        );
+
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0]
+        else {
+            panic!("queued heartbeat should be State");
+        };
+        let outbound_position = state_message
+            .state
+            .playstate
+            .as_ref()
+            .and_then(|playstate| playstate.position)
+            .expect("heartbeat should include playstate position");
+        assert!(
+            (11.0..13.5).contains(&outbound_position),
+            "dontSlowDownWithMe should report the room position instead of the locally fast-forwarded player time, got {outbound_position}"
+        );
+        assert_eq!(
+            state_message
+                .state
+                .playstate
+                .as_ref()
+                .and_then(|playstate| playstate.paused),
+            Some(false)
         );
     }
 
@@ -15510,7 +15660,9 @@ mod tests {
             "local playlist changes should immediately enter the recently-advanced grace window"
         );
         assert_eq!(
-            runtime.session_mut().take_pending_playlist_index_reset_intent(),
+            runtime
+                .session_mut()
+                .take_pending_playlist_index_reset_intent(),
             Some(true),
             "local playlist changes should queue a pause-and-rewind reset intent before the server echo"
         );
@@ -15650,7 +15802,8 @@ mod tests {
             .expect("Set message should contain playlistIndex payload");
         assert_eq!(playlist_index.index, 0);
         assert!(playlist_index.user.is_none());
-        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[1] else {
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[1]
+        else {
             panic!("expected queued State protocol message after trusted playlist switch");
         };
         let playstate = state_message
@@ -15718,7 +15871,9 @@ mod tests {
             "playlist advance should immediately enter the recently-advanced grace window"
         );
         assert_eq!(
-            runtime.session_mut().take_pending_playlist_index_reset_intent(),
+            runtime
+                .session_mut()
+                .take_pending_playlist_index_reset_intent(),
             Some(true),
             "playlist advance should queue a pause-and-rewind reset intent before the server echo"
         );

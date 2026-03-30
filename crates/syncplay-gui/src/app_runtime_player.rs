@@ -1410,10 +1410,8 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         if let Some(session) = self.session.as_mut()
-            && let Err(error) = session.sync_local_playback_telemetry(
-                pause_before_sync.then_some(true),
-                Some(0.0),
-            )
+            && let Err(error) =
+                session.sync_local_playback_telemetry(pause_before_sync.then_some(true), Some(0.0))
         {
             eprintln!(
                 "warning: failed to mirror playlist switch reset telemetry into the session runtime: {error}"
@@ -1442,8 +1440,8 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         };
-        let Some((playstate, raw_playstate, local_username)) = self.session.as_ref().and_then(
-            |session| {
+        let Some((playstate, raw_playstate, local_username)) =
+            self.session.as_ref().and_then(|session| {
                 session
                     .current_room_playstate_for_attached_player_sync()
                     .map(|playstate| {
@@ -1453,8 +1451,8 @@ impl GuiPersistedConfigRuntimeOwner {
                             session.local_username().map(str::to_owned),
                         )
                     })
-            },
-        ) else {
+            })
+        else {
             self.last_applied_attached_room_playstate = None;
             return;
         };
@@ -1479,11 +1477,13 @@ impl GuiPersistedConfigRuntimeOwner {
             && self.player_position_seconds.is_none()
             && self.last_applied_attached_room_playstate.is_none();
         let user_offset_seconds = self.user_offset_seconds;
+        let should_seek_for_room_playstate =
+            force || playstate.do_seek == Some(true) || playstate.paused == Some(true);
 
         let mut state_changed = false;
         if let Some(position_seconds) = playstate.position_seconds
             && (!set_by_is_local_user || allow_initial_self_origin_position_sync)
-            && (force || playstate.do_seek == Some(true))
+            && should_seek_for_room_playstate
             && (force
                 || self
                     .player_position_seconds
