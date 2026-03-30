@@ -658,6 +658,126 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner {
+        config_path: None,
+        session: None,
+        session_projects_to_shell: false,
+        session_transport: None,
+        session_transport_driver: None,
+        session_default_room: None,
+        pending_room_change_request: None,
+        startup_saved_connect_attempted: false,
+        player: Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+            state: player_state.clone(),
+        }))),
+        player_launch_state: GuiPlayerLaunchRuntimeState::None,
+        managed_mpv_process: None,
+        player_unavailability_reason: None,
+        player_local_file: None,
+        last_published_local_file: None,
+        attached_media_search_index: None,
+        attached_media_search_next_retry_at: None,
+        pending_attached_media_resolution: None,
+        attached_media_search_progress: None,
+        attached_media_search_progress_updated_at: None,
+        attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
+        attached_media_search_build_roots: Vec::new(),
+        attached_media_search_job_sequence: 0,
+        attached_media_search_index_revision: 0,
+        unresolved_attached_media_target: None,
+        last_attached_media_resolution_trigger: None,
+        last_applied_attached_room_playstate: None,
+        suppressed_attached_room_playstate_after_playlist_reset: None,
+        player_position_seconds: Some(100.0),
+        player_paused: Some(false),
+        user_offset_seconds: 0.0,
+    };
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    handle.push_request(GuiRuntimeRequest::SetOffset(
+        syncplay_client_app::app_boundary::commands::LocalOffsetCommand::Absolute(5.0),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let _ = handle.drain_actions();
+    assert_eq!(owner.user_offset_seconds, 5.0);
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(100.0),
+        "changing offset should not rewrite the stored global position"
+    );
+    assert_eq!(
+        owner.session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds()),
+        Some(100.0),
+        "offset changes should keep detached-session telemetry on the global timeline"
+    );
+
+    handle.push_request(GuiRuntimeRequest::SetOffset(
+        syncplay_client_app::app_boundary::commands::LocalOffsetCommand::Absolute(7.0),
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let _ = handle.drain_actions();
+    assert_eq!(owner.user_offset_seconds, 7.0);
+    assert_eq!(owner.player_position_seconds, Some(100.0));
+
+    handle.push_request(GuiRuntimeRequest::SeekToPosition(42.0));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let _ = handle.drain_actions();
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions,
+        vec![105.0, 107.0, 49.0],
+        "offset commands should target player-local time, while global seeks add the active offset only once"
+    );
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(42.0),
+        "global seek state should remain offset-free after attached-player requests"
+    );
+    assert_eq!(
+        owner.session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds()),
+        Some(42.0),
+        "detached-session seek history should record the global seek target rather than the shifted player position"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_before_applying_fresh_room_playstate()
 {
     #[derive(Debug, Default)]
@@ -855,6 +975,93 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_applies_user_offset_only_at_player_sync_boundary() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.user_offset_seconds = 5.0;
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#
+            .to_owned(),
+    );
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let recorded_state = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        recorded_state
+            .set_positions
+            .iter()
+            .all(|position| *position > 14.9 && *position < 15.5),
+        "attached-player room sync should add the active user offset when seeking the player"
+    );
+    assert_eq!(
+        owner.player_position_seconds.map(|position| position.round()),
+        Some(10.0),
+        "stored runtime playback position should stay on the global timeline instead of the shifted player time"
+    );
 }
 
 #[test]

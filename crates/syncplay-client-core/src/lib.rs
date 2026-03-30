@@ -1103,16 +1103,16 @@ where
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
 
-        let Some(room_playstate) = self.session.current_room_playstate().cloned() else {
+        let Some(room_playstate) = self.current_room_playstate_legacy_ping_compatible_now() else {
             return Ok(());
         };
-        let Some(room_paused) = room_playstate.paused else {
-            return Ok(());
-        };
-        let Some(local_paused) = self.session.local_paused else {
-            return Ok(());
-        };
-        if local_paused == room_paused {
+        let room_seeked = room_playstate.do_seek == Some(true);
+        let pause_mismatch = self
+            .session
+            .local_paused
+            .zip(room_playstate.paused)
+            .is_some_and(|(local_paused, room_paused)| local_paused != room_paused);
+        if !room_seeked && !pause_mismatch {
             return Ok(());
         }
         let set_by_is_self = self
@@ -1126,16 +1126,21 @@ where
         }
 
         let mut actions = Vec::new();
-        if room_paused
+        if (room_seeked || room_playstate.paused == Some(true))
             && let Some(room_position) = room_playstate.position.filter(|value| value.is_finite())
         {
             actions.push(ClientRuntimeAction::SetPosition(room_position));
             self.session.local_position = Some(room_position);
         }
-        actions.push(ClientRuntimeAction::SetPaused(room_paused));
+        if pause_mismatch && let Some(room_paused) = room_playstate.paused {
+            actions.push(ClientRuntimeAction::SetPaused(room_paused));
+            // Mirror the expected local state to avoid duplicate correction attempts until telemetry catches up.
+            self.session.local_paused = Some(room_paused);
+        }
+        if actions.is_empty() {
+            return Ok(());
+        }
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        // Mirror the expected local state to avoid duplicate correction attempts until telemetry catches up.
-        self.session.local_paused = Some(room_paused);
         Ok(())
     }
 
@@ -10866,6 +10871,60 @@ mod tests {
             "room pause sync should optimistically mirror the corrected position"
         );
         assert_eq!(runtime.session().local_paused, Some(true));
+    }
+
+    #[test]
+    fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":12.5,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("remote seek state should apply");
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        session
+            .room_playstate_updated_at_seconds
+            .insert("room1".to_owned(), now_seconds - 2.0);
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(3.0)
+                    .with_paused(false),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_room_pause_sync_if_needed()
+            .expect("room playstate sync should dispatch");
+
+        let synced_position = runtime
+            .player()
+            .position
+            .expect("remote seek should issue a player seek");
+        assert!(
+            synced_position > 14.0,
+            "remote doSeek should use the aged room playstate instead of the stale stored snapshot"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            None,
+            "remote doSeek without a pause mismatch should not send an extra pause action"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(synced_position),
+            "room playstate sync should optimistically mirror the corrected seek target"
+        );
+        assert_eq!(runtime.session().local_paused, Some(false));
     }
 
     #[test]

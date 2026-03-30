@@ -87,9 +87,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 match self.undo_seek_target_position_from_detached_session(projected_state) {
                         Ok(Some(target_position_seconds)) => {
+                            let player_target_position_seconds = self
+                                .player_target_position_seconds_for_global_position(
+                                    target_position_seconds,
+                                );
                             let (player_name, undo_result) = {
                                 let player = self.player.as_mut().expect("player should exist");
-                                (player.name(), player.set_position(target_position_seconds))
+                                (player.name(), player.set_position(player_target_position_seconds))
                             };
                             match undo_result {
                                 Ok(()) => {
@@ -135,27 +139,32 @@ impl GuiPersistedConfigRuntimeOwner {
                     &command,
                     None,
                 );
-                let Some(PlannedLocalRuntimeAction::SeekToPosition(target_position_seconds)) =
+                let Some(PlannedLocalRuntimeAction::SeekToPosition(target_player_position_seconds)) =
                     dispatch.action
                 else {
                     return false;
                 };
                 let (player_name, offset_result) = {
                     let player = self.player.as_mut().expect("player should exist");
-                    (player.name(), player.set_position(target_position_seconds))
+                    (player.name(), player.set_position(target_player_position_seconds))
                 };
                 match offset_result {
                     Ok(()) => {
-                        self.player_position_seconds = Some(target_position_seconds);
                         self.user_offset_seconds = dispatch
                             .updated_user_offset_seconds
                             .unwrap_or(self.user_offset_seconds);
+                        self.player_position_seconds = Some(previous_position_seconds);
                         self.refresh_player_state();
-                        if let Err(error) = self.sync_manual_seek_into_detached_session(
-                            projected_state,
-                            previous_position_seconds,
-                            target_position_seconds,
-                        ) {
+                        if let Err(error) =
+                            self.ensure_detached_client_core_chat_session(projected_state)
+                        {
+                            Self::push_player_error(handle, error);
+                        } else if let Some(session) = self.session.as_mut()
+                            && let Err(error) = session.sync_local_playback_telemetry(
+                                self.player_paused,
+                                Some(previous_position_seconds),
+                            )
+                        {
                             Self::push_player_error(handle, error);
                         }
                         let message = dispatch.line_to_emit.unwrap_or_else(|| {
@@ -206,9 +215,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                     let target_position_seconds =
                         (previous_position_seconds + offset_seconds).max(0.0);
+                    let player_target_position_seconds = self
+                        .player_target_position_seconds_for_global_position(target_position_seconds);
                     let (player_name, seek_result) = {
                         let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_position(target_position_seconds))
+                        (player.name(), player.set_position(player_target_position_seconds))
                     };
                     match seek_result {
                         Ok(()) => {
@@ -250,9 +261,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 if self.player.is_some() {
                     let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                     let target_position_seconds = target_position_seconds.max(0.0);
+                    let player_target_position_seconds = self
+                        .player_target_position_seconds_for_global_position(target_position_seconds);
                     let (player_name, seek_result) = {
                         let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_position(target_position_seconds))
+                        (player.name(), player.set_position(player_target_position_seconds))
                     };
                     match seek_result {
                         Ok(()) => {

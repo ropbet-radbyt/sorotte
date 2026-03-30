@@ -326,6 +326,20 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
+    pub(super) fn global_position_seconds_from_player_position_impl(
+        &self,
+        player_position_seconds: f64,
+    ) -> f64 {
+        player_position_seconds - self.user_offset_seconds
+    }
+
+    pub(super) fn player_target_position_seconds_for_global_position_impl(
+        &self,
+        global_position_seconds: f64,
+    ) -> f64 {
+        (global_position_seconds + self.user_offset_seconds).max(0.0)
+    }
+
     fn quick_existing_media_target_path(target: &Path) -> Option<String> {
         target
             .is_file()
@@ -1362,13 +1376,15 @@ impl GuiPersistedConfigRuntimeOwner {
             .session
             .as_ref()
             .and_then(|session| session.current_room_playstate());
+        let reset_target_position_seconds =
+            self.player_target_position_seconds_for_global_position_impl(0.0);
 
         let Some(player) = self.player.as_mut() else {
             return;
         };
 
         let mut state_changed = false;
-        match player.set_position(0.0) {
+        match player.set_position(reset_target_position_seconds) {
             Ok(()) => {
                 self.player_position_seconds = Some(0.0);
                 state_changed = true;
@@ -1462,6 +1478,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let allow_initial_self_origin_position_sync = force
             && self.player_position_seconds.is_none()
             && self.last_applied_attached_room_playstate.is_none();
+        let user_offset_seconds = self.user_offset_seconds;
 
         let mut state_changed = false;
         if let Some(position_seconds) = playstate.position_seconds
@@ -1475,7 +1492,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                     .unwrap_or(true))
         {
-            match player.set_position(position_seconds) {
+            match player.set_position((position_seconds + user_offset_seconds).max(0.0)) {
                 Ok(()) => {
                     self.player_position_seconds = Some(position_seconds);
                     state_changed = true;
@@ -1933,6 +1950,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn refresh_player_state_impl(&mut self) {
+        let user_offset_seconds = self.user_offset_seconds;
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -1941,7 +1959,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_paused = Some(paused);
             }
             if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds);
+                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
             }
         }
         while let Some(update) = player.take_local_file_update() {

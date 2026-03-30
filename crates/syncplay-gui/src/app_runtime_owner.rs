@@ -1007,6 +1007,13 @@ impl GuiPersistedConfigRuntimeOwner {
         self.refresh_player_state_impl()
     }
 
+    fn player_target_position_seconds_for_global_position(
+        &self,
+        global_position_seconds: f64,
+    ) -> f64 {
+        self.player_target_position_seconds_for_global_position_impl(global_position_seconds)
+    }
+
     fn sync_manual_seek_into_detached_session(
         &mut self,
         state: &SyncplayGuiShellAppState,
