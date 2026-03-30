@@ -22,7 +22,10 @@ use std::{
 };
 
 use serde_json::Value;
-use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+use syncplay_client_app::app_boundary::state::{
+    AutoplayThresholdOverride, StoredClientSettingsRuntimeSnapshot,
+    parse_host_and_optional_port_from_host_arg_legacy_compatible,
+};
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession, PrivacyMode,
     QueuedRuntimeControl, RoomPlaylistView,
@@ -214,6 +217,13 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
+    fn sync_runtime_settings(
+        &mut self,
+        _runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn publish_local_file_legacy_compatible(
         &mut self,
         _file_payload: &Value,
@@ -248,6 +258,7 @@ pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     username: String,
     baseline_room: String,
     dont_slow_down_with_me: bool,
+    runtime_settings: StoredClientSettingsRuntimeSnapshot,
     pub(super) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
     next_state_sync_heartbeat_at: Option<Instant>,
@@ -275,15 +286,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let username = username.into();
         let room = room.into();
         let hello_json = Self::hello_json(&username, &room);
+        let runtime_settings = StoredClientSettingsRuntimeSnapshot {
+            controlled_room_password_override,
+            ..StoredClientSettingsRuntimeSnapshot::default()
+        };
         let mut session = ClientSession::default();
-        if let Some(control_password) = controlled_room_password_override.as_deref() {
-            session.remember_control_password_for_room(&room, control_password);
-        }
+        Self::apply_runtime_settings_to_session(&mut session, &runtime_settings, &room);
 
         Ok(Self {
             username,
             baseline_room: room,
             dont_slow_down_with_me: false,
+            runtime_settings,
             runtime: ClientRuntime::new(
                 session,
                 GuiNoopClientRuntimePlayer,
@@ -299,7 +313,125 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn with_dont_slow_down_with_me(mut self, enabled: bool) -> Self {
         self.dont_slow_down_with_me = enabled;
+        self.runtime_settings.settings.dont_slow_down_with_me = Some(enabled);
         self
+    }
+
+    pub(super) fn apply_runtime_settings_snapshot(
+        &mut self,
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) {
+        self.runtime_settings = runtime_settings.clone();
+        self.dont_slow_down_with_me = runtime_settings
+            .settings
+            .dont_slow_down_with_me
+            .unwrap_or(false);
+        let room = self.current_room_for_next_hello();
+        Self::apply_runtime_settings_to_session(
+            self.runtime.session_mut(),
+            &self.runtime_settings,
+            &room,
+        );
+        let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
+            self.autoplay_runtime_flags();
+        self.runtime.update_autoplay_check(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        );
+    }
+
+    fn apply_runtime_settings_to_session(
+        session: &mut ClientSession,
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+        room: &str,
+    ) {
+        if let Some(control_password) = runtime_settings
+            .controlled_room_password_override
+            .as_deref()
+        {
+            session.remember_control_password_for_room(room, control_password);
+        }
+        if let Some(autoplay_enabled) = runtime_settings.settings.autoplay_initial_state {
+            session.set_autoplay_enabled(autoplay_enabled);
+        }
+        if let Some(show_same_room_osd) = runtime_settings.settings.show_same_room_osd {
+            session.behavior_config_mut().show_same_room_osd = show_same_room_osd;
+        }
+        if let Some(show_osd_warnings) = runtime_settings.settings.show_osd_warnings {
+            session.behavior_config_mut().show_osd_warnings = show_osd_warnings;
+        }
+        if let Some(show_noncontroller_osd) = runtime_settings.settings.show_noncontroller_osd {
+            session.behavior_config_mut().show_noncontroller_osd = show_noncontroller_osd;
+        }
+        if let Some(show_different_room_osd) = runtime_settings.settings.show_different_room_osd {
+            session.behavior_config_mut().show_different_room_osd = show_different_room_osd;
+        }
+        if let Some(pause_on_leave) = runtime_settings.settings.pause_on_leave {
+            session.behavior_config_mut().pause_on_leave = pause_on_leave;
+        }
+        if let Some(loop_at_end_of_playlist) = runtime_settings.settings.loop_at_end_of_playlist {
+            session.behavior_config_mut().loop_at_end_of_playlist = loop_at_end_of_playlist;
+        }
+        if let Some(loop_single_files) = runtime_settings.settings.loop_single_files {
+            session.behavior_config_mut().loop_single_files = loop_single_files;
+        }
+        if let Some(only_switch_to_trusted_domains) =
+            runtime_settings.settings.only_switch_to_trusted_domains
+        {
+            session.behavior_config_mut().only_switch_to_trusted_domains =
+                only_switch_to_trusted_domains;
+        }
+        if let Some(trusted_domains) = runtime_settings.settings.trusted_domains.as_ref() {
+            session.behavior_config_mut().trusted_domains = trusted_domains.clone();
+        }
+        if let Some(rewind_on_desync) = runtime_settings.settings.rewind_on_desync {
+            session.desync_config_mut().rewind_on_desync = rewind_on_desync;
+        }
+        if let Some(fastforward_on_desync) = runtime_settings.settings.fastforward_on_desync {
+            session.desync_config_mut().fastforward_on_desync = fastforward_on_desync;
+        }
+        if let Some(slow_on_desync) = runtime_settings.settings.slow_on_desync {
+            session.desync_config_mut().slow_on_desync = slow_on_desync;
+        }
+        if let Some(rewind_threshold_seconds) = runtime_settings.settings.rewind_threshold_seconds {
+            session.desync_config_mut().rewind_threshold_seconds = rewind_threshold_seconds;
+        }
+        if let Some(fastforward_threshold_seconds) =
+            runtime_settings.settings.fastforward_threshold_seconds
+        {
+            session.desync_config_mut().fastforward_threshold_seconds =
+                fastforward_threshold_seconds;
+        }
+        if let Some(slowdown_threshold_seconds) =
+            runtime_settings.settings.slowdown_threshold_seconds
+        {
+            session.desync_config_mut().slowdown_threshold_seconds = slowdown_threshold_seconds;
+        }
+        {
+            let readiness_config = session.readiness_autoplay_config_mut();
+            if let Some(autoplay_require_same_filenames) =
+                runtime_settings.settings.autoplay_require_same_filenames
+            {
+                readiness_config.autoplay_require_same_filenames = autoplay_require_same_filenames;
+            }
+            if let Some(unpause_action) = runtime_settings.settings.unpause_action.as_ref() {
+                readiness_config.unpause_action = unpause_action.clone();
+            }
+            if let Some(auto_play_threshold) = runtime_settings.settings.autoplay_min_users.as_ref()
+            {
+                readiness_config.auto_play_threshold = match auto_play_threshold {
+                    AutoplayThresholdOverride::Disable => None,
+                    AutoplayThresholdOverride::Set(value) => Some(*value),
+                };
+            }
+            if let Some(show_duration_notification) =
+                runtime_settings.settings.show_duration_notification
+            {
+                readiness_config.show_duration_notification = show_duration_notification;
+            }
+        }
     }
 
     fn hello_json(username: &str, room: &str) -> String {
@@ -317,8 +449,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn reset_session_for_reconnect(&mut self) {
         let room = self.current_room_for_next_hello();
         self.baseline_room = room.clone();
+        let mut session = ClientSession::default();
+        Self::apply_runtime_settings_to_session(&mut session, &self.runtime_settings, &room);
         self.runtime = ClientRuntime::new(
-            ClientSession::default(),
+            session,
             GuiNoopClientRuntimePlayer,
             QueuedRuntimeControl::default(),
         );
@@ -1158,6 +1292,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             is_playing_music,
             recently_advanced,
         );
+        Ok(())
+    }
+
+    fn sync_runtime_settings(
+        &mut self,
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) -> Result<(), String> {
+        self.apply_runtime_settings_snapshot(runtime_settings);
         Ok(())
     }
 

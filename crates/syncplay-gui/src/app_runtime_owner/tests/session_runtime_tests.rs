@@ -411,3 +411,176 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
 
     let _ = std::fs::remove_dir_all(&media_root);
 }
+
+#[test]
+fn gui_persisted_config_runtime_owner_resyncs_detached_runtime_settings_each_pump() {
+    #[derive(Debug, Default)]
+    struct RecordingDetachedSessionState {
+        runtime_settings:
+            Vec<syncplay_client_app::app_boundary::state::StoredClientSettingsRuntimeSnapshot>,
+        autoplay_enabled: Vec<bool>,
+        autoplay_thresholds: Vec<usize>,
+    }
+
+    struct RecordingDetachedSessionRuntimeAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingDetachedSessionState>>,
+    }
+
+    impl GuiSessionRuntimeAdapter for RecordingDetachedSessionRuntimeAdapter {
+        fn sync_runtime_settings(
+            &mut self,
+            runtime_settings: &syncplay_client_app::app_boundary::state::StoredClientSettingsRuntimeSnapshot,
+        ) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .runtime_settings
+                .push(runtime_settings.clone());
+            Ok(())
+        }
+
+        fn sync_local_playback_telemetry(
+            &mut self,
+            _paused: Option<bool>,
+            _position_seconds: Option<f64>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .autoplay_enabled
+                .push(enabled);
+            Ok(())
+        }
+
+        fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .autoplay_thresholds
+                .push(threshold);
+            Ok(())
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(
+        RecordingDetachedSessionState::default(),
+    ));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(RecordingDetachedSessionRuntimeAdapter {
+            state: recorded.clone(),
+        }),
+    );
+    owner.player_paused = Some(true);
+    owner.player_position_seconds = Some(12.5);
+
+    let state_a = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        autoplay_initial_state: Some(true),
+        dont_slow_down_with_me: Some(false),
+        loop_single_files: Some(true),
+        rewind_on_desync: Some(false),
+        unpause_action: Some(syncplay_client_core::UnpauseActionMode::IfOthersReady),
+        autoplay_min_users: Some(
+            syncplay_client_app::app_boundary::state::AutoplayThresholdOverride::Set(3),
+        ),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner
+        .sync_detached_session_preferences_and_player_state(&state_a)
+        .expect("first detached-session preference sync should succeed");
+
+    let state_b = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        autoplay_initial_state: Some(false),
+        dont_slow_down_with_me: Some(true),
+        loop_single_files: Some(false),
+        rewind_on_desync: Some(true),
+        unpause_action: Some(syncplay_client_core::UnpauseActionMode::Always),
+        autoplay_min_users: Some(
+            syncplay_client_app::app_boundary::state::AutoplayThresholdOverride::Set(5),
+        ),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner
+        .sync_detached_session_preferences_and_player_state(&state_b)
+        .expect("second detached-session preference sync should succeed");
+
+    let recorded = recorded
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(recorded.runtime_settings.len(), 2);
+    assert_eq!(
+        recorded.runtime_settings[0].settings.dont_slow_down_with_me,
+        Some(false)
+    );
+    assert_eq!(
+        recorded.runtime_settings[0].settings.loop_single_files,
+        Some(true)
+    );
+    assert_eq!(
+        recorded.runtime_settings[0].settings.rewind_on_desync,
+        Some(false)
+    );
+    assert_eq!(
+        recorded.runtime_settings[0].settings.unpause_action,
+        Some(syncplay_client_core::UnpauseActionMode::IfOthersReady)
+    );
+    assert_eq!(
+        recorded.runtime_settings[1].settings.dont_slow_down_with_me,
+        Some(true)
+    );
+    assert_eq!(
+        recorded.runtime_settings[1].settings.loop_single_files,
+        Some(false)
+    );
+    assert_eq!(
+        recorded.runtime_settings[1].settings.rewind_on_desync,
+        Some(true)
+    );
+    assert_eq!(
+        recorded.runtime_settings[1].settings.unpause_action,
+        Some(syncplay_client_core::UnpauseActionMode::Always)
+    );
+    assert_eq!(
+        recorded.autoplay_enabled,
+        vec![
+            state_a.main_window.autoplay_active,
+            state_b.main_window.autoplay_active
+        ]
+    );
+    assert_eq!(
+        recorded.autoplay_thresholds,
+        vec![
+            state_a.main_window.autoplay_threshold,
+            state_b.main_window.autoplay_threshold,
+        ]
+    );
+}

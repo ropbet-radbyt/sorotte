@@ -42,18 +42,17 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.session.is_none() {
             let runtime_settings = Self::detached_runtime_settings_for_state(state);
             self.session_default_room = runtime_settings.settings.room.clone();
-            let dont_slow_down_with_me = runtime_settings
-                .settings
-                .dont_slow_down_with_me
-                .unwrap_or(false);
-            self.session = Some(Box::new(
-                GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
-                    runtime_settings.settings.username.unwrap_or_default(),
-                    runtime_settings.settings.room.unwrap_or_default(),
-                    runtime_settings.controlled_room_password_override,
-                )?
-                .with_dont_slow_down_with_me(dont_slow_down_with_me),
-            ));
+            let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+                runtime_settings
+                    .settings
+                    .username
+                    .clone()
+                    .unwrap_or_default(),
+                runtime_settings.settings.room.clone().unwrap_or_default(),
+                runtime_settings.controlled_room_password_override.clone(),
+            )?;
+            session.apply_runtime_settings_snapshot(&runtime_settings);
+            self.session = Some(Box::new(session));
             self.session_projects_to_shell = false;
             self.last_published_local_file = None;
         }
@@ -101,6 +100,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
+        session.sync_runtime_settings(&runtime_settings)?;
         session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
         session.set_autoplay_enabled(state.main_window.autoplay_active)?;
         session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
@@ -430,17 +430,13 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         };
         let default_room = target.room.clone();
-        let dont_slow_down_with_me = projected_state
-            .configuration
-            .to_stored_settings()
-            .dont_slow_down_with_me
-            .unwrap_or(false);
-        let session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+        let runtime_settings = Self::detached_runtime_settings_for_state(projected_state);
+        let mut session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             target.username,
             target.room,
             target.controlled_room_password_override,
         ) {
-            Ok(session) => session.with_dont_slow_down_with_me(dont_slow_down_with_me),
+            Ok(session) => session,
             Err(error) => {
                 let message = format!(
                     "Configured server connect through the detached session runtime failed: {error}"
@@ -457,6 +453,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         };
+        session.apply_runtime_settings_snapshot(&runtime_settings);
 
         self.session = Some(Box::new(session));
         self.session_projects_to_shell = true;

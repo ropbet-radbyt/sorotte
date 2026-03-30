@@ -17,5 +17,7 @@ mod controller_autoplay_tests;
 mod playlist_tests;
 #[path = "tests/public_server_tests.rs"]
 mod public_server_tests;
+#[path = "tests/session_config_tests.rs"]
+mod session_config_tests;
 #[path = "tests/session_transition_tests.rs"]
 mod session_transition_tests;
