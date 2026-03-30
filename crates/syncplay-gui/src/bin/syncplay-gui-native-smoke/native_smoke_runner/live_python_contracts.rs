@@ -80,6 +80,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -98,6 +99,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
         wait_for_main_window_user_row_name(
             driver,
             window,
@@ -126,6 +128,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
         wait_for_main_window_user_row_name(
             driver,
             window,
@@ -249,6 +252,13 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 "Trusted Domains",
                 step_timeout,
             )?;
+            select_top_tab_with_wait(
+                driver,
+                window,
+                "Playback & Search",
+                "Shared Playlists",
+                step_timeout,
+            )?;
             invoke_named_control_with_wait(
                 driver,
                 window,
@@ -265,6 +275,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 "Show Users",
                 step_timeout,
             )?;
+            select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
             wait_for_named_control_count(
                 driver,
                 window,
@@ -280,6 +291,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned(),
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned(),
         ];
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         python_harness
             .set_peer_playlist(&initial_playlist)
             .map_err(|error| format!("failed to seed Python reference peer playlist: {error}"))?;

@@ -7,8 +7,9 @@ use syncplay_client_app::app_boundary::state::{
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
-    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
+    GuiCommandAvailabilityState, GuiConfigurationTab, GuiMainWindowTab,
+    GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal, GuiShellView,
+    GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
     SyncplayGuiShellAppState,
 };
@@ -23,6 +24,8 @@ impl SyncplayGuiShellAppState {
             .room;
         let mut state = Self {
             active_view: GuiShellView::Configuration,
+            selected_main_window_tab: GuiMainWindowTab::Overview,
+            selected_configuration_tab: GuiConfigurationTab::Overview,
             open_modal: None,
             selection: GuiSelectionState::default(),
             runtime_menu_action_overrides: Vec::new(),
@@ -170,6 +173,24 @@ impl SyncplayGuiShellAppState {
                 });
         self.selection.selected_media_search_directory =
             (!self.media_search.directories.is_empty()).then_some(0);
+    }
+
+    pub(super) fn select_main_window_tab(&mut self, tab: GuiMainWindowTab) {
+        self.selected_main_window_tab = tab;
+    }
+
+    pub(super) fn select_configuration_tab(&mut self, tab: GuiConfigurationTab) {
+        self.selected_configuration_tab = tab;
+    }
+
+    pub(super) fn configuration_tab_for_section(section: &str) -> Option<GuiConfigurationTab> {
+        match section {
+            "Connection" => Some(GuiConfigurationTab::Connection),
+            "Readiness" | "Desync" | "Media Search" => Some(GuiConfigurationTab::PlaybackSearch),
+            "Privacy" | "Chat" => Some(GuiConfigurationTab::PrivacyChat),
+            "OSD" | "System" => Some(GuiConfigurationTab::InterfaceSystem),
+            _ => None,
+        }
     }
 
     pub(super) fn normalize_selection(&mut self) {

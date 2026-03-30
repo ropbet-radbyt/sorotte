@@ -71,91 +71,79 @@ impl SyncplayGuiShellAppState {
                 })
                 .collect::<Vec<_>>();
 
-        let mut children = vec![
-            GuiWidgetNode::branch(
-                "config-commands",
-                "Commands",
-                GuiWidgetKind::Panel,
-                vec![GuiWidgetNode::layout(
-                    "config-commands:buttons",
-                    "Command Buttons",
-                    GuiLayoutMode::ButtonWrap {
-                        min_button_width: 140.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "config-command:edit-room-history",
-                            "Edit Room History",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.pending_operation.is_none(),
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:connect",
-                            self.saved_session_connect_button_label(),
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_connect_saved_server
-                                && self.validation.issues.is_empty(),
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:disconnect",
-                            "Disconnect",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_disconnect_session,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:save",
-                            "Save",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_save_configuration,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:reset",
-                            "Reset",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_reset_configuration,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:reload",
-                            "Reload",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_reload_configuration,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "config-command:clear-gui-data",
-                            "Clear GUI Data",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.pending_operation.is_none(),
-                            false,
-                        ),
-                    ],
-                )],
-            ),
-            GuiWidgetNode::layout(
-                "configuration:sections",
-                "Configuration Sections",
-                GuiLayoutMode::ResponsiveColumns {
-                    min_column_width: 420.0,
-                    max_columns: 3,
+        let commands_panel = GuiWidgetNode::branch(
+            "config-commands",
+            "Commands",
+            GuiWidgetKind::Panel,
+            vec![GuiWidgetNode::layout(
+                "config-commands:buttons",
+                "Command Buttons",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 140.0,
                 },
-                section_cards,
-            ),
-        ];
+                vec![
+                    GuiWidgetNode::leaf(
+                        "config-command:edit-room-history",
+                        "Edit Room History",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:connect",
+                        self.saved_session_connect_button_label(),
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_connect_saved_server && self.validation.issues.is_empty(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:disconnect",
+                        "Disconnect",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_disconnect_session,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:save",
+                        "Save",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_save_configuration,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:reset",
+                        "Reset",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_reset_configuration,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:reload",
+                        "Reload",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.commands.can_reload_configuration,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:clear-gui-data",
+                        "Clear GUI Data",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                ],
+            )],
+        );
 
-        if let Some(session) = &self.room_history_edit_session {
-            children.push(GuiWidgetNode::branch(
+        let room_history_panel = self.room_history_edit_session.as_ref().map(|session| {
+            GuiWidgetNode::branch(
                 "room-history:edit-session",
                 "Room History Edit",
                 GuiWidgetKind::Panel,
@@ -194,14 +182,149 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                 ],
-            ));
+            )
+        });
+
+        let section_card = |title: &str| {
+            section_cards
+                .iter()
+                .find(|card| card.label == title)
+                .cloned()
+        };
+
+        let mut overview_children = vec![GuiWidgetNode::layout(
+            "configuration:sections",
+            "Configuration Sections",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 420.0,
+                max_columns: 3,
+            },
+            section_cards.clone(),
+        )];
+        if let Some(panel) = room_history_panel.clone() {
+            overview_children.push(panel);
         }
+        let overview_content = GuiWidgetNode::layout(
+            "configuration:content:overview",
+            "Overview Content",
+            GuiLayoutMode::Stack,
+            overview_children,
+        );
+
+        let connection_content = GuiWidgetNode::layout(
+            "configuration:content:connection",
+            "Connection Content",
+            GuiLayoutMode::Stack,
+            [section_card("Connection"), room_history_panel.clone()]
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+
+        let playback_search_content = GuiWidgetNode::layout(
+            "configuration:content:playback-search",
+            "Playback And Search Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 420.0,
+                max_columns: 3,
+            },
+            ["Readiness", "Desync", "Media Search"]
+                .into_iter()
+                .filter_map(section_card)
+                .collect(),
+        );
+
+        let privacy_chat_content = GuiWidgetNode::layout(
+            "configuration:content:privacy-chat",
+            "Privacy And Chat Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 420.0,
+                max_columns: 2,
+            },
+            ["Privacy", "Chat"]
+                .into_iter()
+                .filter_map(section_card)
+                .collect(),
+        );
+
+        let interface_system_content = GuiWidgetNode::layout(
+            "configuration:content:interface-system",
+            "Interface And System Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 420.0,
+                max_columns: 2,
+            },
+            ["OSD", "System"]
+                .into_iter()
+                .filter_map(section_card)
+                .collect(),
+        );
+
+        let selected_content = match self.selected_configuration_tab {
+            GuiConfigurationTab::Overview => overview_content,
+            GuiConfigurationTab::Connection => connection_content,
+            GuiConfigurationTab::PlaybackSearch => playback_search_content,
+            GuiConfigurationTab::PrivacyChat => privacy_chat_content,
+            GuiConfigurationTab::InterfaceSystem => interface_system_content,
+        };
 
         GuiWidgetNode::layout(
             "configuration-root",
             "Configuration",
             GuiLayoutMode::Stack,
-            children,
+            vec![
+                commands_panel,
+                GuiWidgetNode::layout(
+                    "configuration:tabs",
+                    "Configuration Tabs",
+                    GuiLayoutMode::TabStrip {
+                        min_tab_width: 132.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "configuration:tab:overview",
+                            "Overview",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_configuration_tab == GuiConfigurationTab::Overview,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "configuration:tab:connection",
+                            "Connection",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_configuration_tab == GuiConfigurationTab::Connection,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "configuration:tab:playback-search",
+                            "Playback & Search",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_configuration_tab == GuiConfigurationTab::PlaybackSearch,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "configuration:tab:privacy-chat",
+                            "Privacy & Chat",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_configuration_tab == GuiConfigurationTab::PrivacyChat,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "configuration:tab:interface-system",
+                            "Interface & System",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_configuration_tab == GuiConfigurationTab::InterfaceSystem,
+                        ),
+                    ],
+                ),
+                selected_content,
+            ],
         )
     }
 }

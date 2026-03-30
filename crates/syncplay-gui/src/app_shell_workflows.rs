@@ -1,9 +1,9 @@
 use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
 use super::shell_state::{
-    GuiShellModal, GuiShellView, GuiTransientNotification, GuiTransientNotificationLevel,
-    MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
-    MainWindowRuntimeSnapshot, MainWindowShellState, MainWindowUserRow, SyncplayGuiRuntimeSnapshot,
-    SyncplayGuiShellAppState,
+    GuiConfigurationTab, GuiMainWindowTab, GuiShellModal, GuiShellView, GuiTransientNotification,
+    GuiTransientNotificationLevel, MainWindowChatRow, MainWindowPlaybackControls,
+    MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
+    MainWindowUserRow, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 
@@ -102,12 +102,14 @@ impl SyncplayGuiShellAppState {
             }
             ("Playback", "Playlist Actions") => {
                 self.active_view = GuiShellView::MainWindow;
+                self.select_main_window_tab(GuiMainWindowTab::Playlist);
                 self.push_system_chat_message("Playlist actions opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
             ("Advanced", "Trusted Domains") => {
                 self.active_view = GuiShellView::Configuration;
+                self.select_configuration_tab(GuiConfigurationTab::PrivacyChat);
                 self.push_system_chat_message("Trusted domains opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
@@ -120,12 +122,26 @@ impl SyncplayGuiShellAppState {
             }
             ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
             ("Advanced", "Update Check") => self.begin_update_check(true),
-            ("Window", "Show Chat") | ("Window", "Show Playlist") | ("Window", "Show Users") => {
+            ("Window", "Show Chat") => {
                 self.active_view = GuiShellView::MainWindow;
-                self.push_system_chat_message(format!(
-                    "Main window section opened: {}.",
-                    action.label
-                ));
+                self.select_main_window_tab(GuiMainWindowTab::Chat);
+                self.push_system_chat_message("Main window section opened: Show Chat.".to_owned());
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Window", "Show Playlist") => {
+                self.active_view = GuiShellView::MainWindow;
+                self.select_main_window_tab(GuiMainWindowTab::Playlist);
+                self.push_system_chat_message(
+                    "Main window section opened: Show Playlist.".to_owned(),
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
+            ("Window", "Show Users") => {
+                self.active_view = GuiShellView::MainWindow;
+                self.select_main_window_tab(GuiMainWindowTab::Session);
+                self.push_system_chat_message("Main window section opened: Show Users.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }

@@ -2,9 +2,9 @@ use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 use super::shell_state::{
     GuiCommandAvailabilityRuntimeOverride, GuiCommandRuntimeSnapshot,
-    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
-    GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
-    GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
+    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,
+    GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
+    GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
     GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot, GuiPendingOperationKind,
     GuiPendingOperationState, GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
     GuiRoomHistoryEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiShellView,
@@ -530,6 +530,7 @@ impl SyncplayGuiShellAppState {
             is_dirty: false,
         });
         self.active_view = GuiShellView::Configuration;
+        self.select_configuration_tab(GuiConfigurationTab::Connection);
         self.clear_action_error_and_refresh();
         true
     }

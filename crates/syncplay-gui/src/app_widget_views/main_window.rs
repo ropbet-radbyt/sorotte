@@ -388,12 +388,12 @@ impl SyncplayGuiShellAppState {
             "main-window:summary-column",
             "Summary Column",
             GuiLayoutMode::Stack,
-            autoplay_panel.into_iter().fold(
+            autoplay_panel.clone().into_iter().fold(
                 vec![
-                    session_summary,
-                    room_actions,
-                    playback_summary,
-                    controls_panel,
+                    session_summary.clone(),
+                    room_actions.clone(),
+                    playback_summary.clone(),
+                    controls_panel.clone(),
                 ],
                 |mut children, panel| {
                     children.push(panel);
@@ -600,7 +600,7 @@ impl SyncplayGuiShellAppState {
             "main-window:playlist-column",
             "Playlist Column",
             GuiLayoutMode::Stack,
-            vec![playlist_panel, playlist_actions],
+            vec![playlist_panel.clone(), playlist_actions.clone()],
         );
 
         let chat_panel = GuiWidgetNode::branch(
@@ -640,27 +640,8 @@ impl SyncplayGuiShellAppState {
             ],
         );
 
-        let mut children = vec![
-            GuiWidgetNode::layout(
-                "main-window:top-region",
-                "Main Window Top Region",
-                GuiLayoutMode::ResponsiveColumns {
-                    min_column_width: 360.0,
-                    max_columns: 3,
-                },
-                vec![
-                    summary_column,
-                    self.main_window_browser_widget_node()
-                        .with_min_content_height(300.0),
-                    playlist_column,
-                ],
-            ),
-            chat_panel,
-        ];
-
-        let mut editor_panels = Vec::new();
-        if let Some(session) = &self.playlist_text_edit_session {
-            editor_panels.push(GuiWidgetNode::branch(
+        let playlist_text_edit_panel = self.playlist_text_edit_session.as_ref().map(|session| {
+            GuiWidgetNode::branch(
                 "main-window:playlist-edit",
                 "Playlist Editor",
                 GuiWidgetKind::Panel,
@@ -699,11 +680,11 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                 ],
-            ));
-        }
+            )
+        });
 
-        if let Some(session) = &self.playlist_url_edit_session {
-            editor_panels.push(GuiWidgetNode::branch(
+        let playlist_url_edit_panel = self.playlist_url_edit_session.as_ref().map(|session| {
+            GuiWidgetNode::branch(
                 "main-window:playlist-url-edit",
                 "Playlist URLs",
                 GuiWidgetKind::Panel,
@@ -742,11 +723,11 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                 ],
-            ));
-        }
+            )
+        });
 
-        if let Some(session) = &self.media_url_edit_session {
-            editor_panels.push(GuiWidgetNode::branch(
+        let media_url_edit_panel = self.media_url_edit_session.as_ref().map(|session| {
+            GuiWidgetNode::branch(
                 "main-window:media-url-edit",
                 "Open URL",
                 GuiWidgetKind::Panel,
@@ -793,66 +774,67 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                 ],
-            ));
-        }
-
-        if let Some(session) = &self.controlled_room_create_session {
-            let can_create_controlled_room = normalized_editable_text(
-                &controlled_room_base_name_legacy_compatible(&session.room_buffer),
             )
-            .is_some();
-            editor_panels.push(GuiWidgetNode::branch(
-                "main-window:controlled-room-create",
-                "Create Controlled Room",
-                GuiWidgetKind::Panel,
-                vec![
-                    GuiWidgetNode::layout(
-                        "main-window:controlled-room-create:form",
-                        "Controlled Room Form",
-                        GuiLayoutMode::FormGrid {
-                            label_width: 160.0,
-                            min_field_width: 220.0,
-                        },
-                        vec![GuiWidgetNode::leaf(
-                            "main-window:controlled-room-create:room",
-                            "Room Name",
-                            GuiWidgetKind::TextInput,
-                            Some(session.room_buffer.clone()),
-                            self.pending_operation.is_none(),
-                            false,
-                        )],
-                    ),
-                    GuiWidgetNode::layout(
-                        "main-window:controlled-room-create:actions",
-                        "Controlled Room Actions",
-                        GuiLayoutMode::ButtonWrap {
-                            min_button_width: 140.0,
-                        },
-                        vec![
-                            GuiWidgetNode::leaf(
-                                "main-window:controlled-room-create:commit",
-                                "Create Controlled Room",
-                                GuiWidgetKind::Button,
-                                None,
-                                can_create_controlled_room,
-                                false,
-                            ),
-                            GuiWidgetNode::leaf(
-                                "main-window:controlled-room-create:cancel",
-                                "Cancel Controlled Room Creation",
-                                GuiWidgetKind::Button,
-                                None,
-                                true,
-                                false,
-                            ),
-                        ],
-                    ),
-                ],
-            ));
-        }
+        });
 
-        if let Some(session) = &self.controller_auth_edit_session {
-            editor_panels.push(GuiWidgetNode::branch(
+        let controlled_room_create_panel =
+            self.controlled_room_create_session.as_ref().map(|session| {
+                let can_create_controlled_room = normalized_editable_text(
+                    &controlled_room_base_name_legacy_compatible(&session.room_buffer),
+                )
+                .is_some();
+                GuiWidgetNode::branch(
+                    "main-window:controlled-room-create",
+                    "Create Controlled Room",
+                    GuiWidgetKind::Panel,
+                    vec![
+                        GuiWidgetNode::layout(
+                            "main-window:controlled-room-create:form",
+                            "Controlled Room Form",
+                            GuiLayoutMode::FormGrid {
+                                label_width: 160.0,
+                                min_field_width: 220.0,
+                            },
+                            vec![GuiWidgetNode::leaf(
+                                "main-window:controlled-room-create:room",
+                                "Room Name",
+                                GuiWidgetKind::TextInput,
+                                Some(session.room_buffer.clone()),
+                                self.pending_operation.is_none(),
+                                false,
+                            )],
+                        ),
+                        GuiWidgetNode::layout(
+                            "main-window:controlled-room-create:actions",
+                            "Controlled Room Actions",
+                            GuiLayoutMode::ButtonWrap {
+                                min_button_width: 140.0,
+                            },
+                            vec![
+                                GuiWidgetNode::leaf(
+                                    "main-window:controlled-room-create:commit",
+                                    "Create Controlled Room",
+                                    GuiWidgetKind::Button,
+                                    None,
+                                    can_create_controlled_room,
+                                    false,
+                                ),
+                                GuiWidgetNode::leaf(
+                                    "main-window:controlled-room-create:cancel",
+                                    "Cancel Controlled Room Creation",
+                                    GuiWidgetKind::Button,
+                                    None,
+                                    true,
+                                    false,
+                                ),
+                            ],
+                        ),
+                    ],
+                )
+            });
+
+        let controller_auth_panel = self.controller_auth_edit_session.as_ref().map(|session| {
+            GuiWidgetNode::branch(
                 "main-window:controller-auth",
                 "Identify As Controller",
                 GuiWidgetKind::Panel,
@@ -909,31 +891,187 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                 ],
-            ));
-        }
+            )
+        });
 
-        if !editor_panels.is_empty() {
-            if editor_panels.len() == 1
-                && let Some(editor_panel) = editor_panels.first_mut()
+        let room_browser = self
+            .main_window_browser_widget_node()
+            .with_min_content_height(300.0);
+        let top_region = GuiWidgetNode::layout(
+            "main-window:top-region",
+            "Main Window Top Region",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 360.0,
+                max_columns: 3,
+            },
+            vec![
+                summary_column.clone(),
+                room_browser.clone(),
+                playlist_column.clone(),
+            ],
+        );
+
+        let mut overview_children = vec![top_region, chat_panel.clone()];
+        let mut overview_editor_panels = Vec::new();
+        for panel in [
+            playlist_text_edit_panel.clone(),
+            playlist_url_edit_panel.clone(),
+            media_url_edit_panel.clone(),
+            controlled_room_create_panel.clone(),
+            controller_auth_panel.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            overview_editor_panels.push(panel);
+        }
+        if !overview_editor_panels.is_empty() {
+            if overview_editor_panels.len() == 1
+                && let Some(editor_panel) = overview_editor_panels.first_mut()
             {
                 *editor_panel = editor_panel.clone().with_span(2);
             }
-            children.push(GuiWidgetNode::layout(
+            overview_children.push(GuiWidgetNode::layout(
                 "main-window:editors",
                 "Main Window Editors",
                 GuiLayoutMode::ResponsiveColumns {
                     min_column_width: 420.0,
                     max_columns: 2,
                 },
-                editor_panels,
+                overview_editor_panels,
             ));
         }
+
+        let overview_content = GuiWidgetNode::layout(
+            "main-window:content:overview",
+            "Overview Content",
+            GuiLayoutMode::Stack,
+            overview_children,
+        );
+
+        let mut session_children =
+            vec![session_summary.clone(), room_actions.clone(), room_browser];
+        if let Some(panel) = controlled_room_create_panel.clone() {
+            session_children.push(panel);
+        }
+        if let Some(panel) = controller_auth_panel.clone() {
+            session_children.push(panel);
+        }
+        let session_content = GuiWidgetNode::layout(
+            "main-window:content:session",
+            "Session Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 360.0,
+                max_columns: 2,
+            },
+            session_children,
+        );
+
+        let mut playback_children = vec![playback_summary.clone(), controls_panel.clone()];
+        if let Some(panel) = autoplay_panel.clone() {
+            playback_children.push(panel);
+        }
+        if let Some(panel) = media_url_edit_panel.clone() {
+            playback_children.push(panel);
+        }
+        let playback_content = GuiWidgetNode::layout(
+            "main-window:content:playback",
+            "Playback Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 360.0,
+                max_columns: 2,
+            },
+            playback_children,
+        );
+
+        let mut playlist_children = vec![playlist_panel.clone(), playlist_actions.clone()];
+        if let Some(panel) = playlist_text_edit_panel.clone() {
+            playlist_children.push(panel);
+        }
+        if let Some(panel) = playlist_url_edit_panel.clone() {
+            playlist_children.push(panel);
+        }
+        let playlist_content = GuiWidgetNode::layout(
+            "main-window:content:playlist",
+            "Playlist Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 360.0,
+                max_columns: 2,
+            },
+            playlist_children,
+        );
+
+        let chat_content = GuiWidgetNode::layout(
+            "main-window:content:chat",
+            "Chat Content",
+            GuiLayoutMode::Stack,
+            vec![chat_panel],
+        );
+
+        let selected_content = match self.selected_main_window_tab {
+            GuiMainWindowTab::Overview => overview_content,
+            GuiMainWindowTab::Session => session_content,
+            GuiMainWindowTab::Playback => playback_content,
+            GuiMainWindowTab::Playlist => playlist_content,
+            GuiMainWindowTab::Chat => chat_content,
+        };
 
         GuiWidgetNode::layout(
             "main-window-root",
             "Main Window",
             GuiLayoutMode::Stack,
-            children,
+            vec![
+                GuiWidgetNode::layout(
+                    "main-window:tabs",
+                    "Main Window Tabs",
+                    GuiLayoutMode::TabStrip {
+                        min_tab_width: 132.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "main-window:tab:overview",
+                            "Overview",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_main_window_tab == GuiMainWindowTab::Overview,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "main-window:tab:session",
+                            "Session",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_main_window_tab == GuiMainWindowTab::Session,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "main-window:tab:playback",
+                            "Playback",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_main_window_tab == GuiMainWindowTab::Playback,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "main-window:tab:playlist",
+                            "Playlist",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_main_window_tab == GuiMainWindowTab::Playlist,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "main-window:tab:chat",
+                            "Chat",
+                            GuiWidgetKind::Button,
+                            None,
+                            true,
+                            self.selected_main_window_tab == GuiMainWindowTab::Chat,
+                        ),
+                    ],
+                ),
+                selected_content,
+            ],
         )
     }
 

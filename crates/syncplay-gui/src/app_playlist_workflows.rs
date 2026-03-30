@@ -1,9 +1,9 @@
 use sha2::{Digest, Sha256};
 
 use super::shell_state::{
-    GuiPlaylistTextEditSessionState, GuiTransientNotificationLevel, GuiUrlEditSessionState,
-    MainWindowPlaylistRow, SyncplayGuiShellAppState, playlist_entries_multiline_text,
-    shuffle_playlist_entries_in_place,
+    GuiMainWindowTab, GuiPlaylistTextEditSessionState, GuiTransientNotificationLevel,
+    GuiUrlEditSessionState, MainWindowPlaylistRow, SyncplayGuiShellAppState,
+    playlist_entries_multiline_text, shuffle_playlist_entries_in_place,
 };
 use super::support::normalized_editable_text;
 
@@ -310,6 +310,7 @@ impl SyncplayGuiShellAppState {
         if !self.ensure_shared_playlist_event_allowed() {
             return false;
         }
+        self.select_main_window_tab(GuiMainWindowTab::Playlist);
         self.playlist_text_edit_session = Some(GuiPlaylistTextEditSessionState {
             buffer: playlist_entries_multiline_text(&self.current_shared_playlist_entries()),
             is_dirty: false,
@@ -341,6 +342,7 @@ impl SyncplayGuiShellAppState {
         if !self.ensure_shared_playlist_event_allowed() {
             return false;
         }
+        self.select_main_window_tab(GuiMainWindowTab::Playlist);
         self.playlist_url_edit_session = Some(GuiUrlEditSessionState {
             buffer: String::new(),
             is_dirty: false,
@@ -369,6 +371,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn begin_media_url_edit(&mut self) -> bool {
+        self.select_main_window_tab(GuiMainWindowTab::Playback);
         self.media_url_edit_session = Some(GuiUrlEditSessionState {
             buffer: String::new(),
             is_dirty: false,

@@ -6,9 +6,9 @@ use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
-    GuiDraftRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
-    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    SyncplayGuiShellAppState,
+    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiMainWindowTab, GuiShellAction, GuiShellModal,
+    GuiShellView, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, SyncplayGuiShellAppState,
 };
 use crate::app::testing::support::{TEST_USERNAME, browser_runtime_user};
 use crate::app::widget_tree::GuiWidgetKind;
@@ -475,6 +475,18 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
 
     let shell_tree = state.shell_widget_tree();
+    let media_url_text_node = shell_tree.find("main-window:media-url-edit:text").unwrap();
+    let media_url_cancel = shell_tree
+        .find("main-window:media-url-edit:cancel")
+        .unwrap();
+    assert!(
+        shell_tree.find("main-window:playlist-edit:text").is_none(),
+        "playlist editors should remain hidden while the playback tab owns the visible content"
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowTab(
+        GuiMainWindowTab::Playlist,
+    )));
+    let shell_tree = state.shell_widget_tree();
     let playlist_text_node = shell_tree.find("main-window:playlist-edit:text").unwrap();
     let playlist_text_commit = shell_tree.find("main-window:playlist-edit:commit").unwrap();
     let playlist_text_cancel = shell_tree.find("main-window:playlist-edit:cancel").unwrap();
@@ -486,10 +498,6 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
         .unwrap();
     let playlist_url_cancel = shell_tree
         .find("main-window:playlist-url-edit:cancel")
-        .unwrap();
-    let media_url_text_node = shell_tree.find("main-window:media-url-edit:text").unwrap();
-    let media_url_cancel = shell_tree
-        .find("main-window:media-url-edit:cancel")
         .unwrap();
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_text_commit),
@@ -561,6 +569,27 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
             ),
             GuiShellAction::CancelMediaUrlEdit,
         ])
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_maps_tab_buttons_to_shell_actions() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let shell_tree = state.shell_widget_tree();
+    let main_window_playlist_tab = shell_tree.find("main-window:tab:playlist").unwrap();
+    let configuration_privacy_tab = shell_tree.find("configuration:tab:privacy-chat").unwrap();
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, main_window_playlist_tab),
+        vec![GuiShellAction::SelectMainWindowTab(
+            GuiMainWindowTab::Playlist,
+        )]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, configuration_privacy_tab),
+        vec![GuiShellAction::SelectConfigurationTab(
+            GuiConfigurationTab::PrivacyChat,
+        )]
     );
 }
 

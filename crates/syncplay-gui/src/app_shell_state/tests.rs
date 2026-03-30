@@ -2,20 +2,20 @@ use std::collections::BTreeMap;
 
 use super::{
     FirstRunConfigurationDialogState, GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
-    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
-    GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
-    GuiFocusedConfigurationControlRuntimeSnapshot, GuiInteractionRuntimeSnapshot,
-    GuiMainWindowUserEditSessionRuntimeSnapshot, GuiPendingOperationKind,
-    GuiPublicServerEditSessionRuntimeSnapshot, GuiSavedConfigurationRuntimeSnapshot,
-    GuiSelectionState, GuiShellAction, GuiShellModal, GuiShellView,
-    GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification, GuiTransientNotificationLevel,
-    GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
-    MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MainWindowShellState,
-    MediaSearchDirectoryRow, MediaSearchWorkflowShellState, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, MenuDialogShellState, PublicServerBrowserRow,
-    PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
-    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
-    save_playlist_entries_to_path,
+    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,
+    GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
+    GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
+    GuiInteractionRuntimeSnapshot, GuiMainWindowTab, GuiMainWindowUserEditSessionRuntimeSnapshot,
+    GuiPendingOperationKind, GuiPublicServerEditSessionRuntimeSnapshot,
+    GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
+    GuiShellView, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
+    GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,
+    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
+    MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
+    PublicServerBrowserRow, PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot,
+    SyncplayGuiShellAppState, load_playlist_entries_from_path,
+    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 
 use crate::app::{
@@ -49,6 +49,53 @@ fn configuration_surface_defaults_to_first_run_mode() {
     assert_eq!(state.chat.chat_input_position_label, "Top");
     assert_eq!(state.chat.chat_output_mode_label, "Chatroom");
     assert_eq!(state.connection.public_server_count, 0);
+}
+
+#[test]
+fn gui_shell_app_state_defaults_tabs_to_overview() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Overview);
+    assert_eq!(
+        state.selected_configuration_tab,
+        GuiConfigurationTab::Overview
+    );
+}
+
+#[test]
+fn gui_shell_app_state_auto_switches_tabs_for_owned_workflows_and_preserves_hidden_sessions() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        room: Some("+room:ABCDEF123456".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
+    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playlist);
+    assert!(state.playlist_text_edit_session.is_some());
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat,)));
+    assert!(state.playlist_text_edit_session.is_some());
+
+    assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
+    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playback);
+    assert!(state.media_url_edit_session.is_some());
+
+    assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
+    assert_eq!(
+        state.selected_configuration_tab,
+        GuiConfigurationTab::Connection
+    );
+    assert!(state.room_history_edit_session.is_some());
+
+    assert!(state.apply(GuiShellAction::FocusConfigurationControl {
+        section: "Privacy",
+        label: "Trusted Domains",
+    }));
+    assert_eq!(
+        state.selected_configuration_tab,
+        GuiConfigurationTab::PrivacyChat
+    );
 }
 
 #[test]

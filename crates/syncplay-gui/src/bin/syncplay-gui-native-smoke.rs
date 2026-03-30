@@ -1206,6 +1206,31 @@ fn navigate_to_view_with_fallback<D: NativeGuiDriver>(
     })
 }
 
+fn select_top_tab_with_wait<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    tab_name: &str,
+    expected_name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    if wait_for_accessible_name(
+        driver,
+        window,
+        expected_name,
+        timeout.min(Duration::from_millis(500)),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    invoke_named_control_with_wait(driver, window, tab_name, NativeControlKind::Button, timeout)
+        .map_err(|error| {
+            format!("failed to activate top tab {tab_name:?} before waiting for {expected_name:?}: {error}")
+        })?;
+    wait_for_accessible_name(driver, window, expected_name, timeout).map(|_| ())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {

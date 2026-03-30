@@ -7,9 +7,9 @@ use syncplay_client_app::app_boundary::{
 
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
-    GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiShellAction, GuiShellView,
-    GuiTransientNotificationLevel, SyncplayGuiShellAppState, browser_domain_from_url,
-    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
+    GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMainWindowTab,
+    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    browser_domain_from_url, load_playlist_entries_from_path, playlist_entries_from_multiline_text,
     save_playlist_entries_to_path,
 };
 use super::support::normalized_editable_text;
@@ -137,6 +137,50 @@ impl GuiWidgetEguiRenderer {
         }
 
         match node.id.as_str() {
+            "main-window:tab:overview" => {
+                vec![GuiShellAction::SelectMainWindowTab(
+                    GuiMainWindowTab::Overview,
+                )]
+            }
+            "main-window:tab:session" => {
+                vec![GuiShellAction::SelectMainWindowTab(
+                    GuiMainWindowTab::Session,
+                )]
+            }
+            "main-window:tab:playback" => {
+                vec![GuiShellAction::SelectMainWindowTab(
+                    GuiMainWindowTab::Playback,
+                )]
+            }
+            "main-window:tab:playlist" => {
+                vec![GuiShellAction::SelectMainWindowTab(
+                    GuiMainWindowTab::Playlist,
+                )]
+            }
+            "main-window:tab:chat" => {
+                vec![GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat)]
+            }
+            "configuration:tab:overview" => {
+                vec![GuiShellAction::SelectConfigurationTab(
+                    GuiConfigurationTab::Overview,
+                )]
+            }
+            "configuration:tab:connection" => {
+                vec![GuiShellAction::SelectConfigurationTab(
+                    GuiConfigurationTab::Connection,
+                )]
+            }
+            "configuration:tab:playback-search" => vec![GuiShellAction::SelectConfigurationTab(
+                GuiConfigurationTab::PlaybackSearch,
+            )],
+            "configuration:tab:privacy-chat" => {
+                vec![GuiShellAction::SelectConfigurationTab(
+                    GuiConfigurationTab::PrivacyChat,
+                )]
+            }
+            "configuration:tab:interface-system" => vec![GuiShellAction::SelectConfigurationTab(
+                GuiConfigurationTab::InterfaceSystem,
+            )],
             "config-command:edit-room-history" => vec![GuiShellAction::BeginRoomHistoryEdit],
             "config-command:connect" => vec![GuiShellAction::BeginSavedServerConnect],
             "config-command:disconnect" => vec![GuiShellAction::BeginSessionDisconnect],

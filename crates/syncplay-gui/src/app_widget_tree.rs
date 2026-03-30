@@ -9,6 +9,9 @@ pub(super) enum GuiLayoutMode {
         min_column_width: f32,
         max_columns: usize,
     },
+    TabStrip {
+        min_tab_width: f32,
+    },
     FormGrid {
         label_width: f32,
         min_field_width: f32,

@@ -1,7 +1,7 @@
 use syncplay_client_app::app_boundary::commands::controlled_room_base_name_legacy_compatible;
 
 use super::shell_state::{
-    GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState,
+    GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState, GuiMainWindowTab,
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRoomRow, MainWindowUserRow, SyncplayGuiShellAppState,
 };
@@ -286,6 +286,7 @@ impl SyncplayGuiShellAppState {
             );
         };
         self.active_view = GuiShellView::MainWindow;
+        self.select_main_window_tab(GuiMainWindowTab::Session);
         self.controlled_room_create_session = Some(GuiControlledRoomCreateSessionState {
             room_buffer: room_name,
             is_dirty: false,
@@ -329,6 +330,7 @@ impl SyncplayGuiShellAppState {
             );
         }
         self.active_view = GuiShellView::MainWindow;
+        self.select_main_window_tab(GuiMainWindowTab::Session);
         self.controller_auth_edit_session = Some(GuiControllerAuthEditSessionState {
             room_name,
             password_buffer: String::new(),

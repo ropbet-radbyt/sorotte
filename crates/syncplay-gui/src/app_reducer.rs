@@ -16,6 +16,16 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SelectMainWindowTab(tab) => {
+                self.select_main_window_tab(tab);
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::SelectConfigurationTab(tab) => {
+                self.select_configuration_tab(tab);
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::OpenModal(modal) => {
                 self.open_modal = Some(modal);
                 self.clear_action_error_and_refresh();
@@ -138,6 +148,9 @@ impl SyncplayGuiShellAppState {
                     kind: control.kind,
                     activation_count,
                 });
+                if let Some(tab) = Self::configuration_tab_for_section(section) {
+                    self.select_configuration_tab(tab);
+                }
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -482,6 +495,9 @@ impl SyncplayGuiShellAppState {
                     buffer: control.value.clone(),
                     is_dirty: false,
                 });
+                if let Some(tab) = Self::configuration_tab_for_section(section) {
+                    self.select_configuration_tab(tab);
+                }
                 self.clear_action_error_and_refresh();
                 true
             }

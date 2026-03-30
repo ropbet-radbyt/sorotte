@@ -18,7 +18,10 @@ use super::runtime_localization::{
     localized_update_dismiss_hint_line_legacy_compatible,
     localized_update_notice_available_message_legacy_compatible,
 };
-use super::shell_state::{GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
+use super::shell_state::{
+    GuiConfigurationTab, GuiMainWindowTab, GuiShellView, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
+};
 use super::support::autoplay_threshold_from_settings;
 
 #[cfg(test)]
@@ -28,6 +31,8 @@ mod tests;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct GuiPersistedUiState {
     pub(super) active_view: Option<GuiShellView>,
+    pub(super) main_window_tab: Option<GuiMainWindowTab>,
+    pub(super) configuration_tab: Option<GuiConfigurationTab>,
     pub(super) selected_public_server_address: Option<String>,
     pub(super) selected_media_search_directory: Option<String>,
     pub(super) hide_empty_rooms: bool,
@@ -105,6 +110,10 @@ impl GuiPersistedUiState {
         Self {
             active_view: (state.active_view != GuiShellView::Configuration)
                 .then_some(state.active_view),
+            main_window_tab: (state.selected_main_window_tab != GuiMainWindowTab::Overview)
+                .then_some(state.selected_main_window_tab),
+            configuration_tab: (state.selected_configuration_tab != GuiConfigurationTab::Overview)
+                .then_some(state.selected_configuration_tab),
             selected_public_server_address: state
                 .selected_public_server_address()
                 .map(str::to_owned),
@@ -143,6 +152,8 @@ impl GuiPersistedUiState {
 
     pub(super) fn is_empty(&self) -> bool {
         self.active_view.is_none()
+            && self.main_window_tab.is_none()
+            && self.configuration_tab.is_none()
             && self.selected_public_server_address.is_none()
             && self.selected_media_search_directory.is_none()
             && !self.hide_empty_rooms
@@ -167,6 +178,12 @@ impl GuiPersistedUiState {
     pub(super) fn apply_to_shell_state(&self, state: &mut SyncplayGuiShellAppState) {
         if let Some(active_view) = self.active_view {
             state.active_view = active_view;
+        }
+        if let Some(tab) = self.main_window_tab {
+            state.select_main_window_tab(tab);
+        }
+        if let Some(tab) = self.configuration_tab {
+            state.select_configuration_tab(tab);
         }
         state.last_media_dialog_directory = self.last_media_dialog_directory.clone();
         if let Some(selected_address) = self.selected_public_server_address.as_deref()
@@ -324,6 +341,12 @@ pub(super) fn persist_gui_ui_state_at_root(
                     .active_view
                     .map(|view| ("activeView", view.label().to_owned())),
                 state
+                    .main_window_tab
+                    .map(|tab| ("mainWindowTab", tab.label().to_owned())),
+                state
+                    .configuration_tab
+                    .map(|tab| ("configurationTab", tab.label().to_owned())),
+                state
                     .hide_empty_rooms
                     .then(|| ("hideEmptyRooms", "true".to_owned())),
                 state
@@ -413,6 +436,12 @@ pub(super) fn load_gui_ui_state_from_root(
         state.active_view = parsed
             .get(&(String::from("MainWindow"), String::from("activeView")))
             .and_then(|value| GuiShellView::from_label(value));
+        state.main_window_tab = parsed
+            .get(&(String::from("MainWindow"), String::from("mainWindowTab")))
+            .and_then(|value| GuiMainWindowTab::from_label(value));
+        state.configuration_tab = parsed
+            .get(&(String::from("MainWindow"), String::from("configurationTab")))
+            .and_then(|value| GuiConfigurationTab::from_label(value));
         state.selected_public_server_address = parsed
             .get(&(
                 String::from("MainWindow"),

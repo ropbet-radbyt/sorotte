@@ -101,6 +101,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             "Trusted Domains",
             step_timeout,
         )?;
+        select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
         let editable_count = driver.editable_text_input_count(window)?;
         if editable_count < 6 {
             return Err(format!(
@@ -115,6 +116,13 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
         }
         steps.push("config-reload-persisted".to_owned());
+        select_top_tab_with_wait(
+            driver,
+            window,
+            "Privacy & Chat",
+            "Trusted Domains",
+            step_timeout,
+        )?;
         wait_for_edit_value_by_index(
             driver,
             window,
@@ -122,24 +130,23 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             TRUSTED_DOMAINS_VALUE,
             step_timeout,
         )?;
-        let mut config_page_downs = 0usize;
-        config_page_downs += wait_for_accessible_name_with_page_down(
+        wait_for_accessible_name(driver, window, "Chat Input", step_timeout)?;
+        select_top_tab_with_wait(
             driver,
             window,
+            "Playback & Search",
             "Rewind On Desync",
-            2,
             step_timeout,
         )?;
-        config_page_downs +=
-            wait_for_accessible_name_with_page_down(driver, window, "Chat Input", 2, step_timeout)?;
-        config_page_downs +=
-            wait_for_accessible_name_with_page_down(driver, window, "Show OSD", 2, step_timeout)?;
-        config_page_downs +=
-            wait_for_accessible_name_with_page_down(driver, window, "Language", 2, step_timeout)?;
+        select_top_tab_with_wait(
+            driver,
+            window,
+            "Interface & System",
+            "Show OSD",
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "Language", step_timeout)?;
         wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
-        for _ in 0..config_page_downs {
-            let _ = driver.scroll_active_view_page_up(window);
-        }
         steps.push("trusted-domains-persisted".to_owned());
 
         navigate_to_view_with_fallback(

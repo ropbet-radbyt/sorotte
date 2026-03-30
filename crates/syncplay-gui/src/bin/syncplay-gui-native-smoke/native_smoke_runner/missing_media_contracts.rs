@@ -116,6 +116,7 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             )?;
         }
 
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
         wait_for_named_control_enabled_state(
             driver,

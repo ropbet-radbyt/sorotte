@@ -458,6 +458,17 @@ impl GuiWidgetEguiRenderer {
                     }
                 }
             }
+            GuiLayoutMode::TabStrip { min_tab_width } => {
+                ui.horizontal_wrapped(|ui| {
+                    let mut spacing = ui.spacing().item_spacing;
+                    spacing.x = 8.0;
+                    spacing.y = 8.0;
+                    ui.spacing_mut().item_spacing = spacing;
+                    for child in &node.children {
+                        self.render_tab_button(ui, child, state, min_tab_width);
+                    }
+                });
+            }
             GuiLayoutMode::FormGrid {
                 label_width,
                 min_field_width,
@@ -892,6 +903,32 @@ impl GuiWidgetEguiRenderer {
             } else if Self::is_exit_menu_action(state, node) {
                 self.close_requested = true;
             } else if let Some(actions) = Self::direct_menu_actions(state, node) {
+                self.actions.extend(actions);
+            } else {
+                self.actions
+                    .extend(Self::actions_for_clicked_button(state, node));
+            }
+        }
+    }
+
+    fn render_tab_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        min_tab_width: f32,
+    ) {
+        let mut clicked = false;
+        ui.add_enabled_ui(node.enabled, |ui| {
+            clicked = ui
+                .add_sized(
+                    [min_tab_width.max(0.0), 0.0],
+                    egui::Button::new(Self::display_text(node)).selected(node.selected),
+                )
+                .clicked();
+        });
+        if clicked {
+            if let Some(actions) = Self::direct_menu_actions(state, node) {
                 self.actions.extend(actions);
             } else {
                 self.actions

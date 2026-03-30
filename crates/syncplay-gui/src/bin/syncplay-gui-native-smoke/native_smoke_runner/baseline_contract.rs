@@ -155,6 +155,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     steps.push("main-window-playback-controls-detached".to_owned());
+    select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
     wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
     wait_for_named_control_enabled_state(
         driver,
@@ -175,6 +176,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         "Trusted Domains",
         step_timeout,
     )?;
+    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
     for (edit_index, expected_value) in [
         (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
         (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
@@ -187,6 +189,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             driver.set_edit_value_by_index(window, edit_index, expected_value)?;
         }
     }
+    select_top_tab_with_wait(
+        driver,
+        window,
+        "Privacy & Chat",
+        "Trusted Domains",
+        step_timeout,
+    )?;
     let trusted_domains_index = trusted_domains_edit_index(true);
     driver.set_edit_value_by_index(window, trusted_domains_index, TRUSTED_DOMAINS_VALUE)?;
     wait_for_edit_value_by_index(
@@ -203,6 +212,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Any,
         step_timeout,
     )?;
+    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
     for (edit_index, expected_value) in [
         (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
         (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
@@ -599,6 +609,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         "Trusted Domains",
         step_timeout,
     )?;
+    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
     steps.push("surface-configuration".to_owned());
 
     upsert_syncplay_ini_stored_client_settings_mvp_at_path(
@@ -642,6 +653,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         &media_search_directory_value,
         config_persist_timeout,
     )?;
+    select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
     for (edit_index, expected_value) in [
         (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
         (CONFIG_PORT_EDIT_INDEX, CONFIG_PORT_VALUE),
@@ -651,6 +663,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     ] {
         wait_for_edit_value_by_index(driver, window, edit_index, expected_value, step_timeout)?;
     }
+    select_top_tab_with_wait(
+        driver,
+        window,
+        "Privacy & Chat",
+        "Trusted Domains",
+        step_timeout,
+    )?;
     wait_for_edit_value_by_index(
         driver,
         window,
@@ -658,27 +677,26 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         TRUSTED_DOMAINS_VALUE,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "Ready At Start", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
     wait_for_accessible_name(driver, window, "Trusted Domains Only", step_timeout)?;
-    let mut config_page_downs = 0usize;
-    config_page_downs += wait_for_accessible_name_with_page_down(
+    wait_for_accessible_name(driver, window, "Chat Input", step_timeout)?;
+    select_top_tab_with_wait(
         driver,
         window,
-        "Rewind On Desync",
-        2,
+        "Playback & Search",
+        "Ready At Start",
         step_timeout,
     )?;
-    config_page_downs +=
-        wait_for_accessible_name_with_page_down(driver, window, "Chat Input", 2, step_timeout)?;
-    config_page_downs +=
-        wait_for_accessible_name_with_page_down(driver, window, "Show OSD", 2, step_timeout)?;
-    config_page_downs +=
-        wait_for_accessible_name_with_page_down(driver, window, "Language", 2, step_timeout)?;
+    wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Rewind On Desync", step_timeout)?;
+    select_top_tab_with_wait(
+        driver,
+        window,
+        "Interface & System",
+        "Show OSD",
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Language", step_timeout)?;
     wait_for_accessible_name(driver, window, "Auto Update", step_timeout)?;
-    for _ in 0..config_page_downs {
-        let _ = driver.scroll_active_view_page_up(window);
-    }
     steps.push("config-reload-persisted".to_owned());
     steps.push("trusted-domains-persisted".to_owned());
     steps.push("config-readiness-persisted".to_owned());
@@ -688,7 +706,17 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     steps.push("config-osd-persisted".to_owned());
     steps.push("config-system-persisted".to_owned());
 
-    if let Err(error) = wait_for_accessible_name(driver, window, "Shared Playlists", step_timeout) {
+    if select_top_tab_with_wait(
+        driver,
+        window,
+        "Playback & Search",
+        "Shared Playlists",
+        step_timeout,
+    )
+    .is_err()
+    {
+        let error =
+            wait_for_accessible_name(driver, window, "Shared Playlists", step_timeout).unwrap_err();
         steps.push(format!(
             "open-media-prep-shared-playlists-skipped:{}",
             error.replace('|', "/").replace('\n', " ")

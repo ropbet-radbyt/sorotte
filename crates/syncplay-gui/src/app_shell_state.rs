@@ -170,6 +170,8 @@ pub(super) struct GuiErrorRuntimeSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SyncplayGuiShellAppState {
     pub(super) active_view: GuiShellView,
+    pub(super) selected_main_window_tab: GuiMainWindowTab,
+    pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) open_modal: Option<GuiShellModal>,
     pub(super) selection: GuiSelectionState,
     pub(super) runtime_menu_action_overrides: Vec<MenuActionRuntimeOverride>,
@@ -544,6 +546,72 @@ pub(super) struct GuiValidationState {
     pub(super) last_action_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum GuiMainWindowTab {
+    #[default]
+    Overview,
+    Session,
+    Playback,
+    Playlist,
+    Chat,
+}
+
+impl GuiMainWindowTab {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Session => "session",
+            Self::Playback => "playback",
+            Self::Playlist => "playlist",
+            Self::Chat => "chat",
+        }
+    }
+
+    pub(super) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "overview" => Some(Self::Overview),
+            "session" => Some(Self::Session),
+            "playback" => Some(Self::Playback),
+            "playlist" => Some(Self::Playlist),
+            "chat" => Some(Self::Chat),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum GuiConfigurationTab {
+    #[default]
+    Overview,
+    Connection,
+    PlaybackSearch,
+    PrivacyChat,
+    InterfaceSystem,
+}
+
+impl GuiConfigurationTab {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Connection => "connection",
+            Self::PlaybackSearch => "playback-search",
+            Self::PrivacyChat => "privacy-chat",
+            Self::InterfaceSystem => "interface-system",
+        }
+    }
+
+    pub(super) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "overview" => Some(Self::Overview),
+            "connection" => Some(Self::Connection),
+            "playback-search" => Some(Self::PlaybackSearch),
+            "privacy-chat" => Some(Self::PrivacyChat),
+            "interface-system" => Some(Self::InterfaceSystem),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiShellView {
     Configuration,
@@ -597,6 +665,8 @@ impl GuiShellModal {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiShellAction {
     SwitchView(GuiShellView),
+    SelectMainWindowTab(GuiMainWindowTab),
+    SelectConfigurationTab(GuiConfigurationTab),
     OpenModal(GuiShellModal),
     CloseModal,
     DismissUpdateNotice,

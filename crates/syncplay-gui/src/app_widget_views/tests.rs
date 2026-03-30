@@ -1,9 +1,9 @@
 use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::{
-    GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
-    GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeSnapshot,
-    SyncplayGuiShellAppState,
+    GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
+    MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
@@ -29,6 +29,20 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
     )));
 
     let tree = state.configuration_widget_tree();
+    let tabs = tree
+        .find("configuration:tabs")
+        .expect("configuration tabs should exist in widget tree");
+    assert_eq!(
+        tabs.layout_mode,
+        Some(GuiLayoutMode::TabStrip {
+            min_tab_width: 132.0,
+        })
+    );
+    assert!(
+        tree.find("configuration:tab:connection")
+            .expect("connection tab should exist")
+            .selected
+    );
     let host = tree
         .find("config:Connection:Host")
         .expect("host control should exist in widget tree");
@@ -45,9 +59,18 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         .find("config:Connection:Room History")
         .expect("room-history control should exist in widget tree");
     assert_eq!(room_history.kind, GuiWidgetKind::TextArea);
+    assert!(
+        tree.find("config:Privacy:Trusted Domains").is_none(),
+        "privacy controls should be hidden while the connection tab is selected"
+    );
+
+    assert!(state.apply(GuiShellAction::SelectConfigurationTab(
+        GuiConfigurationTab::PrivacyChat,
+    )));
+    let tree = state.configuration_widget_tree();
     let trusted_domains = tree
         .find("config:Privacy:Trusted Domains")
-        .expect("trusted-domains control should exist in widget tree");
+        .expect("trusted-domains control should exist once the privacy tab is selected");
     assert_eq!(trusted_domains.kind, GuiWidgetKind::TextArea);
 
     let save = tree
@@ -81,6 +104,20 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     )));
 
     let tree = state.main_window_widget_tree();
+    let tabs = tree
+        .find("main-window:tabs")
+        .expect("main-window tabs should exist in widget tree");
+    assert_eq!(
+        tabs.layout_mode,
+        Some(GuiLayoutMode::TabStrip {
+            min_tab_width: 132.0,
+        })
+    );
+    assert!(
+        tree.find("main-window:tab:overview")
+            .expect("overview tab should exist")
+            .selected
+    );
     let browser = tree
         .find("main-window:browser")
         .expect("room browser should exist in widget tree");
@@ -299,6 +336,13 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     let configuration = state.configuration_widget_tree();
     assert_eq!(configuration.kind, GuiWidgetKind::Layout);
     assert_eq!(configuration.layout_mode, Some(GuiLayoutMode::Stack));
+    let configuration_tabs = configuration.find("configuration:tabs").unwrap();
+    assert_eq!(
+        configuration_tabs.layout_mode,
+        Some(GuiLayoutMode::TabStrip {
+            min_tab_width: 132.0,
+        })
+    );
     let section_grid = configuration.find("configuration:sections").unwrap();
     assert_eq!(section_grid.kind, GuiWidgetKind::Layout);
     assert_eq!(
@@ -314,6 +358,13 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     let main_window = state.main_window_widget_tree();
     assert_eq!(main_window.kind, GuiWidgetKind::Layout);
     assert_eq!(main_window.layout_mode, Some(GuiLayoutMode::Stack));
+    let main_window_tabs = main_window.find("main-window:tabs").unwrap();
+    assert_eq!(
+        main_window_tabs.layout_mode,
+        Some(GuiLayoutMode::TabStrip {
+            min_tab_width: 132.0,
+        })
+    );
     let top_region = main_window.find("main-window:top-region").unwrap();
     assert_eq!(
         top_region.layout_mode,
@@ -371,7 +422,7 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
 }
 
 #[test]
-fn gui_shell_app_state_projects_single_main_window_editor_as_full_width_row() {
+fn gui_shell_app_state_projects_main_window_tab_owned_editor_content() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("Lounge".to_owned()),
         ..StoredClientSettingsMvp::default()
@@ -380,20 +431,48 @@ fn gui_shell_app_state_projects_single_main_window_editor_as_full_width_row() {
     assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
 
     let tree = state.main_window_widget_tree();
-    let editors = tree
-        .find("main-window:editors")
-        .expect("main window editors should exist when an editor is active");
-    assert_eq!(editors.kind, GuiWidgetKind::Layout);
-    assert_eq!(
-        editors.layout_mode,
-        Some(GuiLayoutMode::ResponsiveColumns {
-            min_column_width: 420.0,
-            max_columns: 2,
-        })
+    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playback);
+    assert!(
+        tree.find("main-window:editors").is_none(),
+        "overview editor row should not be mounted while a focused playback tab is selected"
     );
-    assert_eq!(editors.children.len(), 1);
-    assert_eq!(editors.children[0].id, "main-window:media-url-edit");
-    assert_eq!(editors.children[0].column_span, 2);
+    let media_url_edit = tree
+        .find("main-window:media-url-edit")
+        .expect("media-url editor should exist on the playback tab");
+    assert_eq!(media_url_edit.kind, GuiWidgetKind::Panel);
+    assert!(
+        tree.find("main-window:playlist-edit").is_none(),
+        "unrelated editors should remain hidden until their owning tab is selected"
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_only_selected_tab_content_for_main_window_and_configuration() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        shared_playlist_enabled: Some(true),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat,)));
+    let main_window = state.main_window_widget_tree();
+    assert!(main_window.find("main-window:chat-input").is_some());
+    assert!(main_window.find("main-window:playlist-actions").is_none());
+    assert!(main_window.find("main-window:browser").is_none());
+
+    assert!(state.apply(GuiShellAction::SelectConfigurationTab(
+        GuiConfigurationTab::InterfaceSystem,
+    )));
+    let configuration = state.configuration_widget_tree();
+    assert!(configuration.find("config:OSD:Show OSD").is_some());
+    assert!(configuration.find("config:System:Language").is_some());
+    assert!(configuration.find("config:Connection:Host").is_none());
+    assert!(
+        configuration
+            .find("config:Privacy:Trusted Domains")
+            .is_none()
+    );
 }
 
 #[test]

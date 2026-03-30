@@ -131,6 +131,14 @@ fn wait_for_visible_chat_message<D: NativeGuiDriver>(
         return Ok(());
     }
 
+    let _ = select_top_tab_with_wait(
+        driver,
+        window,
+        "Chat",
+        "Chat Input",
+        Duration::from_millis(800),
+    );
+
     let _ = invoke_menu_command_with_fallback(
         driver,
         window,
@@ -182,6 +190,7 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
     message: &str,
     timeout: Duration,
 ) -> Result<(), String> {
+    let _ = select_top_tab_with_wait(driver, window, "Chat", "Chat Input", timeout);
     driver.set_named_edit_value(window, "Chat Input", message, true)?;
     let _ = wait_for_accessible_name_with_page_up(
         driver,

@@ -146,7 +146,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 };
                 let (player_name, offset_result) = {
                     let player = self.player.as_mut().expect("player should exist");
-                    (player.name(), player.set_position(target_player_position_seconds))
+                    (
+                        player.name(),
+                        player.set_position(target_player_position_seconds),
+                    )
                 };
                 match offset_result {
                     Ok(()) => {
@@ -216,10 +219,15 @@ impl GuiPersistedConfigRuntimeOwner {
                     let target_position_seconds =
                         (previous_position_seconds + offset_seconds).max(0.0);
                     let player_target_position_seconds = self
-                        .player_target_position_seconds_for_global_position(target_position_seconds);
+                        .player_target_position_seconds_for_global_position(
+                            target_position_seconds,
+                        );
                     let (player_name, seek_result) = {
                         let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_position(player_target_position_seconds))
+                        (
+                            player.name(),
+                            player.set_position(player_target_position_seconds),
+                        )
                     };
                     match seek_result {
                         Ok(()) => {
@@ -262,10 +270,15 @@ impl GuiPersistedConfigRuntimeOwner {
                     let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                     let target_position_seconds = target_position_seconds.max(0.0);
                     let player_target_position_seconds = self
-                        .player_target_position_seconds_for_global_position(target_position_seconds);
+                        .player_target_position_seconds_for_global_position(
+                            target_position_seconds,
+                        );
                     let (player_name, seek_result) = {
                         let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_position(player_target_position_seconds))
+                        (
+                            player.name(),
+                            player.set_position(player_target_position_seconds),
+                        )
                     };
                     match seek_result {
                         Ok(()) => {
