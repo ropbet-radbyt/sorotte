@@ -82,6 +82,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) unresolved_attached_media_target: Option<String>,
     pub(super) last_attached_media_resolution_trigger: Option<GuiAutomaticMediaResolutionTrigger>,
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
+    pub(super) suppressed_attached_room_playstate_after_playlist_reset:
+        Option<GuiSessionRoomPlaystate>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) user_offset_seconds: f64,
@@ -204,6 +206,7 @@ impl GuiPersistedConfigRuntimeOwner {
             unresolved_attached_media_target: None,
             last_attached_media_resolution_trigger: None,
             last_applied_attached_room_playstate: None,
+            suppressed_attached_room_playstate_after_playlist_reset: None,
             player_position_seconds: None,
             player_paused: None,
             user_offset_seconds: 0.0,
@@ -305,6 +308,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.unresolved_attached_media_target = None;
         self.last_attached_media_resolution_trigger = None;
         self.last_applied_attached_room_playstate = None;
+        self.suppressed_attached_room_playstate_after_playlist_reset = None;
     }
 
     fn detach_player(&mut self) {
@@ -714,6 +718,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
         let opened_selected_media =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
+        self.apply_pending_playlist_index_reset_to_attached_player_impl(opened_selected_media);
         self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
     }
 

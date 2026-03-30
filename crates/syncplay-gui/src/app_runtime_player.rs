@@ -1316,6 +1316,73 @@ impl GuiPersistedConfigRuntimeOwner {
         opened
     }
 
+    pub(super) fn apply_pending_playlist_index_reset_to_attached_player_impl(
+        &mut self,
+        opened_selected_media: bool,
+    ) {
+        if !opened_selected_media {
+            return;
+        }
+        let Some(pause_before_sync) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.take_pending_playlist_index_reset_intent())
+        else {
+            return;
+        };
+
+        self.suppressed_attached_room_playstate_after_playlist_reset = self
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playstate());
+
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+
+        let mut state_changed = false;
+        match player.set_position(0.0) {
+            Ok(()) => {
+                self.player_position_seconds = Some(0.0);
+                state_changed = true;
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: failed to rewind the attached player for a playlist switch reset: {error}"
+                );
+            }
+        }
+        if pause_before_sync {
+            match player.set_paused(true) {
+                Ok(()) => {
+                    self.player_paused = Some(true);
+                    state_changed = true;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to pause the attached player for a playlist switch reset: {error}"
+                    );
+                }
+            }
+        }
+
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.sync_local_playback_telemetry(
+                pause_before_sync.then_some(true),
+                Some(0.0),
+            )
+        {
+            eprintln!(
+                "warning: failed to mirror playlist switch reset telemetry into the session runtime: {error}"
+            );
+        }
+
+        self.last_applied_attached_room_playstate = None;
+        if state_changed {
+            self.refresh_player_state_impl();
+        }
+    }
+
     pub(super) fn sync_session_playstate_to_attached_player_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -1332,20 +1399,46 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         };
-        let Some(playstate) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.current_room_playstate())
-        else {
+        let Some((playstate, raw_playstate, local_username)) = self.session.as_ref().and_then(
+            |session| {
+                session
+                    .current_room_playstate_for_attached_player_sync()
+                    .map(|playstate| {
+                        (
+                            playstate,
+                            session.current_room_playstate(),
+                            session.local_username().map(str::to_owned),
+                        )
+                    })
+            },
+        ) else {
             self.last_applied_attached_room_playstate = None;
             return;
         };
+        if let Some(suppressed_playstate) = self
+            .suppressed_attached_room_playstate_after_playlist_reset
+            .as_ref()
+        {
+            if raw_playstate.as_ref() == Some(suppressed_playstate) {
+                return;
+            }
+            self.suppressed_attached_room_playstate_after_playlist_reset = None;
+        }
         if !force && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate) {
             return;
         }
+        let set_by_is_local_user = playstate
+            .set_by
+            .as_deref()
+            .zip(local_username.as_deref())
+            .is_some_and(|(set_by, local_username)| set_by == local_username);
+        let allow_initial_self_origin_position_sync = force
+            && self.player_position_seconds.is_none()
+            && self.last_applied_attached_room_playstate.is_none();
 
         let mut state_changed = false;
         if let Some(position_seconds) = playstate.position_seconds
+            && (!set_by_is_local_user || allow_initial_self_origin_position_sync)
             && (force || playstate.do_seek == Some(true))
             && (force
                 || self
@@ -1678,6 +1771,12 @@ impl GuiPersistedConfigRuntimeOwner {
         } else {
             false
         };
+        if opened_selected_media
+            && let Some(session) = self.session.as_mut()
+        {
+            session.note_local_playlist_index_reset_intent(true);
+        }
+        self.apply_pending_playlist_index_reset_to_attached_player_impl(opened_selected_media);
         self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
 
         let mut actions = Vec::new();

@@ -50,6 +50,7 @@ pub(super) struct GuiSessionRoomPlaystate {
     pub(super) position_seconds: Option<f64>,
     pub(super) paused: Option<bool>,
     pub(super) do_seek: Option<bool>,
+    pub(super) set_by: Option<String>,
 }
 
 pub(super) trait GuiSessionRuntimeAdapter: Send {
@@ -183,7 +184,21 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn local_username(&self) -> Option<&str> {
+        None
+    }
+
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
+        None
+    }
+
+    fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
+        self.current_room_playstate()
+    }
+
+    fn note_local_playlist_index_reset_intent(&mut self, _pause_before_sync: bool) {}
+
+    fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
         None
     }
 
@@ -1060,6 +1075,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().local_position_seconds()
     }
 
+    fn local_username(&self) -> Option<&str> {
+        self.runtime.session().username.as_deref()
+    }
+
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
         self.runtime
             .session()
@@ -1068,7 +1087,32 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 position_seconds: playstate.position,
                 paused: playstate.paused,
                 do_seek: playstate.do_seek,
+                set_by: playstate.set_by.clone(),
             })
+    }
+
+    fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
+        self.runtime
+            .current_room_playstate_legacy_ping_compatible_now()
+            .map(|playstate| GuiSessionRoomPlaystate {
+                position_seconds: playstate.position,
+                paused: playstate.paused,
+                do_seek: playstate.do_seek,
+                set_by: playstate.set_by,
+            })
+    }
+
+    fn note_local_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+        self.runtime.session_mut().begin_local_playlist_index_reset_intent(
+            pause_before_sync,
+            system_time_seconds(),
+        );
+    }
+
+    fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
+        self.runtime
+            .session_mut()
+            .take_pending_playlist_index_reset_intent()
     }
 
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {

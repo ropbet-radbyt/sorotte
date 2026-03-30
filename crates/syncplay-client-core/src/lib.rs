@@ -869,6 +869,28 @@ where
         &mut self.player
     }
 
+    pub fn current_room_playstate_legacy_ping_compatible_at(
+        &self,
+        now_seconds: f64,
+    ) -> Option<RoomPlaystateView> {
+        let mut room_playstate = self.session.current_room_playstate_at(now_seconds)?;
+        if room_playstate.paused == Some(false)
+            && let Some(position) = room_playstate.position
+        {
+            let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
+            if forward_delay.is_finite() && forward_delay > 0.0 {
+                room_playstate.position = Some(position + forward_delay);
+            }
+        }
+        Some(room_playstate)
+    }
+
+    pub fn current_room_playstate_legacy_ping_compatible_now(&self) -> Option<RoomPlaystateView> {
+        self.current_room_playstate_legacy_ping_compatible_at(
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
     pub fn into_parts(self) -> (ClientSession, P, C) {
         (self.session, self.player, self.control)
     }
@@ -1101,8 +1123,13 @@ where
         };
         let local_position =
             self.desync_local_position_with_legacy_ping_forward_delay(local_position);
+        let Some(room_playstate) = self.session.current_room_playstate_at(now_seconds) else {
+            self.session.behind_first_detected_at_seconds = None;
+            return Ok(());
+        };
 
-        let actions = self.session.runtime_actions_for_desync_correction(
+        let actions = self.session.runtime_actions_for_desync_correction_against_room_playstate(
+            room_playstate,
             now_seconds,
             local_position,
             local_can_control,
@@ -1264,15 +1291,35 @@ where
             .session
             .runtime_actions_for_local_playlist_index_set(index);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        if sent
+            && actions
+                .iter()
+                .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
+        {
+            self.session.begin_local_playlist_index_reset_intent(
+                true,
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            );
+        }
+        Ok(sent)
     }
 
     pub fn run_advance_playlist_index(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_next();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        if sent
+            && actions
+                .iter()
+                .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
+        {
+            self.session.begin_local_playlist_index_reset_intent(
+                true,
+                unix_wall_clock_time_seconds_legacy_compatible(),
+            );
+        }
+        Ok(sent)
     }
 
     pub fn run_queue_playlist_item(
@@ -1717,6 +1764,7 @@ pub struct ClientSession {
     known_rooms: BTreeSet<String>,
     room_playlists: BTreeMap<String, RoomPlaylistView>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
+    room_playstate_updated_at_seconds: BTreeMap<String, f64>,
     pending_playlist: Option<RoomPlaylistView>,
     reconnect_ready_restore_snapshot: Option<bool>,
     reconnect_ready_restore_intent: Option<bool>,
@@ -1748,6 +1796,9 @@ pub struct ClientSession {
     controlled_room_passwords: BTreeMap<String, String>,
     playlist_undo_snapshots: BTreeMap<String, Vec<String>>,
     playlist_shuffle_nonce: u64,
+    received_first_playlist_index: bool,
+    pending_playlist_index_reset_pause_before_sync: Option<bool>,
+    suppress_next_self_playlist_index_reset: bool,
     last_seek_position_before_manual_seek: Option<f64>,
     local_position: Option<f64>,
     local_paused: Option<bool>,
@@ -1783,6 +1834,7 @@ impl Default for ClientSession {
             known_rooms: BTreeSet::new(),
             room_playlists: BTreeMap::new(),
             room_playstates: BTreeMap::new(),
+            room_playstate_updated_at_seconds: BTreeMap::new(),
             pending_playlist: None,
             reconnect_ready_restore_snapshot: None,
             reconnect_ready_restore_intent: None,
@@ -1815,6 +1867,9 @@ impl Default for ClientSession {
             controlled_room_passwords: BTreeMap::new(),
             playlist_undo_snapshots: BTreeMap::new(),
             playlist_shuffle_nonce: 0,
+            received_first_playlist_index: false,
+            pending_playlist_index_reset_pause_before_sync: None,
+            suppress_next_self_playlist_index_reset: false,
             last_seek_position_before_manual_seek: None,
             local_position: None,
             local_paused: None,
@@ -1838,6 +1893,35 @@ impl ClientSession {
         if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {
             self.local_position = Some(position_seconds);
         }
+    }
+
+    fn reset_playlist_index_transition_tracking(&mut self) {
+        self.received_first_playlist_index = false;
+        self.pending_playlist_index_reset_pause_before_sync = None;
+        self.suppress_next_self_playlist_index_reset = false;
+    }
+
+    fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+        self.pending_playlist_index_reset_pause_before_sync = Some(
+            self.pending_playlist_index_reset_pause_before_sync
+                .unwrap_or(false)
+                || pause_before_sync,
+        );
+    }
+
+    pub fn begin_local_playlist_index_reset_intent(
+        &mut self,
+        pause_before_sync: bool,
+        now_seconds: f64,
+    ) {
+        self.received_first_playlist_index = true;
+        self.queue_playlist_index_reset_intent(pause_before_sync);
+        self.suppress_next_self_playlist_index_reset = true;
+        self.last_advanced_at_seconds = Some(now_seconds);
+    }
+
+    pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
+        self.pending_playlist_index_reset_pause_before_sync.take()
     }
 
     fn clear_reconnect_state_restore_validation_state(&mut self) {
@@ -2192,7 +2276,9 @@ impl ClientSession {
             ProtocolMessage::Hello(hello_message) => self.apply_hello(hello_message.hello),
             ProtocolMessage::Set(set_message) => self.apply_set(set_message.set, now_seconds),
             ProtocolMessage::List(list_message) => self.apply_list(list_message.list),
-            ProtocolMessage::State(state_message) => self.apply_state(state_message.state),
+            ProtocolMessage::State(state_message) => {
+                self.apply_state_at(state_message.state, now_seconds)
+            }
             ProtocolMessage::Chat(chat_message) => self.apply_chat(chat_message.chat),
             ProtocolMessage::Error(_) | ProtocolMessage::Tls(_) => {}
         }
@@ -2463,6 +2549,22 @@ impl ClientSession {
         self.room
             .as_deref()
             .and_then(|room_name| self.room_playstates.get(room_name))
+    }
+
+    pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {
+        let room_name = self.room.as_deref()?;
+        let mut playstate = self.room_playstates.get(room_name)?.clone();
+        let updated_at_seconds = self.room_playstate_updated_at_seconds.get(room_name).copied();
+        if playstate.paused == Some(false)
+            && let (Some(position), Some(updated_at_seconds)) =
+                (playstate.position, updated_at_seconds)
+        {
+            let elapsed_seconds = now_seconds - updated_at_seconds;
+            if elapsed_seconds.is_finite() && elapsed_seconds > 0.0 {
+                playstate.position = Some(position + elapsed_seconds);
+            }
+        }
+        Some(playstate)
     }
 
     pub fn client_ignoring_on_the_fly(&self) -> u32 {
@@ -3888,19 +3990,15 @@ impl ClientSession {
         vec![ClientRuntimeAction::SetPosition(target_position)]
     }
 
-    pub fn evaluate_desync_correction(
+    fn evaluate_desync_correction_for_room_playstate(
         &mut self,
+        global_playstate: &RoomPlaystateView,
         now_seconds: f64,
         local_position: f64,
         local_can_control: bool,
         dont_slow_down_with_me: bool,
         speed_supported: bool,
     ) -> DesyncCorrectionAction {
-        let Some(global_playstate) = self.current_room_playstate() else {
-            self.behind_first_detected_at_seconds = None;
-            return DesyncCorrectionAction::None;
-        };
-
         let (Some(global_position), Some(global_paused)) =
             (global_playstate.position, global_playstate.paused)
         else {
@@ -3988,6 +4086,29 @@ impl ClientSession {
         DesyncCorrectionAction::None
     }
 
+    pub fn evaluate_desync_correction(
+        &mut self,
+        now_seconds: f64,
+        local_position: f64,
+        local_can_control: bool,
+        dont_slow_down_with_me: bool,
+        speed_supported: bool,
+    ) -> DesyncCorrectionAction {
+        let Some(global_playstate) = self.current_room_playstate().cloned() else {
+            self.behind_first_detected_at_seconds = None;
+            return DesyncCorrectionAction::None;
+        };
+
+        self.evaluate_desync_correction_for_room_playstate(
+            &global_playstate,
+            now_seconds,
+            local_position,
+            local_can_control,
+            dont_slow_down_with_me,
+            speed_supported,
+        )
+    }
+
     pub fn runtime_actions_for_desync_correction(
         &mut self,
         now_seconds: f64,
@@ -3997,6 +4118,39 @@ impl ClientSession {
         speed_supported: bool,
     ) -> Vec<ClientRuntimeAction> {
         match self.evaluate_desync_correction(
+            now_seconds,
+            local_position,
+            local_can_control,
+            dont_slow_down_with_me,
+            speed_supported,
+        ) {
+            DesyncCorrectionAction::None => Vec::new(),
+            DesyncCorrectionAction::Rewind {
+                target_position, ..
+            }
+            | DesyncCorrectionAction::FastForward {
+                target_position, ..
+            } => {
+                vec![ClientRuntimeAction::SetPosition(target_position)]
+            }
+            DesyncCorrectionAction::SlowDown { rate, .. }
+            | DesyncCorrectionAction::RestoreSpeed { rate } => {
+                vec![ClientRuntimeAction::SetPlaybackRate(rate)]
+            }
+        }
+    }
+
+    pub fn runtime_actions_for_desync_correction_against_room_playstate(
+        &mut self,
+        room_playstate: RoomPlaystateView,
+        now_seconds: f64,
+        local_position: f64,
+        local_can_control: bool,
+        dont_slow_down_with_me: bool,
+        speed_supported: bool,
+    ) -> Vec<ClientRuntimeAction> {
+        match self.evaluate_desync_correction_for_room_playstate(
+            &room_playstate,
             now_seconds,
             local_position,
             local_can_control,
@@ -4255,9 +4409,11 @@ impl ClientSession {
         self.domain = SyncDomain::default();
         self.room_playlists.clear();
         self.room_playstates.clear();
+        self.room_playstate_updated_at_seconds.clear();
         self.pending_playlist = None;
         self.playlist_undo_snapshots.clear();
         self.playlist_shuffle_nonce = 0;
+        self.reset_playlist_index_transition_tracking();
         self.local_position = None;
         self.local_paused = None;
         self.last_seek_position_before_manual_seek = None;
@@ -4383,7 +4539,7 @@ impl ClientSession {
         let room_name = hello.room.name;
 
         self.username = Some(username.clone());
-        self.room = Some(room_name.clone());
+        self.update_local_room(room_name.clone());
 
         self.controller_reidentify_intent = self
             .controlled_room_passwords
@@ -4422,7 +4578,7 @@ impl ClientSession {
             if let Some(username) = self.username.clone() {
                 self.set_user_room(&username, Some(room.name.clone()));
             }
-            self.room = Some(room.name);
+            self.update_local_room(room.name);
         }
 
         if let Some(users) = set_payload.user {
@@ -4450,7 +4606,7 @@ impl ClientSession {
                 if let Some(room) = user_payload.room {
                     self.set_user_room(&username, Some(room.name.clone()));
                     if was_local_user {
-                        self.room = Some(room.name);
+                        self.update_local_room(room.name);
                     }
                 }
 
@@ -4558,7 +4714,7 @@ impl ClientSession {
             );
 
             if let Some(local_username) = self.username.clone() {
-                self.room = Some(room_name.clone());
+                self.update_local_room(room_name.clone());
                 self.set_user_room(&local_username, Some(room_name.clone()));
                 self.set_user_controller(&local_username, false);
                 if Self::is_controlled_room_name(&room_name) && !normalized_password.is_empty() {
@@ -4622,6 +4778,19 @@ impl ClientSession {
                 self.last_advanced_at_seconds = now_seconds;
             }
 
+            let should_queue_playlist_reset = if !self.received_first_playlist_index {
+                self.received_first_playlist_index = true;
+                false
+            } else if set_by_local && self.suppress_next_self_playlist_index_reset {
+                self.suppress_next_self_playlist_index_reset = false;
+                false
+            } else {
+                true
+            };
+            if should_queue_playlist_reset {
+                self.queue_playlist_index_reset_intent(false);
+            }
+
             if let Some(room_name) =
                 self.resolve_room_for_playlist_update(playlist_index.user.as_deref())
             {
@@ -4670,12 +4839,16 @@ impl ClientSession {
             }
         }
 
-        if resolved_self_room.is_some() {
-            self.room = resolved_self_room;
+        if let Some(resolved_self_room) = resolved_self_room {
+            self.update_local_room(resolved_self_room);
         }
     }
 
     fn apply_state(&mut self, state_payload: StatePayload) {
+        self.apply_state_at(state_payload, None);
+    }
+
+    fn apply_state_at(&mut self, state_payload: StatePayload, now_seconds: Option<f64>) {
         let Some(playstate) = state_payload.playstate else {
             return;
         };
@@ -4687,7 +4860,11 @@ impl ClientSession {
             .or_else(|| self.room.clone());
 
         if let Some(room_name) = room_name {
-            self.merge_room_playstate(room_name, playstate);
+            self.merge_room_playstate(
+                room_name,
+                playstate,
+                now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+            );
         }
     }
 
@@ -4760,7 +4937,13 @@ impl ClientSession {
         version_components >= min_version_components
     }
 
-    fn merge_room_playstate(&mut self, room_name: String, playstate: PlaystatePayload) {
+    fn merge_room_playstate(
+        &mut self,
+        room_name: String,
+        playstate: PlaystatePayload,
+        updated_at_seconds: f64,
+    ) {
+        let room_key = room_name.clone();
         let room_playstate = self.room_playstates.entry(room_name).or_default();
         if let Some(position) = playstate.position {
             room_playstate.position = Some(position);
@@ -4772,6 +4955,8 @@ impl ClientSession {
             room_playstate.do_seek = Some(do_seek);
         }
         room_playstate.set_by = playstate.set_by;
+        self.room_playstate_updated_at_seconds
+            .insert(room_key, updated_at_seconds);
     }
 
     fn apply_inbound_ignore_counters(&mut self, state_payload: &StatePayload) {
@@ -4808,10 +4993,11 @@ impl ClientSession {
             .and_then(|playstate| playstate.position)
             .unwrap_or(0.0);
         let player_paused = self.local_paused.unwrap_or(global_paused);
+        let player_position = self.local_position.unwrap_or(global_position);
 
         let pause_change = player_paused != local_paused && global_paused != local_paused;
-        let seeked =
-            (global_position - local_position).abs() > SEEK_THRESHOLD_SECONDS && !pause_change;
+        let seeked = (player_position - local_position).abs() > SEEK_THRESHOLD_SECONDS
+            && (global_position - local_position).abs() > SEEK_THRESHOLD_SECONDS;
         (pause_change, seeked)
     }
 
@@ -4819,6 +5005,13 @@ impl ClientSession {
         let local_username = self.username.as_deref()?;
         let local_room = self.room.as_deref()?;
         Some((local_username, local_room))
+    }
+
+    fn update_local_room(&mut self, room_name: String) {
+        if self.room.as_deref() != Some(room_name.as_str()) {
+            self.reset_playlist_index_transition_tracking();
+        }
+        self.room = Some(room_name);
     }
 
     fn is_controlled_room_name(room_name: &str) -> bool {
@@ -7000,9 +7193,46 @@ mod tests {
             .apply_message_json_at(
                 r#"{"Set":{"playlistIndex":{"index":2,"user":"bob"}}}"#,
                 20.0,
-            )
-            .expect("remote playlist index should apply");
+        )
+        .expect("remote playlist index should apply");
         assert!(!session.recently_advanced(20.1));
+    }
+
+    #[test]
+    fn current_room_playstate_at_advances_unpaused_position() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+                100.0,
+            )
+            .expect("room playstate should apply");
+
+        let raw_playstate = session
+            .current_room_playstate()
+            .expect("raw room playstate should be stored");
+        assert_eq!(
+            raw_playstate.position,
+            Some(10.0),
+            "stored room playstate should preserve the inbound snapshot"
+        );
+
+        let advanced_playstate = session
+            .current_room_playstate_at(103.25)
+            .expect("effective room playstate should be available");
+        assert_eq!(
+            advanced_playstate.position,
+            Some(13.25),
+            "effective room playstate should advance while the room is playing"
+        );
+        assert_eq!(advanced_playstate.paused, Some(false));
+        assert_eq!(advanced_playstate.do_seek, Some(false));
+        assert_eq!(advanced_playstate.set_by.as_deref(), Some("bob"));
     }
 
     #[test]
@@ -7140,7 +7370,7 @@ mod tests {
             .expect("outbound state should include playstate");
         assert_eq!(outbound_playstate.position, Some(12.0));
         assert_eq!(outbound_playstate.paused, Some(false));
-        assert_eq!(outbound_playstate.do_seek, None);
+        assert_eq!(outbound_playstate.do_seek, Some(true));
         assert_eq!(session.client_ignoring_on_the_fly(), 1);
         assert_eq!(
             outbound
@@ -7203,6 +7433,31 @@ mod tests {
         assert_eq!(updated.paused, Some(true));
         assert_eq!(updated.do_seek, Some(true));
         assert_eq!(updated.set_by.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn determine_local_state_change_requires_divergence_from_previous_local_position() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(0.0),
+                paused: Some(false),
+                do_seek: Some(false),
+                set_by: Some("bob".to_owned()),
+            },
+        );
+        session.local_position = Some(0.6);
+        session.local_paused = Some(false);
+
+        let (pause_change, seeked) = session.determine_local_state_change(false, 1.2);
+
+        assert!(!pause_change);
+        assert!(
+            !seeked,
+            "smooth playback progress should not be classified as a seek when it remains close to the last local telemetry position"
+        );
     }
 
     #[test]
@@ -15117,6 +15372,17 @@ mod tests {
                 .expect("set playlist index should not fail"),
             "set playlist index should emit outbound Set.playlistIndex"
         );
+        assert!(
+            runtime
+                .session()
+                .recently_advanced(unix_wall_clock_time_seconds_legacy_compatible()),
+            "local playlist changes should immediately enter the recently-advanced grace window"
+        );
+        assert_eq!(
+            runtime.session_mut().take_pending_playlist_index_reset_intent(),
+            Some(true),
+            "local playlist changes should queue a pause-and-rewind reset intent before the server echo"
+        );
 
         let (_, _, control) = runtime.into_parts();
         assert_eq!(control.outbound_messages().len(), 1);
@@ -15281,6 +15547,17 @@ mod tests {
                 .run_advance_playlist_index()
                 .expect("next playlist command should not fail"),
             "next playlist command should emit outbound Set.playlistIndex"
+        );
+        assert!(
+            runtime
+                .session()
+                .recently_advanced(unix_wall_clock_time_seconds_legacy_compatible()),
+            "playlist advance should immediately enter the recently-advanced grace window"
+        );
+        assert_eq!(
+            runtime.session_mut().take_pending_playlist_index_reset_intent(),
+            Some(true),
+            "playlist advance should queue a pause-and-rewind reset intent before the server echo"
         );
 
         let (_, _, control) = runtime.into_parts();
