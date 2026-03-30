@@ -202,6 +202,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn has_pending_playlist_index_reset_intent(&self) -> bool {
+        false
+    }
+
     fn set_autoplay_enabled(&mut self, _enabled: bool) -> Result<(), String> {
         Ok(())
     }
@@ -1113,6 +1117,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime
             .session_mut()
             .take_pending_playlist_index_reset_intent()
+    }
+
+    fn has_pending_playlist_index_reset_intent(&self) -> bool {
+        self.runtime
+            .session()
+            .has_pending_playlist_index_reset_intent()
     }
 
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {

@@ -716,10 +716,15 @@ impl GuiPersistedConfigRuntimeOwner {
         let actions = self.augment_runtime_actions_for_room_transitions(projected_state, actions);
         self.emit_gui_actions_to_attached_player(&actions);
         Self::push_actions_and_project(handle, projected_state, actions);
-        let opened_selected_media =
+        let selected_media_sync =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
-        self.apply_pending_playlist_index_reset_to_attached_player_impl(opened_selected_media);
-        self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
+        self.apply_pending_playlist_index_reset_to_attached_player_impl(
+            selected_media_sync.selection_ready(),
+        );
+        self.sync_session_playstate_to_attached_player_impl(
+            projected_state,
+            selected_media_sync.selection_ready(),
+        );
     }
 
     fn flush_session_transport_outbound(

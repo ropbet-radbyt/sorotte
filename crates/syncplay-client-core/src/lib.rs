@@ -566,6 +566,7 @@ pub trait ClientRuntimeControl {
     fn set_file(&mut self, _file_payload: Value) {}
     fn set_playlist(&mut self, _files: Vec<String>) {}
     fn set_playlist_index(&mut self, _index: i64) {}
+    fn send_state(&mut self, _state: StatePayload) {}
     fn request_controller_auth(&mut self, _room: String, _password: String) {}
     fn send_chat(&mut self, _message: String) {}
     fn notify_chat(&mut self, _notification: ChatNotification) {}
@@ -758,6 +759,10 @@ impl ClientRuntimeControl for QueuedRuntimeControl {
             .push(ProtocolMessage::set(set_payload));
     }
 
+    fn send_state(&mut self, state: StatePayload) {
+        self.outbound_messages.push(ProtocolMessage::state(state));
+    }
+
     fn request_controller_auth(&mut self, room: String, password: String) {
         let payload = ControllerAuthPayload::new()
             .with_room(room)
@@ -834,6 +839,31 @@ where
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: Vec::new(),
         }
+    }
+
+    fn finalize_local_playlist_index_switch_if_needed(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+    ) {
+        if !actions
+            .iter()
+            .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
+        {
+            return;
+        }
+
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        self.session
+            .begin_local_playlist_index_reset_intent(true, now_seconds);
+        self.session
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(true)
+                    .with_position_seconds(0.0),
+            );
+        self.control.send_state(StatePayload::new().with_playstate(
+            PlaystatePayload::new().with_position(0.0).with_paused(true),
+        ));
     }
 
     pub fn session(&self) -> &ClientSession {
@@ -1095,11 +1125,15 @@ where
             return Ok(());
         }
 
-        ClientSession::dispatch_runtime_actions(
-            &[ClientRuntimeAction::SetPaused(room_paused)],
-            &mut self.player,
-            &mut self.control,
-        )?;
+        let mut actions = Vec::new();
+        if room_paused
+            && let Some(room_position) = room_playstate.position.filter(|value| value.is_finite())
+        {
+            actions.push(ClientRuntimeAction::SetPosition(room_position));
+            self.session.local_position = Some(room_position);
+        }
+        actions.push(ClientRuntimeAction::SetPaused(room_paused));
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
         // Mirror the expected local state to avoid duplicate correction attempts until telemetry catches up.
         self.session.local_paused = Some(room_paused);
         Ok(())
@@ -1292,16 +1326,7 @@ where
             .runtime_actions_for_local_playlist_index_set(index);
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        if sent
-            && actions
-                .iter()
-                .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
-        {
-            self.session.begin_local_playlist_index_reset_intent(
-                true,
-                unix_wall_clock_time_seconds_legacy_compatible(),
-            );
-        }
+        self.finalize_local_playlist_index_switch_if_needed(&actions);
         Ok(sent)
     }
 
@@ -1309,16 +1334,7 @@ where
         let actions = self.session.runtime_actions_for_local_playlist_next();
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
-        if sent
-            && actions
-                .iter()
-                .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
-        {
-            self.session.begin_local_playlist_index_reset_intent(
-                true,
-                unix_wall_clock_time_seconds_legacy_compatible(),
-            );
-        }
+        self.finalize_local_playlist_index_switch_if_needed(&actions);
         Ok(sent)
     }
 
@@ -1922,6 +1938,10 @@ impl ClientSession {
 
     pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
         self.pending_playlist_index_reset_pause_before_sync.take()
+    }
+
+    pub fn has_pending_playlist_index_reset_intent(&self) -> bool {
+        self.pending_playlist_index_reset_pause_before_sync.is_some()
     }
 
     fn clear_reconnect_state_restore_validation_state(&mut self) {
@@ -5800,6 +5820,7 @@ mod tests {
         file_updates: Vec<Value>,
         playlist_updates: Vec<Vec<String>>,
         playlist_index_updates: Vec<i64>,
+        state_updates: Vec<StatePayload>,
         controller_auth_requests: Vec<(String, String)>,
         chat_messages: Vec<String>,
         chat_notifications: Vec<ChatNotification>,
@@ -5830,6 +5851,10 @@ mod tests {
 
         fn set_playlist_index(&mut self, index: i64) {
             self.playlist_index_updates.push(index);
+        }
+
+        fn send_state(&mut self, state: StatePayload) {
+            self.state_updates.push(state);
         }
 
         fn request_controller_auth(&mut self, room: String, password: String) {
@@ -10797,6 +10822,53 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_room_pause_sync_seeks_before_pausing_remote_pause() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("remote paused state should apply");
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(3.0)
+                    .with_paused(false),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_room_pause_sync_if_needed()
+            .expect("room pause sync should dispatch");
+
+        assert_eq!(
+            runtime.player().position,
+            Some(12.5),
+            "remote pause sync should seek to the room position before pausing"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            Some(true),
+            "remote pause sync should pause after seeking"
+        );
+        assert_eq!(
+            runtime.session().local_position,
+            Some(12.5),
+            "room pause sync should optimistically mirror the corrected position"
+        );
+        assert_eq!(runtime.session().local_paused, Some(true));
+    }
+
+    #[test]
     fn client_runtime_room_pause_sync_skips_when_room_playstate_set_by_local_user() {
         let mut session = ClientSession::default();
         session
@@ -15385,7 +15457,7 @@ mod tests {
         );
 
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set protocol message");
         };
@@ -15396,6 +15468,17 @@ mod tests {
             .expect("Set message should contain playlistIndex payload");
         assert_eq!(playlist_index.index, 1);
         assert!(playlist_index.user.is_none());
+        let ProtocolMessage::State(state_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued State protocol message after playlist index change");
+        };
+        let playstate = state_message
+            .state
+            .playstate
+            .as_ref()
+            .expect("reset state should include a playstate payload");
+        assert_eq!(playstate.position, Some(0.0));
+        assert_eq!(playstate.paused, Some(true));
+        assert_eq!(playstate.do_seek, None);
     }
 
     #[test]
@@ -15497,7 +15580,28 @@ mod tests {
                 .expect("set playlist index should not fail"),
             "set playlist index should allow default trusted domains"
         );
-        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        assert_eq!(runtime.control().outbound_messages().len(), 2);
+        let ProtocolMessage::Set(set_message) = &runtime.control().outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_index = set_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("Set message should contain playlistIndex payload");
+        assert_eq!(playlist_index.index, 0);
+        assert!(playlist_index.user.is_none());
+        let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[1] else {
+            panic!("expected queued State protocol message after trusted playlist switch");
+        };
+        let playstate = state_message
+            .state
+            .playstate
+            .as_ref()
+            .expect("reset state should include a playstate payload");
+        assert_eq!(playstate.position, Some(0.0));
+        assert_eq!(playstate.paused, Some(true));
+        assert_eq!(playstate.do_seek, None);
     }
 
     #[test]
@@ -15561,7 +15665,7 @@ mod tests {
         );
 
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set protocol message");
         };
@@ -15572,6 +15676,17 @@ mod tests {
             .expect("Set message should contain playlistIndex payload");
         assert_eq!(playlist_index.index, 1);
         assert!(playlist_index.user.is_none());
+        let ProtocolMessage::State(state_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued State protocol message after playlist advance");
+        };
+        let playstate = state_message
+            .state
+            .playstate
+            .as_ref()
+            .expect("reset state should include a playstate payload");
+        assert_eq!(playstate.position, Some(0.0));
+        assert_eq!(playstate.paused, Some(true));
+        assert_eq!(playstate.do_seek, None);
     }
 
     #[test]
@@ -15661,7 +15776,7 @@ mod tests {
         );
 
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set protocol message");
         };
@@ -15672,6 +15787,17 @@ mod tests {
             .expect("Set message should contain playlistIndex payload");
         assert_eq!(playlist_index.index, 0);
         assert!(playlist_index.user.is_none());
+        let ProtocolMessage::State(state_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued State protocol message after playlist loop");
+        };
+        let playstate = state_message
+            .state
+            .playstate
+            .as_ref()
+            .expect("reset state should include a playstate payload");
+        assert_eq!(playstate.position, Some(0.0));
+        assert_eq!(playstate.paused, Some(true));
+        assert_eq!(playstate.do_seek, None);
     }
 
     #[test]

@@ -38,6 +38,19 @@ const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SelectedPlaylistMediaSyncOutcome {
+    NoChange,
+    MatchedCurrentTarget,
+    OpenedNewMedia,
+}
+
+impl SelectedPlaylistMediaSyncOutcome {
+    pub(super) fn selection_ready(self) -> bool {
+        !matches!(self, Self::NoChange)
+    }
+}
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn open_media_unavailable_message_impl(&self, selected_paths: &[String]) -> String {
         let base = if selected_paths.len() == 1 {
@@ -1234,21 +1247,33 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn sync_selected_shared_playlist_media_to_attached_player_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
-    ) -> bool {
+    ) -> SelectedPlaylistMediaSyncOutcome {
         let Some(target) = Self::selected_shared_playlist_target(state) else {
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
             }
             self.last_attached_media_resolution_trigger = None;
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
 
         let search_roots = self.automatic_media_search_roots(state);
         let roots = Self::automatic_media_search_root_keys(&search_roots);
         let trigger = self.automatic_media_resolution_trigger(&target, &roots);
         if !self.should_rerun_automatic_media_resolution(&trigger) {
-            return false;
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_playlist_index_reset_intent())
+                && self.current_player_matches_media_target(&target)
+            {
+                self.unresolved_attached_media_target = None;
+                if !self.attached_media_search_refresh_pending() {
+                    self.attached_media_search_next_retry_at = None;
+                }
+                return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
+            }
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         self.last_attached_media_resolution_trigger = Some(trigger);
 
@@ -1257,19 +1282,19 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             Ok(GuiUserMediaTargetResolution::Resolved(path)) => path,
             Ok(GuiUserMediaTargetResolution::Pending | GuiUserMediaTargetResolution::Missing)
-            | Err(_) => return false,
+            | Err(_) => return SelectedPlaylistMediaSyncOutcome::NoChange,
         };
 
         self.ensure_configured_player_attached();
         if self.player.is_none() {
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         if self.current_player_matches_media_target(&resolved_target) {
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
             }
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
         }
 
         let player_paths = [resolved_target];
@@ -1281,27 +1306,28 @@ impl GuiPersistedConfigRuntimeOwner {
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
             }
+            return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
         }
-        opened
+        SelectedPlaylistMediaSyncOutcome::NoChange
     }
 
     fn open_selected_playlist_media_path_through_attached_player_impl(
         &mut self,
         player_paths: &[String],
-    ) -> bool {
+    ) -> SelectedPlaylistMediaSyncOutcome {
         let Some(selected_path) = player_paths.first() else {
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
 
         self.ensure_configured_player_attached();
         if self.player.is_none() {
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         if self.current_player_matches_media_target(selected_path) {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
             self.attached_media_search_next_retry_at = None;
-            return false;
+            return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
         }
 
         let player_paths = [selected_path.clone()];
@@ -1312,8 +1338,9 @@ impl GuiPersistedConfigRuntimeOwner {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
             self.attached_media_search_next_retry_at = None;
+            return SelectedPlaylistMediaSyncOutcome::OpenedNewMedia;
         }
-        opened
+        SelectedPlaylistMediaSyncOutcome::NoChange
     }
 
     pub(super) fn apply_pending_playlist_index_reset_to_attached_player_impl(
@@ -1702,18 +1729,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 )],
             );
 
-            let opened_selected_media =
-                dispatch
-                    .player_paths
-                    .as_deref()
-                    .is_some_and(|player_paths| {
-                        self.open_selected_playlist_media_path_through_attached_player_impl(
-                            player_paths,
-                        )
-                    });
+            let selected_media_sync = dispatch
+                .player_paths
+                .as_deref()
+                .map(|player_paths| {
+                    self.open_selected_playlist_media_path_through_attached_player_impl(
+                        player_paths,
+                    )
+                })
+                .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange);
             self.sync_session_playstate_to_attached_player_impl(
                 projected_state,
-                opened_selected_media,
+                selected_media_sync.selection_ready(),
             );
 
             let success_message = Self::shared_playlist_open_success_message(&dispatch);
@@ -1755,7 +1782,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 (!dispatch.playlist_entries.is_empty()).then_some(0),
             );
         let session_success = session_result.is_ok();
-        let opened_selected_media = if session_success
+        let selected_media_sync = if session_success
             && Self::project_loaded_shared_playlist_into_state(
                 projected_state,
                 dispatch.playlist_entries.clone(),
@@ -1763,21 +1790,27 @@ impl GuiPersistedConfigRuntimeOwner {
             dispatch
                 .player_paths
                 .as_deref()
-                .is_some_and(|player_paths| {
+                .map(|player_paths| {
                     self.open_selected_playlist_media_path_through_attached_player_impl(
                         player_paths,
                     )
                 })
+                .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange)
         } else {
-            false
+            SelectedPlaylistMediaSyncOutcome::NoChange
         };
-        if opened_selected_media
+        if selected_media_sync.selection_ready()
             && let Some(session) = self.session.as_mut()
         {
             session.note_local_playlist_index_reset_intent(true);
         }
-        self.apply_pending_playlist_index_reset_to_attached_player_impl(opened_selected_media);
-        self.sync_session_playstate_to_attached_player_impl(projected_state, opened_selected_media);
+        self.apply_pending_playlist_index_reset_to_attached_player_impl(
+            selected_media_sync.selection_ready(),
+        );
+        self.sync_session_playstate_to_attached_player_impl(
+            projected_state,
+            selected_media_sync.selection_ready(),
+        );
 
         let mut actions = Vec::new();
         if session_success {

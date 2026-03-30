@@ -60,35 +60,60 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     let selection_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("selection lines should encode");
-    assert_eq!(selection_lines.len(), 1);
+    assert_eq!(selection_lines.len(), 2);
     assert!(selection_lines[0].contains("\"playlistIndex\""));
     assert!(selection_lines[0].contains("\"index\":0"));
-    adapter
-        .apply_message_json(&selection_lines[0])
-        .expect("selection echo should apply");
+    assert!(selection_lines[1].contains("\"State\""));
+    assert!(selection_lines[1].contains("\"position\":0.0"));
+    assert!(selection_lines[1].contains("\"paused\":true"));
+    for line in &selection_lines {
+        adapter
+            .apply_message_json(line)
+            .expect("selection echo should apply");
+    }
 
     GuiSessionRuntimeAdapter::advance_playlist_index(&mut adapter)
         .expect("playlist advancement should dispatch");
     let advance_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("advance lines should encode");
-    assert_eq!(advance_lines.len(), 1);
-    assert!(advance_lines[0].contains("\"playlistIndex\""));
-    assert!(advance_lines[0].contains("\"index\":1"));
-    adapter
-        .apply_message_json(&advance_lines[0])
-        .expect("advance echo should apply");
+    assert!(
+        advance_lines
+            .iter()
+            .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":1")),
+        "playlist advancement should emit a playlistIndex update"
+    );
+    assert!(
+        advance_lines.iter().any(|line| {
+            line.contains("\"State\"")
+                && line.contains("\"position\":0.0")
+                && line.contains("\"paused\":true")
+        }),
+        "playlist advancement should emit the immediate paused-at-zero reset state"
+    );
+    for line in &advance_lines {
+        adapter
+            .apply_message_json(line)
+            .expect("advance echo should apply");
+    }
 
     GuiSessionRuntimeAdapter::delete_playlist_index(&mut adapter, 0)
         .expect("playlist removal should dispatch");
     let delete_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("delete lines should encode");
-    assert_eq!(delete_lines.len(), 2);
-    assert!(delete_lines[0].contains("\"playlistChange\""));
-    assert!(delete_lines[0].contains("episode2.mkv"));
-    assert!(delete_lines[1].contains("\"playlistIndex\""));
-    assert!(delete_lines[1].contains("\"index\":0"));
+    assert!(
+        delete_lines
+            .iter()
+            .any(|line| line.contains("\"playlistChange\"") && line.contains("episode2.mkv")),
+        "playlist deletion should emit the updated playlist"
+    );
+    assert!(
+        delete_lines
+            .iter()
+            .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":0")),
+        "playlist deletion should emit the updated playlist index"
+    );
     for line in &delete_lines {
         adapter
             .apply_message_json(line)
@@ -104,12 +129,20 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     let replace_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("replace lines should encode");
-    assert_eq!(replace_lines.len(), 2);
-    assert!(replace_lines[0].contains("\"playlistChange\""));
-    assert!(replace_lines[0].contains("episode3.mkv"));
-    assert!(replace_lines[0].contains("episode2.mkv"));
-    assert!(replace_lines[1].contains("\"playlistIndex\""));
-    assert!(replace_lines[1].contains("\"index\":1"));
+    assert!(
+        replace_lines.iter().any(|line| {
+            line.contains("\"playlistChange\"")
+                && line.contains("episode3.mkv")
+                && line.contains("episode2.mkv")
+        }),
+        "playlist replacement should emit the reordered playlist"
+    );
+    assert!(
+        replace_lines
+            .iter()
+            .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":1")),
+        "playlist replacement should emit the selected playlist index"
+    );
     for line in &replace_lines {
         adapter
             .apply_message_json(line)
