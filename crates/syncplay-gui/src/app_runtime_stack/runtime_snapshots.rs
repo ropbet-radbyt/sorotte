@@ -25,7 +25,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn shared_playlist_control_available(&self) -> bool {
-        self.runtime.session().local_can_control().unwrap_or(false)
+        self.shared_playlist_server_supported()
+            && self.runtime.session().local_can_control().unwrap_or(false)
     }
 
     pub(super) fn session_runtime_rooms(
@@ -118,10 +119,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let baseline_main_window =
             MainWindowShellState::from_stored_settings(&state.configuration.to_stored_settings());
         let session = self.runtime.session();
+        let shared_playlist_server_supported = self.shared_playlist_server_supported();
         let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
         snapshot.room_name = baseline_main_window.room_name.clone();
         snapshot.room_control_status = baseline_main_window.room_control_status.clone();
-        snapshot.shared_playlist_enabled = baseline_main_window.shared_playlist_enabled;
+        snapshot.shared_playlist_enabled =
+            shared_playlist_server_supported && baseline_main_window.shared_playlist_enabled;
         snapshot.controlled_room_active = baseline_main_window.controlled_room_active;
         snapshot.hide_empty_rooms = state.main_window.hide_empty_rooms;
         snapshot.rooms = baseline_main_window
@@ -182,9 +185,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         snapshot.room_control_status =
             self.room_control_status_for_runtime_snapshot(snapshot.controlled_room_active);
-        if let Some(playlist) = self.projected_current_room_playlist() {
+        if shared_playlist_server_supported
+            && let Some(playlist) = self.projected_current_room_playlist()
+        {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
+        } else if !shared_playlist_server_supported {
+            snapshot.playlist.clear();
         }
         snapshot.can_manage_playlist =
             snapshot.shared_playlist_enabled && self.shared_playlist_control_available();

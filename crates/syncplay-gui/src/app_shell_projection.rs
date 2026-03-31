@@ -410,7 +410,7 @@ impl MainWindowShellState {
                 username,
                 room_name,
                 is_self: true,
-                is_ready: settings.ready_at_start.unwrap_or(false),
+                is_ready: false,
                 is_controller: controlled_room_active,
                 has_file: false,
                 file_name: None,

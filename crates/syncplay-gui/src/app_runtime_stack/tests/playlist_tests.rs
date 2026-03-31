@@ -159,6 +159,63 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_server_feature_is_false()
+ {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.main_window.shared_playlist_enabled);
+
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true,"sharedPlaylists":false}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    assert!(
+        !GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+        "playlist controls should remain unavailable when the server disables shared playlists"
+    );
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let snapshot = actions
+        .iter()
+        .find_map(|action| match action {
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("server playlist capability change should project a main-window snapshot");
+    assert!(!snapshot.shared_playlist_enabled);
+    assert!(snapshot.playlist.is_empty());
+    assert!(!snapshot.can_manage_playlist);
+    let menu_snapshot = actions
+        .iter()
+        .find_map(|action| match action {
+            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("server playlist capability change should project a menu snapshot");
+    assert!(
+        menu_snapshot
+            .action_overrides
+            .contains(&MenuActionRuntimeOverride {
+                section_title: "Window",
+                action_label: "Show Playlist",
+                enabled: false,
+            })
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_when_session_has_none()
 {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

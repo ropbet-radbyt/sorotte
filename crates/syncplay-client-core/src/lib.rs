@@ -36,6 +36,7 @@ const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
 const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
 const LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
+const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
 const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
 const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
 const LEGACY_SHOW_OSD_WARNINGS: bool = true;
@@ -1796,6 +1797,7 @@ pub struct ClientSession {
     pub domain: SyncDomain,
     server_readiness_supported: Option<bool>,
     server_set_others_readiness_supported: Option<bool>,
+    server_shared_playlists_supported: Option<bool>,
     server_chat_supported: Option<bool>,
     desync_config: DesyncCorrectionConfig,
     reconnect_policy: ReconnectPolicyConfig,
@@ -1866,6 +1868,7 @@ impl Default for ClientSession {
             domain: SyncDomain::default(),
             server_readiness_supported: None,
             server_set_others_readiness_supported: None,
+            server_shared_playlists_supported: None,
             server_chat_supported: None,
             desync_config: DesyncCorrectionConfig::default(),
             reconnect_policy: ReconnectPolicyConfig::default(),
@@ -2714,8 +2717,19 @@ impl ClientSession {
         self.server_set_others_readiness_supported
     }
 
+    pub fn server_shared_playlists_supported(&self) -> Option<bool> {
+        self.server_shared_playlists_supported
+    }
+
     pub fn server_chat_supported(&self) -> Option<bool> {
         self.server_chat_supported
+    }
+
+    pub fn clear_server_feature_support_state(&mut self) {
+        self.server_readiness_supported = None;
+        self.server_set_others_readiness_supported = None;
+        self.server_shared_playlists_supported = None;
+        self.server_chat_supported = None;
     }
 
     pub fn local_can_control(&self) -> Option<bool> {
@@ -3432,6 +3446,9 @@ impl ClientSession {
         let Some(restore_intent) = self.reconnect_playlist_restore_intent.take() else {
             return Vec::new();
         };
+        if self.server_shared_playlists_supported == Some(false) {
+            return Vec::new();
+        }
 
         let mut actions = vec![
             ClientRuntimeAction::NotifyReconnectTransition(
@@ -3485,7 +3502,7 @@ impl ClientSession {
         &self,
         manually_initiated: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_readiness_supported == Some(false) {
+        if self.username.is_none() || self.server_readiness_supported != Some(true) {
             return Vec::new();
         }
         vec![ClientRuntimeAction::SetReady {
@@ -3504,7 +3521,7 @@ impl ClientSession {
             return Vec::new();
         }
         if username.is_empty() {
-            if self.server_readiness_supported == Some(false) {
+            if self.server_readiness_supported != Some(true) {
                 return Vec::new();
             }
             return vec![ClientRuntimeAction::SetReady {
@@ -3512,8 +3529,8 @@ impl ClientSession {
                 manually_initiated,
             }];
         }
-        if self.server_readiness_supported == Some(false)
-            || self.server_set_others_readiness_supported == Some(false)
+        if self.server_readiness_supported != Some(true)
+            || self.server_set_others_readiness_supported != Some(true)
         {
             return Vec::new();
         }
@@ -3606,7 +3623,10 @@ impl ClientSession {
         &self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || index < 0 {
+        if self.username.is_none()
+            || index < 0
+            || self.server_shared_playlists_supported == Some(false)
+        {
             return Vec::new();
         }
 
@@ -3627,7 +3647,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_next(&self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
 
@@ -3681,7 +3701,7 @@ impl ClientSession {
         file_name: String,
         select_after_queue: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3728,7 +3748,10 @@ impl ClientSession {
         &mut self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || index < 0 {
+        if self.username.is_none()
+            || index < 0
+            || self.server_shared_playlists_supported == Some(false)
+        {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3783,7 +3806,7 @@ impl ClientSession {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3846,7 +3869,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_undo(&mut self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3898,7 +3921,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_remaining(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3950,7 +3973,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_entire(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -4228,7 +4251,10 @@ impl ClientSession {
     }
 
     pub fn handle_disconnect(&mut self, now_seconds: f64) -> Vec<ClientRuntimeAction> {
+        self.server_shared_playlists_supported = None;
         self.server_chat_supported = None;
+        self.server_readiness_supported = None;
+        self.server_set_others_readiness_supported = None;
         if !self.behavior_config.pause_on_leave {
             return Vec::new();
         }
@@ -4479,7 +4505,10 @@ impl ClientSession {
         self.last_advanced_at_seconds = None;
         self.client_ignoring_on_the_fly = 0;
         self.server_ignoring_on_the_fly = 0;
+        self.server_shared_playlists_supported = None;
         self.server_chat_supported = None;
+        self.server_readiness_supported = None;
+        self.server_set_others_readiness_supported = None;
 
         if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
             self.set_user_room(&username, Some(room_name));
@@ -4566,8 +4595,15 @@ impl ClientSession {
             self.reconnect_connected_intent = true;
         }
 
-        self.server_readiness_supported = Self::feature_bool(hello.features.as_ref(), "readiness");
         let server_version = hello.effective_version().to_owned();
+        self.server_readiness_supported = Some(
+            Self::feature_bool(hello.features.as_ref(), "readiness").unwrap_or_else(|| {
+                Self::meets_min_version_legacy_compatible(
+                    &server_version,
+                    LEGACY_USER_READY_MIN_VERSION,
+                )
+            }),
+        );
         self.server_set_others_readiness_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "setOthersReadiness").unwrap_or_else(
                 || {
@@ -4578,6 +4614,8 @@ impl ClientSession {
                 },
             ),
         );
+        self.server_shared_playlists_supported =
+            Self::feature_bool(hello.features.as_ref(), "sharedPlaylists");
         self.server_chat_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
@@ -5970,6 +6008,37 @@ mod tests {
             .expect("hello should apply");
 
         assert_eq!(session.server_chat_supported(), Some(false));
+    }
+
+    #[test]
+    fn hello_records_server_shared_playlist_support_flag() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":false}}}"#,
+            )
+            .expect("hello should apply");
+
+        assert_eq!(session.server_shared_playlists_supported(), Some(false));
+    }
+
+    #[test]
+    fn hello_without_features_uses_legacy_version_gate_for_readiness_support() {
+        let mut old_server_session = ClientSession::default();
+        old_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(old_server_session.server_readiness_supported(), Some(false));
+
+        let mut new_server_session = ClientSession::default();
+        new_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(new_server_session.server_readiness_supported(), Some(true));
     }
 
     #[test]
@@ -9174,6 +9243,112 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_playlist_restore_is_suppressed_when_server_shared_playlists_disabled() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("local playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("local playlist index should apply");
+
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":false}}}"#,
+            )
+            .expect("reconnect hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+            .expect("empty server playlist snapshot should apply");
+
+        assert!(
+            session
+                .runtime_actions_for_reconnect_playlist_restore_if_needed()
+                .is_empty(),
+            "reconnect playlist restore should be suppressed when the server disables shared playlists"
+        );
+        assert!(
+            session
+                .runtime_actions_for_reconnect_playlist_restore_if_needed()
+                .is_empty(),
+            "suppressed reconnect restore should still drain the pending restore intent"
+        );
+    }
+
+    #[test]
+    fn local_playlist_actions_are_suppressed_when_server_shared_playlists_disabled() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let _ = session.runtime_actions_for_local_playlist_queue("episode4.mkv".to_owned(), false);
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":false}}}"#,
+            )
+            .expect("hello should apply");
+
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_index_set(1)
+                .is_empty()
+        );
+        assert!(session.runtime_actions_for_local_playlist_next().is_empty());
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_queue("episode5.mkv".to_owned(), true)
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_delete(1)
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_replace(
+                    vec![
+                        "episode3.mkv".to_owned(),
+                        "episode2.mkv".to_owned(),
+                        "episode1.mkv".to_owned(),
+                    ],
+                    Some(2),
+                )
+                .is_empty()
+        );
+        assert!(session.runtime_actions_for_local_playlist_undo().is_empty());
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_shuffle_remaining()
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_shuffle_entire()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn handle_disconnect_with_pause_on_leave_sets_pause_and_timestamp() {
         let mut session = ClientSession {
             local_paused: Some(false),
@@ -9210,6 +9385,77 @@ mod tests {
 
         let _ = session.handle_disconnect(200.0);
         assert_eq!(session.server_chat_supported(), None);
+    }
+
+    #[test]
+    fn handle_disconnect_clears_readiness_support_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"setOthersReadiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(session.server_readiness_supported(), Some(true));
+        assert_eq!(session.server_set_others_readiness_supported(), Some(true));
+        assert_eq!(
+            session.runtime_actions_for_local_ready_toggle(true),
+            vec![ClientRuntimeAction::SetReady {
+                ready: true,
+                manually_initiated: true,
+            }]
+        );
+        assert_eq!(
+            session.runtime_actions_for_local_user_ready_set("bob".to_owned(), true, true),
+            vec![ClientRuntimeAction::SetReadyForUser {
+                username: "bob".to_owned(),
+                ready: true,
+                manually_initiated: true,
+            }]
+        );
+
+        let _ = session.handle_disconnect(200.0);
+        assert_eq!(session.server_readiness_supported(), None);
+        assert_eq!(session.server_set_others_readiness_supported(), None);
+        assert!(
+            session
+                .runtime_actions_for_local_ready_toggle(true)
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_user_ready_set(String::new(), true, true)
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_user_ready_set("bob".to_owned(), true, true)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_clears_readiness_support_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"setOthersReadiness":true}}}"#,
+            )
+            .expect("hello should apply");
+
+        session.reset_sync_state_for_reconnect();
+
+        assert_eq!(session.server_readiness_supported(), None);
+        assert_eq!(session.server_set_others_readiness_supported(), None);
+        assert!(
+            session
+                .runtime_actions_for_local_ready_toggle(true)
+                .is_empty()
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_user_ready_set("bob".to_owned(), true, true)
+                .is_empty()
+        );
     }
 
     #[test]

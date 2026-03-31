@@ -196,6 +196,7 @@ fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() 
         state.validation.last_action_error.as_deref(),
         Some("Playback is already running.")
     );
+    assert!(state.apply(GuiShellAction::AnnounceLocalUserReady));
     assert!(!state.apply(GuiShellAction::AnnounceLocalUserReady));
     assert_eq!(
         state.validation.last_action_error.as_deref(),

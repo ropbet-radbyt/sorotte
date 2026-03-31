@@ -289,7 +289,7 @@ fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
     assert!(state.controlled_room_active);
     assert_eq!(state.users.len(), 1);
     assert_eq!(state.users[0].username, TEST_USERNAME);
-    assert!(state.users[0].is_ready);
+    assert!(!state.users[0].is_ready);
     assert!(state.users[0].is_controller);
     assert!(!state.playback.can_toggle_pause);
     assert!(!state.playback.can_seek);

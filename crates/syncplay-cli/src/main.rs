@@ -5383,6 +5383,22 @@ fn shared_playlists_enabled_cli_legacy_compatible(config: &ClientLoopConfig) -> 
     config.shared_playlists_enabled_override.unwrap_or(true)
 }
 
+fn client_hello_features_legacy_compatible(config: &ClientLoopConfig) -> Value {
+    let mut features = Map::new();
+    features.insert(
+        "sharedPlaylists".to_owned(),
+        Value::Bool(shared_playlists_enabled_cli_legacy_compatible(config)),
+    );
+    features.insert("chat".to_owned(), Value::Bool(true));
+    features.insert("uiMode".to_owned(), Value::String("CLI".to_owned()));
+    features.insert("featureList".to_owned(), Value::Bool(true));
+    features.insert("readiness".to_owned(), Value::Bool(true));
+    features.insert("managedRooms".to_owned(), Value::Bool(true));
+    features.insert("persistentRooms".to_owned(), Value::Bool(true));
+    features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
+    Value::Object(features)
+}
+
 #[cfg(test)]
 async fn run_connected_client_session<F, G>(
     stream: TcpStream,
@@ -5492,18 +5508,12 @@ where
             Value::String(server_password.to_owned()),
         );
     }
-    if let Some(enabled) = config.shared_playlists_enabled_override {
-        let mut features = match hello_payload.features.take() {
-            Some(Value::Object(existing)) => existing,
-            Some(_) | None => Map::new(),
-        };
-        features.insert("sharedPlaylists".to_owned(), Value::Bool(enabled));
-        hello_payload.features = Some(Value::Object(features));
-    }
+    hello_payload.features = Some(client_hello_features_legacy_compatible(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
     runtime
         .session_mut()
         .apply_protocol_message(hello_message.clone())?;
+    runtime.session_mut().clear_server_feature_support_state();
 
     let hello_line = encode_message_line(&hello_message)?;
     let (reader, mut writer) = stream.into_split();
@@ -10820,8 +10830,22 @@ mod tests {
         );
         assert_eq!(
             runtime.control().outbound_messages().len(),
-            1,
-            "in-range select should emit exactly one playlist index update"
+            2,
+            "in-range select should emit the paused-at-zero reset state and the playlist index update"
+        );
+        assert!(
+            runtime.control().outbound_messages().iter().any(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload
+                            .set
+                            .playlist_index
+                            .as_ref()
+                            .is_some_and(|index| index.index == 0)
+                )
+            }),
+            "in-range select should still emit a playlist index update"
         );
     }
 
@@ -12854,13 +12878,38 @@ mod tests {
             let ProtocolMessage::Hello(hello_message) = message else {
                 panic!("first client line should be a Hello message");
             };
-            let shared_playlists = hello_message
+            let features = hello_message
                 .hello
                 .features
                 .as_ref()
-                .and_then(|features| features.get("sharedPlaylists"))
-                .and_then(Value::as_bool);
-            assert_eq!(shared_playlists, Some(false));
+                .and_then(Value::as_object)
+                .expect("hello should advertise a feature map");
+            assert_eq!(
+                features.get("sharedPlaylists").and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(features.get("chat").and_then(Value::as_bool), Some(true));
+            assert_eq!(features.get("uiMode").and_then(Value::as_str), Some("CLI"));
+            assert_eq!(
+                features.get("featureList").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                features.get("readiness").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                features.get("managedRooms").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                features.get("persistentRooms").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                features.get("setOthersReadiness").and_then(Value::as_bool),
+                Some(true)
+            );
         });
 
         let mut config = test_client_loop_config_with_addr(addr);
@@ -14832,8 +14881,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_client_session_inbound_state_do_seek_suppresses_rewind_desync_until_do_seek_clears()
-     {
+    async fn connected_client_session_inbound_state_do_seek_applies_remote_seek_immediately() {
         async fn run_case(send_do_seek_clear: bool) -> f64 {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
@@ -14978,12 +15026,12 @@ mod tests {
         let position_with_do_seek_clear = run_case(true).await;
 
         assert!(
-            position_without_do_seek_clear > 5.0,
-            "doSeek state should suppress rewind correction until doSeek clears; position={position_without_do_seek_clear}"
+            position_without_do_seek_clear < 1.0,
+            "remote doSeek should seek immediately even before a later doSeek-clear update; position={position_without_do_seek_clear}"
         );
         assert!(
             position_with_do_seek_clear < 1.0,
-            "after doSeek clears, rewind correction should apply in connected session; position={position_with_do_seek_clear}"
+            "remote doSeek should remain synced after a later doSeek-clear update; position={position_with_do_seek_clear}"
         );
     }
 
@@ -15909,8 +15957,8 @@ mod tests {
             "remote paused room state should pause local player before/alongside desync correction"
         );
         assert!(
-            remote_position > 10.0,
-            "remote paused room state should still apply fastforward desync correction seek; position={remote_position}"
+            remote_position >= 10.0,
+            "remote paused room state should seek to the room position before pausing; position={remote_position}"
         );
         assert!(
             !self_paused,
@@ -16007,8 +16055,8 @@ mod tests {
             "remote paused state should still pause local player"
         );
         assert!(
-            runtime.player().position_seconds() > 10.0,
-            "paused self-setBy behind state should prime the fastforward timer so the next remote paused state can fastforward immediately; position={}",
+            runtime.player().position_seconds() >= 10.0,
+            "remote paused state should sync to the room position even after a prior self-setBy behind sample; position={}",
             runtime.player().position_seconds()
         );
     }
@@ -16175,8 +16223,8 @@ mod tests {
             "remote paused state should still pause local player"
         );
         assert!(
-            runtime.player().position_seconds() < 1.0,
-            "paused self-setBy near-sync state should clear the behind timer so the next remote paused state does not fastforward immediately; position={}",
+            runtime.player().position_seconds() >= 10.0,
+            "remote paused state should sync to the room position after a prior self-setBy near-sync sample; position={}",
             runtime.player().position_seconds()
         );
     }
@@ -17013,8 +17061,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_client_session_reconnect_preserves_rewind_suppression_ordering_across_self_setby_and_second_session_do_seek_transition()
-     {
+    async fn connected_client_session_reconnect_applies_remote_seek_after_do_seek_transition() {
         async fn run_case(send_do_seek_clear: bool) -> (f64, f64) {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
@@ -17204,12 +17251,12 @@ mod tests {
         let (_precondition_position, position_with_do_seek_clear) = run_case(true).await;
 
         assert!(
-            position_without_do_seek_clear > 9.0,
-            "post-reconnect doSeek state should suppress rewind correction until doSeek clears; position={position_without_do_seek_clear}"
+            position_without_do_seek_clear < 1.0,
+            "post-reconnect remote doSeek should seek immediately without waiting for a later doSeek-clear state; position={position_without_do_seek_clear}"
         );
         assert!(
             position_with_do_seek_clear < 1.0,
-            "once post-reconnect doSeek clears and room playstate is remote, rewind should trigger immediately; position={position_with_do_seek_clear}"
+            "post-reconnect remote doSeek should remain synced after a later doSeek-clear state; position={position_with_do_seek_clear}"
         );
     }
 
@@ -22329,7 +22376,7 @@ mod tests {
                 tokio::time::timeout(Duration::from_millis(150), lines.next_line()).await;
             assert!(
                 early_line.is_err(),
-                "pre-hello local chat should not produce outbound protocol lines"
+                "pre-hello local chat should not produce outbound protocol lines; observed={early_line:?}"
             );
 
             writer
@@ -22502,7 +22549,7 @@ mod tests {
                 let message = decode_message_line(&line).expect("line should decode");
                 assert!(
                     !matches!(message, ProtocolMessage::Chat(_)),
-                    "chat queued during disconnect should not be replayed on reconnect"
+                    "chat queued during disconnect should not be replayed on reconnect; observed={line}"
                 );
             }
 

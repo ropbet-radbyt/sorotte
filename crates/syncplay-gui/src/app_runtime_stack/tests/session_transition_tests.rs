@@ -1,5 +1,7 @@
 use super::*;
 
+use syncplay_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_before_server_hello() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -97,6 +99,60 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
                 action_label: "Show Playlist",
                 enabled: false,
             })
+    );
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_server_hello() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ready_at_start: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(!state.main_window.users[0].is_ready);
+
+    let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(
+        &state.configuration.to_stored_settings(),
+    );
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+        .expect("runtime settings should sync into the session");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("ready-at-start lines should encode");
+    assert_eq!(outbound_lines.len(), 1);
+    assert!(outbound_lines[0].contains(r#""Set":{"ready":{"isReady":true"#));
+    assert!(outbound_lines[0].contains(r#""manuallyInitiated":false"#));
+
+    adapter
+        .apply_message_json(&outbound_lines[0])
+        .expect("ready-at-start echo should apply");
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let snapshot = actions
+        .iter()
+        .find_map(|action| match action {
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("ready-at-start echo should surface a runtime snapshot");
+    assert!(
+        snapshot
+            .users
+            .iter()
+            .any(|user| user.username == "alice" && user.is_self && user.is_ready)
     );
 }
 

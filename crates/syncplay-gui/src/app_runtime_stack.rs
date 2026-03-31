@@ -258,6 +258,7 @@ pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     username: String,
     baseline_room: String,
     dont_slow_down_with_me: bool,
+    pending_ready_at_start_on_server_hello: bool,
     runtime_settings: StoredClientSettingsRuntimeSnapshot,
     pub(super) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
@@ -297,6 +298,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             username,
             baseline_room: room,
             dont_slow_down_with_me: false,
+            pending_ready_at_start_on_server_hello: false,
             runtime_settings,
             runtime: ClientRuntime::new(
                 session,
@@ -322,6 +324,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) {
         self.runtime_settings = runtime_settings.clone();
+        if self.runtime.session().username.is_none() {
+            self.pending_ready_at_start_on_server_hello = self
+                .runtime_settings
+                .settings
+                .ready_at_start
+                .unwrap_or(false);
+        }
         self.dont_slow_down_with_me = runtime_settings
             .settings
             .dont_slow_down_with_me
@@ -446,6 +455,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .local_room_command_target_with_legacy_fallback(&self.baseline_room)
     }
 
+    fn shared_playlist_server_supported(&self) -> bool {
+        self.runtime.session().server_shared_playlists_supported() != Some(false)
+    }
+
     fn reset_session_for_reconnect(&mut self) {
         let room = self.current_room_for_next_hello();
         self.baseline_room = room.clone();
@@ -461,6 +474,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .push_back(Self::hello_json(&self.username, &room));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
+        self.pending_ready_at_start_on_server_hello = self
+            .runtime_settings
+            .settings
+            .ready_at_start
+            .unwrap_or(false);
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
@@ -623,6 +641,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
         let message = decode_message_line(json_line)
             .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
+        let inbound_is_server_hello = matches!(&message, ProtocolMessage::Hello(_));
         let result = match message {
             ProtocolMessage::State(state_message) => {
                 let _ = self
@@ -639,6 +658,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .apply_protocol_message(other)
                 .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
         };
+        if result.is_ok() && inbound_is_server_hello && self.pending_ready_at_start_on_server_hello
+        {
+            let _ = self
+                .runtime
+                .run_set_ready_for_user("", true, false)
+                .map_err(|error| {
+                    format!(
+                        "Client-core ready-at-start dispatch failed after server Hello: {error}"
+                    )
+                })?;
+            self.pending_ready_at_start_on_server_hello = false;
+        }
         self.sync_optimistic_room_playlist();
         result
     }
