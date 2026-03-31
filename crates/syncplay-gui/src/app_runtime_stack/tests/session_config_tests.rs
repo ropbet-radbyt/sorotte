@@ -169,3 +169,34 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
         Some(3)
     );
 }
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_without_reconnect()
+{
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let disabled_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            dont_slow_down_with_me: Some(false),
+            ..StoredClientSettingsMvp::default()
+        });
+    let enabled_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            dont_slow_down_with_me: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &disabled_settings)
+        .expect("initial runtime settings should sync");
+    assert!(
+        !adapter.dont_slow_down_with_me,
+        "initial sync should keep dontSlowDownWithMe disabled"
+    );
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &enabled_settings)
+        .expect("steady-state runtime sync should update dontSlowDownWithMe");
+    assert!(
+        adapter.dont_slow_down_with_me,
+        "steady-state sync should update dontSlowDownWithMe without requiring reconnect"
+    );
+}
