@@ -262,9 +262,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let create_controlled_room_enabled = session_room_name.is_some();
-        let identify_as_controller_enabled =
-            session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
+        let managed_rooms_server_supported = self.managed_rooms_server_supported();
+        let create_controlled_room_enabled =
+            managed_rooms_server_supported && session_room_name.is_some();
+        let identify_as_controller_enabled = managed_rooms_server_supported
+            && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
         let config_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
             || settings.chat_output_enabled.unwrap_or(false);
         let desired_show_chat_enabled =

@@ -209,6 +209,8 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
 {
     let runtime_settings =
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            username: Some("bob".to_owned()),
+            room: Some("room2".to_owned()),
             server_password: Some("secret-pass".to_owned()),
             shared_playlist_enabled: Some(false),
             ..StoredClientSettingsMvp::default()
@@ -228,8 +230,8 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
     else {
         panic!("startup protocol line should be a Hello message");
     };
-    assert_eq!(hello.hello.username, "alice");
-    assert_eq!(hello.hello.room.name, "room1");
+    assert_eq!(hello.hello.username, "bob");
+    assert_eq!(hello.hello.room.name, "room2");
     assert_eq!(hello.hello.version, SYNCPLAY_WIRE_VERSION_LEGACY);
     assert_eq!(
         hello.hello.realversion.as_deref(),
@@ -286,4 +288,41 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_runtime_identity() {
+    let runtime_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            username: Some("bob".to_owned()),
+            room: Some("room2".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+        .expect("runtime settings should sync into the reconnect hello");
+    adapter.reset_session_for_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    assert_eq!(reconnect_lines.len(), 1);
+
+    let ProtocolMessage::Hello(hello) =
+        decode_message_line(&reconnect_lines[0]).expect("reconnect hello should decode")
+    else {
+        panic!("reconnect protocol line should be a Hello message");
+    };
+    assert_eq!(hello.hello.username, "bob");
+    assert_eq!(hello.hello.room.name, "room2");
 }

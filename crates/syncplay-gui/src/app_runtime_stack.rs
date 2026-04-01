@@ -324,6 +324,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) {
+        if let Some(username) = runtime_settings.settings.username.as_ref() {
+            self.username = username.clone();
+        }
+        self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
         self.runtime_settings = runtime_settings.clone();
         if self.runtime.session().username.is_none() {
             self.pending_ready_at_start_on_server_hello = self
@@ -505,9 +509,16 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().server_shared_playlists_supported() != Some(false)
     }
 
+    fn managed_rooms_server_supported(&self) -> bool {
+        self.runtime.session().server_managed_rooms_supported() == Some(true)
+    }
+
     fn reset_session_for_reconnect(&mut self) {
+        if let Some(username) = self.runtime_settings.settings.username.as_ref() {
+            self.username = username.clone();
+        }
+        self.baseline_room = self.runtime_settings.settings.room.clone().unwrap_or_default();
         let room = self.current_room_for_next_hello();
-        self.baseline_room = room.clone();
         let mut session = ClientSession::default();
         Self::apply_runtime_settings_to_session(&mut session, &self.runtime_settings, &room);
         self.runtime = ClientRuntime::new(
@@ -1038,6 +1049,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 if self.runtime.session().username.is_none() {
                     Err(
                         "Client-core session runtime cannot request controller access until the server Hello is received."
+                            .to_owned(),
+                    )
+                } else if self.runtime.session().server_managed_rooms_supported().is_none() {
+                    Err(
+                        "Client-core session runtime cannot request controller access until the server Hello enables controlled-room support."
+                            .to_owned(),
+                    )
+                } else if self.runtime.session().server_managed_rooms_supported() == Some(false) {
+                    Err(
+                        "Client-core session runtime cannot request controller access because the server disabled controlled-room support."
                             .to_owned(),
                     )
                 } else {

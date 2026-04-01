@@ -39,6 +39,7 @@ pub const SYNCPLAY_WIRE_VERSION_LEGACY: &str = "1.2.255";
 pub const SYNCPLAY_COMPAT_VERSION_LEGACY: &str = "1.7.5";
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
 const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
+const LEGACY_MANAGED_ROOMS_MIN_VERSION: &str = "1.3.0";
 const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
 const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
 const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
@@ -1800,6 +1801,7 @@ pub struct ClientSession {
     pub domain: SyncDomain,
     server_readiness_supported: Option<bool>,
     server_set_others_readiness_supported: Option<bool>,
+    server_managed_rooms_supported: Option<bool>,
     server_shared_playlists_supported: Option<bool>,
     server_chat_supported: Option<bool>,
     desync_config: DesyncCorrectionConfig,
@@ -1871,6 +1873,7 @@ impl Default for ClientSession {
             domain: SyncDomain::default(),
             server_readiness_supported: None,
             server_set_others_readiness_supported: None,
+            server_managed_rooms_supported: None,
             server_shared_playlists_supported: None,
             server_chat_supported: None,
             desync_config: DesyncCorrectionConfig::default(),
@@ -2720,6 +2723,10 @@ impl ClientSession {
         self.server_set_others_readiness_supported
     }
 
+    pub fn server_managed_rooms_supported(&self) -> Option<bool> {
+        self.server_managed_rooms_supported
+    }
+
     pub fn server_shared_playlists_supported(&self) -> Option<bool> {
         self.server_shared_playlists_supported
     }
@@ -2731,6 +2738,7 @@ impl ClientSession {
     pub fn clear_server_feature_support_state(&mut self) {
         self.server_readiness_supported = None;
         self.server_set_others_readiness_supported = None;
+        self.server_managed_rooms_supported = None;
         self.server_shared_playlists_supported = None;
         self.server_chat_supported = None;
     }
@@ -3470,6 +3478,12 @@ impl ClientSession {
     pub fn runtime_actions_for_controller_reidentify_if_needed(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
+        if self.server_managed_rooms_supported != Some(true) {
+            self.controlled_room_switch_intent = None;
+            self.controller_reidentify_intent = None;
+            return Vec::new();
+        }
+
         let mut actions = Vec::new();
         if let Some(room) = self.controlled_room_switch_intent.take() {
             actions.push(ClientRuntimeAction::SetRoom { room });
@@ -3550,6 +3564,9 @@ impl ClientSession {
         password: String,
     ) -> Vec<ClientRuntimeAction> {
         if self.username.is_none() {
+            return Vec::new();
+        }
+        if self.server_managed_rooms_supported != Some(true) {
             return Vec::new();
         }
         if room.is_empty() {
@@ -4258,6 +4275,7 @@ impl ClientSession {
         self.server_chat_supported = None;
         self.server_readiness_supported = None;
         self.server_set_others_readiness_supported = None;
+        self.server_managed_rooms_supported = None;
         if !self.behavior_config.pause_on_leave {
             return Vec::new();
         }
@@ -4512,6 +4530,7 @@ impl ClientSession {
         self.server_chat_supported = None;
         self.server_readiness_supported = None;
         self.server_set_others_readiness_supported = None;
+        self.server_managed_rooms_supported = None;
 
         if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
             self.set_user_room(&username, Some(room_name));
@@ -4616,6 +4635,14 @@ impl ClientSession {
                     )
                 },
             ),
+        );
+        self.server_managed_rooms_supported = Some(
+            Self::feature_bool(hello.features.as_ref(), "managedRooms").unwrap_or_else(|| {
+                Self::meets_min_version_legacy_compatible(
+                    &server_version,
+                    LEGACY_MANAGED_ROOMS_MIN_VERSION,
+                )
+            }),
         );
         self.server_shared_playlists_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "sharedPlaylists").unwrap_or_else(|| {
@@ -6032,6 +6059,18 @@ mod tests {
     }
 
     #[test]
+    fn hello_records_server_managed_rooms_support_flag() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"managedRooms":false}}}"#,
+            )
+            .expect("hello should apply");
+
+        assert_eq!(session.server_managed_rooms_supported(), Some(false));
+    }
+
+    #[test]
     fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support() {
         let mut old_server_session = ClientSession::default();
         old_server_session
@@ -6054,6 +6093,25 @@ mod tests {
             new_server_session.server_shared_playlists_supported(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn hello_without_features_uses_legacy_version_gate_for_managed_rooms_support() {
+        let mut old_server_session = ClientSession::default();
+        old_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(old_server_session.server_managed_rooms_supported(), Some(false));
+
+        let mut new_server_session = ClientSession::default();
+        new_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(new_server_session.server_managed_rooms_supported(), Some(true));
     }
 
     #[test]
@@ -6794,7 +6852,7 @@ mod tests {
         let mut session = ClientSession::default();
         session
             .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
         assert_eq!(session.local_can_control(), Some(true));
@@ -6841,7 +6899,7 @@ mod tests {
         let mut session = ClientSession::default();
         session
             .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
         session.set_autoplay_enabled(true);
@@ -6872,7 +6930,7 @@ mod tests {
 
         session
             .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
 
@@ -6909,7 +6967,7 @@ mod tests {
             .expect("new controlled room message should apply");
         session
             .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
 
@@ -9468,6 +9526,37 @@ mod tests {
     }
 
     #[test]
+    fn handle_disconnect_clears_managed_rooms_support_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(session.server_managed_rooms_supported(), Some(true));
+        assert!(
+            !session
+                .runtime_actions_for_local_controller_auth_request(
+                    "+room:ABCDEF123456".to_owned(),
+                    "AB-123-456".to_owned(),
+                )
+                .is_empty()
+        );
+
+        let _ = session.handle_disconnect(200.0);
+
+        assert_eq!(session.server_managed_rooms_supported(), None);
+        assert!(
+            session
+                .runtime_actions_for_local_controller_auth_request(
+                    "+room:ABCDEF123456".to_owned(),
+                    "AB-123-456".to_owned(),
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn reset_sync_state_for_reconnect_clears_readiness_support_until_next_hello() {
         let mut session = ClientSession::default();
         session
@@ -9488,6 +9577,28 @@ mod tests {
         assert!(
             session
                 .runtime_actions_for_local_user_ready_set("bob".to_owned(), true, true)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reset_sync_state_for_reconnect_clears_managed_rooms_support_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
+            )
+            .expect("hello should apply");
+
+        session.reset_sync_state_for_reconnect();
+
+        assert_eq!(session.server_managed_rooms_supported(), None);
+        assert!(
+            session
+                .runtime_actions_for_local_controller_auth_request(
+                    "+room:ABCDEF123456".to_owned(),
+                    "AB-123-456".to_owned(),
+                )
                 .is_empty()
         );
     }
@@ -14618,7 +14729,7 @@ mod tests {
         session.remember_control_password_for_room("+room:ABCDEF123456", "ab-123-456");
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
 
@@ -14652,11 +14763,33 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_controller_reidentify_is_omitted_when_managed_rooms_are_unsupported() {
+        let mut session = ClientSession::default();
+        session.remember_control_password_for_room("+room:ABCDEF123456", "ab-123-456");
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_controller_reidentify_if_needed()
+            .expect("controller reidentify should not fail when suppressed");
+
+        let (_, _, control) = runtime.into_parts();
+        assert!(control.outbound_messages().is_empty());
+        assert!(control.controller_auth_notifications().is_empty());
+    }
+
+    #[test]
     fn client_runtime_new_controlled_room_dispatches_room_then_controller_auth() {
         let mut session = ClientSession::default();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
         session
@@ -15521,6 +15654,28 @@ mod tests {
                 room: " +room:ABCDEF123456 ".to_owned()
             }]
         );
+    }
+
+    #[test]
+    fn client_runtime_request_controller_auth_is_omitted_when_managed_rooms_are_unsupported() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"managedRooms":false}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_request_controller_auth(" +room:ABCDEF123456 ", "ab_123-456!")
+                .expect("controller auth request should not fail when suppressed"),
+            "manual controller auth request should be suppressed when managedRooms is disabled"
+        );
+        let (_, _, control) = runtime.into_parts();
+        assert!(control.outbound_messages().is_empty());
+        assert!(control.controller_auth_notifications().is_empty());
     }
 
     #[test]
@@ -17331,7 +17486,7 @@ mod tests {
         session.remember_control_password_for_room("+room:ABCDEF123456", "ab-123-456");
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
 

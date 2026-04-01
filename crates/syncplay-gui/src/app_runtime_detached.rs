@@ -87,6 +87,9 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> Result<(), String> {
         let runtime_settings = Self::detached_runtime_settings_for_state(state);
+        if !self.session_projects_to_shell {
+            self.session_default_room = runtime_settings.settings.room.clone();
+        }
         let filename_privacy_mode = runtime_settings
             .settings
             .filename_privacy_mode

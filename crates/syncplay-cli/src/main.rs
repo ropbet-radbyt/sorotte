@@ -23223,7 +23223,7 @@ mod tests {
 
             writer
                 .write_all(
-                    br#"{"Hello":{"username":"cli-user","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255","features":{"managedRooms":true}}}
 "#,
                 )
                 .await
@@ -23336,6 +23336,13 @@ mod tests {
                 "first client line should be a Hello message"
             );
 
+            writer
+                .write_all(
+                    br#"{"Hello":{"username":"cli-user","room":{"name":"room1"},"version":"1.2.255","features":{"managedRooms":true}}}
+"#,
+                )
+                .await
+                .expect("server should write hello response");
             writer
                 .write_all(
                     br#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"AB-123-456"}}}
@@ -27124,7 +27131,7 @@ mod tests {
         runtime
             .session_mut()
             .apply_message_json(
-                r#"{"Hello":{"username":"cli-user","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"cli-user","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255","features":{"managedRooms":true}}}"#,
             )
             .expect("hello should apply");
         runtime

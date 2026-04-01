@@ -298,6 +298,35 @@ fn gui_client_core_chat_session_runtime_adapter_rejects_remote_ready_changes_whe
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_rejects_controller_auth_when_managed_rooms_are_unsupported()
+ {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"managedRooms":false}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    let error = GuiSessionRuntimeAdapter::request_controller_auth(
+        &mut adapter,
+        "+room:ABCDEF123456".to_owned(),
+        "AB-123-456".to_owned(),
+    )
+    .expect_err("servers without managedRooms support should reject controller auth");
+    assert!(
+        error.contains("controlled-room support"),
+        "error should identify the missing managedRooms capability"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_after_server_hello() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),

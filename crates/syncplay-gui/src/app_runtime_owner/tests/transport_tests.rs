@@ -929,6 +929,55 @@ fn gui_persisted_config_runtime_owner_rejects_room_changes_before_server_hello_w
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detached_room_edit() {
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.session_projects_to_shell = false;
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "Connection",
+        label: "Room",
+        value: "room9".to_owned(),
+    }));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+
+    handle.push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert_eq!(outbound_protocol_lines.len(), 1);
+    assert!(
+        outbound_protocol_lines[0].contains(r#""room":{"name":"room9"}"#),
+        "return-to-default should target the updated detached room setting"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_transport() {
     use std::{
         io::{BufRead, BufReader, Write},
