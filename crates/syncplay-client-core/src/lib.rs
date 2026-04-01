@@ -1846,6 +1846,7 @@ pub struct ClientSession {
     reconnect_connected_intent: bool,
     controlled_room_switch_intent: Option<String>,
     controller_reidentify_intent: Option<(String, String)>,
+    last_controller_auth_password_attempt: Option<String>,
     controlled_room_passwords: BTreeMap<String, String>,
     playlist_undo_snapshots: BTreeMap<String, Vec<String>>,
     playlist_shuffle_nonce: u64,
@@ -1919,6 +1920,7 @@ impl Default for ClientSession {
             reconnect_connected_intent: false,
             controlled_room_switch_intent: None,
             controller_reidentify_intent: None,
+            last_controller_auth_password_attempt: None,
             controlled_room_passwords: BTreeMap::new(),
             playlist_undo_snapshots: BTreeMap::new(),
             playlist_shuffle_nonce: 0,
@@ -3487,8 +3489,10 @@ impl ClientSession {
         let mut actions = Vec::new();
         if let Some(room) = self.controlled_room_switch_intent.take() {
             actions.push(ClientRuntimeAction::SetRoom { room });
+            actions.push(ClientRuntimeAction::RequestUserList);
         }
         if let Some((room, password)) = self.controller_reidentify_intent.take() {
+            self.last_controller_auth_password_attempt = Some(password.clone());
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));
@@ -3562,7 +3566,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_controller_auth_request(
-        &self,
+        &mut self,
         room: String,
         password: String,
     ) -> Vec<ClientRuntimeAction> {
@@ -3576,6 +3580,7 @@ impl ClientSession {
             return Vec::new();
         }
         let password = Self::normalize_control_password_legacy_compatible(&password);
+        self.last_controller_auth_password_attempt = Some(password.clone());
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
@@ -3584,7 +3589,7 @@ impl ClientSession {
         ]
     }
 
-    pub fn runtime_actions_for_local_room_switch(&self, room: String) -> Vec<ClientRuntimeAction> {
+    pub fn runtime_actions_for_local_room_switch(&mut self, room: String) -> Vec<ClientRuntimeAction> {
         if self.server_chat_supported.is_none() {
             return Vec::new();
         }
@@ -3598,6 +3603,7 @@ impl ClientSession {
         if self.server_managed_rooms_supported == Some(true)
             && let Some(password) = self.controlled_room_passwords.get(&room).cloned()
         {
+            self.last_controller_auth_password_attempt = Some(password.clone());
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
                 ControllerAuthTransitionNotification::Attempting { room: room.clone() },
             ));
@@ -4819,6 +4825,15 @@ impl ClientSession {
                 Some(true) => {
                     if let Some(target_username) = target_username.as_deref() {
                         self.set_user_controller(target_username, true);
+                    }
+                    if target_is_local_user
+                        && target_room_matches_local_room
+                        && let (Some(target_room), Some(password)) = (
+                            target_room.as_deref(),
+                            self.last_controller_auth_password_attempt.clone(),
+                        )
+                    {
+                        self.remember_control_password_for_room(target_room, &password);
                     }
                     if target_room_matches_local_room
                         && let (Some(target_username), Some(target_room)) =
@@ -6928,6 +6943,7 @@ mod tests {
                 ClientRuntimeAction::SetRoom {
                     room: "+room:ABCDEF123456".to_owned(),
                 },
+                ClientRuntimeAction::RequestUserList,
                 ClientRuntimeAction::NotifyControllerAuthTransition(
                     ControllerAuthTransitionNotification::Attempting {
                         room: "+room:ABCDEF123456".to_owned(),
@@ -7035,6 +7051,53 @@ mod tests {
                 ClientRuntimeAction::RequestControllerAuth {
                     room: "+room:ABCDEF123456".to_owned(),
                     password: "AB-123-456".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_controller_auth_success_stores_password_for_future_reidentify() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
+            )
+            .expect("hello should apply");
+        assert!(
+            !session
+                .runtime_actions_for_local_controller_auth_request(
+                    "+room:ABCDEF123456".to_owned(),
+                    "ab_123-456!".to_owned(),
+                )
+                .is_empty(),
+            "manual controller auth should record the attempted password"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
+            )
+            .expect("controller auth success should apply");
+
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"managedRooms":true}}}"#,
+            )
+            .expect("reconnect hello should apply");
+
+        assert_eq!(
+            session.runtime_actions_for_controller_reidentify_if_needed(),
+            vec![
+                ClientRuntimeAction::NotifyControllerAuthTransition(
+                    ControllerAuthTransitionNotification::Attempting {
+                        room: "+room:ABCDEF123456".to_owned(),
+                    },
+                ),
+                ClientRuntimeAction::RequestControllerAuth {
+                    room: "+room:ABCDEF123456".to_owned(),
+                    password: "AB123-456".to_owned(),
                 },
             ]
         );
@@ -14859,7 +14922,7 @@ mod tests {
             .expect("controller reidentify should dispatch");
 
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 2);
+        assert_eq!(control.outbound_messages().len(), 3);
         assert_eq!(
             control.controller_auth_notifications(),
             &[ControllerAuthTransitionNotification::Attempting {
@@ -14877,14 +14940,19 @@ mod tests {
             .expect("first outbound message should include room payload");
         assert_eq!(room.name, "+room:ABCDEF123456");
 
-        let ProtocolMessage::Set(auth_set) = &control.outbound_messages()[1] else {
-            panic!("second outbound message should be Set.controllerAuth");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("second outbound message should be List");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
+
+        let ProtocolMessage::Set(auth_set) = &control.outbound_messages()[2] else {
+            panic!("third outbound message should be Set.controllerAuth");
         };
         let controller_auth = auth_set
             .set
             .controller_auth
             .as_ref()
-            .expect("second outbound message should include controllerAuth payload");
+            .expect("third outbound message should include controllerAuth payload");
         assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
         assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
     }
