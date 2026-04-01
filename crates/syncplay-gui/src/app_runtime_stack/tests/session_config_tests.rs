@@ -4,7 +4,10 @@ use syncplay_client_app::app_boundary::state::{
     AutoplayThresholdOverride, StoredClientSettingsMvp,
     stored_client_settings_runtime_snapshot_legacy_compatible,
 };
-use syncplay_client_core::UnpauseActionMode;
+use syncplay_client_core::{
+    SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY, UnpauseActionMode,
+};
+use syncplay_protocol::{ProtocolMessage, decode_message_line};
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_session_and_reconnects_with_them()
@@ -198,5 +201,89 @@ fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_w
     assert!(
         adapter.dont_slow_down_with_me,
         "steady-state sync should update dontSlowDownWithMe without requiring reconnect"
+    );
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_and_full_features()
+{
+    let runtime_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            server_password: Some("secret-pass".to_owned()),
+            shared_playlist_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+        .expect("runtime settings should sync into the startup hello");
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    let ProtocolMessage::Hello(hello) =
+        decode_message_line(&startup_lines[0]).expect("startup hello should decode")
+    else {
+        panic!("startup protocol line should be a Hello message");
+    };
+    assert_eq!(hello.hello.username, "alice");
+    assert_eq!(hello.hello.room.name, "room1");
+    assert_eq!(hello.hello.version, SYNCPLAY_WIRE_VERSION_LEGACY);
+    assert_eq!(
+        hello.hello.realversion.as_deref(),
+        Some(SYNCPLAY_COMPAT_VERSION_LEGACY)
+    );
+    assert_eq!(
+        hello.hello.extra.get("password").and_then(serde_json::Value::as_str),
+        Some("secret-pass")
+    );
+
+    let features = hello
+        .hello
+        .features
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .expect("startup hello should advertise a feature map");
+    assert_eq!(
+        features
+            .get("sharedPlaylists")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        features.get("chat").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features.get("uiMode").and_then(serde_json::Value::as_str),
+        Some("GUI")
+    );
+    assert_eq!(
+        features.get("featureList").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features.get("readiness").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features
+            .get("managedRooms")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features
+            .get("persistentRooms")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        features
+            .get("setOthersReadiness")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
     );
 }

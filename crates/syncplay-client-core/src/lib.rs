@@ -35,8 +35,11 @@ const LEGACY_SHOW_DURATION_NOTIFICATION: bool = true;
 const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
 const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
 const LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
+pub const SYNCPLAY_WIRE_VERSION_LEGACY: &str = "1.2.255";
+pub const SYNCPLAY_COMPAT_VERSION_LEGACY: &str = "1.7.5";
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
 const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
+const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
 const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
 const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
 const LEGACY_SHOW_OSD_WARNINGS: bool = true;
@@ -4614,8 +4617,14 @@ impl ClientSession {
                 },
             ),
         );
-        self.server_shared_playlists_supported =
-            Self::feature_bool(hello.features.as_ref(), "sharedPlaylists");
+        self.server_shared_playlists_supported = Some(
+            Self::feature_bool(hello.features.as_ref(), "sharedPlaylists").unwrap_or_else(|| {
+                Self::meets_min_version_legacy_compatible(
+                    &server_version,
+                    LEGACY_SHARED_PLAYLIST_MIN_VERSION,
+                )
+            }),
+        );
         self.server_chat_supported = Some(
             Self::feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
@@ -5818,7 +5827,7 @@ mod tests {
         let mut session = ClientSession::default();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("hello should apply");
         let state_line = json!({
@@ -6020,6 +6029,31 @@ mod tests {
             .expect("hello should apply");
 
         assert_eq!(session.server_shared_playlists_supported(), Some(false));
+    }
+
+    #[test]
+    fn hello_without_features_uses_legacy_version_gate_for_shared_playlist_support() {
+        let mut old_server_session = ClientSession::default();
+        old_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.255"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            old_server_session.server_shared_playlists_supported(),
+            Some(false)
+        );
+
+        let mut new_server_session = ClientSession::default();
+        new_server_session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.4.0"}}"#,
+            )
+            .expect("hello should apply");
+        assert_eq!(
+            new_server_session.server_shared_playlists_supported(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -7162,7 +7196,7 @@ mod tests {
         let mut session = ClientSession::default();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("hello should apply");
         session
@@ -9033,7 +9067,7 @@ mod tests {
         session.reset_sync_state_for_reconnect();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
 
@@ -9122,7 +9156,7 @@ mod tests {
 
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
         session
@@ -10937,7 +10971,7 @@ mod tests {
         session.reset_sync_state_for_reconnect();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
 
@@ -11000,7 +11034,7 @@ mod tests {
         session.reset_sync_state_for_reconnect();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
         session
@@ -11122,7 +11156,7 @@ mod tests {
         let mut session = ClientSession::default();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("hello should apply");
         session
@@ -11742,7 +11776,7 @@ mod tests {
         session.reset_sync_state_for_reconnect();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
         session
@@ -11879,7 +11913,7 @@ mod tests {
         session.reset_sync_state_for_reconnect();
         session
             .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
             )
             .expect("reconnect hello should apply");
         session

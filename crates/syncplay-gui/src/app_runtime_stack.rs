@@ -21,17 +21,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use syncplay_client_app::app_boundary::state::{
     AutoplayThresholdOverride, StoredClientSettingsRuntimeSnapshot,
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession, PrivacyMode,
-    QueuedRuntimeControl, RoomPlaylistView,
+    QueuedRuntimeControl, RoomPlaylistView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    SYNCPLAY_WIRE_VERSION_LEGACY,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
-use syncplay_protocol::{ProtocolMessage, decode_message_line};
+use syncplay_protocol::{HelloPayload, ProtocolMessage, decode_message_line, encode_message_line};
 
 use self::player::GuiNoopClientRuntimePlayer;
 #[cfg(not(test))]
@@ -286,11 +287,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Result<Self, String> {
         let username = username.into();
         let room = room.into();
-        let hello_json = Self::hello_json(&username, &room);
         let runtime_settings = StoredClientSettingsRuntimeSnapshot {
             controlled_room_password_override,
             ..StoredClientSettingsRuntimeSnapshot::default()
         };
+        let hello_json = Self::hello_json(&username, &room, &runtime_settings);
         let mut session = ClientSession::default();
         Self::apply_runtime_settings_to_session(&mut session, &runtime_settings, &room);
 
@@ -330,6 +331,15 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .settings
                 .ready_at_start
                 .unwrap_or(false);
+            if !self.pending_startup_protocol_lines.is_empty() {
+                let room = self.current_room_for_next_hello();
+                self.pending_startup_protocol_lines.clear();
+                self.pending_startup_protocol_lines.push_back(Self::hello_json(
+                    &self.username,
+                    &room,
+                    &self.runtime_settings,
+                ));
+            }
         }
         self.dont_slow_down_with_me = runtime_settings
             .settings
@@ -443,10 +453,46 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn hello_json(username: &str, room: &str) -> String {
-        format!(
-            r#"{{"Hello":{{"username":{username:?},"room":{{"name":{room:?}}},"version":"1.7.5","features":{{"chat":true}}}}}}"#
-        )
+    fn client_hello_features_legacy_compatible(
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) -> Value {
+        let mut features = Map::new();
+        features.insert(
+            "sharedPlaylists".to_owned(),
+            Value::Bool(runtime_settings.settings.shared_playlist_enabled.unwrap_or(true)),
+        );
+        features.insert("chat".to_owned(), Value::Bool(true));
+        features.insert("uiMode".to_owned(), Value::String("GUI".to_owned()));
+        features.insert("featureList".to_owned(), Value::Bool(true));
+        features.insert("readiness".to_owned(), Value::Bool(true));
+        features.insert("managedRooms".to_owned(), Value::Bool(true));
+        features.insert("persistentRooms".to_owned(), Value::Bool(true));
+        features.insert("setOthersReadiness".to_owned(), Value::Bool(true));
+        Value::Object(features)
+    }
+
+    fn hello_json(
+        username: &str,
+        room: &str,
+        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
+    ) -> String {
+        let mut hello = HelloPayload::new(username, room, SYNCPLAY_WIRE_VERSION_LEGACY)
+            .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY)
+            .with_features(Self::client_hello_features_legacy_compatible(runtime_settings));
+        if let Some(server_password) = runtime_settings
+            .settings
+            .server_password
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            hello.extra.insert(
+                "password".to_owned(),
+                Value::String(server_password.to_owned()),
+            );
+        }
+
+        encode_message_line(&ProtocolMessage::hello(hello))
+            .expect("client-core GUI startup hello should encode")
     }
 
     fn current_room_for_next_hello(&self) -> String {
@@ -471,7 +517,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         );
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
-            .push_back(Self::hello_json(&self.username, &room));
+            .push_back(Self::hello_json(&self.username, &room, &self.runtime_settings));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
         self.pending_ready_at_start_on_server_hello = self
