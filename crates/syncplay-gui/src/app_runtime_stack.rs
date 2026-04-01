@@ -27,9 +27,10 @@ use syncplay_client_app::app_boundary::state::{
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use syncplay_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession, PrivacyMode,
-    QueuedRuntimeControl, RoomPlaylistView, SYNCPLAY_COMPAT_VERSION_LEGACY,
-    SYNCPLAY_WIRE_VERSION_LEGACY,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession,
+    DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
+    RoomPlaylistView, SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY,
+    SessionBehaviorConfig,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_protocol::{HelloPayload, ProtocolMessage, decode_message_line, encode_message_line};
@@ -324,9 +325,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) {
-        if let Some(username) = runtime_settings.settings.username.as_ref() {
-            self.username = username.clone();
-        }
+        self.username = runtime_settings
+            .settings
+            .username
+            .clone()
+            .unwrap_or_default();
         self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
         self.runtime_settings = runtime_settings.clone();
         if self.runtime.session().username.is_none() {
@@ -349,7 +352,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .settings
             .dont_slow_down_with_me
             .unwrap_or(false);
-        let room = self.current_room_for_next_hello();
+        let room = self.current_room_for_runtime_settings_sync();
         Self::apply_runtime_settings_to_session(
             self.runtime.session_mut(),
             &self.runtime_settings,
@@ -370,6 +373,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
         room: &str,
     ) {
+        let behavior_defaults = SessionBehaviorConfig::default();
+        let desync_defaults = DesyncCorrectionConfig::default();
+        let readiness_defaults = ReadinessAutoplayConfig::default();
+
         if let Some(control_password) = runtime_settings
             .controlled_room_password_override
             .as_deref()
@@ -379,81 +386,97 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(autoplay_enabled) = runtime_settings.settings.autoplay_initial_state {
             session.set_autoplay_enabled(autoplay_enabled);
         }
-        if let Some(show_same_room_osd) = runtime_settings.settings.show_same_room_osd {
-            session.behavior_config_mut().show_same_room_osd = show_same_room_osd;
-        }
-        if let Some(show_osd_warnings) = runtime_settings.settings.show_osd_warnings {
-            session.behavior_config_mut().show_osd_warnings = show_osd_warnings;
-        }
-        if let Some(show_noncontroller_osd) = runtime_settings.settings.show_noncontroller_osd {
-            session.behavior_config_mut().show_noncontroller_osd = show_noncontroller_osd;
-        }
-        if let Some(show_different_room_osd) = runtime_settings.settings.show_different_room_osd {
-            session.behavior_config_mut().show_different_room_osd = show_different_room_osd;
-        }
-        if let Some(pause_on_leave) = runtime_settings.settings.pause_on_leave {
-            session.behavior_config_mut().pause_on_leave = pause_on_leave;
-        }
-        if let Some(loop_at_end_of_playlist) = runtime_settings.settings.loop_at_end_of_playlist {
-            session.behavior_config_mut().loop_at_end_of_playlist = loop_at_end_of_playlist;
-        }
-        if let Some(loop_single_files) = runtime_settings.settings.loop_single_files {
-            session.behavior_config_mut().loop_single_files = loop_single_files;
-        }
-        if let Some(only_switch_to_trusted_domains) =
-            runtime_settings.settings.only_switch_to_trusted_domains
         {
-            session.behavior_config_mut().only_switch_to_trusted_domains =
-                only_switch_to_trusted_domains;
+            let behavior_config = session.behavior_config_mut();
+            behavior_config.show_same_room_osd = runtime_settings
+                .settings
+                .show_same_room_osd
+                .unwrap_or(behavior_defaults.show_same_room_osd);
+            behavior_config.show_osd_warnings = runtime_settings
+                .settings
+                .show_osd_warnings
+                .unwrap_or(behavior_defaults.show_osd_warnings);
+            behavior_config.show_noncontroller_osd = runtime_settings
+                .settings
+                .show_noncontroller_osd
+                .unwrap_or(behavior_defaults.show_noncontroller_osd);
+            behavior_config.show_different_room_osd = runtime_settings
+                .settings
+                .show_different_room_osd
+                .unwrap_or(behavior_defaults.show_different_room_osd);
+            behavior_config.pause_on_leave = runtime_settings
+                .settings
+                .pause_on_leave
+                .unwrap_or(behavior_defaults.pause_on_leave);
+            behavior_config.loop_at_end_of_playlist = runtime_settings
+                .settings
+                .loop_at_end_of_playlist
+                .unwrap_or(behavior_defaults.loop_at_end_of_playlist);
+            behavior_config.loop_single_files = runtime_settings
+                .settings
+                .loop_single_files
+                .unwrap_or(behavior_defaults.loop_single_files);
+            behavior_config.only_switch_to_trusted_domains = runtime_settings
+                .settings
+                .only_switch_to_trusted_domains
+                .unwrap_or(behavior_defaults.only_switch_to_trusted_domains);
+            behavior_config.trusted_domains = runtime_settings
+                .settings
+                .trusted_domains
+                .clone()
+                .unwrap_or_else(|| behavior_defaults.trusted_domains.clone());
         }
-        if let Some(trusted_domains) = runtime_settings.settings.trusted_domains.as_ref() {
-            session.behavior_config_mut().trusted_domains = trusted_domains.clone();
-        }
-        if let Some(rewind_on_desync) = runtime_settings.settings.rewind_on_desync {
-            session.desync_config_mut().rewind_on_desync = rewind_on_desync;
-        }
-        if let Some(fastforward_on_desync) = runtime_settings.settings.fastforward_on_desync {
-            session.desync_config_mut().fastforward_on_desync = fastforward_on_desync;
-        }
-        if let Some(slow_on_desync) = runtime_settings.settings.slow_on_desync {
-            session.desync_config_mut().slow_on_desync = slow_on_desync;
-        }
-        if let Some(rewind_threshold_seconds) = runtime_settings.settings.rewind_threshold_seconds {
-            session.desync_config_mut().rewind_threshold_seconds = rewind_threshold_seconds;
-        }
-        if let Some(fastforward_threshold_seconds) =
-            runtime_settings.settings.fastforward_threshold_seconds
         {
-            session.desync_config_mut().fastforward_threshold_seconds =
-                fastforward_threshold_seconds;
-        }
-        if let Some(slowdown_threshold_seconds) =
-            runtime_settings.settings.slowdown_threshold_seconds
-        {
-            session.desync_config_mut().slowdown_threshold_seconds = slowdown_threshold_seconds;
+            let desync_config = session.desync_config_mut();
+            desync_config.rewind_on_desync = runtime_settings
+                .settings
+                .rewind_on_desync
+                .unwrap_or(desync_defaults.rewind_on_desync);
+            desync_config.fastforward_on_desync = runtime_settings
+                .settings
+                .fastforward_on_desync
+                .unwrap_or(desync_defaults.fastforward_on_desync);
+            desync_config.slow_on_desync = runtime_settings
+                .settings
+                .slow_on_desync
+                .unwrap_or(desync_defaults.slow_on_desync);
+            desync_config.rewind_threshold_seconds = runtime_settings
+                .settings
+                .rewind_threshold_seconds
+                .unwrap_or(desync_defaults.rewind_threshold_seconds);
+            desync_config.fastforward_threshold_seconds = runtime_settings
+                .settings
+                .fastforward_threshold_seconds
+                .unwrap_or(desync_defaults.fastforward_threshold_seconds);
+            desync_config.slowdown_threshold_seconds = runtime_settings
+                .settings
+                .slowdown_threshold_seconds
+                .unwrap_or(desync_defaults.slowdown_threshold_seconds);
         }
         {
             let readiness_config = session.readiness_autoplay_config_mut();
-            if let Some(autoplay_require_same_filenames) =
-                runtime_settings.settings.autoplay_require_same_filenames
-            {
-                readiness_config.autoplay_require_same_filenames = autoplay_require_same_filenames;
-            }
-            if let Some(unpause_action) = runtime_settings.settings.unpause_action.as_ref() {
-                readiness_config.unpause_action = unpause_action.clone();
-            }
-            if let Some(auto_play_threshold) = runtime_settings.settings.autoplay_min_users.as_ref()
-            {
-                readiness_config.auto_play_threshold = match auto_play_threshold {
+            readiness_config.autoplay_require_same_filenames = runtime_settings
+                .settings
+                .autoplay_require_same_filenames
+                .unwrap_or(readiness_defaults.autoplay_require_same_filenames);
+            readiness_config.unpause_action = runtime_settings
+                .settings
+                .unpause_action
+                .clone()
+                .unwrap_or(readiness_defaults.unpause_action);
+            readiness_config.auto_play_threshold = runtime_settings
+                .settings
+                .autoplay_min_users
+                .as_ref()
+                .map(|auto_play_threshold| match auto_play_threshold {
                     AutoplayThresholdOverride::Disable => None,
                     AutoplayThresholdOverride::Set(value) => Some(*value),
-                };
-            }
-            if let Some(show_duration_notification) =
-                runtime_settings.settings.show_duration_notification
-            {
-                readiness_config.show_duration_notification = show_duration_notification;
-            }
+                })
+                .unwrap_or(readiness_defaults.auto_play_threshold);
+            readiness_config.show_duration_notification = runtime_settings
+                .settings
+                .show_duration_notification
+                .unwrap_or(readiness_defaults.show_duration_notification);
         }
     }
 
@@ -500,6 +523,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn current_room_for_next_hello(&self) -> String {
+        self.current_room_name()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.baseline_room.clone())
+    }
+
+    fn current_room_for_runtime_settings_sync(&self) -> String {
         self.runtime
             .session()
             .local_room_command_target_with_legacy_fallback(&self.baseline_room)
@@ -514,9 +543,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn reset_session_for_reconnect(&mut self) {
-        if let Some(username) = self.runtime_settings.settings.username.as_ref() {
-            self.username = username.clone();
-        }
+        self.username = self
+            .runtime_settings
+            .settings
+            .username
+            .clone()
+            .unwrap_or_default();
         self.baseline_room = self.runtime_settings.settings.room.clone().unwrap_or_default();
         let room = self.current_room_for_next_hello();
         let mut session = ClientSession::default();
