@@ -599,9 +599,8 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn schedule_session_transport_reconnect(&mut self, delay_seconds: f64) {
-        self.session_transport_reconnect_due_at = Some(
-            Instant::now() + Duration::from_secs_f64(delay_seconds.max(0.0)),
-        );
+        self.session_transport_reconnect_due_at =
+            Some(Instant::now() + Duration::from_secs_f64(delay_seconds.max(0.0)));
         self.session_transport_reconnect_failures =
             self.session_transport_reconnect_failures.saturating_add(1);
         self.session_transport_disconnect_pending_cleanup = false;
@@ -619,7 +618,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn apply_session_transport_disconnect_pause(
+    pub(super) fn apply_session_transport_disconnect_pause(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,

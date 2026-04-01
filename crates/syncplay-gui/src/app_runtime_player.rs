@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use syncplay_player_api::PlayerAdapter;
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
 use syncplay_player_mpv::LegacySyncplayOsdKind;
 
 use super::super::media_search_cache::{
@@ -324,6 +324,48 @@ impl GuiPersistedConfigRuntimeOwner {
                 local_file.name == target_name
             }
         })
+    }
+
+    fn local_file_identity_matches(current: &LocalFileUpdate, next: &LocalFileUpdate) -> bool {
+        let current_path = current
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let next_path = next
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        if let (Some(current_path), Some(next_path)) = (current_path, next_path) {
+            return if cfg!(windows) {
+                current_path.eq_ignore_ascii_case(next_path)
+            } else {
+                current_path == next_path
+            };
+        }
+
+        let current_name = current.name.trim();
+        let next_name = next.name.trim();
+        if current_name.is_empty() || next_name.is_empty() {
+            return false;
+        }
+
+        if cfg!(windows) {
+            current_name.eq_ignore_ascii_case(next_name)
+        } else {
+            current_name == next_name
+        }
+    }
+
+    fn local_file_update_replaces_current_file(
+        current: Option<&LocalFileUpdate>,
+        next: &LocalFileUpdate,
+    ) -> bool {
+        match current {
+            Some(current) => !Self::local_file_identity_matches(current, next),
+            None => true,
+        }
     }
 
     pub(super) fn global_position_seconds_from_player_position_impl(
@@ -1904,11 +1946,19 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) {
-        if self.session.is_none() {
-            return;
-        }
-
         let mut errors = Vec::new();
+        let chat_ready = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.attached_player_chat_input_ready());
+        let unavailable_message = self
+            .session
+            .as_ref()
+            .map(|session| session.attached_player_chat_input_unavailable_message())
+            .unwrap_or_else(|| {
+                "Chat input from the attached player requires an active session with chat support."
+                    .to_owned()
+            });
         loop {
             let pending_chat = self
                 .player
@@ -1917,6 +1967,10 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(message) = pending_chat else {
                 break;
             };
+            if !chat_ready {
+                errors.push(unavailable_message.clone());
+                continue;
+            }
             let send_result = self
                 .session
                 .as_mut()
@@ -1963,8 +2017,12 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         while let Some(update) = player.take_local_file_update() {
+            let file_changed = Self::local_file_update_replaces_current_file(
+                self.player_local_file.as_ref(),
+                &update,
+            );
             self.player_local_file = Some(update);
-            if self.player_position_seconds.is_none() {
+            if file_changed || self.player_position_seconds.is_none() {
                 self.player_position_seconds = Some(0.0);
             }
         }

@@ -25,6 +25,7 @@ use super::shell_state::{
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 use super::startup_support::env_trimmed;
+use super::support::system_time_seconds;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
@@ -487,6 +488,16 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) {
+        let disconnect_error = if let Some(session) = self.session.as_mut() {
+            let sync_result = session
+                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds);
+            sync_result
+                .and_then(|()| session.disconnect_session(system_time_seconds()))
+                .err()
+        } else {
+            None
+        };
+        self.apply_session_transport_disconnect_pause(handle, projected_state);
         if let Some(session_transport) = self.session_transport.as_ref() {
             session_transport.clear_protocol_lines();
         }
@@ -503,6 +514,12 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_applied_attached_room_playstate = None;
 
         let mut actions = self.sessionless_projection_actions(projected_state);
+        if let Some(error) = disconnect_error {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: error,
+            });
+        }
         actions.push(GuiShellAction::CompleteSessionDisconnect);
         Self::push_actions_and_project(handle, projected_state, actions);
     }

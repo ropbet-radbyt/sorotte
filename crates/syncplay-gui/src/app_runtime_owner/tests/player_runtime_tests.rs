@@ -313,6 +313,75 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_reports_a_new_file() {
+    #[derive(Debug, Default)]
+    struct TelemetryPlayerState {
+        local_file_updates: std::collections::VecDeque<syncplay_player_api::LocalFileUpdate>,
+    }
+
+    struct TelemetryPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<TelemetryPlayerState>>,
+    }
+
+    impl PlayerAdapter for TelemetryPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "telemetry"
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        local_file_updates: std::collections::VecDeque::from([
+            syncplay_player_api::LocalFileUpdate::new("episode2.mkv")
+                .with_path("C:/Media/episode2.mkv"),
+        ]),
+    }));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
+        state: player_state,
+    })));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv"),
+    );
+    owner.player_position_seconds = Some(42.0);
+    owner.player_paused = Some(false);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner
+        .ensure_detached_client_core_chat_session(&state)
+        .expect("detached client-core session should bootstrap");
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(0.0),
+        "a newly reported file should reset the stored global playback position"
+    );
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds()),
+        Some(0.0),
+        "detached-session telemetry should publish the new file from the start instead of reusing the old timestamp"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_seek() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
