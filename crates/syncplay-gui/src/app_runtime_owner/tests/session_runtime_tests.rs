@@ -578,3 +578,306 @@ fn gui_persisted_config_runtime_owner_resyncs_detached_runtime_settings_each_pum
         ]
     );
 }
+
+#[test]
+fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_duration() {
+    #[derive(Debug, Default)]
+    struct TelemetryPlayerState {
+        local_file_updates: std::collections::VecDeque<syncplay_player_api::LocalFileUpdate>,
+        playback_updates:
+            std::collections::VecDeque<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+    }
+
+    struct TelemetryPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<TelemetryPlayerState>>,
+    }
+
+    impl PlayerAdapter for TelemetryPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "telemetry"
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSessionState {
+        synced_playback: Vec<(Option<bool>, Option<f64>)>,
+    }
+
+    struct RecordingSessionRuntimeAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
+    }
+
+    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
+        fn sync_local_playback_telemetry(
+            &mut self,
+            paused: Option<bool>,
+            position_seconds: Option<f64>,
+        ) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .synced_playback
+                .push((paused, position_seconds));
+            Ok(())
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    {
+        let mut player_state = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        player_state.local_file_updates.push_back(
+            syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+                .with_path("C:/Media/episode1.mkv".to_owned())
+                .with_duration_seconds(1510.0),
+        );
+    }
+
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(RecordingSessionRuntimeAdapter {
+            state: recorded.clone(),
+        }),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
+        state: player_state.clone(),
+    })));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(1511.0),
+        );
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+
+    assert_eq!(owner.player_position_seconds, Some(1510.0));
+    let recorded = recorded
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        !recorded.synced_playback.is_empty(),
+        "detached-session sync should receive playback telemetry"
+    );
+    assert_eq!(
+        recorded.synced_playback.last().copied(),
+        Some((Some(false), Some(1510.0))),
+        "the latest detached-session sync should reflect the clamped end-of-file position"
+    );
+    assert!(
+        recorded
+            .synced_playback
+            .iter()
+            .all(|(_, position_seconds)| {
+                position_seconds
+                    .map(|position_seconds| position_seconds <= 1510.0)
+                    .unwrap_or(true)
+            }),
+        "detached-session sync should never see a position beyond the known media duration"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof() {
+    #[derive(Debug, Default)]
+    struct TelemetryPlayerState {
+        local_file_updates: std::collections::VecDeque<syncplay_player_api::LocalFileUpdate>,
+        playback_updates:
+            std::collections::VecDeque<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+    }
+
+    struct TelemetryPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<TelemetryPlayerState>>,
+    }
+
+    impl PlayerAdapter for TelemetryPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "telemetry"
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSessionState {
+        advance_calls: usize,
+    }
+
+    struct RecordingSessionRuntimeAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
+    }
+
+    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
+        fn playlist_control_available(&self) -> bool {
+            true
+        }
+
+        fn can_auto_advance_to_next_playlist_item(&self) -> bool {
+            true
+        }
+
+        fn advance_playlist_index(&mut self) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .advance_calls += 1;
+            Ok(())
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    {
+        let mut player_state = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        player_state.local_file_updates.push_back(
+            syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+                .with_path("C:/Media/episode1.mkv".to_owned())
+                .with_duration_seconds(1510.0),
+        );
+    }
+
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(RecordingSessionRuntimeAdapter {
+            state: recorded.clone(),
+        }),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
+        state: player_state.clone(),
+    })));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(1511.0),
+        );
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+    assert_eq!(
+        recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .advance_calls,
+        1,
+        "EOF should trigger one playlist advance when the player pauses at the file end"
+    );
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+    assert_eq!(
+        recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .advance_calls,
+        1,
+        "the EOF auto-advance should stay latched until the player leaves the end-of-file state"
+    );
+}

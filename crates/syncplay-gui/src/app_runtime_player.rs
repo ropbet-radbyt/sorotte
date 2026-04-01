@@ -37,6 +37,8 @@ use super::{
 const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
+const PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS: f64 = 10.0;
+const PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS: f64 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectedPlaylistMediaSyncOutcome {
@@ -380,6 +382,54 @@ impl GuiPersistedConfigRuntimeOwner {
         global_position_seconds: f64,
     ) -> f64 {
         (global_position_seconds + self.user_offset_seconds).max(0.0)
+    }
+
+    fn current_player_file_duration_seconds(&self) -> Option<f64> {
+        self.player_local_file
+            .as_ref()
+            .and_then(|local_file| local_file.duration_seconds)
+            .filter(|duration_seconds| duration_seconds.is_finite() && *duration_seconds >= 0.0)
+    }
+
+    fn clamp_player_position_to_file_duration(&mut self) {
+        let Some(duration_seconds) = self.current_player_file_duration_seconds() else {
+            return;
+        };
+        let Some(position_seconds) = self
+            .player_position_seconds
+            .filter(|position_seconds| position_seconds.is_finite())
+        else {
+            return;
+        };
+        self.player_position_seconds = Some(position_seconds.clamp(0.0, duration_seconds));
+    }
+
+    pub(crate) fn take_playlist_auto_advance_eof_trigger_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        playlist_control_available: bool,
+        can_auto_advance_to_next_playlist_item: bool,
+    ) -> bool {
+        let should_trigger = state.main_window.shared_playlist_enabled
+            && playlist_control_available
+            && can_auto_advance_to_next_playlist_item
+            && self.player_paused == Some(true)
+            && self
+                .current_player_file_duration_seconds()
+                .filter(|duration_seconds| {
+                    *duration_seconds > PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS
+                })
+                .zip(
+                    self.player_position_seconds
+                        .filter(|position_seconds| position_seconds.is_finite()),
+                )
+                .is_some_and(|(duration_seconds, position_seconds)| {
+                    (position_seconds - duration_seconds).abs()
+                        < PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS
+                });
+        let trigger = should_trigger && !self.playlist_auto_advance_eof_latched;
+        self.playlist_auto_advance_eof_latched = should_trigger;
+        trigger
     }
 
     fn quick_existing_media_target_path(target: &Path) -> Option<String> {
@@ -2026,6 +2076,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_position_seconds = Some(0.0);
             }
         }
+        self.clamp_player_position_to_file_duration();
     }
 
     pub(super) fn sync_manual_seek_into_detached_session_impl(

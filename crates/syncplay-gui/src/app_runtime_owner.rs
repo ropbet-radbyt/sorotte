@@ -90,6 +90,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<GuiSessionRoomPlaystate>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
+    pub(super) playlist_auto_advance_eof_latched: bool,
     pub(super) user_offset_seconds: f64,
 }
 
@@ -216,6 +217,7 @@ impl GuiPersistedConfigRuntimeOwner {
             suppressed_attached_room_playstate_after_playlist_reset: None,
             player_position_seconds: None,
             player_paused: None,
+            playlist_auto_advance_eof_latched: false,
             user_offset_seconds: 0.0,
         }
     }
@@ -316,6 +318,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_attached_media_resolution_trigger = None;
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
+        self.playlist_auto_advance_eof_latched = false;
     }
 
     fn detach_player(&mut self) {
