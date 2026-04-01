@@ -18073,7 +18073,9 @@ mod tests {
                 let ProtocolMessage::Set(payload) = message else {
                     continue;
                 };
-                if let Some(ready) = payload.set.ready {
+                if let Some(ready) = payload.set.ready
+                    && ready.manually_initiated == Some(true)
+                {
                     ready_payload = Some(ready);
                     break;
                 }
@@ -18118,7 +18120,7 @@ mod tests {
             rewind_threshold_seconds_override: None,
             fastforward_threshold_seconds_override: None,
             slowdown_threshold_seconds_override: None,
-            unpause_action_override: None,
+            unpause_action_override: Some(UnpauseActionMode::IfAlreadyReady),
             auto_play_threshold_override: None,
             filename_privacy_mode: PrivacyMode::SendRaw,
             filesize_privacy_mode: PrivacyMode::SendRaw,
@@ -21930,7 +21932,7 @@ mod tests {
             version: "1.2.255".to_owned(),
             max_retries: 0,
             max_connected_runtime_seconds: 0.5,
-            readiness_supported_override: None,
+            readiness_supported_override: Some(false),
             local_can_control_override: None,
             is_playing_music_override: None,
             recently_advanced_override: None,
@@ -21967,12 +21969,9 @@ mod tests {
             .await
             .expect("client should connect to test listener");
         let (sender, mut receiver) = unbounded_channel::<String>();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            sender
-                .send("pause".to_owned())
-                .expect("pause command should queue");
-        });
+        sender
+            .send("pause".to_owned())
+            .expect("pause command should queue");
         let mut notification_sink = ignore_autoplay_notification;
         let mut file_difference_sink = ignore_file_difference_notification;
 
@@ -23367,6 +23366,18 @@ mod tests {
                 .expect("second client line should include room payload");
             assert_eq!(room_payload.name, "+room:ABCDEF123456");
 
+            let list_line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("list request read should not timeout")
+                .expect("list request read should succeed")
+                .expect("list request line should be present");
+            let list_message =
+                decode_message_line(&list_line).expect("list request line should decode");
+            let ProtocolMessage::List(list_payload) = list_message else {
+                panic!("third client line should be List.request");
+            };
+            assert!(matches!(list_payload.list, ListPayload::Request(_)));
+
             let auth_line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
                 .await
                 .expect("controller auth read should not timeout")
@@ -23375,12 +23386,12 @@ mod tests {
             let auth_message =
                 decode_message_line(&auth_line).expect("controller auth should decode");
             let ProtocolMessage::Set(auth_set) = auth_message else {
-                panic!("third client line should be Set.controllerAuth");
+                panic!("fourth client line should be Set.controllerAuth");
             };
             let controller_auth = auth_set
                 .set
                 .controller_auth
-                .expect("third client line should include controllerAuth payload");
+                .expect("fourth client line should include controllerAuth payload");
             assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
             assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
         });

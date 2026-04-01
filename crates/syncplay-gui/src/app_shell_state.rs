@@ -806,6 +806,10 @@ pub(super) enum GuiShellAction {
     ToggleSelectedMainWindowUserController,
     RemoveSelectedMainWindowUser,
     SelectMainWindowPlaylist(usize),
+    MoveMainWindowPlaylistRow {
+        from_index: usize,
+        to_index: usize,
+    },
     MoveSelectedMainWindowPlaylistUp,
     MoveSelectedMainWindowPlaylistDown,
     RemoveSelectedMainWindowPlaylist,

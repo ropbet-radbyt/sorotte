@@ -664,6 +664,10 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::MoveMainWindowPlaylistRow {
+                from_index,
+                to_index,
+            } => self.move_main_window_playlist_row(from_index, to_index),
             GuiShellAction::MoveSelectedMainWindowPlaylistUp => {
                 self.move_selected_main_window_playlist(-1)
             }

@@ -44,6 +44,11 @@ pub(super) struct GuiResponsiveColumnsPlanEntry {
     pub(super) span: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuiDraggedPlaylistRow {
+    index: usize,
+}
+
 impl GuiWidgetEguiRenderer {
     pub(super) fn root(&self) -> Option<&GuiWidgetNode> {
         self.root.as_ref()
@@ -373,6 +378,10 @@ impl GuiWidgetEguiRenderer {
                 });
             }
             GuiWidgetKind::List => {
+                if node.id == "main-window:playlist" {
+                    self.render_playlist_list(ui, node, state);
+                    return;
+                }
                 let response = egui::Frame::group(ui.style()).show(ui, |ui| {
                     if let Some(min_content_height) = node.min_content_height {
                         ui.set_min_height(min_content_height);
@@ -611,6 +620,162 @@ impl GuiWidgetEguiRenderer {
             }
             GuiWidgetKind::Panel | GuiWidgetKind::List => {}
         }
+    }
+
+    fn render_playlist_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let playlist_len = node.children.len();
+        let response = egui::Frame::group(ui.style()).show(ui, |ui| {
+            if let Some(min_content_height) = node.min_content_height {
+                ui.set_min_height(min_content_height);
+            }
+            ui.strong(&node.label);
+            if node.children.is_empty() {
+                ui.label("No items.");
+            } else {
+                for child in &node.children {
+                    self.render_playlist_list_item(ui, child, state, playlist_len);
+                }
+            }
+        });
+        self.playlist_drop_target_rect = Some(response.response.rect);
+        self.playlist_drop_target_hovered = response.response.hovered();
+    }
+
+    fn render_playlist_list_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        playlist_len: usize,
+    ) {
+        let Some(index) = node
+            .id
+            .strip_prefix("main-window:playlist:")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+        else {
+            self.render_leaf(ui, node, state);
+            return;
+        };
+        let can_drag_reorder = node.enabled && state.main_window.playback.can_manage_playlist;
+        let text = Self::display_text(node).to_owned();
+        let selection_action = Self::action_for_list_item_node(node);
+
+        let response = if can_drag_reorder {
+            let drag_id = egui::Id::new(("main-window:playlist:drag", index));
+            let inner = ui.dnd_drag_source(drag_id, GuiDraggedPlaylistRow { index }, |ui| {
+                ui.add_enabled_ui(node.enabled, |ui| {
+                    ui.add_sized(
+                        [ui.available_width().max(0.0), 0.0],
+                        egui::Button::new(text.clone()).selected(node.selected),
+                    )
+                })
+                .inner
+            });
+            if inner.inner.clicked()
+                && let Some(action) = selection_action.clone()
+            {
+                self.actions.push(action);
+            }
+            inner.response
+        } else {
+            let response = ui.add_enabled_ui(node.enabled, |ui| {
+                ui.add_sized(
+                    [ui.available_width().max(0.0), 0.0],
+                    egui::Button::new(text).selected(node.selected),
+                )
+            });
+            if response.inner.clicked()
+                && let Some(action) = selection_action
+            {
+                self.actions.push(action);
+            }
+            response.response
+        };
+
+        self.render_playlist_drop_indicator(ui, &response, index, playlist_len);
+    }
+
+    fn render_playlist_drop_indicator(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        row_index: usize,
+        playlist_len: usize,
+    ) {
+        let Some(payload) = response.dnd_hover_payload::<GuiDraggedPlaylistRow>() else {
+            return;
+        };
+        let pointer_pos = ui
+            .ctx()
+            .pointer_hover_pos()
+            .or_else(|| response.interact_pointer_pos());
+        let Some(target_slot) =
+            Self::playlist_drop_slot_for_response(response, row_index, pointer_pos)
+        else {
+            return;
+        };
+        let Some(action) = Self::playlist_row_move_action(payload.index, target_slot, playlist_len)
+        else {
+            return;
+        };
+
+        let stroke = ui.visuals().widgets.active.fg_stroke;
+        let y = if target_slot == row_index {
+            response.rect.top()
+        } else {
+            response.rect.bottom()
+        };
+        ui.painter().line_segment(
+            [
+                egui::pos2(response.rect.left(), y),
+                egui::pos2(response.rect.right(), y),
+            ],
+            stroke,
+        );
+
+        if response
+            .dnd_release_payload::<GuiDraggedPlaylistRow>()
+            .is_some()
+        {
+            self.actions.push(action);
+        }
+    }
+
+    fn playlist_drop_slot_for_response(
+        response: &egui::Response,
+        row_index: usize,
+        pointer_pos: Option<egui::Pos2>,
+    ) -> Option<usize> {
+        let pointer_pos = pointer_pos?;
+        Some(if pointer_pos.y < response.rect.center().y {
+            row_index
+        } else {
+            row_index.saturating_add(1)
+        })
+    }
+
+    pub(super) fn playlist_row_move_action(
+        from_index: usize,
+        target_slot: usize,
+        playlist_len: usize,
+    ) -> Option<GuiShellAction> {
+        if from_index >= playlist_len || target_slot > playlist_len {
+            return None;
+        }
+        let to_index = if target_slot > from_index {
+            target_slot.saturating_sub(1)
+        } else {
+            target_slot
+        };
+        (from_index != to_index).then_some(GuiShellAction::MoveMainWindowPlaylistRow {
+            from_index,
+            to_index,
+        })
     }
 
     fn render_text_input(

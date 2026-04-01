@@ -856,6 +856,40 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
 }
 
 #[test]
+fn gui_widget_egui_renderer_maps_playlist_drag_targets_to_row_moves() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(2, 0, 3),
+        Some(GuiShellAction::MoveMainWindowPlaylistRow {
+            from_index: 2,
+            to_index: 0,
+        })
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(0, 3, 3),
+        Some(GuiShellAction::MoveMainWindowPlaylistRow {
+            from_index: 0,
+            to_index: 2,
+        })
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(1, 1, 3),
+        None
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(1, 2, 3),
+        None
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(4, 0, 3),
+        None
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_move_action(1, 4, 3),
+        None
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let configuration_tree = state.configuration_widget_tree();

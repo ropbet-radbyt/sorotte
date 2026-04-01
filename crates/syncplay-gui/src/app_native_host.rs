@@ -410,6 +410,9 @@ impl eframe::App for GuiNativeApp {
                     selected_playlist_index = Some(*index);
                     playlist_selection_changes.push(*index);
                 }
+                GuiShellAction::MoveMainWindowPlaylistRow { .. } => {
+                    playlist_reorder_requested = true;
+                }
                 GuiShellAction::RemoveSelectedMainWindowPlaylist => {
                     if let Some(index) = selected_playlist_index {
                         playlist_deletions.push(index);

@@ -8,6 +8,41 @@ use super::shell_state::{
 use super::support::normalized_editable_text;
 
 impl SyncplayGuiShellAppState {
+    pub(super) fn move_main_window_playlist_row(
+        &mut self,
+        from_index: usize,
+        to_index: usize,
+    ) -> bool {
+        if !self.main_window.playback.can_manage_playlist {
+            return self.record_action_error(
+                "Playlist row movement is unavailable when shared playlist controls are disabled.",
+            );
+        }
+        if from_index >= self.main_window.playlist.len()
+            || to_index >= self.main_window.playlist.len()
+        {
+            return self.record_action_error("No playlist row exists at the requested index.");
+        }
+        if from_index == to_index {
+            self.clear_action_error_and_refresh();
+            return false;
+        }
+
+        let next_entries = {
+            let mut entries = self.current_shared_playlist_entries();
+            let moved_entry = entries.remove(from_index);
+            entries.insert(to_index, moved_entry);
+            entries
+        };
+        self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
+        let moved_row = self.main_window.playlist.remove(from_index);
+        self.main_window.playlist.insert(to_index, moved_row);
+        self.selection.selected_main_window_playlist = Some(to_index);
+        self.apply_selection_to_surfaces();
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     pub(super) fn move_selected_main_window_playlist(&mut self, delta: isize) -> bool {
         if !self.main_window.playback.can_manage_playlist {
             return self.record_action_error(

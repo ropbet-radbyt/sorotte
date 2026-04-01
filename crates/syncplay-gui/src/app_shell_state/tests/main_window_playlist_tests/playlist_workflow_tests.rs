@@ -55,6 +55,50 @@ fn gui_shell_app_state_moves_and_removes_playlist_rows() {
 }
 
 #[test]
+fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1".to_owned(),
+            "Episode 2".to_owned(),
+            "Episode 3".to_owned(),
+        ]))
+    );
+
+    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
+        from_index: 2,
+        to_index: 0,
+    }));
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Episode 3", "Episode 1", "Episode 2"]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+
+    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Episode 1", "Episode 2", "Episode 3"]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+}
+
+#[test]
 fn gui_shell_app_state_announces_shared_playlist_events() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
