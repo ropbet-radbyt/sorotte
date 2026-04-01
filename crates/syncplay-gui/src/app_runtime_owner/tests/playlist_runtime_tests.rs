@@ -494,3 +494,89 @@ fn gui_persisted_config_runtime_owner_opens_inbound_selected_shared_playlist_med
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn gui_persisted_config_runtime_owner_local_playlist_selection_switches_media_before_server_echo() {
+    let root = test_temp_root("shared-playlist-local-select-before-echo");
+    let current_media_path = root.join("episode1.mkv");
+    let selected_media_path = root.join("episode2.mkv");
+    std::fs::write(&current_media_path, b"test")
+        .expect("current shared-playlist media fixture should be written");
+    std::fs::write(&selected_media_path, b"test")
+        .expect("selected shared-playlist media fixture should be written");
+
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(current_media_path.to_string_lossy().into_owned()),
+    );
+    owner.player_position_seconds = Some(42.0);
+    owner.player_paused = Some(false);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"bob"}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#.to_owned(),
+    );
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state.main_window.playlist.len() == 2
+                && state.selection.selected_main_window_playlist == Some(0)
+        },
+        "initial playlist selection should land on the current item",
+    );
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if state.selection.selected_main_window_playlist == Some(1)
+            && owner
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref())
+                == Some(selected_media_path.to_string_lossy().as_ref())
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(selected_media_path.to_string_lossy().as_ref())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -667,28 +667,51 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .filter(|value| !value.is_empty())
     }
 
+    fn room_playlist_matches_projection_target(
+        current: &RoomPlaylistView,
+        optimistic: &RoomPlaylistView,
+    ) -> bool {
+        current.files == optimistic.files && current.index == optimistic.index
+    }
+
     pub(super) fn projected_current_room_playlist(&self) -> Option<&RoomPlaylistView> {
-        if let Some(playlist) = self.runtime.session().current_room_playlist() {
-            return Some(playlist);
+        let current_room = self.current_room_name();
+        let optimistic_playlist =
+            self.optimistic_room_playlist
+                .as_ref()
+                .and_then(|(room_name, playlist)| {
+                    (Some(room_name.as_str()) == current_room).then_some(playlist)
+                });
+        let session_playlist = self.runtime.session().current_room_playlist();
+
+        match (optimistic_playlist, session_playlist) {
+            (Some(optimistic), Some(current))
+                if !Self::room_playlist_matches_projection_target(current, optimistic) =>
+            {
+                Some(optimistic)
+            }
+            (Some(_), Some(current)) => Some(current),
+            (Some(optimistic), None) => Some(optimistic),
+            (None, Some(current)) => Some(current),
+            (None, None) => None,
         }
-        let current_room = self.current_room_name()?;
-        self.optimistic_room_playlist
-            .as_ref()
-            .and_then(|(room_name, playlist)| (room_name == current_room).then_some(playlist))
     }
 
     fn sync_optimistic_room_playlist(&mut self) {
-        if self.runtime.session().current_room_playlist().is_some() {
-            self.optimistic_room_playlist = None;
-            return;
-        }
-
         let current_room = self.current_room_name();
-        if self
-            .optimistic_room_playlist
-            .as_ref()
-            .is_some_and(|(room_name, _)| Some(room_name.as_str()) != current_room)
-        {
+        let should_clear = match self.optimistic_room_playlist.as_ref() {
+            Some((room_name, _)) if Some(room_name.as_str()) != current_room => true,
+            Some((_, optimistic)) => {
+                self.runtime
+                    .session()
+                    .current_room_playlist()
+                    .is_some_and(|current| {
+                        Self::room_playlist_matches_projection_target(current, optimistic)
+                    })
+            }
+            None => false,
+        };
+        if should_clear {
             self.optimistic_room_playlist = None;
         }
     }

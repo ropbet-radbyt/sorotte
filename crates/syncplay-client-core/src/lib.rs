@@ -1335,6 +1335,8 @@ where
             .runtime_actions_for_local_playlist_index_set(index);
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
         self.finalize_local_playlist_index_switch_if_needed(&actions);
         Ok(sent)
     }
@@ -1343,6 +1345,8 @@ where
         let actions = self.session.runtime_actions_for_local_playlist_next();
         let sent = !actions.is_empty();
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
         self.finalize_local_playlist_index_switch_if_needed(&actions);
         Ok(sent)
     }
@@ -1356,8 +1360,10 @@ where
             .session
             .runtime_actions_for_local_playlist_queue(file_name.into(), select_after_queue);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_delete_playlist_index(&mut self, index: i64) -> Result<bool, PlayerError> {
@@ -1365,8 +1371,10 @@ where
             .session
             .runtime_actions_for_local_playlist_delete(index);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_replace_playlist(
@@ -1378,15 +1386,19 @@ where
             .session
             .runtime_actions_for_local_playlist_replace(files, selected_index);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_undo_playlist_change(&mut self) -> Result<bool, PlayerError> {
         let actions = self.session.runtime_actions_for_local_playlist_undo();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_shuffle_remaining_playlist(&mut self) -> Result<bool, PlayerError> {
@@ -1394,8 +1406,10 @@ where
             .session
             .runtime_actions_for_local_playlist_shuffle_remaining();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_shuffle_entire_playlist(&mut self) -> Result<bool, PlayerError> {
@@ -1403,8 +1417,10 @@ where
             .session
             .runtime_actions_for_local_playlist_shuffle_entire();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
+        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)?;
+        self.session
+            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        Ok(sent)
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
@@ -2603,6 +2619,52 @@ impl ClientSession {
             .and_then(|room_name| self.room_playlists.get(room_name))
     }
 
+    fn apply_local_playlist_runtime_actions_legacy_compatible(
+        &mut self,
+        actions: &[ClientRuntimeAction],
+    ) {
+        let Some(room_name) = self.room.clone() else {
+            return;
+        };
+        let Some(local_username) = self.username.clone() else {
+            return;
+        };
+
+        let mut playlist = self
+            .room_playlists
+            .get(&room_name)
+            .cloned()
+            .unwrap_or_default();
+        let mut playlist_changed = false;
+        for action in actions {
+            match action {
+                ClientRuntimeAction::SetPlaylist { files } => {
+                    playlist.files = files.clone();
+                    if playlist.files.is_empty() {
+                        playlist.index = None;
+                    }
+                    playlist.set_by = Some(local_username.clone());
+                    playlist_changed = true;
+                }
+                ClientRuntimeAction::SetPlaylistIndex { index } => {
+                    let Ok(index_usize) = usize::try_from(*index) else {
+                        continue;
+                    };
+                    if index_usize >= playlist.files.len() {
+                        continue;
+                    }
+                    playlist.index = Some(*index);
+                    playlist.set_by = Some(local_username.clone());
+                    playlist_changed = true;
+                }
+                _ => {}
+            }
+        }
+        if playlist_changed {
+            self.room_playlists.insert(room_name, playlist);
+        }
+    }
+
     pub fn room_playstate(&self, room_name: &str) -> Option<&RoomPlaystateView> {
         self.room_playstates.get(room_name)
     }
@@ -3589,7 +3651,10 @@ impl ClientSession {
         ]
     }
 
-    pub fn runtime_actions_for_local_room_switch(&mut self, room: String) -> Vec<ClientRuntimeAction> {
+    pub fn runtime_actions_for_local_room_switch(
+        &mut self,
+        room: String,
+    ) -> Vec<ClientRuntimeAction> {
         if self.server_chat_supported.is_none() {
             return Vec::new();
         }
@@ -6145,7 +6210,10 @@ mod tests {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
             )
             .expect("hello should apply");
-        assert_eq!(old_server_session.server_managed_rooms_supported(), Some(false));
+        assert_eq!(
+            old_server_session.server_managed_rooms_supported(),
+            Some(false)
+        );
 
         let mut new_server_session = ClientSession::default();
         new_server_session
@@ -6153,7 +6221,10 @@ mod tests {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.3.0"}}"#,
             )
             .expect("hello should apply");
-        assert_eq!(new_server_session.server_managed_rooms_supported(), Some(true));
+        assert_eq!(
+            new_server_session.server_managed_rooms_supported(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -6595,9 +6666,7 @@ mod tests {
         let _ = session.runtime_actions_for_user_change_notifications_if_needed();
 
         session
-            .apply_message_json(
-                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"}}}}}"#,
-            )
+            .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room2"}}}}}"#)
             .expect("room switch should apply");
         assert_eq!(session.user_controller("bob"), Some(false));
         assert_eq!(
@@ -6619,9 +6688,7 @@ mod tests {
             .expect("carol join should apply");
         let _ = session.runtime_actions_for_user_change_notifications_if_needed();
         session
-            .apply_message_json(
-                r#"{"Set":{"user":{"carol":{"room":{"name":"room2"}}}}}"#,
-            )
+            .apply_message_json(r#"{"Set":{"user":{"carol":{"room":{"name":"room2"}}}}}"#)
             .expect("carol room switch should apply");
         assert_eq!(session.user_controller("carol"), Some(false));
         assert_eq!(
@@ -16315,6 +16382,12 @@ mod tests {
             Some(true),
             "local playlist changes should queue a pause-and-rewind reset intent before the server echo"
         );
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("local playlist selection should update the current room playlist immediately");
+        assert_eq!(playlist.files, vec!["episode1.mkv", "episode2.mkv"]);
+        assert_eq!(playlist.index, Some(1));
 
         let (_, _, control) = runtime.into_parts();
         assert_eq!(control.outbound_messages().len(), 2);
@@ -16526,6 +16599,12 @@ mod tests {
             Some(true),
             "playlist advance should queue a pause-and-rewind reset intent before the server echo"
         );
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("playlist advance should update the current room playlist immediately");
+        assert_eq!(playlist.files, vec!["episode1.mkv", "episode2.mkv"]);
+        assert_eq!(playlist.index, Some(1));
 
         let (_, _, control) = runtime.into_parts();
         assert_eq!(control.outbound_messages().len(), 2);
@@ -16752,6 +16831,15 @@ mod tests {
                 .expect("queue command should not fail"),
             "queue command should emit playlist change/index updates"
         );
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("queue command should update the current room playlist immediately");
+        assert_eq!(
+            playlist.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert_eq!(playlist.index, Some(0));
 
         let (_, _, control) = runtime.into_parts();
         assert_eq!(control.outbound_messages().len(), 2);
@@ -16778,6 +16866,81 @@ mod tests {
             .as_ref()
             .expect("second outbound message should include playlistIndex");
         assert_eq!(playlist_index.index, 0);
+        assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_reconnect_playlist_restore_uses_latest_local_playlist_before_echo() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_queue_playlist_item("episode3.mkv", true)
+                .expect("queue-and-select command should not fail"),
+            "queue-and-select should enqueue playlist updates before the server echo"
+        );
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("queue-and-select should update the current room playlist immediately");
+        assert_eq!(
+            playlist.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert_eq!(playlist.index, Some(2));
+
+        let (mut session, player, _control) = runtime.into_parts();
+        session.reset_sync_state_for_reconnect();
+        session
+            .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+            .expect("empty reconnect playlist snapshot should apply");
+
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_reconnect_playlist_restore_if_needed()
+            .expect("reconnect playlist restore should dispatch");
+
+        assert_eq!(runtime.control().outbound_messages().len(), 2);
+        let ProtocolMessage::Set(change_message) = &runtime.control().outbound_messages()[0] else {
+            panic!("first reconnect restore message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("reconnect restore should include playlistChange");
+        assert_eq!(
+            playlist_change.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert!(playlist_change.user.is_none());
+
+        let ProtocolMessage::Set(index_message) = &runtime.control().outbound_messages()[1] else {
+            panic!("second reconnect restore message should be Set.playlistIndex");
+        };
+        let playlist_index = index_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("reconnect restore should include playlistIndex");
+        assert_eq!(playlist_index.index, 2);
         assert!(playlist_index.user.is_none());
     }
 
@@ -17213,7 +17376,8 @@ mod tests {
     }
 
     #[test]
-    fn client_runtime_undo_playlist_change_restores_initial_empty_snapshot_once() {
+    fn client_runtime_undo_playlist_change_toggles_initial_empty_snapshot_without_waiting_for_echo()
+    {
         let mut session = ClientSession::default();
         session
             .apply_hello_json(
@@ -17248,14 +17412,39 @@ mod tests {
             .as_ref()
             .expect("undo playlist message should include playlistChange");
         assert!(playlist_change.files.is_empty());
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("undo should update the current room playlist immediately");
+        assert!(playlist.files.is_empty());
+        assert_eq!(playlist.index, None);
 
         assert!(
-            !runtime
+            runtime
                 .run_undo_playlist_change()
                 .expect("second undo playlist should not fail"),
-            "second undo without playlist echo should be suppressed"
+            "second undo should toggle back to the restored playlist without waiting for an echo"
         );
-        assert_eq!(runtime.control().outbound_messages().len(), 1);
+        assert_eq!(runtime.control().outbound_messages().len(), 3);
+        let ProtocolMessage::Set(change_message) = &runtime.control().outbound_messages()[1] else {
+            panic!("second undo change message should be Set.playlistChange");
+        };
+        let playlist_change = change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("second undo change message should include playlistChange");
+        assert_eq!(playlist_change.files, vec!["episode1.mkv"]);
+
+        let ProtocolMessage::Set(index_message) = &runtime.control().outbound_messages()[2] else {
+            panic!("second undo index message should be Set.playlistIndex");
+        };
+        let playlist_index = index_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("second undo index message should include playlistIndex");
+        assert_eq!(playlist_index.index, 0);
     }
 
     #[test]

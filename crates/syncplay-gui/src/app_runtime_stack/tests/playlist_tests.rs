@@ -412,6 +412,67 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_over_existing_room_playlist_before_server_echo()
+ {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"bob"}}}"#,
+        )
+        .expect("existing playlist change should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
+        .expect("existing playlist index should apply");
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+
+    GuiSessionRuntimeAdapter::replace_playlist(
+        &mut adapter,
+        vec!["episode3.mkv".to_owned(), "episode4.mkv".to_owned()],
+        Some(1),
+    )
+    .expect("playlist replace should dispatch");
+
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let main_snapshot = actions.iter().find_map(|action| match action {
+        GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+        _ => None,
+    });
+    let interaction_snapshot = actions.iter().find_map(|action| match action {
+        GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => Some(snapshot),
+        _ => None,
+    });
+
+    let snapshot = main_snapshot
+        .expect("local playlist replace should override the previously echoed room playlist");
+    assert!(snapshot.shared_playlist_enabled);
+    assert_eq!(
+        snapshot.playlist,
+        vec!["episode3.mkv".to_owned(), "episode4.mkv".to_owned()]
+    );
+    let interaction = interaction_snapshot
+        .expect("local playlist replace should project the new selection immediately");
+    assert_eq!(interaction.selection.selected_main_window_playlist, Some(1));
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when_session_has_no_playstate()
  {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
