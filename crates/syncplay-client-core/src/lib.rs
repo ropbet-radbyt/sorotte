@@ -489,7 +489,7 @@ pub struct ReadinessAutoplayConfig {
 impl Default for ReadinessAutoplayConfig {
     fn default() -> Self {
         Self {
-            unpause_action: UnpauseActionMode::IfAlreadyReady,
+            unpause_action: UnpauseActionMode::IfOthersReady,
             auto_play_threshold: None,
             autoplay_require_same_filenames: false,
             show_duration_notification: LEGACY_SHOW_DURATION_NOTIFICATION,
@@ -9801,8 +9801,14 @@ mod tests {
             .expect("bob ready state should apply");
 
         assert!(
+            session.instaplay_conditions_met(true, false),
+            "default IfOthersReady mode should allow unpause when another ready user is present"
+        );
+
+        session.readiness_autoplay_config_mut().unpause_action = UnpauseActionMode::IfAlreadyReady;
+        assert!(
             !session.instaplay_conditions_met(true, false),
-            "default IfAlreadyReady mode should require local ready=true"
+            "IfAlreadyReady mode should require local ready=true"
         );
 
         session
@@ -10634,6 +10640,7 @@ mod tests {
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
             )
             .expect("hello should apply");
+        session.readiness_autoplay_config_mut().unpause_action = UnpauseActionMode::IfAlreadyReady;
 
         let actions =
             session.runtime_actions_for_readiness_unpause_attempt(10.0, true, true, false);
@@ -17576,7 +17583,7 @@ mod tests {
             .expect("runtime should dispatch readiness actions");
         let (_, player, control) = runtime.into_parts();
 
-        assert_eq!(player.paused, Some(true));
+        assert_eq!(player.paused, None);
         assert_eq!(control.outbound_messages().len(), 1);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued ready protocol message");
@@ -17587,7 +17594,7 @@ mod tests {
             .as_ref()
             .expect("Set message should contain ready payload");
         assert!(ready.is_ready);
-        assert_eq!(ready.manually_initiated, Some(true));
+        assert_eq!(ready.manually_initiated, Some(false));
     }
 
     #[test]

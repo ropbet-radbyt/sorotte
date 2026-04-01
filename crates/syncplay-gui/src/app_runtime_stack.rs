@@ -219,6 +219,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         false
     }
 
+    fn can_auto_advance_to_next_playlist_item(&self) -> bool {
+        false
+    }
+
     fn set_autoplay_enabled(&mut self, _enabled: bool) -> Result<(), String> {
         Ok(())
     }
@@ -232,6 +236,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         _runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn handle_local_player_unpause_attempt(&mut self) -> Result<bool, String> {
+        Ok(false)
     }
 
     fn publish_local_file_legacy_compatible(
@@ -1548,6 +1556,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .has_pending_playlist_index_reset_intent()
     }
 
+    fn can_auto_advance_to_next_playlist_item(&self) -> bool {
+        self.runtime
+            .session()
+            .runtime_actions_for_local_playlist_next()
+            .iter()
+            .any(|action| {
+                matches!(
+                    action,
+                    syncplay_client_core::ClientRuntimeAction::SetPlaylistIndex { .. }
+                )
+            })
+    }
+
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
         self.runtime.session_mut().set_autoplay_enabled(enabled);
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
@@ -1583,6 +1604,39 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     ) -> Result<(), String> {
         self.apply_runtime_settings_snapshot(runtime_settings);
         Ok(())
+    }
+
+    fn handle_local_player_unpause_attempt(&mut self) -> Result<bool, String> {
+        if self
+            .current_room_playstate_for_attached_player_sync()
+            .and_then(|playstate| playstate.paused)
+            != Some(true)
+        {
+            return Ok(false);
+        }
+
+        let readiness_supported = self
+            .runtime
+            .session()
+            .server_readiness_supported()
+            .unwrap_or(false);
+        if !readiness_supported {
+            return Ok(false);
+        }
+
+        let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        let is_playing_music = self.runtime.session().is_playing_music();
+        self.runtime
+            .run_readiness_unpause_attempt(
+                system_time_seconds(),
+                readiness_supported,
+                local_can_control,
+                is_playing_music,
+            )
+            .map_err(|error| {
+                format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
+            })?;
+        Ok(self.runtime.session().local_paused() == Some(true))
     }
 
     fn publish_local_file_legacy_compatible(

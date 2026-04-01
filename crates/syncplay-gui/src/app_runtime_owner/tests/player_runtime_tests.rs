@@ -100,6 +100,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         suppressed_attached_room_playstate_after_playlist_reset: None,
         player_position_seconds: None,
         player_paused: None,
+        playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -466,6 +467,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         suppressed_attached_room_playstate_after_playlist_reset: None,
         player_position_seconds: None,
         player_paused: None,
+        playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -797,6 +799,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         suppressed_attached_room_playstate_after_playlist_reset: None,
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
+        playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -1233,6 +1236,100 @@ fn gui_persisted_config_runtime_owner_seeks_before_pausing_attached_player_for_r
     drop(recorded_state);
     assert_eq!(owner.player_position_seconds, Some(10.0));
     assert_eq!(owner.player_paused, Some(true));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_player_unpauses() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        playback_updates: Vec<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop()
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(true);
+    owner.player_position_seconds = Some(10.0);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":10.0,"paused":true,"setBy":"bob"}}}"#.to_owned(),
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":true")),
+        "attached-player unpause should queue a local ready update"
+    );
+    assert_eq!(owner.player_paused, Some(false));
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .is_empty(),
+        "python-compatible default unpause handling should not re-pause when no other users block playback"
+    );
 }
 
 #[test]

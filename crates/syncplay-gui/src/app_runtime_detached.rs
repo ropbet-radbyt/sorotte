@@ -9,7 +9,7 @@ use syncplay_client_app::app_boundary::{
     },
 };
 use syncplay_client_core::PrivacyMode;
-use syncplay_player_api::LocalFileUpdate;
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
 
 #[cfg(not(test))]
 use super::remote_services;
@@ -101,11 +101,42 @@ impl GuiPersistedConfigRuntimeOwner {
             .unwrap_or(PrivacyMode::SendRaw);
         let player_local_file = self.player_local_file.clone();
         let file_publish_pending = player_local_file != self.last_published_local_file;
+        let playlist_control_available = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.playlist_control_available());
+        let can_auto_advance_to_next_playlist_item = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.can_auto_advance_to_next_playlist_item());
+        let auto_advance_playlist_at_eof = self.take_playlist_auto_advance_eof_trigger_impl(
+            state,
+            playlist_control_available,
+            can_auto_advance_to_next_playlist_item,
+        );
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
+        let previous_session_paused = session.local_pause_state();
         session.sync_runtime_settings(&runtime_settings)?;
         session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
+        if self.player_paused == Some(false)
+            && previous_session_paused != Some(false)
+            && session.handle_local_player_unpause_attempt()?
+        {
+            if let Some(player) = self.player.as_mut() {
+                player.set_paused(true).map_err(|error| {
+                    format!(
+                        "Attached player readiness/unpause correction failed while restoring the paused state: {error}"
+                    )
+                })?;
+            }
+            self.player_paused = Some(true);
+            session.sync_local_playback_telemetry(Some(true), self.player_position_seconds)?;
+        }
+        if auto_advance_playlist_at_eof {
+            session.advance_playlist_index()?;
+        }
         session.set_autoplay_enabled(state.main_window.autoplay_active)?;
         session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
         if file_publish_pending && session.server_handshake_completed() {
