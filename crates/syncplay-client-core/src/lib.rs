@@ -3551,6 +3551,9 @@ impl ClientSession {
         {
             return Vec::new();
         }
+        if self.local_can_control() != Some(true) {
+            return Vec::new();
+        }
         vec![ClientRuntimeAction::SetReadyForUser {
             ready,
             manually_initiated,
@@ -3588,7 +3591,19 @@ impl ClientSession {
         if room.is_empty() {
             return Vec::new();
         }
-        vec![ClientRuntimeAction::SetRoom { room }]
+        let mut actions = vec![
+            ClientRuntimeAction::SetRoom { room: room.clone() },
+            ClientRuntimeAction::RequestUserList,
+        ];
+        if self.server_managed_rooms_supported == Some(true)
+            && let Some(password) = self.controlled_room_passwords.get(&room).cloned()
+        {
+            actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
+                ControllerAuthTransitionNotification::Attempting { room: room.clone() },
+            ));
+            actions.push(ClientRuntimeAction::RequestControllerAuth { room, password });
+        }
+        actions
     }
 
     pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
@@ -4704,7 +4719,11 @@ impl ClientSession {
     fn apply_set(&mut self, set_payload: SetPayload, now_seconds: Option<f64>) {
         if let Some(room) = set_payload.room {
             if let Some(username) = self.username.clone() {
+                let room_changed = self.user_room(&username) != Some(room.name.as_str());
                 self.set_user_room(&username, Some(room.name.clone()));
+                if room_changed {
+                    self.set_user_controller(&username, false);
+                }
             }
             self.update_local_room(room.name);
         }
@@ -4731,8 +4750,16 @@ impl ClientSession {
                     continue;
                 }
 
-                if let Some(room) = user_payload.room {
+                let room_payload = user_payload.room;
+                if let Some(room) = room_payload {
+                    let room_changed = previous_user_view
+                        .as_ref()
+                        .and_then(|view| view.room.as_deref())
+                        != Some(room.name.as_str());
                     self.set_user_room(&username, Some(room.name.clone()));
+                    if room_changed {
+                        self.set_user_controller(&username, false);
+                    }
                     if was_local_user {
                         self.update_local_room(room.name);
                     }
@@ -6254,6 +6281,30 @@ mod tests {
     }
 
     #[test]
+    fn room_change_clears_local_controller_flag_until_reidentified() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":true}}}}"#,
+            )
+            .expect("controller update should apply");
+        assert_eq!(session.local_can_control(), Some(true));
+
+        session
+            .apply_message_json(r#"{"Set":{"room":{"name":"+room2:123456ABCDEF"}}}"#)
+            .expect("room change should apply");
+
+        assert_eq!(session.user_controller("alice"), Some(false));
+        assert_eq!(session.local_can_control(), Some(false));
+    }
+
+    #[test]
     fn noncontroller_event_hide_from_osd_respects_behavior_config_and_controller_flag() {
         let mut session = ClientSession::default();
         session
@@ -6393,7 +6444,7 @@ mod tests {
                     file_name: Some("movie.mkv".to_owned()),
                     file_duration: Some(json!(123.4)),
                     include_room_addendum: true,
-                    hide_from_osd: false,
+                    hide_from_osd: true,
                 },
             )]
         );
@@ -6530,16 +6581,17 @@ mod tests {
 
         session
             .apply_message_json(
-                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"controller":true}}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"}}}}}"#,
             )
             .expect("room switch should apply");
+        assert_eq!(session.user_controller("bob"), Some(false));
         assert_eq!(
             session.runtime_actions_for_user_change_notifications_if_needed(),
             vec![ClientRuntimeAction::NotifyUserChange(
                 UserChangeNotification::Joined {
                     username: "bob".to_owned(),
                     room: "room2".to_owned(),
-                    hide_from_osd: false,
+                    hide_from_osd: true,
                 },
             )]
         );
@@ -6553,9 +6605,10 @@ mod tests {
         let _ = session.runtime_actions_for_user_change_notifications_if_needed();
         session
             .apply_message_json(
-                r#"{"Set":{"user":{"carol":{"room":{"name":"room2"},"controller":true}}}}"#,
+                r#"{"Set":{"user":{"carol":{"room":{"name":"room2"}}}}}"#,
             )
             .expect("carol room switch should apply");
+        assert_eq!(session.user_controller("carol"), Some(false));
         assert_eq!(
             session.runtime_actions_for_user_change_notifications_if_needed(),
             vec![ClientRuntimeAction::NotifyUserChange(
@@ -15616,6 +15669,26 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_ready_for_user_is_omitted_without_local_room_control() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"readiness":true,"setOthersReadiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_set_ready_for_user("bob", true, true)
+                .expect("set ready for other user should not fail"),
+            "set ready for other user should be suppressed when the local user cannot control the current room"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
     fn client_runtime_request_controller_auth_dispatches_protocol_message_with_normalized_password()
     {
         let mut session = ClientSession::default();
@@ -15790,7 +15863,7 @@ mod tests {
         );
         let (_, _, control) = runtime.into_parts();
 
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.room protocol message");
         };
@@ -15800,6 +15873,10 @@ mod tests {
             .as_ref()
             .expect("Set message should contain room payload");
         assert_eq!(room.name, "  room2  ");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message after room switch");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -15853,7 +15930,7 @@ mod tests {
             "whitespace-only room switch should still emit outbound Set.room"
         );
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.room protocol message");
         };
@@ -15863,6 +15940,10 @@ mod tests {
             .as_ref()
             .expect("Set message should contain room payload");
         assert_eq!(room.name, "   ");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message after whitespace-only room switch");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -15883,7 +15964,7 @@ mod tests {
             "unchanged room switch should still emit outbound Set.room"
         );
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.room protocol message");
         };
@@ -15893,6 +15974,63 @@ mod tests {
             .as_ref()
             .expect("Set message should contain room payload");
         assert_eq!(room.name, "room1");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message after unchanged room switch");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
+    }
+
+    #[test]
+    fn client_runtime_set_room_reidentifies_controlled_room_with_stored_password() {
+        let mut session = ClientSession::default();
+        session.remember_control_password_for_room("+room:ABCDEF123456", "ab-123-456");
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"managedRooms":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room("+room:ABCDEF123456")
+                .expect("set room should not fail"),
+            "room switch should emit outbound room/list/controller-auth dispatches"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 3);
+
+        let ProtocolMessage::Set(room_set) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.room protocol message");
+        };
+        assert_eq!(
+            room_set.set.room.as_ref().map(|room| room.name.as_str()),
+            Some("+room:ABCDEF123456")
+        );
+
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
+
+        let ProtocolMessage::Set(auth_set) = &control.outbound_messages()[2] else {
+            panic!("expected queued Set.controllerAuth protocol message");
+        };
+        let controller_auth = auth_set
+            .set
+            .controller_auth
+            .as_ref()
+            .expect("Set message should contain controllerAuth payload");
+        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+        assert_eq!(
+            control.controller_auth_notifications(),
+            &[ControllerAuthTransitionNotification::Attempting {
+                room: "+room:ABCDEF123456".to_owned()
+            }]
+        );
     }
 
     #[test]
@@ -15918,7 +16056,7 @@ mod tests {
             "room fallback should emit outbound Set.room from local file name"
         );
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.room protocol message");
         };
@@ -15928,6 +16066,10 @@ mod tests {
             .as_ref()
             .expect("Set message should contain room payload");
         assert_eq!(room.name, "movie.mkv");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message after room fallback");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -15948,7 +16090,7 @@ mod tests {
             "room fallback should emit outbound Set.room from default room"
         );
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.room protocol message");
         };
@@ -15958,6 +16100,10 @@ mod tests {
             .as_ref()
             .expect("Set message should contain room payload");
         assert_eq!(room.name, "fallback-room");
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message after room fallback");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]

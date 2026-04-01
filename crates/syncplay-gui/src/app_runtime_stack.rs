@@ -1063,10 +1063,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     "Client-core session runtime cannot change other users' readiness because the server disabled remote readiness changes."
                         .to_owned(),
                 ),
-                Some(true) => Err(
-                    "Client-core session runtime did not queue an outbound remote readiness change."
-                        .to_owned(),
-                ),
+                Some(true) => {
+                    if self.runtime.session().local_can_control() != Some(true) {
+                        Err(
+                            "Client-core session runtime cannot change other users' readiness because the local user cannot control the current room."
+                                .to_owned(),
+                        )
+                    } else {
+                        Err(
+                            "Client-core session runtime did not queue an outbound remote readiness change."
+                                .to_owned(),
+                        )
+                    }
+                }
             },
             Err(error) => Err(format!(
                 "Client-core session runtime readiness dispatch failed: {error}"

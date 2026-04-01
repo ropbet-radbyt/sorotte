@@ -382,6 +382,43 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_disables_remote_readiness_without_control() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("+room:ABCDEF123456".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "+room:ABCDEF123456")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true,"readiness":true,"setOthersReadiness":true,"managedRooms":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let snapshot = actions
+        .iter()
+        .find_map(|action| match action {
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("server hello should produce a main-window runtime snapshot");
+    assert!(snapshot.can_set_ready);
+    assert!(!snapshot.can_set_others_ready);
+    assert_eq!(
+        snapshot.room_control_status,
+        "Not granted by server: room controls are locked."
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_reconciles_inbound_state_through_runtime() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

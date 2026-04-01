@@ -765,13 +765,17 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         reader
             .read_line(&mut room_line)
             .expect("test session transport server should read one outbound room-change line");
+        let mut list_line = String::new();
+        reader
+            .read_line(&mut list_line)
+            .expect("test session transport server should read one outbound room-list line");
         stream
             .write_all(br#"{"Set":{"room":{"name":"room2"}}}"#)
             .expect("test session transport server should write one inbound room line");
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound room line");
-        room_line
+        (room_line, list_line)
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -794,12 +798,13 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let room_line = server_thread
+    let (room_line, list_line) = server_thread
         .join()
         .expect("test session transport server thread should complete");
     assert!(room_line.contains("\"Set\""));
     assert!(room_line.contains("\"room\""));
     assert!(room_line.contains("\"room2\""));
+    assert!(list_line.contains("\"List\""));
 
     pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -970,10 +975,14 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
     handle.push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
-    assert_eq!(outbound_protocol_lines.len(), 1);
+    assert_eq!(outbound_protocol_lines.len(), 2);
     assert!(
         outbound_protocol_lines[0].contains(r#""room":{"name":"room9"}"#),
         "return-to-default should target the updated detached room setting"
+    );
+    assert!(
+        outbound_protocol_lines[1].contains(r#""List""#),
+        "room fallback should also request a fresh user list"
     );
 }
 
@@ -1116,6 +1125,10 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         reader
             .read_line(&mut join_line)
             .expect("test session transport server should read one outbound room-change line");
+        let mut join_list_line = String::new();
+        reader
+            .read_line(&mut join_list_line)
+            .expect("test session transport server should read one outbound room-list line");
         stream
             .write_all(br#"{"Set":{"room":{"name":"room2"}}}"#)
             .expect("test session transport server should write one inbound room line");
@@ -1127,6 +1140,10 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         reader
             .read_line(&mut leave_line)
             .expect("test session transport server should read one outbound default-room line");
+        let mut leave_list_line = String::new();
+        reader
+            .read_line(&mut leave_list_line)
+            .expect("test session transport server should read one outbound default-room list line");
         release_leave_rx
             .recv_timeout(Duration::from_secs(1))
             .expect(
@@ -1139,7 +1156,7 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound default-room line");
 
-        (join_line, leave_line)
+        (join_line, join_list_line, leave_line, leave_list_line)
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -1198,11 +1215,13 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         "default-room return over TCP transport",
     );
 
-    let (join_line, leave_line) = server_thread
+    let (join_line, join_list_line, leave_line, leave_list_line) = server_thread
         .join()
         .expect("test session transport server thread should complete");
     assert!(join_line.contains("\"room2\""));
+    assert!(join_list_line.contains("\"List\""));
     assert!(leave_line.contains("\"room1\""));
+    assert!(leave_list_line.contains("\"List\""));
     assert_eq!(state.main_window.room_name, "room1");
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),

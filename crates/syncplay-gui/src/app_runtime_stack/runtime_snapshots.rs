@@ -221,7 +221,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         snapshot.can_set_others_ready = session
             .server_set_others_readiness_supported()
-            .unwrap_or(false);
+            .unwrap_or(false)
+            && session.local_can_control().unwrap_or(false);
         (snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window))
             .then_some(snapshot)
     }
