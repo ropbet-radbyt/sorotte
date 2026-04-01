@@ -178,7 +178,7 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runtime_settings_blank()
- {
+{
     let runtime_settings =
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
             room: Some("room1".to_owned()),
@@ -204,8 +204,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runt
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_without_reconnect()
-{
+fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_without_reconnect() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let disabled_settings =
@@ -268,7 +267,11 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
         Some(SYNCPLAY_COMPAT_VERSION_LEGACY)
     );
     assert_eq!(
-        hello.hello.extra.get("password").and_then(serde_json::Value::as_str),
+        hello
+            .hello
+            .extra
+            .get("password")
+            .and_then(serde_json::Value::as_str),
         Some("secret-pass")
     );
 
@@ -293,11 +296,15 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
         Some("GUI")
     );
     assert_eq!(
-        features.get("featureList").and_then(serde_json::Value::as_bool),
+        features
+            .get("featureList")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
     assert_eq!(
-        features.get("readiness").and_then(serde_json::Value::as_bool),
+        features
+            .get("readiness")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
     assert_eq!(
@@ -387,8 +394,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_curren
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_settings_to_defaults()
- {
+fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_settings_to_defaults() {
     let configured_settings =
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
             username: Some("alice".to_owned()),

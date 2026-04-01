@@ -739,7 +739,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
 
 #[test]
 fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_local_file_over_transport()
-{
+ {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1210,9 +1210,9 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
             .read_line(&mut leave_line)
             .expect("test session transport server should read one outbound default-room line");
         let mut leave_list_line = String::new();
-        reader
-            .read_line(&mut leave_list_line)
-            .expect("test session transport server should read one outbound default-room list line");
+        reader.read_line(&mut leave_list_line).expect(
+            "test session transport server should read one outbound default-room list line",
+        );
         release_leave_rx
             .recv_timeout(Duration::from_secs(1))
             .expect(
@@ -1318,8 +1318,8 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         time::{Duration, Instant},
     };
 
-    let listener =
-        TcpListener::bind("127.0.0.1:0").expect("reconnect test session transport listener should bind");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .expect("reconnect test session transport listener should bind");
     let address = listener
         .local_addr()
         .expect("reconnect test session transport listener should expose a local address");
