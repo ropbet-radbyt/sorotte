@@ -107,7 +107,7 @@ impl GuiPersistedConfigRuntimeOwner {
         session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
         session.set_autoplay_enabled(state.main_window.autoplay_active)?;
         session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
-        if file_publish_pending {
+        if file_publish_pending && session.server_handshake_completed() {
             let file_payload =
                 Self::local_file_payload_legacy_compatible(player_local_file.as_ref());
             session.publish_local_file_legacy_compatible(
@@ -460,6 +460,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         self.session = Some(Box::new(session));
         self.session_projects_to_shell = true;
+        self.reset_session_transport_reconnect_state();
         self.session_default_room = Some(default_room);
         self.pending_room_change_request = None;
         self.last_published_local_file = None;
@@ -493,6 +494,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;
+        self.reset_session_transport_reconnect_state();
         self.session_default_room = None;
         self.pending_room_change_request = None;
         self.last_published_local_file = None;

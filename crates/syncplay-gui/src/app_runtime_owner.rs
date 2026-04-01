@@ -18,7 +18,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use syncplay_client_app::app_boundary::{
@@ -28,7 +28,7 @@ use syncplay_client_app::app_boundary::{
     },
     state::{StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible},
 };
-use syncplay_player_api::LocalFileUpdate;
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
 use syncplay_player_mpv::MpvAdapter;
 
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
@@ -53,6 +53,7 @@ use super::startup::{
     explicit_mpv_ipc_path_from_lookup, resolve_syncplay_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
+use super::support::system_time_seconds;
 use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
@@ -61,6 +62,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) session_projects_to_shell: bool,
     pub(super) session_transport: Option<GuiQueuedSessionTransportHandle>,
     pub(super) session_transport_driver: Option<Box<dyn GuiSessionTransportDriver + Send>>,
+    pub(super) session_transport_reconnect_due_at: Option<Instant>,
+    pub(super) session_transport_reconnect_failures: u32,
+    pub(super) session_transport_disconnect_pending_cleanup: bool,
     pub(super) session_default_room: Option<String>,
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     pub(super) startup_saved_connect_attempted: bool,
@@ -185,6 +189,9 @@ impl GuiPersistedConfigRuntimeOwner {
             session_projects_to_shell: false,
             session_transport: None,
             session_transport_driver: None,
+            session_transport_reconnect_due_at: None,
+            session_transport_reconnect_failures: 0,
+            session_transport_disconnect_pending_cleanup: false,
             session_default_room: None,
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
@@ -548,6 +555,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_projects_to_shell = false;
         self.session_transport = None;
         self.session_transport_driver = None;
+        self.reset_session_transport_reconnect_state();
         Ok(())
     }
 
@@ -582,6 +590,205 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Self {
         self.session_transport_driver = Some(session_transport_driver);
         self
+    }
+
+    pub(super) fn reset_session_transport_reconnect_state(&mut self) {
+        self.session_transport_reconnect_due_at = None;
+        self.session_transport_reconnect_failures = 0;
+        self.session_transport_disconnect_pending_cleanup = false;
+    }
+
+    fn schedule_session_transport_reconnect(&mut self, delay_seconds: f64) {
+        self.session_transport_reconnect_due_at = Some(
+            Instant::now() + Duration::from_secs_f64(delay_seconds.max(0.0)),
+        );
+        self.session_transport_reconnect_failures =
+            self.session_transport_reconnect_failures.saturating_add(1);
+        self.session_transport_disconnect_pending_cleanup = false;
+    }
+
+    fn sync_session_transport_reconnect_state_from_handshake(&mut self) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.server_handshake_completed())
+        {
+            self.session_transport_reconnect_due_at = None;
+            self.session_transport_reconnect_failures = 0;
+            self.session_transport_disconnect_pending_cleanup = false;
+        }
+    }
+
+    fn apply_session_transport_disconnect_pause(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let should_pause = self
+            .session
+            .as_ref()
+            .and_then(|session| session.local_pause_state())
+            == Some(true)
+            && self.player_paused != Some(true);
+        if !should_pause {
+            return;
+        }
+
+        if let Some(player) = self.player.as_mut()
+            && let Err(error) = player.set_paused(true)
+        {
+            Self::push_actions_and_project(
+                handle,
+                projected_state,
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: format!(
+                        "Pause-on-leave dispatch through the attached {} player failed: {error}",
+                        player.name()
+                    ),
+                }],
+            );
+            return;
+        }
+        self.refresh_player_state();
+    }
+
+    fn handle_session_transport_failure(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        error: String,
+    ) {
+        let mut actions = vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message: format!("Session transport driver pump failed: {error}"),
+        }];
+        let now_seconds = system_time_seconds();
+        let retries = self.session_transport_reconnect_failures;
+        let mut reconnect_delay = None;
+        let stop_reconnect_requested;
+
+        if let Some(session) = self.session.as_mut() {
+            if let Err(session_error) = session.handle_transport_disconnect(now_seconds, retries) {
+                actions.push(GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: session_error,
+                });
+                stop_reconnect_requested = true;
+            } else {
+                reconnect_delay = session.drain_reconnect_delays().into_iter().next();
+                stop_reconnect_requested = session.take_stop_reconnect_requested();
+            }
+        } else {
+            stop_reconnect_requested = true;
+        }
+
+        Self::push_actions_and_project(handle, projected_state, actions);
+        self.apply_session_transport_disconnect_pause(handle, projected_state);
+
+        if let Some(delay_seconds) = reconnect_delay
+            && !stop_reconnect_requested
+        {
+            self.schedule_session_transport_reconnect(delay_seconds);
+            return;
+        }
+
+        self.session_transport_reconnect_due_at = None;
+        self.session_transport_disconnect_pending_cleanup = true;
+    }
+
+    fn pump_due_session_transport_reconnect(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(due_at) = self.session_transport_reconnect_due_at else {
+            return;
+        };
+        if Instant::now() < due_at {
+            return;
+        }
+        self.session_transport_reconnect_due_at = None;
+
+        let Some(session_transport) = self.session_transport.as_ref() else {
+            self.session_transport_disconnect_pending_cleanup = true;
+            return;
+        };
+        session_transport.clear_protocol_lines();
+
+        let Some(session) = self.session.as_mut() else {
+            self.session_transport_disconnect_pending_cleanup = true;
+            return;
+        };
+        if let Err(error) = session.prepare_for_transport_reconnect() {
+            self.handle_session_transport_failure(
+                handle,
+                projected_state,
+                format!("Session transport reconnect preparation failed: {error}"),
+            );
+            return;
+        }
+
+        let Some(session_transport_driver) = self.session_transport_driver.as_mut() else {
+            self.handle_session_transport_failure(
+                handle,
+                projected_state,
+                "Session transport reconnect failed: no transport driver is attached.".to_owned(),
+            );
+            return;
+        };
+        if let Err(error) = session_transport_driver.reconnect() {
+            self.handle_session_transport_failure(
+                handle,
+                projected_state,
+                format!("Session transport reconnect failed: {error}"),
+            );
+        }
+    }
+
+    fn clear_session_runtime_after_transport_disconnect(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if let Some(session_transport) = self.session_transport.as_ref() {
+            session_transport.clear_protocol_lines();
+        }
+        self.session = None;
+        self.session_projects_to_shell = false;
+        self.session_transport = None;
+        self.session_transport_driver = None;
+        self.session_default_room = None;
+        self.pending_room_change_request = None;
+        self.last_published_local_file = None;
+        self.pending_attached_media_resolution = None;
+        self.unresolved_attached_media_target = None;
+        self.last_applied_attached_room_playstate = None;
+        self.reset_session_transport_reconnect_state();
+
+        let actions = self.sessionless_projection_actions(projected_state);
+        Self::push_actions_and_project(handle, projected_state, actions);
+    }
+
+    fn finish_pending_session_transport_disconnect(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if !self.session_transport_disconnect_pending_cleanup {
+            return;
+        }
+        self.clear_session_runtime_after_transport_disconnect(handle, projected_state);
+    }
+
+    fn drain_session_runtime_actions_and_finish_transport_disconnect(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        self.drain_session_runtime_actions(handle, projected_state);
+        self.sync_session_transport_reconnect_state_from_handshake();
+        self.finish_pending_session_transport_disconnect(handle, projected_state);
     }
 
     #[allow(dead_code)]
@@ -660,14 +867,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         if let Err(error) = session_transport_driver.pump(session_transport) {
-            Self::push_actions_and_project(
-                handle,
-                projected_state,
-                vec![GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Error,
-                    message: format!("Session transport driver pump failed: {error}"),
-                }],
-            );
+            self.handle_session_transport_failure(handle, projected_state, error);
         }
     }
 
@@ -1086,16 +1286,23 @@ impl GuiPersistedConfigRuntimeOwner {
     ) {
         self.poll_managed_mpv_process();
         let mut projected_state = state.clone();
+        self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
-        self.drain_session_runtime_actions(handle, &mut projected_state);
+        self.drain_session_runtime_actions_and_finish_transport_disconnect(
+            handle,
+            &mut projected_state,
+        );
         self.drain_player_chat_input(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         self.flush_session_transport_outbound(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
-        self.drain_session_runtime_actions(handle, &mut projected_state);
+        self.drain_session_runtime_actions_and_finish_transport_disconnect(
+            handle,
+            &mut projected_state,
+        );
         self.drain_player_chat_input(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         if !self.startup_saved_connect_attempted {
@@ -1109,7 +1316,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.flush_session_transport_outbound(handle, &mut projected_state);
                 self.pump_session_transport_driver(handle, &mut projected_state);
                 self.drain_session_transport_inbound(handle, &mut projected_state);
-                self.drain_session_runtime_actions(handle, &mut projected_state);
+                self.drain_session_runtime_actions_and_finish_transport_disconnect(
+                    handle,
+                    &mut projected_state,
+                );
                 self.drain_player_chat_input(handle, &mut projected_state);
                 self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
             }
@@ -1122,7 +1332,10 @@ impl GuiPersistedConfigRuntimeOwner {
             self.flush_session_transport_outbound(handle, &mut projected_state);
             self.pump_session_transport_driver(handle, &mut projected_state);
             self.drain_session_transport_inbound(handle, &mut projected_state);
-            self.drain_session_runtime_actions(handle, &mut projected_state);
+            self.drain_session_runtime_actions_and_finish_transport_disconnect(
+                handle,
+                &mut projected_state,
+            );
             self.drain_player_chat_input(handle, &mut projected_state);
             self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
         }

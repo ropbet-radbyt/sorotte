@@ -19,6 +19,7 @@ assert-pending	send-chat-message
 complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
+push-chat-message	smoke-user	hello room
 assert-value	main-window:chat:2	hello room
 enter-text	main-window:chat-input	true	/undo
 assert-pending	none
@@ -30,4 +31,5 @@ assert-pending	send-chat-message
 complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
+push-chat-message	smoke-user	/literal
 assert-value	main-window:chat:5	/literal

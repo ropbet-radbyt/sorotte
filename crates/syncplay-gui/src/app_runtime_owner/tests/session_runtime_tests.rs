@@ -230,7 +230,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             .chat
             .last()
             .map(|row| row.message.as_str()),
-        Some("hello")
+        Some("Welcome.")
     );
 
     handle.push_request(GuiRuntimeRequest::SendChatMessage("slash hello".to_owned()));
@@ -238,16 +238,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     let direct_chat_actions = handle.drain_actions();
     assert_eq!(
         direct_chat_actions,
-        vec![
-            GuiShellAction::PushChatMessage {
-                sender: "You".to_owned(),
-                message: "slash hello".to_owned(),
-            },
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Success,
-                message: "Chat sent.".to_owned(),
-            },
-        ]
+        vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Success,
+            message: "Chat sent.".to_owned(),
+        }]
     );
     for action in direct_chat_actions {
         assert!(state.apply(action));
@@ -258,7 +252,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             .chat
             .last()
             .map(|row| row.message.as_str()),
-        Some("slash hello")
+        Some("Welcome.")
     );
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));

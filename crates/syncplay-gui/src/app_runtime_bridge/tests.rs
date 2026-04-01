@@ -49,16 +49,10 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
             &fallback_state,
             GuiRuntimeRequest::SendChatMessage("preview hello".to_owned()),
         ),
-        vec![
-            GuiShellAction::PushChatMessage {
-                sender: "You".to_owned(),
-                message: "preview hello".to_owned(),
-            },
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Success,
-                message: "Chat sent.".to_owned(),
-            },
-        ]
+        vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Success,
+            message: "Chat sent.".to_owned(),
+        }]
     );
 }
 
@@ -144,14 +138,7 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("hello")
-    );
+    assert!(state.main_window.chat.is_empty());
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(runtime.actions_for_pending_cancel(&state).is_empty());
 }

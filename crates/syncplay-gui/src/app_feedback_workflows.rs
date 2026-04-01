@@ -42,19 +42,10 @@ impl SyncplayGuiShellAppState {
         if pending.kind != GuiPendingOperationKind::SendChatMessage {
             return self.record_action_error("No local chat send is currently in progress.");
         }
-        let Some(message) = self.outgoing_chat_message.take() else {
+        if self.outgoing_chat_message.take().is_none() {
             self.pending_operation = None;
             return self.record_action_error("No local chat send is currently in progress.");
-        };
-        let sender = self
-            .main_window
-            .users
-            .iter()
-            .find(|user| user.is_self)
-            .map(|user| user.username.clone())
-            .unwrap_or_else(|| "You".to_owned());
-
-        self.append_chat_row(sender, message);
+        }
         self.pending_operation = None;
         self.push_transient_notification(
             GuiTransientNotificationLevel::Success,

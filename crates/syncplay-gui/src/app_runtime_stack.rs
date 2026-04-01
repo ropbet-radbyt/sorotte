@@ -189,8 +189,16 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
+    fn local_pause_state(&self) -> Option<bool> {
+        None
+    }
+
     fn local_username(&self) -> Option<&str> {
         None
+    }
+
+    fn server_handshake_completed(&self) -> bool {
+        true
     }
 
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
@@ -253,6 +261,26 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String>;
+
+    fn handle_transport_disconnect(
+        &mut self,
+        _now_seconds: f64,
+        _retries: u32,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn drain_reconnect_delays(&mut self) -> Vec<f64> {
+        Vec::new()
+    }
+
+    fn take_stop_reconnect_requested(&mut self) -> bool {
+        false
+    }
+
+    fn prepare_for_transport_reconnect(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
@@ -568,6 +596,25 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .settings
             .ready_at_start
             .unwrap_or(false);
+        self.tracked_remote_usernames.clear();
+        self.optimistic_room_playlist = None;
+    }
+
+    fn prepare_transport_reconnect(&mut self) {
+        self.username = self
+            .runtime_settings
+            .settings
+            .username
+            .clone()
+            .unwrap_or_default();
+        self.baseline_room = self.runtime_settings.settings.room.clone().unwrap_or_default();
+        let room = self.current_room_for_next_hello();
+        self.pending_startup_protocol_lines.clear();
+        self.pending_startup_protocol_lines
+            .push_back(Self::hello_json(&self.username, &room, &self.runtime_settings));
+        self.next_state_sync_heartbeat_at = None;
+        self.next_autoplay_tick_at = None;
+        self.pending_ready_at_start_on_server_hello = false;
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
@@ -1360,8 +1407,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().local_position_seconds()
     }
 
+    fn local_pause_state(&self) -> Option<bool> {
+        self.runtime.session().local_paused()
+    }
+
     fn local_username(&self) -> Option<&str> {
         self.runtime.session().username.as_deref()
+    }
+
+    fn server_handshake_completed(&self) -> bool {
+        self.runtime.session().server_chat_supported().is_some()
     }
 
     fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
@@ -1517,5 +1572,31 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             }
         }
         Ok(None)
+    }
+
+    fn handle_transport_disconnect(
+        &mut self,
+        now_seconds: f64,
+        retries: u32,
+    ) -> Result<(), String> {
+        self.runtime
+            .run_disconnect(now_seconds)
+            .map_err(|error| format!("Client-core session runtime disconnect failed: {error}"))?;
+        self.runtime
+            .run_reconnect_retry(retries)
+            .map_err(|error| format!("Client-core session runtime reconnect retry failed: {error}"))
+    }
+
+    fn drain_reconnect_delays(&mut self) -> Vec<f64> {
+        self.runtime.drain_reconnect_requests()
+    }
+
+    fn take_stop_reconnect_requested(&mut self) -> bool {
+        self.runtime.take_stop_reconnect_requested()
+    }
+
+    fn prepare_for_transport_reconnect(&mut self) -> Result<(), String> {
+        self.prepare_transport_reconnect();
+        Ok(())
     }
 }

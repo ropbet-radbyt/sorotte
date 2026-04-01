@@ -1095,4 +1095,5 @@ fn gui_persisted_config_runtime_owner_loopback_transport_echoes_client_core_chat
             .map(|entry| (entry.sender.clone(), entry.message.clone())),
         Some(("alice".to_owned(), "hello room".to_owned()))
     );
+    assert_eq!(state.main_window.chat.len(), 1);
 }

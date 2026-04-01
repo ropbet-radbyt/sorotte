@@ -444,27 +444,15 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::SendChatMessage(message) => {
                 if let Some(session) = self.session.as_mut() {
-                    match session.send_chat_message(message.clone()) {
-                        Ok(()) => {
-                            let sender = projected_state
-                                .main_window
-                                .users
-                                .iter()
-                                .find(|user| user.is_self)
-                                .map(|user| user.username.clone())
-                                .unwrap_or_else(|| "You".to_owned());
-                            Self::push_actions_and_project(
-                                handle,
-                                projected_state,
-                                vec![
-                                    GuiShellAction::PushChatMessage { sender, message },
-                                    GuiShellAction::PushTransientNotification {
-                                        level: GuiTransientNotificationLevel::Success,
-                                        message: "Chat sent.".to_owned(),
-                                    },
-                                ],
-                            );
-                        }
+                    match session.send_chat_message(message) {
+                        Ok(()) => Self::push_actions_and_project(
+                            handle,
+                            projected_state,
+                            vec![GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Success,
+                                message: "Chat sent.".to_owned(),
+                            }],
+                        ),
                         Err(error) => Self::push_runtime_unavailable(
                             handle,
                             format!(
@@ -625,6 +613,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 match session.connect_public_server(selected_server) {
                         Ok(()) => {
                             self.session_projects_to_shell = true;
+                            self.reset_session_transport_reconnect_state();
                             if let Some(driver) = replacement_transport_driver {
                                 if let Some(session_transport) = self.session_transport.as_ref() {
                                     session_transport.clear_protocol_lines();

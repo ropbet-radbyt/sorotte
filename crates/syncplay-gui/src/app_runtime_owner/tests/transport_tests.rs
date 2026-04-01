@@ -192,15 +192,20 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     session_transport
         .push_inbound_protocol_line(r#"{"Chat":{"username":"alice","message":"hello room"}}"#);
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let inbound_actions = handle.drain_actions();
     assert!(
-        handle.drain_actions().iter().any(|action| matches!(
+        inbound_actions.iter().any(|action| matches!(
             action,
             GuiShellAction::PushChatMessage { sender, message }
                 if sender == "alice" && message == "hello room"
         )),
         "queued owner should turn inbound protocol chat into a GUI chat message action"
     );
+    for action in inbound_actions {
+        assert!(state.apply(action));
+    }
     assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert_eq!(state.main_window.chat.len(), 1);
 }
 
 #[test]
@@ -218,6 +223,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         .local_addr()
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let (release_server_tx, release_server_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -251,6 +257,9 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound line");
+        release_server_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should be releasable after the echo");
         (hello_line, chat_line)
     });
 
@@ -292,14 +301,6 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
     }
     combined_actions.extend(second_actions);
 
-    let (hello_line, chat_line) = server_thread
-        .join()
-        .expect("test session transport server thread should complete");
-    assert!(hello_line.contains("\"Hello\""));
-    assert!(hello_line.contains("\"alice\""));
-    assert!(chat_line.contains("\"Chat\""));
-    assert!(chat_line.contains("hello room"));
-
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let third_actions = handle.drain_actions();
     for action in third_actions.iter().cloned() {
@@ -329,6 +330,19 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
             .map(|entry| (entry.sender.clone(), entry.message.clone())),
         Some(("alice".to_owned(), "hello room".to_owned()))
     );
+    assert_eq!(state.main_window.chat.len(), 1);
+
+    release_server_tx
+        .send(())
+        .expect("test session transport server should be releasable");
+
+    let (hello_line, chat_line) = server_thread
+        .join()
+        .expect("test session transport server thread should complete");
+    assert!(hello_line.contains("\"Hello\""));
+    assert!(hello_line.contains("\"alice\""));
+    assert!(chat_line.contains("\"Chat\""));
+    assert!(chat_line.contains("hello room"));
 }
 
 #[test]
@@ -724,6 +738,60 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_local_file_over_transport()
+{
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(1234)
+            .with_path("C:/Media/episode1.mkv"),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert_eq!(startup_protocol_lines.len(), 1);
+    assert!(startup_protocol_lines[0].contains("\"Hello\""));
+    assert!(
+        startup_protocol_lines
+            .iter()
+            .all(|line| !line.contains(r#""Set":{"file":"#)),
+        "local file metadata should stay queued until the server hello completes",
+    );
+    assert!(owner.last_published_local_file.is_none());
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
+                return false;
+            };
+            file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
+                && file.get("duration").and_then(serde_json::Value::as_f64) == Some(42.0)
+                && file.get("size").and_then(serde_json::Value::as_i64) == Some(1234)
+        }),
+        "local file metadata should publish after the server hello completes",
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     use std::{
         io::{BufRead, BufReader, Write},
@@ -1097,6 +1165,7 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
     let (release_leave_tx, release_leave_rx) = mpsc::channel();
+    let (release_server_tx, release_server_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -1155,6 +1224,9 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound default-room line");
+        release_server_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("test session transport server should be releasable after the default-room response");
 
         (join_line, join_list_line, leave_line, leave_list_line)
     });
@@ -1215,6 +1287,10 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         "default-room return over TCP transport",
     );
 
+    release_server_tx
+        .send(())
+        .expect("test session transport server should be releasable");
+
     let (join_line, join_list_line, leave_line, leave_list_line) = server_thread
         .join()
         .expect("test session transport server thread should complete");
@@ -1231,6 +1307,163 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         state.configuration.to_stored_settings().room.as_deref(),
         Some("room1")
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("reconnect test session transport listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("reconnect test session transport listener should expose a local address");
+    let (first_hello_tx, first_hello_rx) = mpsc::channel();
+    let (first_server_ready_tx, first_server_ready_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (reconnect_hello_tx, reconnect_hello_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let (mut first_stream, _) = listener
+            .accept()
+            .expect("reconnect test session transport server should accept the first client");
+        let first_reader_stream = first_stream
+            .try_clone()
+            .expect("reconnect test session transport server should clone the first stream");
+        let mut first_reader = BufReader::new(first_reader_stream);
+        let mut first_hello = String::new();
+        first_reader
+            .read_line(&mut first_hello)
+            .expect("reconnect test session transport server should read the startup hello");
+        first_hello_tx
+            .send(first_hello)
+            .expect("reconnect test session transport server should report the startup hello");
+        first_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("reconnect test session transport server should write the first hello");
+        first_stream
+            .write_all(b"\n")
+            .expect("reconnect test session transport server should terminate the first hello");
+        first_server_ready_tx
+            .send(())
+            .expect("reconnect test session transport server should signal hello readiness");
+        release_first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reconnect test session transport server should be released for EOF");
+        drop(first_reader);
+        drop(first_stream);
+
+        let (mut second_stream, _) = listener
+            .accept()
+            .expect("reconnect test session transport server should accept the reconnect");
+        let second_reader_stream = second_stream
+            .try_clone()
+            .expect("reconnect test session transport server should clone the reconnect stream");
+        let mut second_reader = BufReader::new(second_reader_stream);
+        let mut reconnect_hello = String::new();
+        second_reader
+            .read_line(&mut reconnect_hello)
+            .expect("reconnect test session transport server should read the reconnect hello");
+        reconnect_hello_tx
+            .send(reconnect_hello)
+            .expect("reconnect test session transport server should report the reconnect hello");
+        second_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("reconnect test session transport server should write the reconnect hello");
+        second_stream
+            .write_all(b"\n")
+            .expect("reconnect test session transport server should terminate the reconnect hello");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_paused = Some(false);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let first_hello = first_hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reconnect test session transport server should receive the startup hello");
+    assert!(first_hello.contains("\"Hello\""));
+    assert!(first_hello.contains("\"alice\""));
+    first_server_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reconnect test session transport server should signal the first hello");
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.commands.can_send_chat_message,
+        "initial TCP server hello",
+    );
+
+    release_first_tx
+        .send(())
+        .expect("reconnect test session transport server should be releasable");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_hello = loop {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
+            break reconnect_hello;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the reconnect hello after a clean server close"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(reconnect_hello.contains("\"Hello\""));
+    assert!(reconnect_hello.contains("\"alice\""));
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| {
+            state
+                .notifications
+                .iter()
+                .any(|notification| notification.message == "Session reconnected.")
+        },
+        "TCP reconnect completion",
+    );
+    assert!(
+        state
+            .notifications
+            .iter()
+            .any(|notification| notification.message == "Reconnect attempt 1 in 0.1 seconds.")
+    );
+    assert!(
+        state
+            .notifications
+            .iter()
+            .any(|notification| notification.message == "Session reconnected.")
+    );
+
+    server_thread
+        .join()
+        .expect("reconnect test session transport server thread should complete");
 }
 
 #[test]

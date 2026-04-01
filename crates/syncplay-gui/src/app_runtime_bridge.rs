@@ -580,25 +580,10 @@ impl GuiRuntimeRequest {
                     state.playlist_backed_media_opens_preferred(),
                 )
             }
-            Self::SendChatMessage(message) => {
-                let sender = state
-                    .main_window
-                    .users
-                    .iter()
-                    .find(|user| user.is_self)
-                    .map(|user| user.username.clone())
-                    .unwrap_or_else(|| "You".to_owned());
-                vec![
-                    GuiShellAction::PushChatMessage {
-                        sender,
-                        message: message.clone(),
-                    },
-                    GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Success,
-                        message: "Chat sent.".to_owned(),
-                    },
-                ]
-            }
+            Self::SendChatMessage(_message) => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: "Chat sent.".to_owned(),
+            }],
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
                 vec![

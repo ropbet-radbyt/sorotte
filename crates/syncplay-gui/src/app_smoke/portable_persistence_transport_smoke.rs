@@ -124,6 +124,7 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
             .map(|entry| (entry.sender.clone(), entry.message.clone())),
         Some(("portable-user".to_owned(), "portable-loopback".to_owned()))
     );
+    assert_eq!(loopback_state.main_window.chat.len(), 1);
 
     // TCP startup + reconnect swap.
     let first_listener =

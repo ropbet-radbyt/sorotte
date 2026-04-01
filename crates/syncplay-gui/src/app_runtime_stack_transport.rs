@@ -74,6 +74,10 @@ impl GuiQueuedSessionTransportHandle {
 
 pub(in super::super) trait GuiSessionTransportDriver: Send {
     fn pump(&mut self, transport: &GuiQueuedSessionTransportHandle) -> Result<(), String>;
+
+    fn reconnect(&mut self) -> Result<(), String> {
+        Err("Session transport driver does not support reconnect.".to_owned())
+    }
 }
 
 #[allow(dead_code)]
@@ -150,6 +154,8 @@ impl GuiSessionTransportDriver for GuiLoopbackSessionTransportDriver {
 }
 
 pub(in super::super) struct GuiTcpSessionTransportDriver {
+    host: String,
+    port: u16,
     stream: Option<TcpStream>,
     pending_outbound_lines: VecDeque<Vec<u8>>,
     pending_outbound_offset: usize,
@@ -230,6 +236,8 @@ impl GuiTcpSessionTransportDriver {
             .set_nodelay(true)
             .map_err(|error| format!("Session transport TCP nodelay setup failed: {error}"))?;
         Ok(Self {
+            host: host.to_owned(),
+            port,
             stream: Some(stream),
             pending_outbound_lines: VecDeque::new(),
             pending_outbound_offset: 0,
@@ -251,6 +259,21 @@ impl GuiTcpSessionTransportDriver {
         self.pending_outbound_offset = 0;
         self.inbound_buffer.clear();
         Err(message)
+    }
+
+    fn reconnect_stream(&mut self) -> Result<(), String> {
+        let stream = Self::connect_stream(&self.host, self.port)?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| format!("Session transport TCP nonblocking setup failed: {error}"))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("Session transport TCP nodelay setup failed: {error}"))?;
+        self.stream = Some(stream);
+        self.pending_outbound_lines.clear();
+        self.pending_outbound_offset = 0;
+        self.inbound_buffer.clear();
+        Ok(())
     }
 
     fn queue_outbound_lines(&mut self, transport: &GuiQueuedSessionTransportHandle) {
@@ -347,12 +370,15 @@ impl GuiTcpSessionTransportDriver {
         if !complete_lines.is_empty() {
             transport.push_inbound_protocol_lines(complete_lines);
         }
-        if closed_by_server && !self.inbound_buffer.is_empty() {
-            self.inbound_buffer.clear();
-            return Err(
-                "Session transport TCP connection closed with an incomplete inbound line."
-                    .to_owned(),
-            );
+        if closed_by_server {
+            if !self.inbound_buffer.is_empty() {
+                self.inbound_buffer.clear();
+                return Err(
+                    "Session transport TCP connection closed with an incomplete inbound line."
+                        .to_owned(),
+                );
+            }
+            return Err("Session transport TCP connection closed by the server.".to_owned());
         }
         Ok(())
     }
@@ -363,5 +389,9 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
         self.queue_outbound_lines(transport);
         self.flush_outbound_lines()?;
         self.drain_inbound_lines(transport)
+    }
+
+    fn reconnect(&mut self) -> Result<(), String> {
+        self.reconnect_stream()
     }
 }
