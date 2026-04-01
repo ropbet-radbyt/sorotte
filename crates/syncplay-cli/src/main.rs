@@ -118,7 +118,8 @@ use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ChatNotification, ClientRuntime,
     ClientSession, ControllerAuthTransitionNotification, PrivacyMode, QueuedRuntimeControl,
     ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionPolicyMode,
-    ReconnectTransitionNotification, RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
+    ReconnectTransitionNotification, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    UnpauseActionMode, UserChangeNotification,
 };
 use syncplay_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
 use syncplay_player_mpv::{LegacySyncplayOsdKind, LegacySyncplayUiSettings, MpvAdapter};
@@ -5499,7 +5500,8 @@ where
         config.username.clone(),
         config.room.clone(),
         config.version.clone(),
-    );
+    )
+    .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY);
     if let Some(server_password) = config.server_password.as_deref()
         && !server_password.is_empty()
     {
@@ -12878,6 +12880,11 @@ mod tests {
             let ProtocolMessage::Hello(hello_message) = message else {
                 panic!("first client line should be a Hello message");
             };
+            assert_eq!(hello_message.hello.version, "1.2.255");
+            assert_eq!(
+                hello_message.hello.realversion.as_deref(),
+                Some(syncplay_client_core::SYNCPLAY_COMPAT_VERSION_LEGACY)
+            );
             let features = hello_message
                 .hello
                 .features
