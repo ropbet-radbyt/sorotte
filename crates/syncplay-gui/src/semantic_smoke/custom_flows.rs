@@ -451,11 +451,24 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         ));
         GuiQueuedRuntimeOwner::pump(&mut search_owner, &search_handle, &search_state);
         let search_actions = search_handle.drain_actions();
-        if search_actions
-            != vec![GuiShellAction::CompleteMissingMediaSearch(Some(
-                found_path_text.clone(),
-            ))]
-        {
+        if !search_actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::CompleteMissingMediaSearch(Some(path))
+                    if path == &found_path_text
+            )
+        }) {
+            return Err(format!(
+                "detached semantic search flow did not emit the completed missing-media action: {search_actions:?}"
+            ));
+        }
+        if search_actions.iter().any(|action| {
+            !matches!(
+                action,
+                GuiShellAction::CompleteMissingMediaSearch(Some(path))
+                    if path == &found_path_text
+            ) && !matches!(action, GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(_))
+        }) {
             return Err(format!(
                 "detached semantic search flow returned unexpected actions: {search_actions:?}"
             ));

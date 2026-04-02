@@ -27,10 +27,20 @@ fn gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config(
     )
     .expect("real-mpv startup seed should write syncplay.ini");
 
-    let owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
-        Some(config_path.clone()),
-        &|_name| None,
-    );
+    let (mut owner, _session_transport) =
+        GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+            Some(config_path.clone()),
+            &|_name| None,
+        )
+        .with_client_core_chat_session_runtime("smoke-user", "smoke-room")
+        .expect("managed-mpv smoke should bootstrap an active session");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("smoke-user".to_owned()),
+        room: Some("smoke-room".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert_eq!(
         owner.player.as_ref().map(|player| player.name()),
         Some("mpv")

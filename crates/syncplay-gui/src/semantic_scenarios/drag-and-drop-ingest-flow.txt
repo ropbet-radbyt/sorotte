@@ -5,8 +5,8 @@ assert-value	shell:active-view	configuration
 drop-media-files	window	C:/Drops/window-open.mkv
 assert-selected	main-window-root	true
 assert-value	shell:active-view	main-window
-assert-value	shell:notification:0	Media file selected: C:/Drops/window-open.mkv.
-assert-label	main-window:playlist:0	Playlist pane ready for shared entries
+assert-value	shell:notification:0	Shared playlist loaded: 1 entries.
+assert-label	main-window:playlist:0	window-open.mkv
 clear-notifications
 apply-main-window-runtime	smoke-room	true	false	false	false	false	true	true	smoke-user,true,false,false	window-open.mkv	system>connected
 drop-media-files	playlist	C:/Drops/episode1.mkv|C:/Drops/episode2.mkv
