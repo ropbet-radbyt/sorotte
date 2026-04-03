@@ -37,7 +37,8 @@ pub(super) struct GuiDroppedFilesRequest {
 
 impl GuiWidgetEguiRenderer {
     pub(super) fn shared_playlist_entries_for_media_paths(paths: Vec<String>) -> Vec<String> {
-        paths.iter()
+        paths
+            .iter()
             .filter_map(|path| shared_playlist_entry_for_media_path(path))
             .collect()
     }

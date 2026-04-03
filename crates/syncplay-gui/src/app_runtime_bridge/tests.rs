@@ -88,10 +88,12 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
         shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
-    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-        "episode1.mkv".to_owned(),
-        "episode3.mkv".to_owned(),
-    ])));
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "episode1.mkv".to_owned(),
+            "episode3.mkv".to_owned(),
+        ]))
+    );
 
     assert_eq!(
         GuiPreviewRuntimeBridge::preview_open_media_file_actions(

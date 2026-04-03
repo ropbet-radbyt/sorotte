@@ -2119,7 +2119,8 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_applying_playlist_reset() {
+fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_applying_playlist_reset()
+{
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         set_positions: Vec<f64>,

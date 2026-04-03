@@ -418,10 +418,12 @@ fn gui_widget_egui_renderer_defaults_playlist_drops_to_append_slot_when_hover_sl
         shared_playlist_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
-    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
-        "Episode 1.mkv".to_owned(),
-        "Episode 2.mkv".to_owned(),
-    ])));
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1.mkv".to_owned(),
+            "Episode 2.mkv".to_owned(),
+        ]))
+    );
 
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
         &state,
