@@ -54,10 +54,13 @@ pub(super) trait GuiNativeRuntimeBridge {
         state: &SyncplayGuiShellAppState,
         request: GuiDroppedFilesRequest,
     ) -> Vec<GuiShellAction> {
-        self.actions_for_open_media_files(
+        self.dispatch_runtime_request(
             state,
-            request.paths,
-            request.target.load_into_shared_playlist(state),
+            GuiRuntimeRequest::OpenMediaFiles {
+                paths: request.paths,
+                load_into_shared_playlist: request.target.load_into_shared_playlist(state),
+                playlist_insert_slot: request.playlist_insert_slot,
+            },
         )
     }
 
@@ -245,8 +248,10 @@ pub(super) struct GuiPreviewRuntimeBridge;
 
 impl GuiPreviewRuntimeBridge {
     pub(super) fn preview_open_media_file_actions(
+        state: Option<&SyncplayGuiShellAppState>,
         paths: Vec<String>,
         load_into_shared_playlist: bool,
+        playlist_insert_slot: Option<usize>,
     ) -> Vec<GuiShellAction> {
         if paths.is_empty() {
             return Vec::new();
@@ -256,8 +261,18 @@ impl GuiPreviewRuntimeBridge {
         if load_into_shared_playlist {
             match GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(paths) {
                 Ok(dispatch) => {
+                    let playlist_entries = state
+                        .map(|state| {
+                            state
+                                .shared_playlist_entries_after_media_open_from_state(
+                                    dispatch.playlist_entries.clone(),
+                                    playlist_insert_slot,
+                                )
+                                .0
+                        })
+                        .unwrap_or(dispatch.playlist_entries);
                     actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(
-                        dispatch.playlist_entries,
+                        playlist_entries,
                     ));
                 }
                 Err(error) => {
@@ -363,8 +378,10 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
         Self::preview_open_media_file_actions(
+            Some(state),
             paths,
             load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
+            None,
         )
     }
 
@@ -392,8 +409,10 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         target: String,
     ) -> Vec<GuiShellAction> {
         Self::preview_open_media_file_actions(
+            Some(state),
             vec![target],
             state.playlist_backed_media_opens_preferred(),
+            None,
         )
     }
 
@@ -521,6 +540,7 @@ pub(super) enum GuiRuntimeRequest {
     OpenMediaFiles {
         paths: Vec<String>,
         load_into_shared_playlist: bool,
+        playlist_insert_slot: Option<usize>,
     },
     OpenMainWindowUserMedia(String),
     OpenMainWindowUserContainingFolder(String),
@@ -570,14 +590,19 @@ impl GuiRuntimeRequest {
             Self::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,
+                playlist_insert_slot,
             } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                Some(state),
                 paths.clone(),
                 *load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
+                *playlist_insert_slot,
             ),
             Self::OpenMainWindowUserMedia(target) => {
                 GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                    Some(state),
                     vec![target.clone()],
                     state.playlist_backed_media_opens_preferred(),
+                    None,
                 )
             }
             Self::SendChatMessage(_message) => vec![GuiShellAction::PushTransientNotification {
@@ -623,14 +648,19 @@ impl GuiRuntimeRequest {
             Self::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,
+                playlist_insert_slot,
             } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                None,
                 paths.clone(),
                 *load_into_shared_playlist,
+                *playlist_insert_slot,
             ),
             Self::OpenMainWindowUserMedia(target) => {
                 GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+                    None,
                     vec![target.clone()],
                     false,
+                    None,
                 )
             }
             Self::OpenMainWindowUserContainingFolder(target) => {

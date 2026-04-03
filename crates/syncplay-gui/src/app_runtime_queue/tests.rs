@@ -105,6 +105,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         vec![GuiRuntimeRequest::OpenMediaFiles {
             paths: vec!["C:/Media/movie.mkv".to_owned()],
             load_into_shared_playlist: true,
+            playlist_insert_slot: None,
         }]
     );
 
@@ -202,6 +203,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
             "C:/Media/episode2.mkv".to_owned(),
         ],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     assert_eq!(
         handle.drain_preview_response_actions(),

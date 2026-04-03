@@ -28,7 +28,9 @@ use super::super::shell_state::{
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState, browser_is_url,
 };
 use super::super::startup_support::env_trimmed;
-use super::super::support::{normalized_editable_text, system_time_seconds};
+use super::super::support::{
+    normalized_editable_text, shared_playlist_entry_for_media_path, system_time_seconds,
+};
 use super::{
     GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
     GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
@@ -124,25 +126,6 @@ impl GuiPersistedConfigRuntimeOwner {
             .to_owned()
     }
 
-    fn shared_playlist_entry_for_media_path(path: &str) -> Option<String> {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.contains("://") {
-            return Some(trimmed.to_owned());
-        }
-        Some(
-            Path::new(trimmed)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(trimmed)
-                .to_owned(),
-        )
-    }
-
     fn shared_playlist_import_entries_from_path(path: &str) -> Result<Option<Vec<String>>, String> {
         if path.contains("://") {
             return Ok(None);
@@ -184,7 +167,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let playlist_entries = paths
             .iter()
-            .filter_map(|path| Self::shared_playlist_entry_for_media_path(path))
+            .filter_map(|path| shared_playlist_entry_for_media_path(path))
             .collect::<Vec<_>>();
         if playlist_entries.is_empty() {
             return Err(
@@ -278,6 +261,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(()) => {
                 self.player_local_file =
                     Some(Self::placeholder_local_file_for_path(&selected_path));
+                self.player_local_file_placeholder = true;
                 self.player_position_seconds = Some(0.0);
                 self.refresh_player_state_impl();
                 if let Some(session) = self.session.as_mut() {
@@ -329,12 +313,11 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         };
 
-        if let Some(path) = local_file.path.as_deref() {
-            if (cfg!(windows) && path.eq_ignore_ascii_case(target))
-                || (!cfg!(windows) && path == target)
-            {
-                return true;
-            }
+        if let Some(path) = local_file.path.as_deref()
+            && ((cfg!(windows) && path.eq_ignore_ascii_case(target))
+                || (!cfg!(windows) && path == target))
+        {
+            return true;
         }
 
         let target_name = if browser_is_url(target) {
@@ -1474,9 +1457,19 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn apply_pending_playlist_index_reset_to_attached_player_impl(
         &mut self,
+        state: &SyncplayGuiShellAppState,
         opened_selected_media: bool,
     ) {
         if !opened_selected_media {
+            return;
+        }
+        if Self::selected_shared_playlist_target(state)
+            .as_deref()
+            .is_some_and(|target| !self.current_player_matches_media_target(target))
+        {
+            return;
+        }
+        if !self.player_local_file_ready_for_attached_sync() {
             return;
         }
         let Some(pause_before_sync) = self
@@ -1555,7 +1548,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         }
-        if self.player_local_file.is_none() {
+        if !self.player_local_file_ready_for_attached_sync() {
             self.last_applied_attached_room_playstate = None;
             return;
         }
@@ -1786,6 +1779,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 handle,
                 projected_state,
                 vec![resolved_target],
+                None,
             );
             return;
         }
@@ -1804,12 +1798,15 @@ impl GuiPersistedConfigRuntimeOwner {
     fn project_loaded_shared_playlist_into_state(
         projected_state: &mut SyncplayGuiShellAppState,
         entries: Vec<String>,
+        selected_index: Option<usize>,
     ) -> bool {
         let entries = SyncplayGuiShellAppState::normalize_shared_playlist_entries(entries);
+        let selected_index = selected_index
+            .filter(|_| !entries.is_empty())
+            .map(|index| index.min(entries.len().saturating_sub(1)));
         projected_state.main_window.shared_playlist_enabled = true;
         projected_state.remember_shared_playlist_undo_snapshot_if_changed(&entries);
-        projected_state
-            .apply_shared_playlist_entries(entries.clone(), (!entries.is_empty()).then_some(0));
+        projected_state.apply_shared_playlist_entries(entries.clone(), selected_index);
         true
     }
 
@@ -1912,6 +1909,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
         paths: Vec<String>,
+        playlist_insert_slot: Option<usize>,
     ) {
         let selected_paths = paths
             .into_iter()
@@ -1929,6 +1927,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     return;
                 }
             };
+        let (playlist_entries, selected_playlist_index) = projected_state
+            .shared_playlist_entries_after_media_open_from_state(
+                dispatch.playlist_entries.clone(),
+                playlist_insert_slot,
+            );
 
         if self.session.is_none() {
             self.ensure_configured_player_attached();
@@ -1942,7 +1945,8 @@ impl GuiPersistedConfigRuntimeOwner {
 
             if !Self::project_loaded_shared_playlist_into_state(
                 projected_state,
-                dispatch.playlist_entries.clone(),
+                playlist_entries.clone(),
+                selected_playlist_index,
             ) {
                 Self::push_runtime_unavailable(
                     handle,
@@ -2006,15 +2010,13 @@ impl GuiPersistedConfigRuntimeOwner {
             .session
             .as_mut()
             .expect("session should exist")
-            .replace_playlist(
-                dispatch.playlist_entries.clone(),
-                (!dispatch.playlist_entries.is_empty()).then_some(0),
-            );
+            .replace_playlist(playlist_entries.clone(), selected_playlist_index);
         let session_success = session_result.is_ok();
         let selected_media_sync = if session_success
             && Self::project_loaded_shared_playlist_into_state(
                 projected_state,
-                dispatch.playlist_entries.clone(),
+                playlist_entries.clone(),
+                selected_playlist_index,
             ) {
             dispatch
                 .player_paths
@@ -2034,6 +2036,7 @@ impl GuiPersistedConfigRuntimeOwner {
             session.note_local_playlist_index_reset_intent(true);
         }
         self.apply_pending_playlist_index_reset_to_attached_player_impl(
+            projected_state,
             selected_media_sync.selection_ready(),
         );
         self.sync_session_playstate_to_attached_player_impl(
@@ -2192,11 +2195,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 &update,
             );
             self.player_local_file = Some(update);
+            self.player_local_file_placeholder = false;
             if file_changed || self.player_position_seconds.is_none() {
                 self.player_position_seconds = Some(0.0);
             }
         }
         self.clamp_player_position_to_file_duration();
+    }
+
+    fn player_local_file_ready_for_attached_sync(&self) -> bool {
+        self.player_local_file.is_some() && !self.player_local_file_placeholder
     }
 
     pub(super) fn sync_manual_seek_into_detached_session_impl(
@@ -2301,10 +2309,9 @@ impl GuiPersistedConfigRuntimeOwner {
             state,
             previous_paused,
             target_paused,
-        ) {
-            if sync_error.is_none() {
-                sync_error = Some(error);
-            }
+        ) && sync_error.is_none()
+        {
+            sync_error = Some(error);
         }
         Ok((target_paused, sync_error))
     }

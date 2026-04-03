@@ -25,6 +25,7 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
             "C:/Media/episode2.mkv".to_owned(),
         ],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -72,6 +73,98 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested_slot() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::ReplacePlaylist {
+        files: vec!["episode1.mkv".to_owned(), "episode3.mkv".to_owned()],
+        selected_index: Some(0),
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq(["episode1.mkv", "episode3.mkv"])
+                && state.selection.selected_main_window_playlist == Some(0)
+        },
+        "shared-playlist seed before slot insert",
+    );
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/episode2.mkv".to_owned()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(1),
+    });
+    let actions = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq(["episode1.mkv", "episode2.mkv", "episode3.mkv"])
+                && state.selection.selected_main_window_playlist == Some(1)
+        },
+        "shared-playlist insert at requested slot",
+    );
+
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if *level == GuiTransientNotificationLevel::Success
+                    && message == "Loaded 1 selected media entry into the shared playlist."
+        )),
+        "shared-playlist insert should report a runtime-backed success"
+    );
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "episode1.mkv".to_owned(),
+            "episode2.mkv".to_owned(),
+            "episode3.mkv".to_owned(),
+        ]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some("C:/Media/episode2.mkv")
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_control_when_shared_playlist_is_enabled()
  {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -89,6 +182,7 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/local-only.mkv".to_owned()],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -156,6 +250,7 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/local-drop.mkv".to_owned()],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -283,6 +378,7 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/blocked-drop.mkv".to_owned()],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -342,6 +438,7 @@ fn gui_persisted_config_runtime_owner_imports_playlist_files_through_client_core
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![playlist_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions_until(
         &mut owner,
@@ -401,6 +498,7 @@ fn gui_persisted_config_runtime_owner_imports_playlist_files_queued_before_start
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![playlist_path.to_string_lossy().into_owned()],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     let actions = pump_and_apply_runtime_owner_actions_until(
         &mut owner,

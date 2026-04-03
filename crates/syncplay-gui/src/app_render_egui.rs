@@ -19,6 +19,7 @@ pub(super) struct GuiWidgetEguiRenderer {
     dropped_files_request: Option<GuiDroppedFilesRequest>,
     playlist_drop_target_rect: Option<egui::Rect>,
     playlist_drop_target_hovered: bool,
+    playlist_drop_target_slot: Option<usize>,
     pending_completion_requested: bool,
     pending_cancel_requested: bool,
 }
@@ -84,8 +85,14 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         show_manual_pending_controls: bool,
     ) -> Vec<GuiShellAction> {
-        self.playlist_drop_target_rect = None;
-        self.playlist_drop_target_hovered = false;
+        let hovered_files_active = ctx.input(|input| !input.raw.hovered_files.is_empty());
+        let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
+        let external_file_drag_active = hovered_files_active || !dropped_files.is_empty();
+        if !external_file_drag_active {
+            self.playlist_drop_target_rect = None;
+            self.playlist_drop_target_hovered = false;
+            self.playlist_drop_target_slot = None;
+        }
         self.dropped_files_request = None;
         if let Some(root) = self.root().cloned() {
             self.show_menu_bar(ctx, &root, state);
@@ -99,11 +106,11 @@ impl GuiWidgetEguiRenderer {
                 ui.label("No widget tree is currently available.");
             });
         }
-        let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         self.dropped_files_request = Self::dropped_files_request_for_input(
             state,
             self.playlist_drop_target_hovered,
             self.playlist_drop_target_rect,
+            self.playlist_drop_target_slot,
             ctx.input(|input| input.pointer.hover_pos()),
             dropped_files,
         );
@@ -629,6 +636,8 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         let playlist_len = node.children.len();
+        let mut first_row_rect = None;
+        let mut last_row_rect = None;
         let response = egui::Frame::group(ui.style()).show(ui, |ui| {
             if let Some(min_content_height) = node.min_content_height {
                 ui.set_min_height(min_content_height);
@@ -638,7 +647,24 @@ impl GuiWidgetEguiRenderer {
                 ui.label("No items.");
             } else {
                 for child in &node.children {
-                    self.render_playlist_list_item(ui, child, state, playlist_len);
+                    let row_rect = self.render_playlist_list_item(ui, child, state, playlist_len);
+                    if first_row_rect.is_none() {
+                        first_row_rect = row_rect;
+                    }
+                    if row_rect.is_some() {
+                        last_row_rect = row_rect;
+                    }
+                }
+            }
+            if self.playlist_drop_target_slot.is_none()
+                && let Some(pointer_pos) = ui.ctx().pointer_hover_pos()
+            {
+                if playlist_len == 0
+                    || first_row_rect.is_some_and(|rect| pointer_pos.y < rect.top())
+                {
+                    self.playlist_drop_target_slot = Some(0);
+                } else if last_row_rect.is_some_and(|rect| pointer_pos.y > rect.bottom()) {
+                    self.playlist_drop_target_slot = Some(playlist_len);
                 }
             }
         });
@@ -652,14 +678,14 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
         playlist_len: usize,
-    ) {
+    ) -> Option<egui::Rect> {
         let Some(index) = node
             .id
             .strip_prefix("main-window:playlist:")
             .and_then(|suffix| suffix.parse::<usize>().ok())
         else {
             self.render_leaf(ui, node, state);
-            return;
+            return None;
         };
         let can_drag_reorder = node.enabled && state.main_window.playback.can_manage_playlist;
         let text = Self::display_text(node).to_owned();
@@ -697,7 +723,27 @@ impl GuiWidgetEguiRenderer {
             response.response
         };
 
+        self.update_playlist_drop_target_slot(ui, &response, index);
         self.render_playlist_drop_indicator(ui, &response, index, playlist_len);
+        Some(response.rect)
+    }
+
+    fn update_playlist_drop_target_slot(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        row_index: usize,
+    ) {
+        let Some(pointer_pos) = ui
+            .ctx()
+            .pointer_hover_pos()
+            .or_else(|| response.interact_pointer_pos())
+            .filter(|pointer_pos| response.rect.contains(*pointer_pos))
+        else {
+            return;
+        };
+        self.playlist_drop_target_slot =
+            Self::playlist_drop_slot_for_response(response, row_index, Some(pointer_pos));
     }
 
     fn render_playlist_drop_indicator(

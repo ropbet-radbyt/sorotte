@@ -18,12 +18,14 @@ use super::runtime_bridge::{
 use super::shell_state::{GuiShellAction, SyncplayGuiShellAppState};
 use super::support::normalized_editable_text;
 
+type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
+
 #[allow(dead_code)]
 #[derive(Clone, Default)]
 pub(super) struct GuiQueuedRuntimeBridgeHandle {
     queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
     queued_requests: Arc<Mutex<VecDeque<GuiRuntimeRequest>>>,
-    repaint_notifier: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    repaint_notifier: Arc<Mutex<Option<GuiRepaintNotifier>>>,
     threaded_runtime_owner: Arc<Mutex<Option<Weak<GuiThreadedRuntimeOwnerShared>>>>,
 }
 
@@ -209,6 +211,7 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
             self.handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,
+                playlist_insert_slot: None,
             });
         }
         Vec::new()
@@ -582,10 +585,10 @@ impl Drop for GuiThreadedRuntimeOwnerPump {
             shared_state.stop_requested = true;
         }
         self.shared.wake.notify_all();
-        if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
-                eprintln!("syncplay-gui runtime thread panicked during shutdown");
-            }
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            eprintln!("syncplay-gui runtime thread panicked during shutdown");
         }
     }
 }

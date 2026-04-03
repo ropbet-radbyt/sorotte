@@ -289,7 +289,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     directory.display()
                 ));
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(windows))]

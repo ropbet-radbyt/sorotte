@@ -73,6 +73,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,
     pub(super) player_unavailability_reason: Option<String>,
     pub(super) player_local_file: Option<LocalFileUpdate>,
+    pub(super) player_local_file_placeholder: bool,
     pub(super) last_published_local_file: Option<LocalFileUpdate>,
     pub(super) attached_media_search_index: Option<GuiAttachedMediaSearchIndex>,
     pub(super) attached_media_search_next_retry_at: Option<Instant>,
@@ -202,6 +203,7 @@ impl GuiPersistedConfigRuntimeOwner {
             managed_mpv_process: None,
             player_unavailability_reason: None,
             player_local_file: None,
+            player_local_file_placeholder: false,
             last_published_local_file: None,
             attached_media_search_index: None,
             attached_media_search_next_retry_at: None,
@@ -303,6 +305,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn clear_player_runtime_cache(&mut self) {
         self.player_local_file = None;
+        self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.player_paused = None;
         if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
@@ -929,6 +932,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let selected_media_sync =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
         self.apply_pending_playlist_index_reset_to_attached_player_impl(
+            projected_state,
             selected_media_sync.selection_ready(),
         );
         self.sync_session_playstate_to_attached_player_impl(
@@ -1197,8 +1201,14 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
         paths: Vec<String>,
+        playlist_insert_slot: Option<usize>,
     ) {
-        self.open_media_files_through_shared_playlist_runtime_impl(handle, projected_state, paths)
+        self.open_media_files_through_shared_playlist_runtime_impl(
+            handle,
+            projected_state,
+            paths,
+            playlist_insert_slot,
+        )
     }
 
     fn emit_gui_actions_to_attached_player(&mut self, actions: &[GuiShellAction]) {

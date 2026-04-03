@@ -184,6 +184,36 @@ fn gui_shell_app_state_normalizes_bare_controlled_room_names_from_saved_settings
 }
 
 #[test]
+fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        port: Some(8999),
+        username: Some("alice".to_owned()),
+        room: Some("+Test:77F8DA30FB3E:RH-273-303".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert_eq!(
+        state.configuration.to_stored_settings().room.as_deref(),
+        Some("+Test:77F8DA30FB3E:RH-273-303")
+    );
+    assert_eq!(
+        state.saved_configuration.room.as_deref(),
+        Some("+Test:77F8DA30FB3E:RH-273-303")
+    );
+    assert_eq!(state.main_window.room_name, "+Test:77F8DA30FB3E");
+
+    let target = state
+        .saved_session_connect_target()
+        .expect("startup state should produce a saved connect target");
+    assert_eq!(target.room, "+Test:77F8DA30FB3E");
+    assert_eq!(
+        target.controlled_room_password_override.as_deref(),
+        Some("RH-273-303")
+    );
+}
+
+#[test]
 fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("+room:ABCDEF123456".to_owned()),

@@ -65,8 +65,10 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
 
     assert_eq!(
         GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+            None,
             vec![playlist_path.to_string_lossy().into_owned()],
             true,
+            None,
         ),
         vec![
             GuiShellAction::SwitchView(GuiShellView::MainWindow),
@@ -78,6 +80,35 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+        "episode1.mkv".to_owned(),
+        "episode3.mkv".to_owned(),
+    ])));
+
+    assert_eq!(
+        GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+            Some(&state),
+            vec!["C:/Media/episode2.mkv".to_owned()],
+            true,
+            Some(1),
+        ),
+        vec![
+            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+                "episode1.mkv".to_owned(),
+                "episode2.mkv".to_owned(),
+                "episode3.mkv".to_owned(),
+            ]),
+        ]
+    );
 }
 
 #[test]

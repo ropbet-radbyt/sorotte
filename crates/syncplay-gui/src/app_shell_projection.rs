@@ -1,4 +1,6 @@
-use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
+use syncplay_client_app::app_boundary::state::{
+    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+};
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
@@ -370,7 +372,9 @@ impl MainWindowShellState {
     }
 
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let room_name = settings
+        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+        let room_name = runtime_settings
+            .settings
             .room
             .as_deref()
             .map(str::trim)

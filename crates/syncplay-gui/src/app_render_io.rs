@@ -4,7 +4,7 @@ use rfd::FileDialog;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::SyncplayGuiShellAppState;
 use super::startup_support::env_trimmed;
-use super::support::normalized_editable_text;
+use super::support::{normalized_editable_text, shared_playlist_entry_for_media_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiDroppedFilesTarget {
@@ -32,13 +32,21 @@ impl GuiDroppedFilesTarget {
 pub(super) struct GuiDroppedFilesRequest {
     pub(super) target: GuiDroppedFilesTarget,
     pub(super) paths: Vec<String>,
+    pub(super) playlist_insert_slot: Option<usize>,
 }
 
 impl GuiWidgetEguiRenderer {
+    pub(super) fn shared_playlist_entries_for_media_paths(paths: Vec<String>) -> Vec<String> {
+        paths.iter()
+            .filter_map(|path| shared_playlist_entry_for_media_path(path))
+            .collect()
+    }
+
     pub(super) fn dropped_files_request_for_input(
         state: &SyncplayGuiShellAppState,
         playlist_drop_target_hovered: bool,
         playlist_drop_target_rect: Option<egui::Rect>,
+        playlist_drop_target_slot: Option<usize>,
         pointer_hover_pos: Option<egui::Pos2>,
         dropped_files: Vec<egui::DroppedFile>,
     ) -> Option<GuiDroppedFilesRequest> {
@@ -46,6 +54,7 @@ impl GuiWidgetEguiRenderer {
             .iter()
             .filter_map(Self::dropped_file_path)
             .collect::<Vec<_>>();
+        let playlist_append_slot = Some(state.main_window.playlist.len());
         if paths.is_empty() {
             return None;
         }
@@ -53,9 +62,17 @@ impl GuiWidgetEguiRenderer {
             return Some(GuiDroppedFilesRequest {
                 target: GuiDroppedFilesTarget::Playlist,
                 paths,
+                playlist_insert_slot: playlist_drop_target_slot.or(playlist_append_slot),
             });
         }
-        let hovered_playlist_target = playlist_drop_target_hovered
+        let hovered_playlist_insert_slot = hovered_playlist_insert_slot(
+            playlist_drop_target_hovered,
+            playlist_drop_target_rect,
+            pointer_hover_pos,
+            playlist_drop_target_slot,
+        );
+        let hovered_playlist_target = hovered_playlist_insert_slot.is_some()
+            || playlist_drop_target_hovered
             || playlist_drop_target_rect
                 .zip(pointer_hover_pos)
                 .is_some_and(|(rect, pointer)| rect.contains(pointer));
@@ -66,7 +83,13 @@ impl GuiWidgetEguiRenderer {
         } else {
             GuiDroppedFilesTarget::Window
         };
-        Some(GuiDroppedFilesRequest { target, paths })
+        Some(GuiDroppedFilesRequest {
+            target,
+            paths,
+            playlist_insert_slot: matches!(target, GuiDroppedFilesTarget::Playlist)
+                .then_some(hovered_playlist_insert_slot.or(playlist_append_slot))
+                .flatten(),
+        })
     }
 
     fn dropped_file_path(file: &egui::DroppedFile) -> Option<String> {
@@ -185,4 +208,19 @@ impl GuiWidgetEguiRenderer {
                 .map(|row| row.path.as_str())
         })
     }
+}
+
+fn hovered_playlist_insert_slot(
+    playlist_drop_target_hovered: bool,
+    playlist_drop_target_rect: Option<egui::Rect>,
+    pointer_hover_pos: Option<egui::Pos2>,
+    playlist_drop_target_slot: Option<usize>,
+) -> Option<usize> {
+    let hovered_playlist_target = playlist_drop_target_hovered
+        || playlist_drop_target_rect
+            .zip(pointer_hover_pos)
+            .is_some_and(|(rect, pointer)| rect.contains(pointer));
+    hovered_playlist_target
+        .then_some(playlist_drop_target_slot)
+        .flatten()
 }

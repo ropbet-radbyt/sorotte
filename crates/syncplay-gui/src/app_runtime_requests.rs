@@ -33,16 +33,19 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist: true,
+                playlist_insert_slot,
             } => {
                 self.open_media_files_through_shared_playlist_runtime(
                     handle,
                     projected_state,
                     paths,
+                    playlist_insert_slot,
                 );
             }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist: false,
+                playlist_insert_slot: _,
             } => {
                 if paths.is_empty() {
                     return false;
@@ -52,6 +55,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         handle,
                         projected_state,
                         paths,
+                        None,
                     );
                     return true;
                 }

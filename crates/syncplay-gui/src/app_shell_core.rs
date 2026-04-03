@@ -18,10 +18,14 @@ use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
         let mut shell_settings = settings.clone();
-        shell_settings.room = stored_client_settings_runtime_snapshot_legacy_compatible(settings)
-            .settings
-            .room;
+        shell_settings.room = runtime_settings.settings.room.clone().map(|room| {
+            runtime_settings
+                .controlled_room_password_override
+                .as_ref()
+                .map_or(room.clone(), |password| format!("{room}:{password}"))
+        });
         let mut state = Self {
             active_view: GuiShellView::Configuration,
             selected_main_window_tab: GuiMainWindowTab::Overview,

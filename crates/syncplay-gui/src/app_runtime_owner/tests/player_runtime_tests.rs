@@ -84,6 +84,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,
+        player_local_file_placeholder: false,
         last_published_local_file: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
@@ -388,6 +389,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
+        local_file_updates: Vec<syncplay_player_api::LocalFileUpdate>,
         set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
@@ -402,12 +404,29 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.opened_paths.push(path.to_owned());
+            state.local_file_updates.push(
+                syncplay_player_api::LocalFileUpdate::new(
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path),
+                )
+                .with_path(path.to_owned()),
+            );
+            Ok(())
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
             self.state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .opened_paths
-                .push(path.to_owned());
-            Ok(())
+                .local_file_updates
+                .pop()
         }
 
         fn set_position(
@@ -452,6 +471,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,
+        player_local_file_placeholder: false,
         last_published_local_file: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
@@ -484,6 +504,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
             "C:/Media/episode2.mkv".to_owned(),
         ],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let open_actions = handle.drain_actions();
@@ -785,6 +806,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         managed_mpv_process: None,
         player_unavailability_reason: None,
         player_local_file: None,
+        player_local_file_placeholder: false,
         last_published_local_file: None,
         attached_media_search_index: None,
         attached_media_search_next_retry_at: None,
@@ -869,6 +891,7 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
+        local_file_updates: Vec<syncplay_player_api::LocalFileUpdate>,
         set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
@@ -883,12 +906,29 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.opened_paths.push(path.to_owned());
+            state.local_file_updates.push(
+                syncplay_player_api::LocalFileUpdate::new(
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path),
+                )
+                .with_path(path.to_owned()),
+            );
+            Ok(())
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
             self.state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .opened_paths
-                .push(path.to_owned());
-            Ok(())
+                .local_file_updates
+                .pop()
         }
 
         fn set_position(
@@ -991,13 +1031,19 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        if player_state
+        let recorded_state = player_state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let opened_selected_media = recorded_state
             .opened_paths
             .iter()
-            .any(|path| path == selected_media_path.to_string_lossy().as_ref())
-        {
+            .any(|path| path == selected_media_path.to_string_lossy().as_ref());
+        let applied_reset_rewind = recorded_state
+            .set_positions
+            .iter()
+            .any(|position| (*position - 0.0).abs() < f64::EPSILON);
+        drop(recorded_state);
+        if opened_selected_media && applied_reset_rewind {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1018,7 +1064,14 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
             .set_positions
             .iter()
             .any(|position| (*position - 0.0).abs() < f64::EPSILON),
-        "playlist index changes should rewind a newly opened item before any fresh room sync arrives"
+        "playlist index changes should rewind a newly opened item before any fresh room sync arrives; recorded_state={recorded_state:?}, pending_reset={}, placeholder={}, player_local_file={:?}",
+        owner
+            .session
+            .as_ref()
+            .expect("session should exist")
+            .has_pending_playlist_index_reset_intent(),
+        owner.player_local_file_placeholder,
+        owner.player_local_file,
     );
     assert!(
         !recorded_state
@@ -2063,6 +2116,117 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
         "room playstate should seek once the attached player reports a local file"
     );
     assert_eq!(recorded.set_paused_values, vec![true]);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_applying_playlist_reset() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.shared_playlist_enabled = true;
+    state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0));
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .note_local_playlist_index_reset_intent(true);
+
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_path("C:/Media/episode2.mkv".to_owned()),
+    );
+    owner.player_local_file_placeholder = true;
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+    {
+        let recorded = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(recorded.set_positions.is_empty());
+        assert!(recorded.set_paused_values.is_empty());
+    }
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .expect("session should exist")
+            .has_pending_playlist_index_reset_intent(),
+        "playlist reset intent should remain pending until the attached player reports a real local file update"
+    );
+
+    owner.player_local_file_placeholder = false;
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+
+    let recorded = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(recorded.set_positions, vec![0.0]);
+    assert_eq!(recorded.set_paused_values, vec![true]);
+    assert_eq!(owner.player_position_seconds, Some(0.0));
+    assert_eq!(owner.player_paused, Some(true));
+    assert!(
+        !owner
+            .session
+            .as_ref()
+            .expect("session should exist")
+            .has_pending_playlist_index_reset_intent(),
+        "playlist reset intent should clear after the rewind is applied"
+    );
 }
 
 #[test]

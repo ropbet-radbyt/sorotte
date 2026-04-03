@@ -772,8 +772,10 @@ impl GuiSemanticDriver {
 
     fn open_media_files(&mut self, paths: Vec<String>) -> Result<(), String> {
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+            Some(&self.state),
             paths,
             self.state.shared_playlist_events_enabled(),
+            None,
         );
         if actions.is_empty() {
             return Err(
@@ -790,8 +792,10 @@ impl GuiSemanticDriver {
         paths: Vec<String>,
     ) -> Result<(), String> {
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+            Some(&self.state),
             paths,
             target.load_into_shared_playlist(&self.state),
+            None,
         );
         if actions.is_empty() {
             return Err(

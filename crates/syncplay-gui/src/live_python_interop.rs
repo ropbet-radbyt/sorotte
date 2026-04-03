@@ -859,6 +859,7 @@ fn request_local_shared_playlist_open(handle: &GuiQueuedRuntimeBridgeHandle, pat
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: paths.iter().map(|path| (*path).to_owned()).collect(),
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
 }
 

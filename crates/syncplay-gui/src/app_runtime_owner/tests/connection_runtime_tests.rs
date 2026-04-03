@@ -9,6 +9,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/episode1.mkv".to_owned()],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert_eq!(
@@ -29,6 +30,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/movie.mkv".to_owned()],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert_eq!(
@@ -1027,6 +1029,132 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
     assert!(outbound_protocol_lines[0].contains(canonical_room));
     assert!(outbound_protocol_lines[0].contains("\"AB-123-456\""));
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled_room_auth() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    let room_input = "+Test:77F8DA30FB3E:RH-273-303";
+    let canonical_room = "+Test:77F8DA30FB3E";
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("startup auth test should bind a TCP listener");
+    let address = listener
+        .local_addr()
+        .expect("startup auth test listener should expose an address");
+    let connect_host = address.ip().to_string();
+    let connect_port = address.port();
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let (controller_auth_tx, controller_auth_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("startup auth test should accept a GUI connection");
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .expect("startup auth test stream should clone"),
+        );
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("startup auth test should read the GUI hello");
+        hello_tx
+            .send(hello_line)
+            .expect("startup auth test should report the hello");
+        stream
+            .write_all(
+                format!(
+                    r#"{{"Hello":{{"username":"alice","room":{{"name":"{canonical_room}"}},"version":"1.7.5","features":{{"chat":true}}}}}}"#
+                )
+                .as_bytes(),
+            )
+            .expect("startup auth test should write the server hello");
+        stream
+            .write_all(b"\r\n")
+            .expect("startup auth test should terminate the server hello");
+        stream
+            .flush()
+            .expect("startup auth test should flush the server hello");
+
+        let mut controller_auth_line = String::new();
+        reader
+            .read_line(&mut controller_auth_line)
+            .expect("startup auth test should read controller auth");
+        controller_auth_tx
+            .send(controller_auth_line)
+            .expect("startup auth test should report controller auth");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some(connect_host.clone()),
+        port: Some(connect_port),
+        username: Some("alice".to_owned()),
+        room: Some(room_input.to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert_eq!(
+        state.configuration.to_stored_settings().room.as_deref(),
+        Some(room_input)
+    );
+    assert_eq!(state.main_window.room_name, canonical_room);
+    assert_eq!(
+        state
+            .saved_session_connect_target()
+            .and_then(|target| target.controlled_room_password_override)
+            .as_deref(),
+        Some("RH-273-303")
+    );
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.commands.can_disconnect_session,
+        "startup saved-server connect",
+    );
+
+    let hello_line = hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup auth test should observe a GUI hello");
+    assert!(hello_line.contains(canonical_room));
+    assert!(
+        !hello_line.contains("RH-273-303"),
+        "startup hello should not leak the controlled-room password"
+    );
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| {
+            state.main_window.room_control_status
+                == "Not granted by server: room controls are locked."
+        },
+        "server hello projection for startup auth",
+    );
+
+    let controller_auth_line = controller_auth_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup auth test should observe controller auth");
+    assert!(controller_auth_line.contains("\"controllerAuth\""));
+    assert!(controller_auth_line.contains(canonical_room));
+    assert!(controller_auth_line.contains("\"RH-273-303\""));
+
+    server_thread
+        .join()
+        .expect("startup auth test server thread should exit cleanly");
 }
 
 #[test]

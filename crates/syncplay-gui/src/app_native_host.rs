@@ -112,7 +112,11 @@ impl GuiNativeApp {
             .map(GuiDroppedFilesTarget::parse)
             .transpose()?
             .unwrap_or(GuiDroppedFilesTarget::Window);
-        Ok(Some(GuiDroppedFilesRequest { target, paths }))
+        Ok(Some(GuiDroppedFilesRequest {
+            target,
+            paths,
+            playlist_insert_slot: None,
+        }))
     }
 
     pub(super) fn normalize_dropped_files_request(
@@ -157,6 +161,7 @@ impl GuiNativeApp {
         let request = (!kept_paths.is_empty()).then_some(GuiDroppedFilesRequest {
             target: request.target,
             paths: kept_paths,
+            playlist_insert_slot: request.playlist_insert_slot,
         });
         (request, warnings)
     }
@@ -185,13 +190,7 @@ impl GuiNativeApp {
             if let Some(path) = request.paths.first() {
                 self.state.remember_media_dialog_directory(path);
             }
-            let load_into_shared_playlist =
-                matches!(request.target, GuiDroppedFilesTarget::Playlist);
-            for action in self.runtime.actions_for_open_media_files(
-                &self.state,
-                request.paths,
-                load_into_shared_playlist,
-            ) {
+            for action in self.runtime.actions_for_dropped_files(&self.state, request) {
                 state_changed |= self.state.apply(action);
             }
         }

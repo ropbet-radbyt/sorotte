@@ -511,6 +511,7 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/movie.mkv".to_owned()],
         load_into_shared_playlist: false,
+        playlist_insert_slot: None,
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -683,6 +684,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
             "C:/Media/episode2.mkv".to_owned(),
         ],
         load_into_shared_playlist: true,
+        playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let open_actions = handle.drain_actions();

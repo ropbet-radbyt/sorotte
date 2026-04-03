@@ -56,6 +56,7 @@ fn gui_native_app_reads_drag_and_drop_test_override_from_lookup() {
                 "C:/Drops/episode1.mkv".to_owned(),
                 "D:/Alt/episode2.mp4".to_owned(),
             ],
+            playlist_insert_slot: None,
         })
     );
     assert_eq!(

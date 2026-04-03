@@ -1,5 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::SystemTime;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::SystemTime,
+};
 
 use syncplay_client_app::app_boundary::{
     commands::LocalOffsetCommand,
@@ -113,6 +116,22 @@ pub(super) fn normalized_editable_text(value: &str) -> Option<String> {
     } else {
         Some(trimmed.to_owned())
     }
+}
+
+pub(super) fn shared_playlist_entry_for_media_path(path: &str) -> Option<String> {
+    let trimmed = normalized_editable_text(path)?;
+    if trimmed.contains("://") {
+        return Some(trimmed);
+    }
+    Some(
+        Path::new(&trimmed)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(trimmed.as_str())
+            .to_owned(),
+    )
 }
 
 pub(super) fn player_arguments_text_for_path(

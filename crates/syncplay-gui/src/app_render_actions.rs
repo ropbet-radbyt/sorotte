@@ -88,6 +88,7 @@ impl GuiWidgetEguiRenderer {
         }
         if node.id == "main-window:playlist:add-files" {
             return Self::pick_media_files(state)
+                .map(Self::shared_playlist_entries_for_media_paths)
                 .map(GuiShellAction::AppendSharedPlaylistEntries)
                 .into_iter()
                 .collect();

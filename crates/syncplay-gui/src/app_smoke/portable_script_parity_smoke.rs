@@ -323,8 +323,10 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     );
 
     let preview_open_actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
+        None,
         vec!["C:/SmokeMedia/open-target.mkv".to_owned()],
         true,
+        None,
     );
     assert_eq!(
         preview_open_actions,

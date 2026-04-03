@@ -5334,7 +5334,7 @@ impl ClientSession {
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
-            if !(global_paused && !recently_advanced) {
+            if !global_paused || recently_advanced {
                 let ready = !self.local_user_ready();
                 self.apply_local_ready_state_optimistically(ready);
                 actions.push(ClientRuntimeAction::SetReady {
@@ -11818,7 +11818,7 @@ mod tests {
         assert!(!room_paused);
         assert_eq!(local_position, 117.5);
         assert!(
-            room_position >= 120.0 && room_position < 120.1,
+            (120.0..120.1).contains(&room_position),
             "post-restore validation should compare against the aged room playstate, not the stale stored snapshot"
         );
         assert!(
@@ -11834,7 +11834,7 @@ mod tests {
             runtime
                 .player()
                 .position
-                .is_some_and(|position| { position >= 120.0 && position < 120.1 }),
+                .is_some_and(|position| (120.0..120.1).contains(&position)),
             "post-restore validation should issue a corrective seek toward the aged room position"
         );
         assert!(
