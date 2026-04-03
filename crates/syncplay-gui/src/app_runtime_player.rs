@@ -1555,6 +1555,10 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         }
+        if self.player_local_file.is_none() {
+            self.last_applied_attached_room_playstate = None;
+            return;
+        }
         let Some((playstate, raw_playstate, local_username)) =
             self.session.as_ref().and_then(|session| {
                 session
