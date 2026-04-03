@@ -118,21 +118,51 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(());
         };
         let previous_session_paused = session.local_pause_state();
+        let mut pending_local_attached_pause_override_update = None;
         session.sync_runtime_settings(&runtime_settings)?;
-        session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
-        if self.player_paused == Some(false)
-            && previous_session_paused != Some(false)
-            && session.handle_local_player_unpause_attempt()?
+        if session.supports_playback_pause_changes()
+            && let Some(target_paused) = self.player_paused
+            && previous_session_paused != Some(target_paused)
         {
-            if let Some(player) = self.player.as_mut() {
-                player.set_paused(true).map_err(|error| {
-                    format!(
-                        "Attached player readiness/unpause correction failed while restoring the paused state: {error}"
-                    )
-                })?;
+            session.sync_local_playback_telemetry(
+                previous_session_paused,
+                self.player_position_seconds,
+            )?;
+            let _ = session.set_playback_paused(target_paused)?;
+            if let Some(corrected_paused) = session.local_pause_state()
+                && Some(corrected_paused) != self.player_paused
+            {
+                if let Some(player) = self.player.as_mut() {
+                    player
+                        .set_paused(corrected_paused)
+                        .map_err(|error| {
+                            format!(
+                                "Attached player readiness/pause correction failed while restoring the paused state: {error}"
+                            )
+                        })?;
+                }
+                self.player_paused = Some(corrected_paused);
             }
-            self.player_paused = Some(true);
-            session.sync_local_playback_telemetry(Some(true), self.player_position_seconds)?;
+            session
+                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
+            pending_local_attached_pause_override_update = Some(
+                match (
+                    session.local_pause_state(),
+                    session
+                        .current_room_playstate_for_attached_player_sync()
+                        .and_then(|playstate| playstate.paused),
+                ) {
+                    (Some(session_pause_state), Some(room_pause_state))
+                        if room_pause_state != session_pause_state =>
+                    {
+                        Some(session_pause_state)
+                    }
+                    _ => None,
+                },
+            );
+        } else {
+            session
+                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
         }
         if auto_advance_playlist_at_eof {
             session.advance_playlist_index()?;
@@ -148,6 +178,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 filesize_privacy_mode,
             )?;
             self.last_published_local_file = player_local_file;
+        }
+        if let Some(pending_local_attached_pause_override) =
+            pending_local_attached_pause_override_update
+        {
+            self.pending_local_attached_pause_override = pending_local_attached_pause_override;
         }
         Ok(())
     }

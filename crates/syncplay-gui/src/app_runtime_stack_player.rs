@@ -164,6 +164,14 @@ impl PlayerAdapter for GuiOwnedPlayer {
         }
     }
 
+    fn set_playback_rate(&mut self, rate: f64) -> Result<(), syncplay_player_api::PlayerError> {
+        match self {
+            Self::Test(player) => player.set_playback_rate(rate),
+            Self::Mpv(player) => player.set_playback_rate(rate),
+            Self::Custom(player) => player.set_playback_rate(rate),
+        }
+    }
+
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
         match self {
             Self::Test(player) => player.take_local_file_update(),

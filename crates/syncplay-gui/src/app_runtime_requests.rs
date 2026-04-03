@@ -470,37 +470,27 @@ impl GuiPersistedConfigRuntimeOwner {
                 if self.player.is_some() {
                     let target_paused = !projected_state.main_window.playback_paused;
                     let previous_paused = projected_state.main_window.playback_paused;
-                    let (player_name, toggle_result) = {
-                        let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_paused(target_paused))
-                    };
-                    match toggle_result {
-                        Ok(()) => {
-                            self.player_paused = Some(target_paused);
-                            self.refresh_player_state();
-                            if let Err(error) = self.sync_playback_pause_into_detached_session(
-                                projected_state,
-                                previous_paused,
-                                target_paused,
-                            ) {
+                    match self.apply_playback_pause_change_with_detached_session(
+                        projected_state,
+                        previous_paused,
+                        target_paused,
+                    ) {
+                        Ok((actual_paused, sync_error)) => {
+                            if let Some(error) = sync_error {
                                 Self::push_player_error(handle, error);
                             }
-                            Self::push_actions_and_project(
-                                handle,
-                                projected_state,
-                                vec![if target_paused {
+                            let actions = if actual_paused == previous_paused {
+                                Vec::new()
+                            } else {
+                                vec![if actual_paused {
                                     GuiShellAction::AnnouncePlaybackPaused
                                 } else {
                                     GuiShellAction::AnnouncePlaybackResumed
-                                }],
-                            );
+                                }]
+                            };
+                            Self::push_actions_and_project(handle, projected_state, actions);
                         }
-                        Err(error) => Self::push_player_error(
-                            handle,
-                            format!(
-                                "Playback pause toggle through the attached {player_name} player failed: {error}"
-                            ),
-                        ),
+                        Err(error) => Self::push_player_error(handle, error),
                     }
                 } else {
                     Self::push_runtime_unavailable(handle, self.toggle_pause_unavailable_message());
@@ -514,19 +504,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 if self.player.is_some() {
                     let target_paused = !projected_state.main_window.playback_paused;
                     let previous_paused = projected_state.main_window.playback_paused;
-                    let (player_name, toggle_result) = {
-                        let player = self.player.as_mut().expect("player should exist");
-                        (player.name(), player.set_paused(target_paused))
-                    };
-                    let actions = match toggle_result {
-                        Ok(()) => {
-                            self.player_paused = Some(target_paused);
-                            self.refresh_player_state();
-                            if let Err(error) = self.sync_playback_pause_into_detached_session(
-                                projected_state,
-                                previous_paused,
-                                target_paused,
-                            ) {
+                    let actions = match self.apply_playback_pause_change_with_detached_session(
+                        projected_state,
+                        previous_paused,
+                        target_paused,
+                    ) {
+                        Ok((_actual_paused, sync_error)) => {
+                            if let Some(error) = sync_error {
                                 Self::push_player_error(handle, error);
                             }
                             vec![GuiShellAction::CompletePlaybackPauseToggle]
@@ -535,9 +519,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             GuiShellAction::CancelPlaybackPauseToggle,
                             GuiShellAction::PushTransientNotification {
                                 level: GuiTransientNotificationLevel::Error,
-                                message: format!(
-                                    "Playback pause toggle through the attached {player_name} player failed: {error}"
-                                ),
+                                message: error,
                             },
                         ],
                     };

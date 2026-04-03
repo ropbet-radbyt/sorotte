@@ -88,6 +88,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
     pub(super) suppressed_attached_room_playstate_after_playlist_reset:
         Option<GuiSessionRoomPlaystate>,
+    pub(super) pending_local_attached_pause_override: Option<bool>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) playlist_auto_advance_eof_latched: bool,
@@ -215,6 +216,7 @@ impl GuiPersistedConfigRuntimeOwner {
             last_attached_media_resolution_trigger: None,
             last_applied_attached_room_playstate: None,
             suppressed_attached_room_playstate_after_playlist_reset: None,
+            pending_local_attached_pause_override: None,
             player_position_seconds: None,
             player_paused: None,
             playlist_auto_advance_eof_latched: false,
@@ -318,6 +320,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_attached_media_resolution_trigger = None;
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
+        self.pending_local_attached_pause_override = None;
         self.playlist_auto_advance_eof_latched = false;
     }
 
@@ -766,6 +769,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
         self.last_applied_attached_room_playstate = None;
+        self.pending_local_attached_pause_override = None;
         self.reset_session_transport_reconnect_state();
 
         let actions = self.sessionless_projection_actions(projected_state);
@@ -1233,13 +1237,17 @@ impl GuiPersistedConfigRuntimeOwner {
         )
     }
 
-    fn sync_playback_pause_into_detached_session(
+    fn apply_playback_pause_change_with_detached_session(
         &mut self,
         state: &SyncplayGuiShellAppState,
         previous_paused: bool,
         target_paused: bool,
-    ) -> Result<(), String> {
-        self.sync_playback_pause_into_detached_session_impl(state, previous_paused, target_paused)
+    ) -> Result<(bool, Option<String>), String> {
+        self.apply_playback_pause_change_with_detached_session_impl(
+            state,
+            previous_paused,
+            target_paused,
+        )
     }
 
     fn undo_seek_target_position_from_detached_session(

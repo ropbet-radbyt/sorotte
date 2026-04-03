@@ -35,6 +35,9 @@ const LEGACY_SHOW_DURATION_NOTIFICATION: bool = true;
 const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
 const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
 const LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
+const LEGACY_FALLBACK_MAX_USERNAME_LENGTH: usize = 16;
+const LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH: usize = 35;
+const LEGACY_FALLBACK_MAX_FILENAME_LENGTH: usize = 250;
 pub const SYNCPLAY_WIRE_VERSION_LEGACY: &str = "1.2.255";
 pub const SYNCPLAY_COMPAT_VERSION_LEGACY: &str = "1.7.5";
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
@@ -1784,7 +1787,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ClientUserView {
     pub room: Option<String>,
     pub ready: Option<bool>,
@@ -1792,6 +1795,7 @@ pub struct ClientUserView {
     pub file_name: Option<String>,
     pub file_size: Option<Value>,
     pub file_duration: Option<Value>,
+    pub features: Option<Value>,
     pub controller: bool,
 }
 
@@ -1820,6 +1824,10 @@ pub struct ClientSession {
     server_managed_rooms_supported: Option<bool>,
     server_shared_playlists_supported: Option<bool>,
     server_chat_supported: Option<bool>,
+    server_persistent_rooms_supported: Option<bool>,
+    server_max_username_length: Option<usize>,
+    server_max_room_name_length: Option<usize>,
+    server_max_filename_length: Option<usize>,
     desync_config: DesyncCorrectionConfig,
     reconnect_policy: ReconnectPolicyConfig,
     behavior_config: SessionBehaviorConfig,
@@ -1893,6 +1901,10 @@ impl Default for ClientSession {
             server_managed_rooms_supported: None,
             server_shared_playlists_supported: None,
             server_chat_supported: None,
+            server_persistent_rooms_supported: None,
+            server_max_username_length: None,
+            server_max_room_name_length: None,
+            server_max_filename_length: None,
             desync_config: DesyncCorrectionConfig::default(),
             reconnect_policy: ReconnectPolicyConfig::default(),
             behavior_config: SessionBehaviorConfig::default(),
@@ -2438,6 +2450,12 @@ impl ClientSession {
         self.user_views.get(username).map(|user| user.controller)
     }
 
+    pub fn user_features(&self, username: &str) -> Option<&Value> {
+        self.user_views
+            .get(username)
+            .and_then(|user| user.features.as_ref())
+    }
+
     pub fn file_differences_for_user(&self, username: &str) -> Option<FileDifferenceSummary> {
         let current_username = self.username.as_deref()?;
         let current_user = self.user_views.get(current_username)?;
@@ -2799,12 +2817,32 @@ impl ClientSession {
         self.server_chat_supported
     }
 
+    pub fn server_persistent_rooms_supported(&self) -> Option<bool> {
+        self.server_persistent_rooms_supported
+    }
+
+    pub fn server_max_username_length(&self) -> Option<usize> {
+        self.server_max_username_length
+    }
+
+    pub fn server_max_room_name_length(&self) -> Option<usize> {
+        self.server_max_room_name_length
+    }
+
+    pub fn server_max_filename_length(&self) -> Option<usize> {
+        self.server_max_filename_length
+    }
+
     pub fn clear_server_feature_support_state(&mut self) {
         self.server_readiness_supported = None;
         self.server_set_others_readiness_supported = None;
         self.server_managed_rooms_supported = None;
         self.server_shared_playlists_supported = None;
         self.server_chat_supported = None;
+        self.server_persistent_rooms_supported = None;
+        self.server_max_username_length = None;
+        self.server_max_room_name_length = None;
+        self.server_max_filename_length = None;
     }
 
     pub fn local_can_control(&self) -> Option<bool> {
@@ -3695,27 +3733,19 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_pause_toggle(&mut self) -> Vec<ClientRuntimeAction> {
-        let target_paused = !self.local_paused.unwrap_or(false);
-        self.local_paused = Some(target_paused);
-        vec![ClientRuntimeAction::SetPaused(target_paused)]
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let target_paused = !self.effective_local_paused_state(now_seconds);
+        self.runtime_actions_for_local_pause_change(target_paused, now_seconds)
     }
 
     pub fn runtime_actions_for_local_pause_set(
         &mut self,
         paused: bool,
     ) -> Vec<ClientRuntimeAction> {
-        let effective_paused = self
-            .local_paused
-            .or_else(|| {
-                self.current_room_playstate()
-                    .and_then(|playstate| playstate.paused)
-            })
-            .unwrap_or(false);
-        if effective_paused == paused {
-            return Vec::new();
-        }
-        self.local_paused = Some(paused);
-        vec![ClientRuntimeAction::SetPaused(paused)]
+        self.runtime_actions_for_local_pause_change(
+            paused,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
     }
 
     pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
@@ -4357,11 +4387,7 @@ impl ClientSession {
     }
 
     pub fn handle_disconnect(&mut self, now_seconds: f64) -> Vec<ClientRuntimeAction> {
-        self.server_shared_playlists_supported = None;
-        self.server_chat_supported = None;
-        self.server_readiness_supported = None;
-        self.server_set_others_readiness_supported = None;
-        self.server_managed_rooms_supported = None;
+        self.clear_server_feature_support_state();
         if !self.behavior_config.pause_on_leave {
             return Vec::new();
         }
@@ -4429,6 +4455,7 @@ impl ClientSession {
             self.local_paused = Some(true);
             let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
             if !self.local_user_ready() {
+                self.apply_local_ready_state_optimistically(true);
                 actions.push(ClientRuntimeAction::SetReady {
                     ready: true,
                     manually_initiated: true,
@@ -4453,6 +4480,7 @@ impl ClientSession {
             return Vec::new();
         }
 
+        self.apply_local_ready_state_optimistically(true);
         vec![ClientRuntimeAction::SetReady {
             ready: true,
             manually_initiated: false,
@@ -4612,11 +4640,7 @@ impl ClientSession {
         self.last_advanced_at_seconds = None;
         self.client_ignoring_on_the_fly = 0;
         self.server_ignoring_on_the_fly = 0;
-        self.server_shared_playlists_supported = None;
-        self.server_chat_supported = None;
-        self.server_readiness_supported = None;
-        self.server_set_others_readiness_supported = None;
-        self.server_managed_rooms_supported = None;
+        self.clear_server_feature_support_state();
 
         if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
             self.set_user_room(&username, Some(room_name));
@@ -4743,6 +4767,20 @@ impl ClientSession {
                 Self::meets_min_version_legacy_compatible(&server_version, LEGACY_CHAT_MIN_VERSION)
             }),
         );
+        self.server_persistent_rooms_supported =
+            Some(Self::feature_bool(hello.features.as_ref(), "persistentRooms").unwrap_or(false));
+        self.server_max_username_length = Some(
+            Self::feature_usize(hello.features.as_ref(), "maxUsernameLength")
+                .unwrap_or(LEGACY_FALLBACK_MAX_USERNAME_LENGTH),
+        );
+        self.server_max_room_name_length = Some(
+            Self::feature_usize(hello.features.as_ref(), "maxRoomNameLength")
+                .unwrap_or(LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH),
+        );
+        self.server_max_filename_length = Some(
+            Self::feature_usize(hello.features.as_ref(), "maxFilenameLength")
+                .unwrap_or(LEGACY_FALLBACK_MAX_FILENAME_LENGTH),
+        );
         if self.chat_config.apply_server_max_chat_message_length {
             self.chat_config.max_chat_message_length =
                 Self::feature_usize(hello.features.as_ref(), "maxChatMessageLength")
@@ -4849,6 +4887,10 @@ impl ClientSession {
                     self.set_user_controller(&username, controller);
                 }
 
+                if let Some(features) = user_payload.features {
+                    self.set_user_features(&username, Some(features));
+                }
+
                 if let Some(is_ready) = user_payload.is_ready {
                     self.set_user_ready(&username, is_ready);
                 }
@@ -4871,6 +4913,23 @@ impl ClientSession {
                     self.set_user_room(&target_username, Some(room_name));
                 }
                 self.set_user_ready(&target_username, ready.is_ready);
+            }
+        }
+
+        if let Some(features_update) = set_payload.features {
+            let target_username = features_update
+                .get("username")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| self.username.clone());
+            let target_features = features_update.get("features").cloned().or_else(|| {
+                features_update
+                    .get("username")
+                    .is_none()
+                    .then_some(features_update.clone())
+            });
+            if let Some(target_username) = target_username {
+                self.set_user_features(&target_username, target_features);
             }
         }
 
@@ -5068,6 +5127,7 @@ impl ClientSession {
                 self.set_user_file_info(&username, has_file, file_name, file_size, file_duration);
                 self.set_user_controller(&username, user_entry.controller.unwrap_or(false));
                 self.set_user_ready_state(&username, user_entry.is_ready);
+                self.set_user_features(&username, user_entry.features);
                 if current_username.as_deref() == Some(username.as_str()) {
                     resolved_self_room = Some(room_name.clone());
                 }
@@ -5210,6 +5270,117 @@ impl ClientSession {
     fn has_global_playstate(&self) -> bool {
         self.current_room_playstate()
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some())
+    }
+
+    fn effective_local_paused_state(&self, now_seconds: f64) -> bool {
+        self.local_paused
+            .or_else(|| {
+                self.current_room_playstate_at(now_seconds)
+                    .and_then(|playstate| playstate.paused)
+            })
+            .unwrap_or(false)
+    }
+
+    fn apply_local_ready_state_optimistically(&mut self, ready: bool) {
+        let Some(username) = self.username.clone() else {
+            return;
+        };
+        self.set_user_ready_state(&username, Some(ready));
+    }
+
+    fn runtime_actions_for_local_pause_change(
+        &mut self,
+        paused: bool,
+        now_seconds: f64,
+    ) -> Vec<ClientRuntimeAction> {
+        let effective_paused = self.effective_local_paused_state(now_seconds);
+        if effective_paused == paused {
+            return Vec::new();
+        }
+
+        if self.username.is_none() || self.server_readiness_supported != Some(true) {
+            self.local_paused = Some(paused);
+            return vec![ClientRuntimeAction::SetPaused(paused)];
+        }
+
+        let local_can_control = self.local_can_control().unwrap_or(false);
+        let is_playing_music = self.is_playing_music();
+        let recently_advanced = self.recently_advanced(now_seconds);
+        let global_paused = self
+            .current_room_playstate_at(now_seconds)
+            .and_then(|playstate| playstate.paused)
+            .unwrap_or(true);
+
+        if !local_can_control {
+            self.local_paused = Some(global_paused);
+            let mut actions = Vec::new();
+            if effective_paused != global_paused {
+                actions.push(ClientRuntimeAction::SetPaused(global_paused));
+            }
+            if !(global_paused && !recently_advanced) {
+                let ready = !self.local_user_ready();
+                self.apply_local_ready_state_optimistically(ready);
+                actions.push(ClientRuntimeAction::SetReady {
+                    ready,
+                    manually_initiated: true,
+                });
+            }
+            return actions;
+        }
+
+        if is_playing_music && recently_advanced {
+            self.local_paused = Some(paused);
+            return vec![ClientRuntimeAction::SetPaused(paused)];
+        }
+
+        if paused {
+            self.local_paused = Some(true);
+            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
+            if self.local_user_ready() {
+                self.apply_local_ready_state_optimistically(false);
+                actions.push(ClientRuntimeAction::SetReady {
+                    ready: false,
+                    manually_initiated: false,
+                });
+            }
+            return actions;
+        }
+
+        let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
+        if !instaplay {
+            self.local_paused = Some(true);
+            let mut actions = vec![ClientRuntimeAction::SetPaused(true)];
+            if !self.local_user_ready() {
+                self.apply_local_ready_state_optimistically(true);
+                actions.push(ClientRuntimeAction::SetReady {
+                    ready: true,
+                    manually_initiated: true,
+                });
+            }
+            return actions;
+        }
+
+        if let Some(last_paused_on_leave_at_seconds) = self.last_paused_on_leave_at_seconds
+            && now_seconds - last_paused_on_leave_at_seconds
+                < self
+                    .readiness_autoplay_config
+                    .last_paused_diff_threshold_seconds
+        {
+            self.last_paused_on_leave_at_seconds = None;
+            self.local_paused = Some(false);
+            return vec![ClientRuntimeAction::SetPaused(false)];
+        }
+
+        self.local_paused = Some(false);
+        let mut actions = vec![ClientRuntimeAction::SetPaused(false)];
+        if !self.local_user_ready() {
+            self.apply_local_ready_state_optimistically(true);
+            actions.push(ClientRuntimeAction::SetReady {
+                ready: true,
+                manually_initiated: false,
+            });
+        }
+        actions
     }
 
     fn determine_local_state_change(
@@ -5836,6 +6007,11 @@ impl ClientSession {
         user_view.controller = controller;
     }
 
+    fn set_user_features(&mut self, username: &str, features: Option<Value>) {
+        let user_view = self.user_views.entry(username.to_owned()).or_default();
+        user_view.features = features;
+    }
+
     fn remove_user(&mut self, username: &str) {
         if let Some(user_view) = self.user_views.remove(username)
             && let Some(room_name) = user_view.room
@@ -5861,8 +6037,9 @@ mod tests {
         ClientRuntimeControl, ClientSession, ControlledRoomCreationNotification,
         ControllerAuthTransitionNotification, DesyncCorrectionAction, FileDifferenceSummary,
         LEGACY_CHAT_MAX_MESSAGE_LENGTH, LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
-        LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, PrivacyMode, QueuedRuntimeControl,
-        ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
+        LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, LEGACY_FALLBACK_MAX_FILENAME_LENGTH,
+        LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH, LEGACY_FALLBACK_MAX_USERNAME_LENGTH, PrivacyMode,
+        QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
         ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification,
         RoomPlaystateView, UnpauseActionMode, UserChangeNotification,
         unix_wall_clock_time_seconds_legacy_compatible,
@@ -6151,6 +6328,45 @@ mod tests {
             .expect("hello should apply");
 
         assert_eq!(session.server_chat_supported(), Some(false));
+    }
+
+    #[test]
+    fn hello_records_persistent_rooms_and_server_limits() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"persistentRooms":true,"maxUsernameLength":12,"maxRoomNameLength":40,"maxFilenameLength":180}}}"#,
+            )
+            .expect("hello should apply");
+
+        assert_eq!(session.server_persistent_rooms_supported(), Some(true));
+        assert_eq!(session.server_max_username_length(), Some(12));
+        assert_eq!(session.server_max_room_name_length(), Some(40));
+        assert_eq!(session.server_max_filename_length(), Some(180));
+    }
+
+    #[test]
+    fn hello_without_limit_features_uses_python_compatible_fallbacks() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+
+        assert_eq!(session.server_persistent_rooms_supported(), Some(false));
+        assert_eq!(
+            session.server_max_username_length(),
+            Some(LEGACY_FALLBACK_MAX_USERNAME_LENGTH)
+        );
+        assert_eq!(
+            session.server_max_room_name_length(),
+            Some(LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH)
+        );
+        assert_eq!(
+            session.server_max_filename_length(),
+            Some(LEGACY_FALLBACK_MAX_FILENAME_LENGTH)
+        );
     }
 
     #[test]
@@ -7370,7 +7586,7 @@ mod tests {
 
         session
             .apply_message_json(
-                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5},"isReady":true,"controller":true}}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room2"},"file":{"name":"bob.mp4","size":"15e2b0d3c338","duration":95.5},"isReady":true,"features":{"uiMode":"GUI"},"controller":true}}}}"#,
             )
             .expect("set user message should apply");
         assert_eq!(session.user_room("bob"), Some("room2"));
@@ -7378,6 +7594,7 @@ mod tests {
         assert_eq!(session.user_file_name("bob"), Some("bob.mp4"));
         assert_eq!(session.user_file_size("bob"), Some(&json!("15e2b0d3c338")));
         assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+        assert_eq!(session.user_features("bob"), Some(&json!({"uiMode":"GUI"})));
         assert_eq!(session.user_controller("bob"), Some(true));
 
         session
@@ -7387,7 +7604,17 @@ mod tests {
 
         session
             .apply_message_json(
-                r#"{"List":{"room1":{"alice":{"isReady":true,"controller":false}},"room2":{"bob":{"isReady":false,"controller":true}}}}"#,
+                r#"{"Set":{"features":{"username":"bob","features":{"chat":true,"readiness":true}}}}"#,
+            )
+            .expect("set features update should apply");
+        assert_eq!(
+            session.user_features("bob"),
+            Some(&json!({"chat":true,"readiness":true}))
+        );
+
+        session
+            .apply_message_json(
+                r#"{"List":{"room1":{"alice":{"isReady":true,"controller":false}},"room2":{"bob":{"isReady":false,"features":{"uiMode":"desktop"},"controller":true}}}}"#,
             )
             .expect("list snapshot should apply");
         assert_eq!(session.user_room("alice"), Some("room1"));
@@ -7396,6 +7623,10 @@ mod tests {
         assert_eq!(session.user_file_name("bob"), None);
         assert_eq!(session.user_file_size("bob"), None);
         assert_eq!(session.user_file_duration("bob"), None);
+        assert_eq!(
+            session.user_features("bob"),
+            Some(&json!({"uiMode":"desktop"}))
+        );
         assert_eq!(session.user_controller("bob"), Some(true));
 
         session
@@ -7516,6 +7747,25 @@ mod tests {
         assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
         assert_eq!(session.user_file_size("bob"), Some(&json!(123456789)));
         assert_eq!(session.user_file_duration("bob"), Some(&json!(95.5)));
+    }
+
+    #[test]
+    fn top_level_set_features_defaults_to_local_user_when_username_is_omitted() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+
+        session
+            .apply_message_json(r#"{"Set":{"features":{"chat":true,"managedRooms":true}}}"#)
+            .expect("top-level local feature update should apply");
+
+        assert_eq!(
+            session.user_features("alice"),
+            Some(&json!({"chat":true,"managedRooms":true}))
+        );
     }
 
     #[test]
@@ -10743,13 +10993,89 @@ mod tests {
         session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
         let allowed =
             session.runtime_actions_for_readiness_unpause_attempt(31.0, true, true, false);
+        assert!(allowed.is_empty());
+        assert_eq!(session.user_ready("alice"), Some(true));
+        assert_eq!(session.local_paused(), Some(false));
+    }
+
+    #[test]
+    fn local_pause_marks_local_user_not_ready_when_readiness_is_supported() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+
+        let actions = session.runtime_actions_for_local_pause_set(true);
+
         assert_eq!(
-            allowed,
+            actions,
+            vec![
+                ClientRuntimeAction::SetPaused(true),
+                ClientRuntimeAction::SetReady {
+                    ready: false,
+                    manually_initiated: false
+                }
+            ]
+        );
+        assert_eq!(session.local_paused(), Some(true));
+        assert_eq!(session.user_ready("alice"), Some(false));
+    }
+
+    #[test]
+    fn local_pause_toggle_uses_room_pause_state_when_local_telemetry_is_unknown() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"setBy":"bob"}}}"#,
+            )
+            .expect("room playstate should apply");
+
+        let actions = session.runtime_actions_for_local_pause_toggle();
+
+        assert_eq!(actions, vec![ClientRuntimeAction::SetPaused(false)]);
+        assert_eq!(session.local_paused(), Some(false));
+    }
+
+    #[test]
+    fn non_controller_pause_request_toggles_ready_without_driving_room_pause() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"room":{"name":"+room:ABCDEF123456"},"controller":false}}}}"#,
+            )
+            .expect("controller flag should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#,
+            )
+            .expect("room playstate should apply");
+
+        let actions = session.runtime_actions_for_local_pause_set(true);
+
+        assert_eq!(
+            actions,
             vec![ClientRuntimeAction::SetReady {
                 ready: true,
-                manually_initiated: false
+                manually_initiated: true
             }]
         );
+        assert_eq!(session.local_paused(), Some(false));
+        assert_eq!(session.user_ready("alice"), Some(true));
     }
 
     #[test]

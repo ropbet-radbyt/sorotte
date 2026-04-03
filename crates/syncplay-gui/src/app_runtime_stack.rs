@@ -27,10 +27,10 @@ use syncplay_client_app::app_boundary::state::{
     parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use syncplay_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientSession,
-    DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
-    RoomPlaylistView, SYNCPLAY_COMPAT_VERSION_LEGACY, SYNCPLAY_WIRE_VERSION_LEGACY,
-    SessionBehaviorConfig,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientRuntimeAction,
+    ClientSession, DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl,
+    ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_protocol::{HelloPayload, ProtocolMessage, decode_message_line, encode_message_line};
@@ -56,6 +56,19 @@ pub(super) struct GuiSessionRoomPlaystate {
     pub(super) paused: Option<bool>,
     pub(super) do_seek: Option<bool>,
     pub(super) set_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiLocalPlayerUnpauseDecision {
+    NotApplicable,
+    Allow,
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum GuiAttachedPlayerRuntimeAction {
+    SetPosition(f64),
+    SetPlaybackRate(f64),
 }
 
 pub(super) trait GuiSessionRuntimeAdapter: Send {
@@ -177,6 +190,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         Err("Attached session runtime does not support playback pause changes.".to_owned())
     }
 
+    fn supports_playback_pause_changes(&self) -> bool {
+        false
+    }
+
     fn record_manual_seek_to_position(&mut self, _position_seconds: f64) -> Result<bool, String> {
         Err("Attached session runtime does not support local seek history.".to_owned())
     }
@@ -238,8 +255,17 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    fn handle_local_player_unpause_attempt(&mut self) -> Result<bool, String> {
-        Ok(false)
+    fn handle_local_player_unpause_attempt(
+        &mut self,
+    ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
+        Ok(GuiLocalPlayerUnpauseDecision::NotApplicable)
+    }
+
+    fn attached_player_runtime_actions(
+        &mut self,
+        _now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
     }
 
     fn publish_local_file_legacy_compatible(
@@ -1481,6 +1507,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn supports_playback_pause_changes(&self) -> bool {
+        true
+    }
+
     fn record_manual_seek_to_position(&mut self, position_seconds: f64) -> Result<bool, String> {
         match self.runtime.run_seek_to_position(position_seconds) {
             Ok(sent) => Ok(sent),
@@ -1606,13 +1636,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn handle_local_player_unpause_attempt(&mut self) -> Result<bool, String> {
+    fn handle_local_player_unpause_attempt(
+        &mut self,
+    ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
         if self
             .current_room_playstate_for_attached_player_sync()
             .and_then(|playstate| playstate.paused)
             != Some(true)
         {
-            return Ok(false);
+            return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
         let readiness_supported = self
@@ -1621,7 +1653,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .server_readiness_supported()
             .unwrap_or(false);
         if !readiness_supported {
-            return Ok(false);
+            return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
         }
 
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
@@ -1636,7 +1668,56 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| {
                 format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
             })?;
-        Ok(self.runtime.session().local_paused() == Some(true))
+        Ok(if self.runtime.session().local_paused() == Some(true) {
+            GuiLocalPlayerUnpauseDecision::Block
+        } else {
+            GuiLocalPlayerUnpauseDecision::Allow
+        })
+    }
+
+    fn attached_player_runtime_actions(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        let Some(room_playstate) = self
+            .runtime
+            .current_room_playstate_legacy_ping_compatible_now()
+        else {
+            return Ok(Vec::new());
+        };
+        let Some(local_position) = self.runtime.session().local_position_seconds() else {
+            return Ok(Vec::new());
+        };
+
+        let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        let actions = self
+            .runtime
+            .session_mut()
+            .runtime_actions_for_desync_correction_against_room_playstate(
+                RoomPlaystateView {
+                    position: room_playstate.position,
+                    paused: room_playstate.paused,
+                    do_seek: room_playstate.do_seek,
+                    set_by: room_playstate.set_by.clone(),
+                },
+                now_seconds,
+                local_position,
+                local_can_control,
+                self.dont_slow_down_with_me,
+                true,
+            );
+        Ok(actions
+            .into_iter()
+            .filter_map(|action| match action {
+                ClientRuntimeAction::SetPosition(position_seconds) => Some(
+                    GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds),
+                ),
+                ClientRuntimeAction::SetPlaybackRate(playback_rate) => Some(
+                    GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate),
+                ),
+                _ => None,
+            })
+            .collect())
     }
 
     fn publish_local_file_legacy_compatible(

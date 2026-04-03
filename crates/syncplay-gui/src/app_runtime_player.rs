@@ -19,13 +19,16 @@ use super::super::media_search_cache::{
 };
 use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
-use super::super::runtime_stack::{GuiClientCoreChatSessionRuntimeAdapter, GuiOwnedPlayer};
+use super::super::runtime_stack::{
+    GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
+    GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer,
+};
 use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState, browser_is_url,
 };
 use super::super::startup_support::env_trimmed;
-use super::super::support::normalized_editable_text;
+use super::super::support::{normalized_editable_text, system_time_seconds};
 use super::{
     GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
     GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
@@ -54,6 +57,26 @@ impl SelectedPlaylistMediaSyncOutcome {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(crate) fn sync_pending_local_attached_pause_override_from_session(&mut self) {
+        let session_pause_state = self
+            .session
+            .as_ref()
+            .and_then(|session| session.local_pause_state());
+        let room_pause_state = self
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playstate_for_attached_player_sync())
+            .and_then(|playstate| playstate.paused);
+        self.pending_local_attached_pause_override = match (session_pause_state, room_pause_state) {
+            (Some(session_pause_state), Some(room_pause_state))
+                if room_pause_state != session_pause_state =>
+            {
+                Some(session_pause_state)
+            }
+            _ => None,
+        };
+    }
+
     pub(super) fn open_media_unavailable_message_impl(&self, selected_paths: &[String]) -> String {
         let base = if selected_paths.len() == 1 {
             "Opening media requires a playback runtime connection; the selected file was not opened."
@@ -1528,10 +1551,10 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         }
-        let Some(player) = self.player.as_mut() else {
+        if self.player.is_none() {
             self.last_applied_attached_room_playstate = None;
             return;
-        };
+        }
         let Some((playstate, raw_playstate, local_username)) =
             self.session.as_ref().and_then(|session| {
                 session
@@ -1557,63 +1580,151 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             self.suppressed_attached_room_playstate_after_playlist_reset = None;
         }
-        if !force && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate) {
-            return;
-        }
+        let playstate_unchanged =
+            !force && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate);
         let set_by_is_local_user = playstate
             .set_by
             .as_deref()
             .zip(local_username.as_deref())
             .is_some_and(|(set_by, local_username)| set_by == local_username);
+        if self.pending_local_attached_pause_override == playstate.paused {
+            self.pending_local_attached_pause_override = None;
+        }
+        let suppress_stale_room_pause_sync = self
+            .pending_local_attached_pause_override
+            .is_some_and(|pending_paused| playstate.paused != Some(pending_paused));
+        let sync_paused_state = (!suppress_stale_room_pause_sync)
+            .then_some(playstate.paused)
+            .flatten();
         let allow_initial_self_origin_position_sync = force
             && self.player_position_seconds.is_none()
             && self.last_applied_attached_room_playstate.is_none();
         let user_offset_seconds = self.user_offset_seconds;
         let should_seek_for_room_playstate =
-            force || playstate.do_seek == Some(true) || playstate.paused == Some(true);
+            force || playstate.do_seek == Some(true) || sync_paused_state == Some(true);
 
         let mut state_changed = false;
-        if let Some(position_seconds) = playstate.position_seconds
-            && (!set_by_is_local_user || allow_initial_self_origin_position_sync)
-            && should_seek_for_room_playstate
-            && (force
-                || self
-                    .player_position_seconds
-                    .map(|current_position_seconds| {
-                        (current_position_seconds - position_seconds).abs() > f64::EPSILON
-                    })
-                    .unwrap_or(true))
-        {
-            match player.set_position((position_seconds + user_offset_seconds).max(0.0)) {
-                Ok(()) => {
-                    self.player_position_seconds = Some(position_seconds);
-                    state_changed = true;
+        if !playstate_unchanged {
+            if let Some(position_seconds) = playstate.position_seconds
+                && (!set_by_is_local_user || allow_initial_self_origin_position_sync)
+                && should_seek_for_room_playstate
+                && (force
+                    || self
+                        .player_position_seconds
+                        .map(|current_position_seconds| {
+                            (current_position_seconds - position_seconds).abs() > f64::EPSILON
+                        })
+                        .unwrap_or(true))
+            {
+                let sync_position_seconds = (position_seconds + user_offset_seconds).max(0.0);
+                match self
+                    .player
+                    .as_mut()
+                    .expect("player should exist while syncing playback position")
+                    .set_position(sync_position_seconds)
+                {
+                    Ok(()) => {
+                        self.player_position_seconds = Some(position_seconds);
+                        state_changed = true;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to sync session playback position to the attached player: {error}"
+                        );
+                    }
                 }
-                Err(error) => {
+            }
+
+            if let Some(paused) = sync_paused_state
+                && (force || self.player_paused != Some(paused))
+            {
+                match self
+                    .player
+                    .as_mut()
+                    .expect("player should exist while syncing playback pause state")
+                    .set_paused(paused)
+                {
+                    Ok(()) => {
+                        self.player_paused = Some(paused);
+                        state_changed = true;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to sync session playback pause state to the attached player: {error}"
+                        );
+                    }
+                }
+            }
+
+            self.last_applied_attached_room_playstate = Some(playstate.clone());
+        }
+
+        if !state_changed {
+            let attached_runtime_actions = self
+                .session
+                .as_mut()
+                .map(|session| session.attached_player_runtime_actions(system_time_seconds()));
+            match attached_runtime_actions {
+                Some(Ok(actions)) => {
+                    for action in actions {
+                        match action {
+                            GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds) => {
+                                let sync_position_seconds =
+                                    (position_seconds + user_offset_seconds).max(0.0);
+                                match self
+                                    .player
+                                    .as_mut()
+                                    .expect("player should exist while applying desync correction")
+                                    .set_position(sync_position_seconds)
+                                {
+                                    Ok(()) => {
+                                        self.player_position_seconds = Some(position_seconds);
+                                        state_changed = true;
+                                        if let Some(session) = self.session.as_mut()
+                                            && let Err(error) = session.sync_local_playback_telemetry(
+                                                self.player_paused,
+                                                Some(position_seconds),
+                                            )
+                                        {
+                                            eprintln!(
+                                                "warning: failed to mirror desync-corrected playback position into the session runtime: {error}"
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!(
+                                            "warning: failed to apply attached-player desync position correction: {error}"
+                                        );
+                                    }
+                                }
+                            }
+                            GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate) => {
+                                if let Err(error) = self
+                                    .player
+                                    .as_mut()
+                                    .expect("player should exist while applying playback-rate correction")
+                                    .set_playback_rate(playback_rate)
+                                {
+                                    eprintln!(
+                                        "warning: failed to apply attached-player playback-rate correction: {error}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(Err(error)) => {
                     eprintln!(
-                        "warning: failed to sync session playback position to the attached player: {error}"
+                        "warning: failed to evaluate attached-player desync correction actions: {error}"
                     );
                 }
+                None => {}
             }
         }
 
-        if let Some(paused) = playstate.paused
-            && (force || self.player_paused != Some(paused))
-        {
-            match player.set_paused(paused) {
-                Ok(()) => {
-                    self.player_paused = Some(paused);
-                    state_changed = true;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "warning: failed to sync session playback pause state to the attached player: {error}"
-                    );
-                }
-            }
+        if self.last_applied_attached_room_playstate.is_none() {
+            self.last_applied_attached_room_playstate = Some(playstate);
         }
-
-        self.last_applied_attached_room_playstate = Some(playstate);
         if state_changed {
             self.refresh_player_state_impl();
         }
@@ -2110,7 +2221,91 @@ impl GuiPersistedConfigRuntimeOwner {
             .sync_local_playback_telemetry(Some(previous_paused), self.player_position_seconds)?;
         let _ = session.set_playback_paused(target_paused)?;
         session.sync_local_playback_telemetry(Some(target_paused), self.player_position_seconds)?;
+        self.sync_pending_local_attached_pause_override_from_session();
         Ok(())
+    }
+
+    pub(super) fn apply_playback_pause_change_with_detached_session_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        previous_paused: bool,
+        target_paused: bool,
+    ) -> Result<(bool, Option<String>), String> {
+        let mut sync_error = None;
+        if !target_paused {
+            match self.preflight_local_player_unpause_against_detached_session_impl(
+                state,
+                previous_paused,
+            ) {
+                Ok(GuiLocalPlayerUnpauseDecision::Block) => {
+                    self.player_paused = Some(true);
+                    self.refresh_player_state_impl();
+                    return Ok((true, None));
+                }
+                Ok(GuiLocalPlayerUnpauseDecision::Allow) => {
+                    self.player
+                        .as_mut()
+                        .expect("player should exist while applying playback pause change")
+                        .set_paused(false)
+                        .map_err(|error| {
+                            format!(
+                                "Playback pause toggle through the attached player failed while resuming playback: {error}"
+                            )
+                        })?;
+                    self.player_paused = Some(false);
+                    self.refresh_player_state_impl();
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.sync_local_playback_telemetry(
+                            Some(false),
+                            self.player_position_seconds,
+                        )
+                    {
+                        sync_error = Some(error);
+                    }
+                    return Ok((false, sync_error));
+                }
+                Ok(GuiLocalPlayerUnpauseDecision::NotApplicable) => {}
+                Err(error) => sync_error = Some(error),
+            }
+        }
+
+        self.player
+            .as_mut()
+            .expect("player should exist while applying playback pause change")
+            .set_paused(target_paused)
+            .map_err(|error| {
+                format!("Playback pause toggle through the attached player failed: {error}")
+            })?;
+        self.player_paused = Some(target_paused);
+        self.refresh_player_state_impl();
+        if let Err(error) = self.sync_playback_pause_into_detached_session_impl(
+            state,
+            previous_paused,
+            target_paused,
+        ) {
+            if sync_error.is_none() {
+                sync_error = Some(error);
+            }
+        }
+        Ok((target_paused, sync_error))
+    }
+
+    fn preflight_local_player_unpause_against_detached_session_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        previous_paused: bool,
+    ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
+        self.ensure_detached_client_core_chat_session(state)?;
+        let Some(session) = self.session.as_mut() else {
+            return Ok(GuiLocalPlayerUnpauseDecision::NotApplicable);
+        };
+        session
+            .sync_local_playback_telemetry(Some(previous_paused), self.player_position_seconds)?;
+        let decision = session.handle_local_player_unpause_attempt()?;
+        if decision == GuiLocalPlayerUnpauseDecision::Block {
+            session.sync_local_playback_telemetry(Some(true), self.player_position_seconds)?;
+        }
+        Ok(decision)
     }
 
     pub(super) fn undo_seek_target_position_from_detached_session_impl(
