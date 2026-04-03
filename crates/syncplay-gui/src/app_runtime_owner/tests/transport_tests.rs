@@ -1831,3 +1831,176 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         .join()
         .expect("second test session transport server thread should complete");
 }
+
+#[test]
+fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server_connect() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let first_listener = TcpListener::bind("127.0.0.1:0")
+        .expect("first test session transport listener should bind");
+    let first_address = first_listener
+        .local_addr()
+        .expect("first test session transport listener should expose a local address");
+    let second_listener = TcpListener::bind("127.0.0.1:0")
+        .expect("second test session transport listener should bind");
+    let second_address = second_listener
+        .local_addr()
+        .expect("second test session transport listener should expose a local address");
+
+    let (first_hello_tx, first_hello_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let first_server_thread = std::thread::spawn(move || {
+        let (stream, _) = first_listener
+            .accept()
+            .expect("first test session transport server should accept one client");
+        let mut reader = BufReader::new(stream);
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("first test session transport server should read the startup hello line");
+        first_hello_tx
+            .send(hello_line)
+            .expect("first test session transport server should report its hello");
+        release_first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first test session transport server should be released after reconnect");
+    });
+
+    let (second_hello_tx, second_hello_rx) = mpsc::channel();
+    let (second_file_tx, second_file_rx) = mpsc::channel();
+    let second_server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = second_listener
+            .accept()
+            .expect("second test session transport server should accept one client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("second test session transport server should clone the reconnect stream");
+        let mut reader = BufReader::new(reader_stream);
+        let mut hello_line = String::new();
+        reader
+            .read_line(&mut hello_line)
+            .expect("second test session transport server should read the reconnect hello line");
+        second_hello_tx
+            .send(hello_line)
+            .expect("second test session transport server should report its hello");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("second test session transport server should write the reconnect hello");
+        stream
+            .write_all(b"\n")
+            .expect("second test session transport server should terminate the reconnect hello");
+        stream
+            .flush()
+            .expect("second test session transport server should flush the reconnect hello");
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("second test session transport server should set a read timeout");
+
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if line.contains("\"file\"") {
+                        second_file_tx
+                            .send(line)
+                            .expect("second test session transport server should report the republished file");
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => panic!(
+                    "second test session transport server should keep reading protocol lines: {error}"
+                ),
+            }
+        }
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_duration_seconds(95.5)
+            .with_size_bytes(123456789)
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+    owner.last_published_local_file = owner.player_local_file.clone();
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    let first_hello_line = first_hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("first test session transport server should receive the startup hello");
+    assert!(first_hello_line.contains("\"Hello\""));
+    assert!(first_hello_line.contains("\"alice\""));
+
+    assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ConnectPublicServer,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    let second_hello_line = second_hello_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second test session transport server should receive the reconnect hello");
+    assert!(second_hello_line.contains("\"Hello\""));
+    assert!(second_hello_line.contains("\"alice\""));
+    assert!(second_hello_line.contains("\"room1\""));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let republished_file_line = loop {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if let Ok(file_line) = second_file_rx.try_recv() {
+            break file_line;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the republished local file after reconnecting to the public server"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(republished_file_line.contains("\"file\""));
+    assert!(republished_file_line.contains("\"episode1.mkv\""));
+    assert!(republished_file_line.contains("\"duration\":95.5"));
+    assert!(republished_file_line.contains("\"size\":123456789"));
+
+    release_first_tx
+        .send(())
+        .expect("first test session transport server should be releasable");
+    first_server_thread
+        .join()
+        .expect("first test session transport server thread should complete");
+    second_server_thread
+        .join()
+        .expect("second test session transport server thread should complete");
+}

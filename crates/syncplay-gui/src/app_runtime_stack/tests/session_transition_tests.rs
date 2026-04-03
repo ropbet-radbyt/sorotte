@@ -218,6 +218,68 @@ fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_t
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_dispatches_reconnect_playlist_restore_messages() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("initial server hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("local playlist should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("local playlist index should apply");
+
+    adapter
+        .runtime
+        .session_mut()
+        .reset_sync_state_for_reconnect();
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
+        .expect("empty reconnect playlist snapshot should apply");
+
+    let _ = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect playlist restore lines should encode");
+    assert!(
+        outbound_lines.iter().any(|line| {
+            line.contains("\"playlistChange\"")
+                && line.contains("\"episode1.mkv\"")
+                && line.contains("\"episode2.mkv\"")
+        }),
+        "reconnect playlist restore should republish the local playlist"
+    );
+    assert!(
+        outbound_lines
+            .iter()
+            .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":1")),
+        "reconnect playlist restore should republish the selected playlist index"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_state_restore_details_to_system_chat()
  {
     assert_eq!(

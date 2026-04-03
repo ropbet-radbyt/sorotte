@@ -596,6 +596,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         Ok(()) => {
                             self.session_projects_to_shell = true;
                             self.reset_session_transport_reconnect_state();
+                            self.last_published_local_file = None;
                             if let Some(driver) = replacement_transport_driver {
                                 if let Some(session_transport) = self.session_transport.as_ref() {
                                     session_transport.clear_protocol_lines();

@@ -190,6 +190,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         Err("Attached session runtime does not support playback pause changes.".to_owned())
     }
 
+    fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
+        Ok(false)
+    }
+
     fn supports_playback_pause_changes(&self) -> bool {
         false
     }
@@ -946,6 +950,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 message: format!("Client-core reconnect state-restore dispatch failed: {error}"),
             });
         }
+        if let Err(error) = self.runtime.run_reconnect_playlist_restore_if_needed() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: format!("Client-core reconnect playlist-restore dispatch failed: {error}"),
+            });
+        }
         if let Err(error) = self
             .runtime
             .run_reconnect_state_restore_validation_if_needed()
@@ -1505,6 +1515,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime playback pause dispatch failed: {error}"
             )),
         }
+    }
+
+    fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
+        Ok(self
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me))
     }
 
     fn supports_playback_pause_changes(&self) -> bool {

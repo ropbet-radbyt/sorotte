@@ -1604,6 +1604,7 @@ impl GuiPersistedConfigRuntimeOwner {
             force || playstate.do_seek == Some(true) || sync_paused_state == Some(true);
 
         let mut state_changed = false;
+        let mut room_playstate_sync_failed = false;
         if !playstate_unchanged {
             if let Some(position_seconds) = playstate.position_seconds
                 && (!set_by_is_local_user || allow_initial_self_origin_position_sync)
@@ -1628,6 +1629,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         state_changed = true;
                     }
                     Err(error) => {
+                        room_playstate_sync_failed = true;
                         eprintln!(
                             "warning: failed to sync session playback position to the attached player: {error}"
                         );
@@ -1649,6 +1651,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         state_changed = true;
                     }
                     Err(error) => {
+                        room_playstate_sync_failed = true;
                         eprintln!(
                             "warning: failed to sync session playback pause state to the attached player: {error}"
                         );
@@ -1656,7 +1659,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
 
-            self.last_applied_attached_room_playstate = Some(playstate.clone());
+            if !room_playstate_sync_failed {
+                self.last_applied_attached_room_playstate = Some(playstate.clone());
+            }
         }
 
         if !state_changed {
@@ -1722,7 +1727,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        if self.last_applied_attached_room_playstate.is_none() {
+        if !room_playstate_sync_failed && self.last_applied_attached_room_playstate.is_none() {
             self.last_applied_attached_room_playstate = Some(playstate);
         }
         if state_changed {
@@ -2254,13 +2259,23 @@ impl GuiPersistedConfigRuntimeOwner {
                         })?;
                     self.player_paused = Some(false);
                     self.refresh_player_state_impl();
-                    if let Some(session) = self.session.as_mut()
-                        && let Err(error) = session.sync_local_playback_telemetry(
+                    let mut telemetry_synced = false;
+                    if let Some(session) = self.session.as_mut() {
+                        match session.sync_local_playback_telemetry(
                             Some(false),
                             self.player_position_seconds,
-                        )
-                    {
-                        sync_error = Some(error);
+                        ) {
+                            Ok(()) => {
+                                telemetry_synced = true;
+                                if let Err(error) = session.emit_immediate_playback_state_update() {
+                                    sync_error = Some(error);
+                                }
+                            }
+                            Err(error) => sync_error = Some(error),
+                        }
+                    }
+                    if telemetry_synced {
+                        self.sync_pending_local_attached_pause_override_from_session();
                     }
                     return Ok((false, sync_error));
                 }
