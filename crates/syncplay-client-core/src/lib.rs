@@ -2607,9 +2607,13 @@ impl ClientSession {
             self.set_user_file_info(&username, has_file, file_name, file_size, file_duration);
         }
 
-        vec![ClientRuntimeAction::SetFile {
+        let mut actions = vec![ClientRuntimeAction::SetFile {
             file_payload: sanitized_payload,
-        }]
+        }];
+        if self.server_chat_supported.is_some() {
+            actions.push(ClientRuntimeAction::RequestUserList);
+        }
+        actions
     }
 
     pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
@@ -3372,6 +3376,9 @@ impl ClientSession {
 
         if let Some(file_payload) = self.reconnect_file_restore_intent.take() {
             actions.push(ClientRuntimeAction::SetFile { file_payload });
+            if self.server_chat_supported.is_some() {
+                actions.push(ClientRuntimeAction::RequestUserList);
+            }
         }
 
         if !actions.is_empty() {
@@ -3749,7 +3756,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_user_list_request(&self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() {
+        if self.username.is_none() || self.server_chat_supported.is_none() {
             return Vec::new();
         }
         vec![ClientRuntimeAction::RequestUserList]
@@ -3759,9 +3766,8 @@ impl ClientSession {
         &self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none()
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
             || index < 0
-            || self.server_shared_playlists_supported == Some(false)
         {
             return Vec::new();
         }
@@ -3783,7 +3789,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_next(&self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
 
@@ -3837,7 +3843,7 @@ impl ClientSession {
         file_name: String,
         select_after_queue: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -3884,9 +3890,8 @@ impl ClientSession {
         &mut self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none()
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
             || index < 0
-            || self.server_shared_playlists_supported == Some(false)
         {
             return Vec::new();
         }
@@ -3942,7 +3947,7 @@ impl ClientSession {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -4005,7 +4010,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_undo(&mut self) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -4057,7 +4062,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_remaining(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -4109,7 +4114,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_entire(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if self.username.is_none() || self.server_shared_playlists_supported == Some(false) {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -5279,6 +5284,13 @@ impl ClientSession {
                     .and_then(|playstate| playstate.paused)
             })
             .unwrap_or(false)
+    }
+
+    fn shared_playlist_runtime_commands_allowed_legacy_compatible(&self) -> bool {
+        self.server_chat_supported.is_some()
+            && self.username.is_some()
+            && self.room.is_some()
+            && self.server_shared_playlists_supported != Some(false)
     }
 
     fn apply_local_ready_state_optimistically(&mut self, ready: bool) {
@@ -9578,8 +9590,9 @@ mod tests {
                         "name": "movie.mkv",
                         "size": 123456789,
                         "duration": 95.5
-                    }),
+                    })
                 },
+                ClientRuntimeAction::RequestUserList,
             ]
         );
         assert!(
@@ -9672,6 +9685,7 @@ mod tests {
                         "duration": 95.5
                     }),
                 },
+                ClientRuntimeAction::RequestUserList,
             ]
         );
 
@@ -10777,14 +10791,17 @@ mod tests {
 
         assert_eq!(
             actions,
-            vec![ClientRuntimeAction::SetFile {
-                file_payload: json!({
-                    "name": "a9858cb4803c",
-                    "size": "15e2b0d3c338",
-                    "duration": 95.5,
-                    "extra": "keep-me"
-                }),
-            }]
+            vec![
+                ClientRuntimeAction::SetFile {
+                    file_payload: json!({
+                        "name": "a9858cb4803c",
+                        "size": "15e2b0d3c338",
+                        "duration": 95.5,
+                        "extra": "keep-me"
+                    }),
+                },
+                ClientRuntimeAction::RequestUserList,
+            ]
         );
         assert_eq!(session.user_has_file("alice"), Some(true));
         assert_eq!(session.user_file_name("alice"), Some("a9858cb4803c"));
@@ -10818,9 +10835,12 @@ mod tests {
 
         assert_eq!(
             actions,
-            vec![ClientRuntimeAction::SetFile {
-                file_payload: json!({}),
-            }]
+            vec![
+                ClientRuntimeAction::SetFile {
+                    file_payload: json!({}),
+                },
+                ClientRuntimeAction::RequestUserList,
+            ]
         );
         assert_eq!(session.user_has_file("alice"), Some(false));
         assert_eq!(session.user_file_name("alice"), None);
@@ -11394,7 +11414,7 @@ mod tests {
         assert_eq!(session.user_file_size("alice"), Some(&json!(0)));
         assert_eq!(session.user_file_duration("alice"), Some(&json!(95.5)));
 
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.file protocol message");
         };
@@ -11407,6 +11427,10 @@ mod tests {
         assert_eq!(file.duration, Some(95.5));
         assert_eq!(file.size.as_ref(), Some(&json!(0)));
         assert!(file.path.is_none());
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected trailing List request after Set.file");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -11452,7 +11476,7 @@ mod tests {
         assert_eq!(session.user_file_size("alice"), Some(&json!(0)));
         assert_eq!(session.user_file_duration("alice"), Some(&json!(95.5)));
 
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.file protocol message");
         };
@@ -11465,6 +11489,10 @@ mod tests {
         assert_eq!(file.duration, Some(95.5));
         assert_eq!(file.size.as_ref(), Some(&json!(0)));
         assert!(file.path.is_none());
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected trailing List request after Set.file");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -11504,7 +11532,7 @@ mod tests {
         );
         assert_eq!(session.user_file_duration("alice"), Some(&json!(0.0)));
 
-        assert_eq!(control.outbound_messages().len(), 1);
+        assert_eq!(control.outbound_messages().len(), 2);
         let ProtocolMessage::Set(set_message) = &control.outbound_messages()[0] else {
             panic!("expected queued Set.file protocol message");
         };
@@ -11520,6 +11548,10 @@ mod tests {
             Some(&json!(ClientSession::hash_filesize_for_compare("0")))
         );
         assert!(file.path.is_none());
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected trailing List request after Set.file");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -11610,7 +11642,7 @@ mod tests {
             .expect("reconnect state restore should dispatch");
 
         let (_, _, control) = runtime.into_parts();
-        assert_eq!(control.outbound_messages().len(), 2);
+        assert_eq!(control.outbound_messages().len(), 3);
         assert_eq!(
             control.reconnect_notifications(),
             &[ReconnectTransitionNotification::RestoringState]
@@ -11638,6 +11670,10 @@ mod tests {
         assert_eq!(file.name.as_deref(), Some("movie.mkv"));
         assert_eq!(file.size.as_ref(), Some(&json!(123456789)));
         assert_eq!(file.duration, Some(95.5));
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[2] else {
+            panic!("third reconnect restore message should be List");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
     }
 
     #[test]
@@ -11733,8 +11769,8 @@ mod tests {
         );
         assert_eq!(
             runtime.control().outbound_messages().len(),
-            2,
-            "restore dispatch should send ready/file restore messages"
+            3,
+            "restore dispatch should send ready/file restore messages plus a trailing list refresh"
         );
         assert!(
             runtime.session().reconnect_state_restore_validation_pending,
@@ -12463,8 +12499,8 @@ mod tests {
         );
         assert_eq!(
             runtime.control().outbound_messages().len(),
-            4,
-            "state restore + playlist restore should enqueue ready/file/playlist/index protocol messages"
+            5,
+            "state restore + playlist restore should enqueue ready/file/list/playlist/index protocol messages"
         );
 
         let ProtocolMessage::Set(first_outbound) = &runtime.control().outbound_messages()[0] else {
@@ -12476,15 +12512,20 @@ mod tests {
             panic!("second reconnect outbound message should be Set.file");
         };
         assert!(second_outbound.set.file.is_some());
-        let ProtocolMessage::Set(third_outbound) = &runtime.control().outbound_messages()[2] else {
-            panic!("third reconnect outbound message should be Set.playlistChange");
+        let ProtocolMessage::List(third_outbound) = &runtime.control().outbound_messages()[2] else {
+            panic!("third reconnect outbound message should be List");
         };
-        assert!(third_outbound.set.playlist_change.is_some());
+        assert!(matches!(third_outbound.list, ListPayload::Request(_)));
         let ProtocolMessage::Set(fourth_outbound) = &runtime.control().outbound_messages()[3]
         else {
-            panic!("fourth reconnect outbound message should be Set.playlistIndex");
+            panic!("fourth reconnect outbound message should be Set.playlistChange");
         };
-        assert!(fourth_outbound.set.playlist_index.is_some());
+        assert!(fourth_outbound.set.playlist_change.is_some());
+        let ProtocolMessage::Set(fifth_outbound) = &runtime.control().outbound_messages()[4]
+        else {
+            panic!("fifth reconnect outbound message should be Set.playlistIndex");
+        };
+        assert!(fifth_outbound.set.playlist_index.is_some());
 
         assert_eq!(
             runtime.player().paused,
@@ -12589,7 +12630,7 @@ mod tests {
             "first reconnect cycle ticks should emit restore + playlist + validation notifications once"
         );
         let outbound_messages_after_first_sequence = runtime.control().outbound_messages().len();
-        assert_eq!(outbound_messages_after_first_sequence, 4);
+        assert_eq!(outbound_messages_after_first_sequence, 5);
 
         runtime
             .run_reconnect_state_restore_if_needed()
@@ -16674,6 +16715,100 @@ mod tests {
             "list request should be suppressed before server hello"
         );
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_request_user_list_is_omitted_after_disconnect_until_next_hello() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session.behavior_config_mut().pause_on_leave = false;
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        runtime
+            .run_disconnect(42.0)
+            .expect("disconnect should not fail");
+
+        assert!(
+            !runtime
+                .run_request_user_list()
+                .expect("list request should not fail"),
+            "list request should be suppressed after disconnect until the next hello"
+        );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn shared_playlist_runtime_actions_are_omitted_after_disconnect() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+        session.playlist_undo_snapshots.insert(
+            "room1".to_owned(),
+            vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+        );
+
+        let _ = session.handle_disconnect(42.0);
+
+        assert!(
+            session.runtime_actions_for_local_playlist_index_set(2).is_empty(),
+            "playlist index changes should be suppressed after disconnect"
+        );
+        assert!(
+            session.runtime_actions_for_local_playlist_next().is_empty(),
+            "playlist next should be suppressed after disconnect"
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_queue("episode4.mkv".to_owned(), false)
+                .is_empty(),
+            "playlist queue should be suppressed after disconnect"
+        );
+        assert!(
+            session.runtime_actions_for_local_playlist_delete(1).is_empty(),
+            "playlist delete should be suppressed after disconnect"
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_replace(
+                    vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                    Some(0),
+                )
+                .is_empty(),
+            "playlist replace should be suppressed after disconnect"
+        );
+        assert!(
+            session.runtime_actions_for_local_playlist_undo().is_empty(),
+            "playlist undo should be suppressed after disconnect"
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_shuffle_remaining()
+                .is_empty(),
+            "playlist shuffle-remaining should be suppressed after disconnect"
+        );
+        assert!(
+            session
+                .runtime_actions_for_local_playlist_shuffle_entire()
+                .is_empty(),
+            "playlist shuffle-entire should be suppressed after disconnect"
+        );
     }
 
     #[test]
