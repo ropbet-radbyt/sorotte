@@ -160,11 +160,14 @@ pub(in super::super) struct GuiTcpSessionTransportDriver {
     pending_outbound_lines: VecDeque<Vec<u8>>,
     pending_outbound_offset: usize,
     inbound_buffer: Vec<u8>,
+    inbound_idle_timeout: Duration,
+    last_inbound_activity_at: Instant,
 }
 
 impl GuiTcpSessionTransportDriver {
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
     const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1500);
+    const INBOUND_IDLE_TIMEOUT: Duration = Duration::from_millis(12_500);
 
     fn normalized_connect_host(host: &str) -> &str {
         host.strip_prefix('[')
@@ -242,6 +245,8 @@ impl GuiTcpSessionTransportDriver {
             pending_outbound_lines: VecDeque::new(),
             pending_outbound_offset: 0,
             inbound_buffer: Vec::new(),
+            inbound_idle_timeout: Self::INBOUND_IDLE_TIMEOUT,
+            last_inbound_activity_at: Instant::now(),
         })
     }
 
@@ -253,12 +258,33 @@ impl GuiTcpSessionTransportDriver {
         Self::connect(&host, port)
     }
 
+    pub(in super::super) fn with_inbound_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.inbound_idle_timeout = timeout;
+        self
+    }
+
     fn disconnect_with_error(&mut self, message: String) -> Result<(), String> {
         self.stream = None;
         self.pending_outbound_lines.clear();
         self.pending_outbound_offset = 0;
         self.inbound_buffer.clear();
         Err(message)
+    }
+
+    fn note_inbound_activity(&mut self) {
+        self.last_inbound_activity_at = Instant::now();
+    }
+
+    fn disconnect_if_inbound_idle(&mut self) -> Result<(), String> {
+        if self.stream.is_none()
+            || self.last_inbound_activity_at.elapsed() < self.inbound_idle_timeout
+        {
+            return Ok(());
+        }
+        self.disconnect_with_error(format!(
+            "Session transport TCP timed out after {:.1} seconds without inbound traffic.",
+            self.inbound_idle_timeout.as_secs_f64()
+        ))
     }
 
     fn reconnect_stream(&mut self) -> Result<(), String> {
@@ -273,6 +299,7 @@ impl GuiTcpSessionTransportDriver {
         self.pending_outbound_lines.clear();
         self.pending_outbound_offset = 0;
         self.inbound_buffer.clear();
+        self.last_inbound_activity_at = Instant::now();
         Ok(())
     }
 
@@ -334,9 +361,11 @@ impl GuiTcpSessionTransportDriver {
                     closed_by_server = true;
                     break;
                 }
-                Ok(read_bytes) => self
-                    .inbound_buffer
-                    .extend_from_slice(&read_buffer[..read_bytes]),
+                Ok(read_bytes) => {
+                    self.inbound_buffer
+                        .extend_from_slice(&read_buffer[..read_bytes]);
+                    self.note_inbound_activity();
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
                     return self.disconnect_with_error(format!(
@@ -380,7 +409,7 @@ impl GuiTcpSessionTransportDriver {
             }
             return Err("Session transport TCP connection closed by the server.".to_owned());
         }
-        Ok(())
+        self.disconnect_if_inbound_idle()
     }
 }
 

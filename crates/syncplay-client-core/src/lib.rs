@@ -3412,7 +3412,8 @@ impl ClientSession {
             return Vec::new();
         }
 
-        let Some(room_playstate) = self.current_room_playstate() else {
+        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let Some(room_playstate) = self.current_room_playstate_at(now_seconds) else {
             return Vec::new();
         };
         let (Some(room_paused), Some(room_position)) =
@@ -3703,15 +3704,23 @@ impl ClientSession {
         if self.server_chat_supported.is_none() {
             return Vec::new();
         }
+        let (room, inline_password) =
+            Self::normalize_runtime_controlled_room_input_legacy_compatible(room);
         if room.is_empty() {
             return Vec::new();
+        }
+        if let Some(password) = inline_password.as_deref() {
+            self.remember_control_password_for_room(&room, password);
         }
         let mut actions = vec![
             ClientRuntimeAction::SetRoom { room: room.clone() },
             ClientRuntimeAction::RequestUserList,
         ];
+        let controller_password = inline_password
+            .filter(|password| !password.is_empty())
+            .or_else(|| self.controlled_room_passwords.get(&room).cloned());
         if self.server_managed_rooms_supported == Some(true)
-            && let Some(password) = self.controlled_room_passwords.get(&room).cloned()
+            && let Some(password) = controller_password
         {
             self.last_controller_auth_password_attempt = Some(password.clone());
             actions.push(ClientRuntimeAction::NotifyControllerAuthTransition(
@@ -3766,9 +3775,7 @@ impl ClientSession {
         &self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
-            || index < 0
-        {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() || index < 0 {
             return Vec::new();
         }
 
@@ -3890,9 +3897,7 @@ impl ClientSession {
         &mut self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
-            || index < 0
-        {
+        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() || index < 0 {
             return Vec::new();
         }
         let Some(room_name) = self.room.clone() else {
@@ -5440,6 +5445,22 @@ impl ClientSession {
             return false;
         };
         hash.len() == 12 && hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    fn normalize_runtime_controlled_room_input_legacy_compatible(
+        room: String,
+    ) -> (String, Option<String>) {
+        let parts: Vec<_> = room.split(':').collect();
+        if !room.starts_with('+') || parts.len() < 3 {
+            return (room, None);
+        }
+
+        let canonical_room = format!("{}:{}", parts[0], parts[1]);
+        let normalized_password = Self::normalize_control_password_legacy_compatible(parts[2]);
+        (
+            canonical_room,
+            (!normalized_password.is_empty()).then_some(normalized_password),
+        )
     }
 
     fn normalize_control_password_legacy_compatible(password: &str) -> String {
@@ -11781,28 +11802,40 @@ mod tests {
             .run_reconnect_state_restore_validation_if_needed()
             .expect("validation should complete using cached pre-restore telemetry");
 
-        assert_eq!(
-            runtime.drain_reconnect_notifications(),
-            vec![
-                ReconnectTransitionNotification::StateRestoreValidationMismatch {
-                    local_paused: true,
-                    room_paused: false,
-                    local_position: 117.5,
-                    room_position: 120.0,
-                    position_diff_seconds: 2.5,
-                }
-            ],
-            "post-restore validation should use cached telemetry-refreshed local state against cached room playstate"
+        let reconnect_notifications = runtime.drain_reconnect_notifications();
+        assert_eq!(reconnect_notifications.len(), 1);
+        let ReconnectTransitionNotification::StateRestoreValidationMismatch {
+            local_paused,
+            room_paused,
+            local_position,
+            room_position,
+            position_diff_seconds,
+        } = reconnect_notifications[0]
+        else {
+            panic!("expected one reconnect state-restore validation mismatch notification");
+        };
+        assert!(local_paused);
+        assert!(!room_paused);
+        assert_eq!(local_position, 117.5);
+        assert!(
+            room_position >= 120.0 && room_position < 120.1,
+            "post-restore validation should compare against the aged room playstate, not the stale stored snapshot"
+        );
+        assert!(
+            (position_diff_seconds - (room_position - 117.5)).abs() < 0.001,
+            "position diff should be computed from the aged room position"
         );
         assert_eq!(
             runtime.player().paused,
             Some(false),
             "post-restore validation should issue corrective pause command"
         );
-        assert_eq!(
-            runtime.player().position,
-            Some(120.0),
-            "post-restore validation should issue corrective seek command"
+        assert!(
+            runtime
+                .player()
+                .position
+                .is_some_and(|position| { position >= 120.0 && position < 120.1 }),
+            "post-restore validation should issue a corrective seek toward the aged room position"
         );
         assert!(
             !runtime.session().reconnect_state_restore_validation_pending,
@@ -12512,7 +12545,8 @@ mod tests {
             panic!("second reconnect outbound message should be Set.file");
         };
         assert!(second_outbound.set.file.is_some());
-        let ProtocolMessage::List(third_outbound) = &runtime.control().outbound_messages()[2] else {
+        let ProtocolMessage::List(third_outbound) = &runtime.control().outbound_messages()[2]
+        else {
             panic!("third reconnect outbound message should be List");
         };
         assert!(matches!(third_outbound.list, ListPayload::Request(_)));
@@ -12521,8 +12555,7 @@ mod tests {
             panic!("fourth reconnect outbound message should be Set.playlistChange");
         };
         assert!(fourth_outbound.set.playlist_change.is_some());
-        let ProtocolMessage::Set(fifth_outbound) = &runtime.control().outbound_messages()[4]
-        else {
+        let ProtocolMessage::Set(fifth_outbound) = &runtime.control().outbound_messages()[4] else {
             panic!("fifth reconnect outbound message should be Set.playlistIndex");
         };
         assert!(fifth_outbound.set.playlist_index.is_some());
@@ -13436,6 +13469,68 @@ mod tests {
             "validation should preserve telemetry updates for later diagnostics drains"
         );
         assert!(runtime.drain_reconnect_notifications().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
+        let mut session = ClientSession::default();
+        session.room = Some("room1".to_owned());
+        session.room_playstates.insert(
+            "room1".to_owned(),
+            RoomPlaystateView {
+                position: Some(120.0),
+                paused: Some(false),
+                ..RoomPlaystateView::default()
+            },
+        );
+        session.room_playstate_updated_at_seconds.insert(
+            "room1".to_owned(),
+            unix_wall_clock_time_seconds_legacy_compatible() - 2.5,
+        );
+        session.reconnect_state_restore_validation_pending = true;
+
+        let player = RecordingPlayer {
+            pending_playback_telemetry_update: Some(
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(122.5),
+            ),
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_reconnect_state_restore_validation_if_needed()
+            .expect("aged room playstate validation should not fail");
+
+        assert!(
+            runtime.drain_reconnect_notifications().is_empty(),
+            "aged room position should be treated as in-sync instead of triggering a false mismatch"
+        );
+        assert_eq!(
+            runtime.player().paused,
+            None,
+            "aged room position match should not issue a corrective pause"
+        );
+        assert_eq!(
+            runtime.player().position,
+            None,
+            "aged room position match should not issue a corrective seek"
+        );
+        assert!(
+            !runtime.session().reconnect_state_restore_validation_pending,
+            "validation should complete once the aged room playstate matches the fresh local telemetry"
+        );
+        assert_eq!(
+            runtime.drain_player_playback_telemetry_updates(),
+            vec![
+                PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(122.5)
+            ],
+            "telemetry should remain available for diagnostics drains after a no-op validation success"
+        );
     }
 
     #[test]
@@ -16543,6 +16638,65 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_room_with_inline_controlled_room_password_canonicalizes_and_reidentifies()
+    {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"managedRooms":true}}}"#,
+            )
+            .expect("hello should apply");
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room("+room:ABCDEF123456:ab-123-456")
+                .expect("set room should not fail"),
+            "inline controlled-room password should canonicalize the room and queue reidentify actions"
+        );
+
+        let (session, _, control) = runtime.into_parts();
+        assert_eq!(
+            session.controlled_room_passwords.get("+room:ABCDEF123456"),
+            Some(&"AB-123-456".to_owned()),
+            "inline controlled-room password should be cached for future reidentify flows"
+        );
+        assert_eq!(control.outbound_messages().len(), 3);
+
+        let ProtocolMessage::Set(room_set) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set.room protocol message");
+        };
+        assert_eq!(
+            room_set.set.room.as_ref().map(|room| room.name.as_str()),
+            Some("+room:ABCDEF123456"),
+            "outbound room switch should strip the inline password before sending Set.room"
+        );
+
+        let ProtocolMessage::List(list_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued List protocol message");
+        };
+        assert!(matches!(list_message.list, ListPayload::Request(_)));
+
+        let ProtocolMessage::Set(auth_set) = &control.outbound_messages()[2] else {
+            panic!("expected queued Set.controllerAuth protocol message");
+        };
+        let controller_auth = auth_set
+            .set
+            .controller_auth
+            .as_ref()
+            .expect("Set message should contain controllerAuth payload");
+        assert_eq!(controller_auth.room.as_deref(), Some("+room:ABCDEF123456"));
+        assert_eq!(controller_auth.password.as_deref(), Some("AB-123-456"));
+        assert_eq!(
+            control.controller_auth_notifications(),
+            &[ControllerAuthTransitionNotification::Attempting {
+                room: "+room:ABCDEF123456".to_owned()
+            }]
+        );
+    }
+
+    #[test]
     fn client_runtime_set_room_with_legacy_fallback_prefers_local_file_name() {
         let mut session = ClientSession::default();
         session
@@ -16767,7 +16921,9 @@ mod tests {
         let _ = session.handle_disconnect(42.0);
 
         assert!(
-            session.runtime_actions_for_local_playlist_index_set(2).is_empty(),
+            session
+                .runtime_actions_for_local_playlist_index_set(2)
+                .is_empty(),
             "playlist index changes should be suppressed after disconnect"
         );
         assert!(
@@ -16781,7 +16937,9 @@ mod tests {
             "playlist queue should be suppressed after disconnect"
         );
         assert!(
-            session.runtime_actions_for_local_playlist_delete(1).is_empty(),
+            session
+                .runtime_actions_for_local_playlist_delete(1)
+                .is_empty(),
             "playlist delete should be suppressed after disconnect"
         );
         assert!(
