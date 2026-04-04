@@ -12515,20 +12515,40 @@ mod tests {
             .run_reconnect_state_restore_validation_if_needed()
             .expect("reconnect validation should run after state+playlist restore dispatch");
 
+        let reconnect_notifications = runtime.control().reconnect_notifications();
         assert_eq!(
-            runtime.control().reconnect_notifications(),
-            &[
-                ReconnectTransitionNotification::RestoringState,
-                ReconnectTransitionNotification::RestoringPlaylist,
-                ReconnectTransitionNotification::StateRestoreValidationMismatch {
-                    local_paused: true,
-                    room_paused: false,
-                    local_position: 117.5,
-                    room_position: 120.0,
-                    position_diff_seconds: 2.5,
-                },
-            ],
+            reconnect_notifications.len(),
+            3,
             "reconnect notifications should preserve restore-state, restore-playlist, then validation-mismatch ordering"
+        );
+        assert_eq!(
+            reconnect_notifications[0],
+            ReconnectTransitionNotification::RestoringState
+        );
+        assert_eq!(
+            reconnect_notifications[1],
+            ReconnectTransitionNotification::RestoringPlaylist
+        );
+        let ReconnectTransitionNotification::StateRestoreValidationMismatch {
+            local_paused,
+            room_paused,
+            local_position,
+            room_position,
+            position_diff_seconds,
+        } = &reconnect_notifications[2]
+        else {
+            panic!("third reconnect notification should be a validation mismatch");
+        };
+        assert!(*local_paused);
+        assert!(!room_paused);
+        assert_eq!(*local_position, 117.5);
+        assert!(
+            (120.0..120.1).contains(room_position),
+            "validation mismatch should use the aged room position recorded at validation time"
+        );
+        assert!(
+            (*position_diff_seconds - (*room_position - 117.5)).abs() < 0.001,
+            "position diff should be derived from the same aged room position"
         );
         assert_eq!(
             runtime.control().outbound_messages().len(),
@@ -12565,9 +12585,11 @@ mod tests {
             Some(false),
             "validation mismatch should still issue corrective pause after playlist restore dispatch"
         );
-        assert_eq!(
-            runtime.player().position,
-            Some(120.0),
+        assert!(
+            runtime
+                .player()
+                .position
+                .is_some_and(|position| (120.0..120.1).contains(&position)),
             "validation mismatch should still issue corrective seek after playlist restore dispatch"
         );
         assert!(
@@ -12647,20 +12669,40 @@ mod tests {
             .run_reconnect_state_restore_validation_if_needed()
             .expect("reconnect validation should dispatch");
 
+        let reconnect_notifications = runtime.drain_reconnect_notifications();
         assert_eq!(
-            runtime.drain_reconnect_notifications(),
-            vec![
-                ReconnectTransitionNotification::RestoringState,
-                ReconnectTransitionNotification::RestoringPlaylist,
-                ReconnectTransitionNotification::StateRestoreValidationMismatch {
-                    local_paused: true,
-                    room_paused: false,
-                    local_position: 117.5,
-                    room_position: 120.0,
-                    position_diff_seconds: 2.5,
-                },
-            ],
+            reconnect_notifications.len(),
+            3,
             "first reconnect cycle ticks should emit restore + playlist + validation notifications once"
+        );
+        assert_eq!(
+            reconnect_notifications[0],
+            ReconnectTransitionNotification::RestoringState
+        );
+        assert_eq!(
+            reconnect_notifications[1],
+            ReconnectTransitionNotification::RestoringPlaylist
+        );
+        let ReconnectTransitionNotification::StateRestoreValidationMismatch {
+            local_paused,
+            room_paused,
+            local_position,
+            room_position,
+            position_diff_seconds,
+        } = &reconnect_notifications[2]
+        else {
+            panic!("third reconnect notification should be a validation mismatch");
+        };
+        assert!(*local_paused);
+        assert!(!room_paused);
+        assert_eq!(*local_position, 117.5);
+        assert!(
+            (120.0..120.1).contains(room_position),
+            "validation mismatch should use the aged room position recorded at validation time"
+        );
+        assert!(
+            (*position_diff_seconds - (*room_position - 117.5)).abs() < 0.001,
+            "position diff should be derived from the same aged room position"
         );
         let outbound_messages_after_first_sequence = runtime.control().outbound_messages().len();
         assert_eq!(outbound_messages_after_first_sequence, 5);
