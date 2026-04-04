@@ -5390,12 +5390,16 @@ mod tests {
             );
             assert_eq!(
                 actions.len(),
-                1,
-                "local file publish should emit one action"
+                2,
+                "local file publish should emit SetFile followed by a List refresh request"
             );
             let ClientRuntimeAction::SetFile { file_payload } = &actions[0] else {
                 panic!("local file publish should emit SetFile action");
             };
+            assert!(
+                matches!(actions[1], ClientRuntimeAction::RequestUserList),
+                "local file publish should request a fresh user list after SetFile"
+            );
             assert_eq!(
                 file_payload, &legacy_result,
                 "privacy file payload mismatch for modes ({filename_privacy_mode}, {filesize_privacy_mode})"
