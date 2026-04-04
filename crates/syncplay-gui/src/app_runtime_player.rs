@@ -843,10 +843,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 continue;
             };
             for relative_path in candidates {
-                let candidate_path = Self::cached_missing_media_candidate_path(
-                    &root_index.root_path,
-                    relative_path,
-                );
+                let candidate_path =
+                    Self::cached_missing_media_candidate_path(&root_index.root_path, relative_path);
                 if !candidate_path.is_file() {
                     continue;
                 }
