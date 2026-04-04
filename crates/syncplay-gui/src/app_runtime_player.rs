@@ -806,6 +806,20 @@ impl GuiPersistedConfigRuntimeOwner {
         candidate_key == directory_key || candidate_key.starts_with(&format!("{directory_key}/"))
     }
 
+    fn cached_missing_media_candidate_path(root_path: &Path, relative_path: &str) -> PathBuf {
+        let direct_path = root_path.join(relative_path);
+        if cfg!(windows) || !relative_path.contains('\\') || direct_path.is_file() {
+            return direct_path;
+        }
+
+        let normalized_path = root_path.join(relative_path.replace('\\', "/"));
+        if normalized_path.is_file() {
+            normalized_path
+        } else {
+            direct_path
+        }
+    }
+
     fn cached_missing_media_target_path(
         &self,
         index: &GuiAttachedMediaSearchIndex,
@@ -829,7 +843,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 continue;
             };
             for relative_path in candidates {
-                let candidate_path = root_index.root_path.join(relative_path);
+                let candidate_path = Self::cached_missing_media_candidate_path(
+                    &root_index.root_path,
+                    relative_path,
+                );
                 if !candidate_path.is_file() {
                     continue;
                 }

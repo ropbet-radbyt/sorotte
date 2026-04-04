@@ -301,11 +301,20 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
     }
     combined_actions.extend(second_actions);
 
-    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let third_actions = handle.drain_actions();
-    for action in third_actions.iter().cloned() {
-        assert!(state.apply(action));
-    }
+    let third_actions = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .chat
+                .last()
+                .is_some_and(|entry| entry.sender == "alice" && entry.message == "hello room")
+        },
+        "the echoed chat message over TCP transport",
+    );
     combined_actions.extend(third_actions);
 
     assert!(
