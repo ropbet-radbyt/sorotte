@@ -13,8 +13,8 @@ use super::shell_state::{
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
-    optional_string_list_multiline_text,
-    parse_editable_string_list_text, parse_room_history_text, set_player_arguments_text_for_path,
+    optional_string_list_multiline_text, parse_editable_string_list_text, parse_room_history_text,
+    set_player_arguments_text_for_path,
 };
 
 #[cfg(test)]

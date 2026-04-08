@@ -414,19 +414,17 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
         .expect("queued room change should encode");
     let set_message = outbound_lines
         .iter()
-        .find_map(|line| match decode_message_line(line)
-            .expect("queued room change protocol lines should decode")
-        {
-            ProtocolMessage::Set(set_message) => Some(set_message),
-            _ => None,
+        .find_map(|line| {
+            match decode_message_line(line)
+                .expect("queued room change protocol lines should decode")
+            {
+                ProtocolMessage::Set(set_message) => Some(set_message),
+                _ => None,
+            }
         })
         .expect("queued room change protocol lines should include a Set message");
     assert_eq!(
-        set_message
-            .set
-            .room
-            .as_ref()
-            .map(|room| room.name.as_str()),
+        set_message.set.room.as_ref().map(|room| room.name.as_str()),
         Some("room2")
     );
 
@@ -436,19 +434,18 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
         .expect("reconnect protocol lines should encode");
     let hello = reconnect_lines
         .iter()
-        .find_map(|line| match decode_message_line(line)
-            .expect("reconnect protocol lines should decode")
-        {
-            ProtocolMessage::Hello(hello) => Some(hello),
-            _ => None,
+        .find_map(|line| {
+            match decode_message_line(line).expect("reconnect protocol lines should decode") {
+                ProtocolMessage::Hello(hello) => Some(hello),
+                _ => None,
+            }
         })
         .expect("reconnect protocol lines should include a Hello message");
     assert_eq!(hello.hello.room.name, "room2");
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whitespace_room_names()
-{
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whitespace_room_names() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 

@@ -5,7 +5,9 @@ use super::shell_state::{
     MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
     MainWindowUserRow, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
 };
-use super::support::{NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text};
+use super::support::{
+    NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
+};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {

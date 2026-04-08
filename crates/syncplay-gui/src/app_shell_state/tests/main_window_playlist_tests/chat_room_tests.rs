@@ -174,12 +174,8 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_jo
         label: "Room",
         value: "  TeamRoom  ".to_owned(),
     }));
-    assert!(state.apply(GuiShellAction::SetMainWindowRoom(
-        "  TeamRoom  ".to_owned(),
-    )));
-    assert!(state.apply(GuiShellAction::JoinMainWindowRoom(
-        "   ".to_owned(),
-    )));
+    assert!(state.apply(GuiShellAction::SetMainWindowRoom("  TeamRoom  ".to_owned(),)));
+    assert!(state.apply(GuiShellAction::JoinMainWindowRoom("   ".to_owned(),)));
 
     let saved = state.configuration.to_stored_settings();
     assert_eq!(saved.room.as_deref(), Some("  TeamRoom  "));

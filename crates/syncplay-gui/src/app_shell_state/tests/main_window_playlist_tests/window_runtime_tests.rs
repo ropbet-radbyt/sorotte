@@ -307,7 +307,11 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_runtime_snapshots() {
     )));
     assert_eq!(state.main_window.room_name, "   ");
     assert_eq!(
-        state.main_window.users.first().map(|user| user.room_name.as_str()),
+        state
+            .main_window
+            .users
+            .first()
+            .map(|user| user.room_name.as_str()),
         Some("   ")
     );
 }

@@ -318,8 +318,7 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         room: String,
         password: String,
     ) -> Vec<GuiShellAction> {
-        if nonempty_room_name_text(&room).is_some()
-            && normalized_editable_text(&password).is_some()
+        if nonempty_room_name_text(&room).is_some() && normalized_editable_text(&password).is_some()
         {
             self.handle
                 .push_request(GuiRuntimeRequest::RequestControllerAuth { room, password });

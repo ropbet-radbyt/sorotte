@@ -112,9 +112,9 @@ impl SyncplayGuiShellAppState {
             .and_then(|value| configured_room_name_text(&value));
         if settings.room.is_none()
             && let Some(room) = settings.room_list.as_ref().and_then(|rooms| {
-                rooms.iter().find_map(|room| {
-                    (!room.is_empty()).then_some(room.to_owned())
-                })
+                rooms
+                    .iter()
+                    .find_map(|room| (!room.is_empty()).then_some(room.to_owned()))
             })
         {
             settings.room = Some(room);

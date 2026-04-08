@@ -715,11 +715,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .iter()
             .rev()
             .find_map(|message| match message {
-                ProtocolMessage::Set(set_message) => set_message
-                    .set
-                    .room
-                    .as_ref()
-                    .map(|room| room.name.clone()),
+                ProtocolMessage::Set(set_message) => {
+                    set_message.set.room.as_ref().map(|room| room.name.clone())
+                }
                 _ => None,
             })
     }

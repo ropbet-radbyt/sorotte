@@ -38,12 +38,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .room_names()
             .into_iter()
             .filter_map(|room_name| {
-                nonempty_room_name_text(&room_name).map(|room_name| {
-                    MainWindowRuntimeRoomSnapshot {
-                        has_named_users: !session.usernames_in_room(&room_name).is_empty(),
-                        is_controlled: room_name.starts_with('+'),
-                        room_name,
-                    }
+                nonempty_room_name_text(&room_name).map(|room_name| MainWindowRuntimeRoomSnapshot {
+                    has_named_users: !session.usernames_in_room(&room_name).is_empty(),
+                    is_controlled: room_name.starts_with('+'),
+                    room_name,
                 })
             })
             .collect::<Vec<_>>();

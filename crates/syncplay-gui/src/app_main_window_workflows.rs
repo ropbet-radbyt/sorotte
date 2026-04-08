@@ -5,9 +5,7 @@ use super::shell_state::{
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRoomRow, MainWindowUserRow, SyncplayGuiShellAppState,
 };
-use super::support::{
-    joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
-};
+use super::support::{joined_room_name_text, nonempty_room_name_text, normalized_editable_text};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn move_main_window_playlist_row(
