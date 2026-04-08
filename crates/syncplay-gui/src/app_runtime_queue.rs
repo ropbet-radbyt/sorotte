@@ -16,7 +16,7 @@ use super::runtime_bridge::{
     GuiQueuedRuntimeOwner, GuiRuntimeRequest,
 };
 use super::shell_state::{GuiShellAction, SyncplayGuiShellAppState};
-use super::support::normalized_editable_text;
+use super::support::{nonempty_room_name_text, normalized_editable_text};
 
 type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
 
@@ -277,7 +277,7 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         _state: &SyncplayGuiShellAppState,
         room: String,
     ) -> Vec<GuiShellAction> {
-        if let Some(room) = normalized_editable_text(&room) {
+        if let Some(room) = nonempty_room_name_text(&room) {
             self.handle.push_request(GuiRuntimeRequest::SetRoom(room));
         }
         Vec::new()
@@ -318,7 +318,7 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         room: String,
         password: String,
     ) -> Vec<GuiShellAction> {
-        if normalized_editable_text(&room).is_some()
+        if nonempty_room_name_text(&room).is_some()
             && normalized_editable_text(&password).is_some()
         {
             self.handle

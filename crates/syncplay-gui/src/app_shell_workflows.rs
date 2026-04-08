@@ -5,7 +5,7 @@ use super::shell_state::{
     MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
     MainWindowUserRow, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
 };
-use super::support::normalized_editable_text;
+use super::support::{NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {
@@ -268,7 +268,7 @@ impl SyncplayGuiShellAppState {
             .apply_text_value("Connection", "Room", &room_value);
         let controlled_room_active = room_value.starts_with('+');
         self.main_window.room_name = if room_value.is_empty() {
-            "(no room joined)".to_owned()
+            NO_ROOM_JOINED_LABEL.to_owned()
         } else {
             room_value
         };
@@ -308,7 +308,7 @@ impl SyncplayGuiShellAppState {
         &mut self,
         snapshot: MainWindowRuntimeSnapshot,
     ) -> bool {
-        let Some(room_name) = normalized_editable_text(&snapshot.room_name) else {
+        let Some(room_name) = nonempty_room_name_text(&snapshot.room_name) else {
             return self.record_action_error(
                 "Main-window runtime snapshots must include a non-empty room name.",
             );
@@ -316,7 +316,7 @@ impl SyncplayGuiShellAppState {
 
         let mut normalized_rooms = Vec::with_capacity(snapshot.rooms.len());
         for room in snapshot.rooms {
-            let Some(room_name) = normalized_editable_text(&room.room_name) else {
+            let Some(room_name) = nonempty_room_name_text(&room.room_name) else {
                 return self.record_action_error(
                     "Main-window runtime snapshots cannot contain empty room names.",
                 );
@@ -343,7 +343,7 @@ impl SyncplayGuiShellAppState {
                 );
             };
             let user_room_name =
-                normalized_editable_text(&user.room_name).unwrap_or_else(|| room_name.clone());
+                nonempty_room_name_text(&user.room_name).unwrap_or_else(|| room_name.clone());
             if normalized_users.iter().any(|existing: &MainWindowUserRow| {
                 existing.username.eq_ignore_ascii_case(&username)
             }) {
@@ -616,7 +616,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn join_main_window_room(&mut self, room: String) -> bool {
-        if normalized_editable_text(&room).is_none() {
+        if nonempty_room_name_text(&room).is_none() {
             return self.record_action_error("Room name cannot be empty.");
         }
         self.clear_action_error_and_refresh();
@@ -624,8 +624,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn leave_main_window_room(&mut self) -> bool {
-        let current_room = self.main_window.room_name.trim();
-        if current_room.is_empty() || current_room == "(no room joined)" {
+        if joined_room_name_text(&self.main_window.room_name).is_none() {
             return self.record_action_error("No joined room is currently active.");
         }
         self.clear_action_error_and_refresh();

@@ -1108,7 +1108,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
 
-        let room_change_result = if default_room.trim().is_empty() {
+        let room_change_result = if default_room.is_empty() {
             session.set_room_with_legacy_fallback(default_room)
         } else {
             session.set_room(default_room)

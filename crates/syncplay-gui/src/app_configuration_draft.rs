@@ -12,7 +12,8 @@ use super::shell_state::{
     GuiDialogControlKind,
 };
 use super::support::{
-    bool_label, normalized_editable_text, optional_string_list_multiline_text,
+    bool_label, configured_room_name_text, normalized_editable_text,
+    optional_string_list_multiline_text,
     parse_editable_string_list_text, parse_room_history_text, set_player_arguments_text_for_path,
 };
 
@@ -133,7 +134,7 @@ impl FirstRunConfigurationDialogDraft {
                 self.settings.username = normalized_editable_text(value);
             }
             ("Connection", "Room") => {
-                self.settings.room = normalized_editable_text(value);
+                self.settings.room = configured_room_name_text(value);
             }
             ("Connection", "Server Password") => {
                 self.settings.server_password = normalized_editable_text(value);

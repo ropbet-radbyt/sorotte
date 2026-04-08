@@ -62,6 +62,15 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         handle.drain_requests(),
         vec![GuiRuntimeRequest::SetRoom("joined-room".to_owned())]
     );
+    assert!(
+        runtime
+            .actions_for_room_join(&state, "   ".to_owned())
+            .is_empty()
+    );
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::SetRoom("   ".to_owned())]
+    );
     assert!(runtime.actions_for_room_leave(&state).is_empty());
     assert_eq!(
         handle.drain_requests(),

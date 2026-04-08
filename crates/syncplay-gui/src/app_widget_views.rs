@@ -7,7 +7,10 @@ use super::shell_state::{
     GuiConfigurationTab, GuiMainWindowTab, GuiPendingOperationKind, GuiShellModal, GuiShellView,
     SyncplayGuiShellAppState, browser_domain_from_url, browser_is_url, browser_uri_is_trusted,
 };
-use super::support::{bool_label, normalized_editable_text, optional_seconds_text};
+use super::support::{
+    bool_label, configured_room_name_text, joined_room_name_text, normalized_editable_text,
+    optional_seconds_text,
+};
 use super::widget_tree::{GuiLayoutMode, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer};
 
 #[path = "app_widget_views/configuration.rs"]

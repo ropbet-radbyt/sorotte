@@ -13,7 +13,7 @@ use super::shell_state::{
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
     SyncplayGuiShellAppState,
 };
-use super::support::normalized_editable_text;
+use super::support::{configured_room_name_text, normalized_editable_text};
 use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
 
 impl SyncplayGuiShellAppState {
@@ -109,13 +109,11 @@ impl SyncplayGuiShellAppState {
         settings.room = settings
             .room
             .take()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
+            .and_then(|value| configured_room_name_text(&value));
         if settings.room.is_none()
             && let Some(room) = settings.room_list.as_ref().and_then(|rooms| {
                 rooms.iter().find_map(|room| {
-                    let trimmed = room.trim();
-                    (!trimmed.is_empty()).then_some(trimmed.to_owned())
+                    (!room.is_empty()).then_some(room.to_owned())
                 })
             })
         {

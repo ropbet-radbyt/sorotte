@@ -212,7 +212,7 @@ fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
 
     assert!(!state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
-            room_name: "   ".to_owned(),
+            room_name: String::new(),
             shared_playlist_enabled: false,
             controlled_room_active: false,
             users: Vec::new(),
@@ -271,6 +271,44 @@ fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
     assert_eq!(
         state.validation.last_action_error.as_deref(),
         Some("Main-window runtime snapshots cannot contain duplicate user names.")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_preserves_whitespace_room_names_in_runtime_snapshots() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        MainWindowRuntimeSnapshot {
+            room_name: "   ".to_owned(),
+            shared_playlist_enabled: false,
+            controlled_room_active: false,
+            users: vec![MainWindowRuntimeUserSnapshot {
+                username: "alice".to_owned(),
+                room_name: "   ".to_owned(),
+                is_self: true,
+                is_ready: false,
+                is_controller: false,
+                ..Default::default()
+            }],
+            playlist: Vec::new(),
+            chat: Vec::new(),
+            can_toggle_pause: false,
+            can_seek: false,
+            can_set_ready: false,
+            can_manage_playlist: false,
+            playback_paused: false,
+            autoplay_active: false,
+            hide_empty_rooms: false,
+            rooms: Vec::new(),
+            ..Default::default()
+        },
+    )));
+    assert_eq!(state.main_window.room_name, "   ");
+    assert_eq!(
+        state.main_window.users.first().map(|user| user.room_name.as_str()),
+        Some("   ")
     );
 }
 
@@ -484,7 +522,7 @@ fn gui_shell_app_state_rejects_invalid_full_gui_runtime_snapshots() {
             active_view: GuiShellView::MainWindow,
             open_modal: None,
             main_window: MainWindowRuntimeSnapshot {
-                room_name: "   ".to_owned(),
+                room_name: String::new(),
                 shared_playlist_enabled: false,
                 controlled_room_active: false,
                 users: Vec::new(),

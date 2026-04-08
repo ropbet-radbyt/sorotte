@@ -338,6 +338,7 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
 pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     username: String,
     baseline_room: String,
+    pending_room_for_next_hello: Option<String>,
     dont_slow_down_with_me: bool,
     pending_ready_at_start_on_server_hello: bool,
     runtime_settings: StoredClientSettingsRuntimeSnapshot,
@@ -378,6 +379,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(Self {
             username,
             baseline_room: room,
+            pending_room_for_next_hello: None,
             dont_slow_down_with_me: false,
             pending_ready_at_start_on_server_hello: false,
             runtime_settings,
@@ -610,7 +612,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn current_room_for_next_hello(&self) -> String {
-        self.current_room_name()
+        self.pending_room_for_next_hello
+            .as_deref()
+            .or_else(|| self.current_room_name())
             .map(str::to_owned)
             .unwrap_or_else(|| self.baseline_room.clone())
     }
@@ -701,8 +705,29 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .session()
             .room
             .as_deref()
-            .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+
+    fn latest_outbound_room_target_for_next_hello(&self) -> Option<String> {
+        self.runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                ProtocolMessage::Set(set_message) => set_message
+                    .set
+                    .room
+                    .as_ref()
+                    .map(|room| room.name.clone()),
+                _ => None,
+            })
+    }
+
+    fn sync_pending_room_for_next_hello_from_session(&mut self) {
+        if self.pending_room_for_next_hello.as_deref() == self.current_room_name() {
+            self.pending_room_for_next_hello = None;
+        }
     }
 
     fn room_playlist_matches_projection_target(
@@ -906,6 +931,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 })?;
             self.pending_ready_at_start_on_server_hello = false;
         }
+        if result.is_ok() {
+            self.sync_pending_room_for_next_hello_from_session();
+        }
         self.sync_optimistic_room_playlist();
         result
     }
@@ -1106,7 +1134,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn set_room(&mut self, room: String) -> Result<(), String> {
         match self.runtime.run_set_room(room) {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                self.pending_room_for_next_hello =
+                    self.latest_outbound_room_target_for_next_hello();
+                Ok(())
+            }
             Ok(false) => {
                 if self.runtime.session().server_chat_supported().is_none() {
                     Err(
@@ -1128,7 +1160,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
         match self.runtime.run_set_room_with_legacy_fallback(default_room) {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                self.pending_room_for_next_hello =
+                    self.latest_outbound_room_target_for_next_hello();
+                Ok(())
+            }
             Ok(false) => {
                 if self.runtime.session().server_chat_supported().is_none() {
                     Err(

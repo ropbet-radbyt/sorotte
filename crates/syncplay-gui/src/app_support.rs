@@ -32,6 +32,10 @@ pub(super) fn optional_string_list_multiline_text(value: Option<&[String]>) -> S
         .unwrap_or_default()
 }
 
+pub(super) fn optional_room_text(value: Option<&str>) -> &str {
+    value.filter(|text| !text.is_empty()).unwrap_or("(unset)")
+}
+
 pub(super) fn parse_trusted_domains_text(value: &str) -> Option<Vec<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -57,7 +61,7 @@ pub(super) fn parse_editable_string_list_text(value: &str) -> Option<Vec<String>
 pub(super) fn parse_room_history_text(value: &str) -> Option<Vec<String>> {
     let rooms = value
         .lines()
-        .filter_map(normalized_editable_text)
+        .filter_map(nonempty_room_name_text)
         .collect::<BTreeSet<_>>();
     (!rooms.is_empty()).then(|| rooms.into_iter().collect())
 }
@@ -115,6 +119,24 @@ pub(super) fn normalized_editable_text(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_owned())
+    }
+}
+
+pub(super) const NO_ROOM_JOINED_LABEL: &str = "(no room joined)";
+
+pub(super) fn nonempty_room_name_text(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+pub(super) fn configured_room_name_text(value: &str) -> Option<String> {
+    (!value.is_empty() && value != "(unset)").then(|| value.to_owned())
+}
+
+pub(super) fn joined_room_name_text(value: &str) -> Option<&str> {
+    if value.is_empty() || value == NO_ROOM_JOINED_LABEL {
+        None
+    } else {
+        Some(value)
     }
 }
 

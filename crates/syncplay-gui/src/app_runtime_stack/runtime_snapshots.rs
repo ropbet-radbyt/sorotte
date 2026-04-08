@@ -5,7 +5,7 @@ use super::super::shell_state::{
     MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState, browser_format_duration_label,
     browser_format_size_label, browser_is_url, browser_uri_is_trusted,
 };
-use super::super::support::normalized_editable_text;
+use super::super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::GuiClientCoreChatSessionRuntimeAdapter;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
@@ -38,7 +38,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .room_names()
             .into_iter()
             .filter_map(|room_name| {
-                normalized_editable_text(&room_name).map(|room_name| {
+                nonempty_room_name_text(&room_name).map(|room_name| {
                     MainWindowRuntimeRoomSnapshot {
                         has_named_users: !session.usernames_in_room(&room_name).is_empty(),
                         is_controlled: room_name.starts_with('+'),
@@ -48,7 +48,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             })
             .collect::<Vec<_>>();
         if rooms.is_empty()
-            && let Some(room_name) = normalized_editable_text(&state.main_window.room_name)
+            && let Some(room_name) = nonempty_room_name_text(&state.main_window.room_name)
         {
             rooms.push(MainWindowRuntimeRoomSnapshot {
                 has_named_users: false,

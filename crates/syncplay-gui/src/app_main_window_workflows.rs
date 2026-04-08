@@ -5,7 +5,9 @@ use super::shell_state::{
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRoomRow, MainWindowUserRow, SyncplayGuiShellAppState,
 };
-use super::support::normalized_editable_text;
+use super::support::{
+    joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
+};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn move_main_window_playlist_row(
@@ -272,12 +274,7 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn current_joined_main_window_room_name(&self) -> Option<&str> {
-        let room_name = self.main_window.room_name.trim();
-        if room_name.is_empty() || room_name == "(no room joined)" {
-            None
-        } else {
-            Some(room_name)
-        }
+        joined_room_name_text(&self.main_window.room_name)
     }
 
     pub(super) fn main_window_local_can_control_current_room(&self) -> bool {
@@ -311,7 +308,7 @@ impl SyncplayGuiShellAppState {
     pub(super) fn controlled_room_create_default_room_name(&self) -> Option<String> {
         self.current_joined_main_window_room_name()
             .map(controlled_room_base_name_legacy_compatible)
-            .and_then(|room_name| normalized_editable_text(&room_name))
+            .and_then(|room_name| nonempty_room_name_text(&room_name))
     }
 
     pub(super) fn begin_create_controlled_room_edit(&mut self) -> bool {
@@ -353,7 +350,7 @@ impl SyncplayGuiShellAppState {
     pub(super) fn begin_controller_auth_edit(&mut self) -> bool {
         let Some(room_name) = self
             .current_joined_main_window_room_name()
-            .and_then(normalized_editable_text)
+            .map(str::to_owned)
         else {
             return self.record_action_error(
                 "A joined room is required before requesting controller access.",

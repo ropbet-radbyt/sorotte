@@ -12,7 +12,7 @@ use super::shell_state::{
     browser_domain_from_url, load_playlist_entries_from_path, playlist_entries_from_multiline_text,
     save_playlist_entries_to_path,
 };
-use super::support::normalized_editable_text;
+use super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::widget_tree::GuiWidgetNode;
 
 impl GuiWidgetEguiRenderer {
@@ -323,7 +323,7 @@ impl GuiWidgetEguiRenderer {
                 .and_then(|session| {
                     let room_name =
                         controlled_room_base_name_legacy_compatible(&session.room_buffer);
-                    normalized_editable_text(&room_name)
+                    nonempty_room_name_text(&room_name)
                 })
                 .map(|room| {
                     vec![
@@ -568,7 +568,7 @@ impl GuiWidgetEguiRenderer {
                     value: value.to_owned(),
                 });
             }
-            if submitted && normalized_editable_text(value).is_some() {
+            if submitted && nonempty_room_name_text(value).is_some() {
                 actions.push(GuiShellAction::JoinMainWindowRoom(value.to_owned()));
             }
             return (!actions.is_empty()).then_some(actions);
@@ -641,7 +641,7 @@ impl GuiWidgetEguiRenderer {
             }
             if submitted {
                 let room_name = controlled_room_base_name_legacy_compatible(value);
-                if let Some(room_name) = normalized_editable_text(&room_name) {
+                if let Some(room_name) = nonempty_room_name_text(&room_name) {
                     actions.push(GuiShellAction::RequestControllerAuth {
                         room: room_name,
                         password: generate_room_password_legacy_compatible(),

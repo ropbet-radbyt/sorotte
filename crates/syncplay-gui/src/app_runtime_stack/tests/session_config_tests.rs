@@ -394,6 +394,88 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_curren
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pending_room_switch() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
+        .expect("room change should queue");
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("queued room change should encode");
+    let set_message = outbound_lines
+        .iter()
+        .find_map(|line| match decode_message_line(line)
+            .expect("queued room change protocol lines should decode")
+        {
+            ProtocolMessage::Set(set_message) => Some(set_message),
+            _ => None,
+        })
+        .expect("queued room change protocol lines should include a Set message");
+    assert_eq!(
+        set_message
+            .set
+            .room
+            .as_ref()
+            .map(|room| room.name.as_str()),
+        Some("room2")
+    );
+
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    let hello = reconnect_lines
+        .iter()
+        .find_map(|line| match decode_message_line(line)
+            .expect("reconnect protocol lines should decode")
+        {
+            ProtocolMessage::Hello(hello) => Some(hello),
+            _ => None,
+        })
+        .expect("reconnect protocol lines should include a Hello message");
+    assert_eq!(hello.hello.room.name, "room2");
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whitespace_room_names()
+{
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"   "},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    assert_eq!(reconnect_lines.len(), 1);
+
+    let ProtocolMessage::Hello(hello) =
+        decode_message_line(&reconnect_lines[0]).expect("reconnect hello should decode")
+    else {
+        panic!("reconnect protocol line should be a Hello message");
+    };
+    assert_eq!(hello.hello.room.name, "   ");
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_settings_to_defaults() {
     let configured_settings =
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {

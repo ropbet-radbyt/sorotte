@@ -1062,7 +1062,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         GuiWidgetEguiRenderer::actions_for_text_input_node(
             &room_state,
             room_input,
-            "TeamRoom",
+            "  TeamRoom  ",
             true,
             true,
         ),
@@ -1070,9 +1070,26 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             GuiShellAction::EditConfigurationText {
                 section: "Connection",
                 label: "Room",
-                value: "TeamRoom".to_owned(),
+                value: "  TeamRoom  ".to_owned(),
             },
-            GuiShellAction::JoinMainWindowRoom("TeamRoom".to_owned()),
+            GuiShellAction::JoinMainWindowRoom("  TeamRoom  ".to_owned()),
+        ])
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_text_input_node(
+            &room_state,
+            room_input,
+            "   ",
+            true,
+            true,
+        ),
+        Some(vec![
+            GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Room",
+                value: "   ".to_owned(),
+            },
+            GuiShellAction::JoinMainWindowRoom("   ".to_owned()),
         ])
     );
 
@@ -1114,7 +1131,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     let controlled_room_actions = GuiWidgetEguiRenderer::actions_for_text_input_node(
         &controlled_room_state,
         controlled_room_input,
-        "Studio",
+        "  Studio  ",
         true,
         true,
     )
@@ -1122,12 +1139,12 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     assert_eq!(controlled_room_actions.len(), 3);
     assert_eq!(
         controlled_room_actions[0],
-        GuiShellAction::UpdateCreateControlledRoomEdit("Studio".to_owned())
+        GuiShellAction::UpdateCreateControlledRoomEdit("  Studio  ".to_owned())
     );
     assert!(matches!(
         &controlled_room_actions[1],
         GuiShellAction::RequestControllerAuth { room, password }
-            if room == "Studio"
+            if room == "  Studio  "
                 && password.len() == 10
                 && password.chars().enumerate().all(|(index, c)| match index {
                     2 | 6 => c == '-',

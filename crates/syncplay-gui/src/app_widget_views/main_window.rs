@@ -10,11 +10,8 @@ impl SyncplayGuiShellAppState {
             .control_value("Connection", "Room")
             .unwrap_or_default()
             .to_owned();
-        let has_room_draft = !room_draft.trim().is_empty();
-        let has_joined_room = {
-            let joined_room = self.main_window.room_name.trim();
-            !joined_room.is_empty() && joined_room != "(no room joined)"
-        };
+        let has_room_draft = configured_room_name_text(&room_draft).is_some();
+        let has_joined_room = joined_room_name_text(&self.main_window.room_name).is_some();
         let can_manage_playlist =
             self.main_window.playback.can_manage_playlist && self.pending_operation.is_none();
         let selected_playlist_index = self.selection.selected_main_window_playlist;

@@ -6,7 +6,7 @@ use super::shell_state::{
     GuiShellAction, GuiTextEditSessionState, GuiTransientNotificationLevel,
     SyncplayGuiShellAppState,
 };
-use super::support::normalized_editable_text;
+use super::support::nonempty_room_name_text;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn apply(&mut self, action: GuiShellAction) -> bool {
@@ -819,8 +819,7 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::JoinMainWindowRoom(room) => self.join_main_window_room(room),
             GuiShellAction::LeaveMainWindowRoom => self.leave_main_window_room(),
             GuiShellAction::SetMainWindowRoom(room) => {
-                let normalized = normalized_editable_text(&room);
-                let Some(room) = normalized else {
+                let Some(room) = nonempty_room_name_text(&room) else {
                     return self.record_action_error("Room name cannot be empty.");
                 };
                 self.set_main_window_room_state(Some(room));

@@ -16,7 +16,7 @@ use syncplay_client_app::app_boundary::{
 use super::GuiLaunchMode;
 use super::remote_services;
 use super::support::{
-    bool_label, optional_f64_text, optional_i64_text, optional_port_text,
+    bool_label, optional_f64_text, optional_i64_text, optional_port_text, optional_room_text,
     optional_string_list_multiline_text, optional_text, player_arguments_text_for_path,
 };
 use super::ui_state::GuiUpdateCheckState;
@@ -1064,7 +1064,7 @@ impl FirstRunConfigurationDialogState {
                     GuiDialogControl {
                         label: "Room",
                         kind: GuiDialogControlKind::TextInput,
-                        value: optional_text(self.connection.room.as_deref()).to_owned(),
+                        value: optional_room_text(self.connection.room.as_deref()).to_owned(),
                     },
                     GuiDialogControl {
                         label: "Server Password",

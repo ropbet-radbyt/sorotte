@@ -21,7 +21,7 @@ use super::runtime_stack::GuiQueuedSessionTransportHandle;
 use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
 use super::startup::syncplay_gui_qsettings_root_from_env;
 use super::startup_support::env_trimmed;
-use super::support::normalized_editable_text;
+use super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::ui_state::{GuiPersistedUiState, persist_gui_ui_state_at_root};
 #[cfg(test)]
 use super::widget_tree::GuiWidgetTextPreviewRenderer;
@@ -354,7 +354,7 @@ impl eframe::App for GuiNativeApp {
         for action in &dispatch_plan.shell_actions {
             match action {
                 GuiShellAction::JoinMainWindowRoom(room) => {
-                    if let Some(room) = normalized_editable_text(room) {
+                    if let Some(room) = nonempty_room_name_text(room) {
                         room_change_requests.push(GuiPendingRoomChangeRequest::Join {
                             requested_room: room.to_owned(),
                         });
@@ -382,7 +382,7 @@ impl eframe::App for GuiNativeApp {
                 }
                 GuiShellAction::RequestControllerAuth { room, password } => {
                     if let (Some(room), Some(password)) = (
-                        normalized_editable_text(room),
+                        nonempty_room_name_text(room),
                         normalized_editable_text(password),
                     ) {
                         controller_auth_requests.push((room.to_owned(), password.to_owned()));

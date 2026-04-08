@@ -8,7 +8,7 @@ use syncplay_client_core::ClientSession;
 
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::shell_state::{GuiDraftRuntimeSnapshot, GuiShellAction, SyncplayGuiShellAppState};
-use super::support::normalized_editable_text;
+use super::support::{configured_room_name_text, joined_room_name_text, normalized_editable_text};
 
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
 const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
@@ -321,7 +321,7 @@ fn render_user_list_lines(state: &SyncplayGuiShellAppState) -> Vec<String> {
         let room_name = current_room_for_local_commands(state)
             .or_else(|| {
                 let configured_room = configured_room_for_local_commands(state);
-                normalized_editable_text(&configured_room)
+                (!configured_room.is_empty()).then_some(configured_room)
             })
             .unwrap_or_else(|| "(no room joined)".to_owned());
         ordered_rooms.push(room_name);
@@ -371,11 +371,11 @@ fn render_user_list_lines(state: &SyncplayGuiShellAppState) -> Vec<String> {
 }
 
 fn current_room_for_local_commands(state: &SyncplayGuiShellAppState) -> Option<String> {
-    normalized_editable_text(&state.main_window.room_name).filter(|room| !room.starts_with('('))
+    joined_room_name_text(&state.main_window.room_name).map(str::to_owned)
 }
 
 fn configured_room_for_local_commands(state: &SyncplayGuiShellAppState) -> String {
-    normalized_editable_text(
+    configured_room_name_text(
         state
             .configuration
             .control_value("Connection", "Room")

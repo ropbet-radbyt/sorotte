@@ -14,7 +14,9 @@ use super::shell_state::{
     GuiValidationIssue, GuiValidationState, SyncplayGuiShellAppState,
     playlist_entries_multiline_text,
 };
-use super::support::{normalized_editable_text, parse_trusted_domains_text};
+use super::support::{
+    nonempty_room_name_text, normalized_editable_text, parse_trusted_domains_text,
+};
 
 impl SyncplayGuiShellAppState {
     pub(super) fn normalize_public_server_edit_session(&mut self) {
@@ -159,14 +161,14 @@ impl SyncplayGuiShellAppState {
             self.controlled_room_create_session = None;
             return;
         };
-        session.is_dirty = normalized_editable_text(&session.room_buffer)
+        session.is_dirty = nonempty_room_name_text(&session.room_buffer)
             .is_some_and(|room_name| room_name != default_room_name);
     }
 
     pub(super) fn normalize_controller_auth_edit_session(&mut self) {
         let current_room_name = self
             .current_joined_main_window_room_name()
-            .and_then(normalized_editable_text);
+            .map(str::to_owned);
         let Some(session) = self.controller_auth_edit_session.as_mut() else {
             return;
         };
