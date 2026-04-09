@@ -710,7 +710,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             ));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
-        self.pending_ready_at_start_on_server_hello = false;
+        self.pending_ready_at_start_on_server_hello = if self.server_handshake_completed() {
+            false
+        } else {
+            self.runtime_settings
+                .settings
+                .ready_at_start
+                .unwrap_or(false)
+        };
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
@@ -926,16 +933,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     );
                 if self.request_user_list_on_first_state_without_media {
                     self.request_user_list_on_first_state_without_media = false;
-                    if self.runtime.session().current_user_file_name().is_none() {
-                        let _ = self
-                            .runtime
-                            .run_request_user_list()
-                            .map_err(|error| {
-                                format!(
-                                    "Client-core user-list request dispatch failed after first state: {error}"
-                                )
-                            })?;
-                    }
+                    let _ = self.runtime.run_request_user_list().map_err(|error| {
+                        format!(
+                            "Client-core user-list request dispatch failed after first state: {error}"
+                        )
+                    })?;
                 }
                 Ok(())
             }

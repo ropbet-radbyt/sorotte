@@ -1056,6 +1056,79 @@ fn gui_persisted_config_runtime_owner_rejects_room_changes_before_server_hello_w
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server_error() {
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+    );
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "initial queued-transport server hello",
+    );
+
+    handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        owner.pending_room_change_request.is_some(),
+        "queued room changes should latch until the runtime confirms the room transition"
+    );
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains(r#""room2""#)),
+        "room change requests should still be dispatched before the terminal server error arrives"
+    );
+
+    session_transport
+        .push_inbound_protocol_line(r#"{"Error":{"message":"wrong-password-server-error"}}"#);
+    let error_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        error_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message,
+            } if message.contains("wrong-password-server-error")
+        )),
+        "terminal server errors should surface the server-provided message"
+    );
+    assert!(
+        !owner.session_active(),
+        "terminal server errors should tear down the GUI session immediately instead of waiting for transport EOF"
+    );
+    assert!(
+        owner.pending_room_change_request.is_none(),
+        "terminal server errors should clear any pending room-change confirmation latch"
+    );
+    assert_eq!(state.main_window.room_name, "room1");
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|notification| notification.message != "Room joined: room2."),
+        "a failed room change must not later surface a false room-joined notification"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detached_room_edit() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
@@ -1460,10 +1533,14 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         ..StoredClientSettingsMvp::default()
     });
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let first_hello = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("reconnect test session transport server should receive the startup hello");
+    let first_hello = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "reconnect test session transport startup hello",
+    );
     assert!(first_hello.contains("\"Hello\""));
     assert!(first_hello.contains("\"alice\""));
     first_server_ready_rx
@@ -1616,10 +1693,14 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
         ..StoredClientSettingsMvp::default()
     });
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let first_hello = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("idle-timeout test session transport server should receive the startup hello");
+    let first_hello = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "idle-timeout test session transport startup hello",
+    );
     assert!(first_hello.contains("\"Hello\""));
     assert!(first_hello.contains("\"alice\""));
     first_server_ready_rx

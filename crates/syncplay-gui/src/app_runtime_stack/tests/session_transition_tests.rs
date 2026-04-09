@@ -200,6 +200,42 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_state_with_local_media()
+{
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"movie.mkv","size":123456789,"duration":95.5}}}}}"#,
+        )
+        .expect("local file metadata should apply before the first state");
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"},"ping":{"latencyCalculation":123.0}}}"#,
+        )
+        .expect("first inbound state should apply");
+
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("first-state follow-up lines should encode");
+    assert!(
+        outbound_lines.iter().any(|line| line.contains(r#""List""#)),
+        "connecting with media already loaded should still request the user list on the first inbound state"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_stops_reconnect_on_server_error() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

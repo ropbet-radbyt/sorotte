@@ -705,6 +705,34 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_transport_disconnect_pending_cleanup = true;
     }
 
+    fn handle_terminal_session_transport_apply_failure(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        error: String,
+    ) {
+        let disconnect_error = self
+            .session
+            .as_mut()
+            .and_then(|session| session.disconnect_session(system_time_seconds()).err());
+        let mut actions = vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message: format!("Inbound session transport message apply failed: {error}"),
+        }];
+        if let Some(disconnect_error) = disconnect_error {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: disconnect_error,
+            });
+        }
+
+        self.pending_room_change_request = None;
+        self.session_transport_reconnect_due_at = None;
+        self.session_transport_disconnect_pending_cleanup = true;
+        Self::push_actions_and_project(handle, projected_state, actions);
+        self.apply_session_transport_disconnect_pause(handle, projected_state);
+    }
+
     fn pump_due_session_transport_reconnect(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -892,11 +920,26 @@ impl GuiPersistedConfigRuntimeOwner {
         if inbound_protocol_lines.is_empty() {
             return;
         }
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
         for inbound_protocol_line in inbound_protocol_lines {
-            if let Err(error) = session.apply_message_json(&inbound_protocol_line) {
+            let apply_result = {
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                session.apply_message_json(&inbound_protocol_line)
+            };
+            if let Err(error) = apply_result {
+                let stop_reconnect_requested = self
+                    .session
+                    .as_mut()
+                    .is_some_and(|session| session.take_stop_reconnect_requested());
+                if stop_reconnect_requested {
+                    self.handle_terminal_session_transport_apply_failure(
+                        handle,
+                        projected_state,
+                        error,
+                    );
+                    break;
+                }
                 Self::push_actions_and_project(
                     handle,
                     projected_state,
