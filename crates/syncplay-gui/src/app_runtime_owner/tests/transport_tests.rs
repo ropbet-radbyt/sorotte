@@ -1596,6 +1596,177 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_reconnecting() {
+    use std::{
+        io::{BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("room-change reconnect test listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("room-change reconnect test listener should expose a local address");
+    let (first_hello_tx, first_hello_rx) = mpsc::channel();
+    let (first_server_ready_tx, first_server_ready_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (reconnect_hello_tx, reconnect_hello_rx) = mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let (mut first_stream, _) = listener
+            .accept()
+            .expect("room-change reconnect test server should accept the first client");
+        let first_reader_stream = first_stream
+            .try_clone()
+            .expect("room-change reconnect test server should clone the first stream");
+        let mut first_reader = BufReader::new(first_reader_stream);
+        let first_hello = read_client_hello_after_optional_start_tls(
+            &mut first_reader,
+            &mut first_stream,
+            "room-change reconnect test server",
+        );
+        first_hello_tx
+            .send(first_hello)
+            .expect("room-change reconnect test server should report the startup hello");
+        first_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("room-change reconnect test server should write the first hello");
+        first_stream
+            .write_all(b"\n")
+            .expect("room-change reconnect test server should terminate the first hello");
+        first_server_ready_tx
+            .send(())
+            .expect("room-change reconnect test server should signal hello readiness");
+        release_first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("room-change reconnect test server should be released for EOF");
+        drop(first_reader);
+        drop(first_stream);
+
+        let (mut second_stream, _) = listener
+            .accept()
+            .expect("room-change reconnect test server should accept the reconnect");
+        let second_reader_stream = second_stream
+            .try_clone()
+            .expect("room-change reconnect test server should clone the reconnect stream");
+        let mut second_reader = BufReader::new(second_reader_stream);
+        let reconnect_hello = read_client_hello_after_optional_start_tls(
+            &mut second_reader,
+            &mut second_stream,
+            "room-change reconnect test server",
+        );
+        reconnect_hello_tx
+            .send(reconnect_hello)
+            .expect("room-change reconnect test server should report the reconnect hello");
+        second_stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room9"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("room-change reconnect test server should write the reconnect hello");
+        second_stream
+            .write_all(b"\n")
+            .expect("room-change reconnect test server should terminate the reconnect hello");
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_input_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let first_hello = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "room-change reconnect test startup hello",
+    );
+    assert!(first_hello.contains("\"Hello\""));
+    assert!(first_hello.contains("\"alice\""));
+    first_server_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("room-change reconnect test server should signal the first hello");
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.commands.can_send_chat_message,
+        "room-change reconnect initial TCP server hello",
+    );
+
+    handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(
+        owner.pending_room_change_request,
+        Some(GuiPendingRoomChangeRequest::Join {
+            requested_room: "room2".to_owned(),
+        }),
+        "room changes should stay pending until the runtime confirms the transition",
+    );
+
+    release_first_tx
+        .send(())
+        .expect("room-change reconnect test server should be releasable");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_hello = loop {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
+            break reconnect_hello;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the reconnect hello after the room-change disconnect"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(reconnect_hello.contains("\"Hello\""));
+    assert!(reconnect_hello.contains("\"alice\""));
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.room_name == "room9",
+        "room-change reconnect second TCP server hello",
+    );
+
+    assert!(
+        owner.pending_room_change_request.is_none(),
+        "reconnect scheduling should clear stale room-change confirmation state",
+    );
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|notification| !notification.message.starts_with("Room joined:")),
+        "a dropped room change must not later surface a false room-joined notification after reconnect",
+    );
+    assert!(
+        state.notifications.iter().all(|notification| !notification
+            .message
+            .starts_with("Returned to default room:")),
+        "a dropped room change must not later surface a false return-to-default notification after reconnect",
+    );
+
+    server_thread
+        .join()
+        .expect("room-change reconnect test server thread should complete");
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout() {
     use std::{
         io::{BufReader, Write},
@@ -1971,6 +2142,175 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     second_server_thread
         .join()
         .expect("second test session transport server thread should complete");
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_public_server_connect()
+{
+    use std::{
+        io::{BufReader, Write},
+        net::TcpListener,
+        sync::mpsc,
+        time::Duration,
+    };
+
+    let first_listener = TcpListener::bind("127.0.0.1:0")
+        .expect("pending-room public-server test first listener should bind");
+    let first_address = first_listener
+        .local_addr()
+        .expect("pending-room public-server test first listener should expose a local address");
+    let second_listener = TcpListener::bind("127.0.0.1:0")
+        .expect("pending-room public-server test second listener should bind");
+    let second_address = second_listener
+        .local_addr()
+        .expect("pending-room public-server test second listener should expose a local address");
+
+    let (first_hello_tx, first_hello_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let first_server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = first_listener
+            .accept()
+            .expect("pending-room public-server test first server should accept one client");
+        let reader_stream = stream.try_clone().expect(
+            "pending-room public-server test first server should clone the accepted stream",
+        );
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "pending-room public-server test first server",
+        );
+        first_hello_tx
+            .send(hello_line)
+            .expect("pending-room public-server test first server should report its hello");
+        release_first_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect(
+                "pending-room public-server test first server should be released after reconnect",
+            );
+    });
+
+    let (second_hello_tx, second_hello_rx) = mpsc::channel();
+    let second_server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = second_listener
+            .accept()
+            .expect("pending-room public-server test second server should accept one client");
+        let reader_stream = stream.try_clone().expect(
+            "pending-room public-server test second server should clone the accepted stream",
+        );
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "pending-room public-server test second server",
+        );
+        second_hello_tx
+            .send(hello_line)
+            .expect("pending-room public-server test second server should report its hello");
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"alice","room":{"name":"room9"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("pending-room public-server test second server should write the reconnect hello");
+        stream.write_all(b"\n").expect(
+            "pending-room public-server test second server should terminate the reconnect hello",
+        );
+    });
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_tcp_session_runtime("alice", "room1", first_address.to_string())
+        .expect("client-core tcp chat runtime owner should bootstrap");
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+
+    let first_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "pending-room public-server test startup hello",
+    );
+    assert!(first_hello_line.contains("\"Hello\""));
+    assert!(first_hello_line.contains("\"alice\""));
+
+    owner.pending_room_change_request = Some(GuiPendingRoomChangeRequest::Join {
+        requested_room: "room2".to_owned(),
+    });
+
+    assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ConnectPublicServer,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let connect_actions = handle.drain_actions();
+    assert!(
+        connect_actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::CompleteSelectedPublicServerConnect)),
+        "public-server connect should complete through the client-core session runtime",
+    );
+    for action in connect_actions {
+        assert!(state.apply(action));
+    }
+
+    let second_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_hello_rx,
+        Duration::from_secs(1),
+        "pending-room public-server test reconnect hello",
+    );
+    assert!(second_hello_line.contains("\"Hello\""));
+    assert!(second_hello_line.contains("\"alice\""));
+
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.room_name == "room9",
+        "pending-room public-server second server hello",
+    );
+
+    assert!(
+        owner.pending_room_change_request.is_none(),
+        "public-server connect should clear stale room-change confirmation state",
+    );
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|notification| !notification.message.starts_with("Room joined:")),
+        "public-server connect must not surface a false room-joined notification from the previous session",
+    );
+    assert!(
+        state.notifications.iter().all(|notification| !notification
+            .message
+            .starts_with("Returned to default room:")),
+        "public-server connect must not surface a false return-to-default notification from the previous session",
+    );
+
+    release_first_tx
+        .send(())
+        .expect("pending-room public-server test first server should be releasable");
+    first_server_thread
+        .join()
+        .expect("pending-room public-server test first server thread should complete");
+    second_server_thread
+        .join()
+        .expect("pending-room public-server test second server thread should complete");
 }
 
 #[test]

@@ -704,6 +704,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         Self::push_actions_and_project(handle, projected_state, actions);
         self.apply_session_transport_disconnect_pause(handle, projected_state);
+        self.pending_room_change_request = None;
 
         if let Some(delay_seconds) = reconnect_delay
             && !stop_reconnect_requested
