@@ -360,6 +360,42 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_run
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_server_assigned_username() {
+    let runtime_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice_2","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("server hello should apply");
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+        .expect("runtime settings sync should preserve the server-assigned username");
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    assert_eq!(reconnect_lines.len(), 1);
+
+    let ProtocolMessage::Hello(hello) =
+        decode_message_line(&reconnect_lines[0]).expect("reconnect hello should decode")
+    else {
+        panic!("reconnect protocol line should be a Hello message");
+    };
+    assert_eq!(hello.hello.username, "alice_2");
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_current_room_over_local_file_name()
  {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
@@ -526,6 +562,62 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
             .iter()
             .any(|line| line.contains(r#""Set":{"ready":{"isReady":true"#)),
         "pre-Hello reconnects should preserve the ready-at-start dispatch after the eventual server hello"
+    );
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_after_hello_before_ready_echo()
+ {
+    let runtime_settings =
+        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ready_at_start: Some(true),
+            ..StoredClientSettingsMvp::default()
+        });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+        .expect("runtime settings should sync into the session");
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+        )
+        .expect("server hello should apply");
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("ready-at-start lines should encode after the first hello");
+    assert!(
+        outbound_lines
+            .iter()
+            .any(|line| line.contains(r#""Set":{"ready":{"isReady":true"#)),
+        "the first hello should queue ready-at-start"
+    );
+
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    assert_eq!(reconnect_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+        )
+        .expect("reconnect hello should apply");
+    let reconnect_outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("ready-at-start lines should encode after reconnect hello");
+    assert!(
+        reconnect_outbound_lines
+            .iter()
+            .any(|line| line.contains(r#""Set":{"ready":{"isReady":true"#)),
+        "post-Hello reconnects should preserve ready-at-start until the ready update round-trips"
     );
 }
 

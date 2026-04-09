@@ -33,7 +33,9 @@ use syncplay_client_core::{
     SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
-use syncplay_protocol::{HelloPayload, ProtocolMessage, decode_message_line, encode_message_line};
+use syncplay_protocol::{
+    HelloPayload, ListPayload, ProtocolMessage, decode_message_line, encode_message_line,
+};
 
 use self::player::GuiNoopClientRuntimePlayer;
 #[cfg(not(test))]
@@ -420,28 +422,23 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) {
-        self.username = runtime_settings
-            .settings
-            .username
-            .clone()
-            .unwrap_or_default();
-        self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
         self.runtime_settings = runtime_settings.clone();
-        if self.runtime.session().username.is_none() {
-            self.pending_ready_at_start_on_server_hello = self
-                .runtime_settings
+        self.username = self.runtime.session().username.clone().unwrap_or_else(|| {
+            self.runtime_settings
                 .settings
-                .ready_at_start
-                .unwrap_or(false);
+                .username
+                .clone()
+                .unwrap_or_default()
+        });
+        self.baseline_room = runtime_settings.settings.room.clone().unwrap_or_default();
+        if self.runtime.session().username.is_none() {
+            self.pending_ready_at_start_on_server_hello = true;
             if !self.pending_startup_protocol_lines.is_empty() {
+                let username = self.current_username_for_next_hello();
                 let room = self.current_room_for_next_hello();
                 self.pending_startup_protocol_lines.clear();
                 self.pending_startup_protocol_lines
-                    .push_back(Self::hello_json(
-                        &self.username,
-                        &room,
-                        &self.runtime_settings,
-                    ));
+                    .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
             }
         }
         self.dont_slow_down_with_me = runtime_settings
@@ -625,12 +622,30 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .expect("client-core GUI startup hello should encode")
     }
 
+    fn current_username_for_next_hello(&self) -> String {
+        self.runtime.session().username.clone().unwrap_or_else(|| {
+            self.runtime_settings
+                .settings
+                .username
+                .clone()
+                .unwrap_or_else(|| self.username.clone())
+        })
+    }
+
     fn current_room_for_next_hello(&self) -> String {
         self.pending_room_for_next_hello
             .as_deref()
             .or_else(|| self.current_room_name())
             .map(str::to_owned)
             .unwrap_or_else(|| self.baseline_room.clone())
+    }
+
+    fn local_username_for_authoritative_updates(&self) -> Option<&str> {
+        self.runtime
+            .session()
+            .username
+            .as_deref()
+            .or_else(|| (!self.username.is_empty()).then_some(self.username.as_str()))
     }
 
     fn current_room_for_runtime_settings_sync(&self) -> String {
@@ -648,12 +663,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn reset_session_for_reconnect(&mut self) {
-        self.username = self
-            .runtime_settings
-            .settings
-            .username
-            .clone()
-            .unwrap_or_default();
+        let username = self.current_username_for_next_hello();
+        self.username = username.clone();
         self.baseline_room = self
             .runtime_settings
             .settings
@@ -670,30 +681,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         );
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
-            .push_back(Self::hello_json(
-                &self.username,
-                &room,
-                &self.runtime_settings,
-            ));
+            .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
-        self.pending_ready_at_start_on_server_hello = self
-            .runtime_settings
-            .settings
-            .ready_at_start
-            .unwrap_or(false);
+        self.pending_ready_at_start_on_server_hello = true;
         self.request_user_list_on_first_state_without_media = true;
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
 
     fn prepare_transport_reconnect(&mut self) {
-        self.username = self
-            .runtime_settings
-            .settings
-            .username
-            .clone()
-            .unwrap_or_default();
+        let username = self.current_username_for_next_hello();
+        self.username = username.clone();
         self.baseline_room = self
             .runtime_settings
             .settings
@@ -703,21 +702,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let room = self.current_room_for_next_hello();
         self.pending_startup_protocol_lines.clear();
         self.pending_startup_protocol_lines
-            .push_back(Self::hello_json(
-                &self.username,
-                &room,
-                &self.runtime_settings,
-            ));
+            .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
-        self.pending_ready_at_start_on_server_hello = if self.server_handshake_completed() {
-            false
-        } else {
-            self.runtime_settings
-                .settings
-                .ready_at_start
-                .unwrap_or(false)
-        };
+        self.pending_ready_at_start_on_server_hello =
+            self.pending_ready_at_start_on_server_hello || !self.server_handshake_completed();
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
@@ -745,12 +734,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn message_updates_authoritative_local_room(&self, message: &ProtocolMessage) -> bool {
-        let local_username = self
-            .runtime
-            .session()
-            .username
-            .as_deref()
-            .unwrap_or(self.username.as_str());
+        let Some(local_username) = self.local_username_for_authoritative_updates() else {
+            return matches!(message, ProtocolMessage::Hello(_));
+        };
         match message {
             ProtocolMessage::Hello(_) => true,
             ProtocolMessage::Set(set_message) => {
@@ -763,6 +749,40 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                         .and_then(|user| user.room.as_ref())
                         .is_some()
             }
+            _ => false,
+        }
+    }
+
+    fn message_updates_authoritative_local_ready_state(&self, message: &ProtocolMessage) -> bool {
+        let Some(local_username) = self.local_username_for_authoritative_updates() else {
+            return false;
+        };
+        match message {
+            ProtocolMessage::Set(set_message) => {
+                set_message.set.ready.as_ref().is_some_and(|ready| {
+                    ready
+                        .username
+                        .as_deref()
+                        .or(ready.set_by.as_deref())
+                        .unwrap_or(local_username)
+                        == local_username
+                }) || set_message
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get(local_username))
+                    .and_then(|user| user.is_ready)
+                    .is_some()
+            }
+            ProtocolMessage::List(list_message) => match &list_message.list {
+                ListPayload::Rooms(rooms) => rooms.values().any(|users| {
+                    users
+                        .get(local_username)
+                        .and_then(|user| user.is_ready)
+                        .is_some()
+                }),
+                ListPayload::Request(_) => false,
+            },
             _ => false,
         }
     }
@@ -953,6 +973,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let inbound_is_server_hello = matches!(&message, ProtocolMessage::Hello(_));
         let message_updates_authoritative_local_room =
             self.message_updates_authoritative_local_room(&message);
+        let message_updates_authoritative_local_ready =
+            self.message_updates_authoritative_local_ready_state(&message);
         let result = match message {
             ProtocolMessage::State(state_message) => {
                 let _ = self
@@ -984,7 +1006,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .apply_protocol_message(other)
                 .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
         };
-        if result.is_ok() && inbound_is_server_hello && self.pending_ready_at_start_on_server_hello
+        if result.is_ok()
+            && inbound_is_server_hello
+            && self.pending_ready_at_start_on_server_hello
+            && self
+                .runtime_settings
+                .settings
+                .ready_at_start
+                .unwrap_or(false)
         {
             let _ = self
                 .runtime
@@ -994,9 +1023,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                         "Client-core ready-at-start dispatch failed after server Hello: {error}"
                     )
                 })?;
-            self.pending_ready_at_start_on_server_hello = false;
         }
         if result.is_ok() {
+            self.username = self.current_username_for_next_hello();
+            if message_updates_authoritative_local_ready {
+                self.pending_ready_at_start_on_server_hello = false;
+            }
             self.sync_pending_room_for_next_hello_from_session(
                 message_updates_authoritative_local_room,
             );
