@@ -493,9 +493,12 @@ impl GuiTcpSessionTransportDriver {
                 format!("Session transport TCP received a non-UTF-8 line: {error}")
             })?;
             let line = line.trim();
-            if line.is_empty() || decode_message_line(line).is_err() {
+            if line.is_empty() {
                 continue;
             }
+            decode_message_line(line).map_err(|error| {
+                format!("Session transport TCP received an invalid protocol line: {error}")
+            })?;
             return Ok(Some(line.to_owned()));
         }
         Ok(None)
@@ -542,7 +545,13 @@ impl GuiTcpSessionTransportDriver {
             }
         }
 
-        let line = Self::next_complete_inbound_line(&mut self.inbound_buffer)?;
+        let line = match Self::next_complete_inbound_line(&mut self.inbound_buffer) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = self.disconnect_with_error(error.clone());
+                return Err(error);
+            }
+        };
         if closed_by_server {
             if !self.inbound_buffer.is_empty() {
                 self.inbound_buffer.clear();
@@ -624,7 +633,14 @@ impl GuiTcpSessionTransportDriver {
         }
 
         let mut complete_lines = Vec::new();
-        while let Some(line) = Self::next_complete_inbound_line(&mut self.inbound_buffer)? {
+        loop {
+            let next_line = match Self::next_complete_inbound_line(&mut self.inbound_buffer) {
+                Ok(line) => line,
+                Err(error) => return self.disconnect_with_error(error),
+            };
+            let Some(line) = next_line else {
+                break;
+            };
             complete_lines.push(line);
         }
         if !complete_lines.is_empty() {
@@ -726,6 +742,73 @@ mod tests {
     fn hello_line() -> String {
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
             .to_owned()
+    }
+
+    #[test]
+    fn tcp_session_transport_driver_rejects_invalid_inbound_protocol_lines() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .expect("invalid-line transport test server should bind");
+        let address = listener
+            .local_addr()
+            .expect("invalid-line transport test server should expose its address");
+        let (first_line_tx, first_line_rx) = mpsc::channel();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("invalid-line transport test server should accept a client");
+            let reader_stream = stream
+                .try_clone()
+                .expect("invalid-line transport test server should clone the socket");
+            let mut reader = BufReader::new(reader_stream);
+            let mut first_line = String::new();
+            reader
+                .read_line(&mut first_line)
+                .expect("invalid-line transport test server should read the TLS request");
+            first_line_tx
+                .send(first_line)
+                .expect("invalid-line transport test server should report the TLS request");
+            stream
+                .write_all(br#"{"status":"connected"}"#)
+                .expect("invalid-line transport test server should write the invalid line");
+            stream
+                .write_all(b"\n")
+                .expect("invalid-line transport test server should terminate the invalid line");
+        });
+
+        let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
+            "localhost:{}",
+            address.port()
+        ))
+        .expect("invalid-line transport test client driver should connect");
+        let transport = GuiQueuedSessionTransportHandle::default();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let error = loop {
+            match driver.pump(&transport) {
+                Ok(()) => {}
+                Err(error) => break error,
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the invalid inbound line to fail the TCP transport",
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let first_line = first_line_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("invalid-line transport test server should receive the TLS request");
+        assert!(first_line.contains(r#""TLS""#));
+        assert!(first_line.contains(r#""startTLS":"send""#));
+        assert!(
+            error.contains("Session transport TCP received an invalid protocol line"),
+            "invalid inbound protocol lines should surface a fatal transport error"
+        );
+        assert!(transport.drain_inbound_protocol_lines().is_empty());
+
+        server_thread
+            .join()
+            .expect("invalid-line transport test server thread should join");
     }
 
     #[test]

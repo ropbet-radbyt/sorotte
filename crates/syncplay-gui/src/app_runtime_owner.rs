@@ -667,11 +667,22 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SyncplayGuiShellAppState,
         error: String,
     ) {
+        let error_message = format!("Session transport driver pump failed: {error}");
+        let now_seconds = system_time_seconds();
+        if Self::session_transport_failure_is_terminal(&error) {
+            self.handle_terminal_session_transport_failure(
+                handle,
+                projected_state,
+                error_message,
+                now_seconds,
+            );
+            return;
+        }
+
         let mut actions = vec![GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Error,
-            message: format!("Session transport driver pump failed: {error}"),
+            message: error_message,
         }];
-        let now_seconds = system_time_seconds();
         let retries = self.session_transport_reconnect_failures;
         let mut reconnect_delay = None;
         let stop_reconnect_requested;
@@ -705,19 +716,25 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_transport_disconnect_pending_cleanup = true;
     }
 
-    fn handle_terminal_session_transport_apply_failure(
+    fn session_transport_failure_is_terminal(error: &str) -> bool {
+        error.starts_with("Session transport TCP received an invalid protocol line:")
+            || error.starts_with("Session transport TCP received a non-UTF-8 line:")
+    }
+
+    fn handle_terminal_session_transport_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
-        error: String,
+        error_message: String,
+        now_seconds: f64,
     ) {
         let disconnect_error = self
             .session
             .as_mut()
-            .and_then(|session| session.disconnect_session(system_time_seconds()).err());
+            .and_then(|session| session.disconnect_session(now_seconds).err());
         let mut actions = vec![GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Error,
-            message: format!("Inbound session transport message apply failed: {error}"),
+            message: error_message,
         }];
         if let Some(disconnect_error) = disconnect_error {
             actions.push(GuiShellAction::PushTransientNotification {
@@ -731,6 +748,20 @@ impl GuiPersistedConfigRuntimeOwner {
         self.session_transport_disconnect_pending_cleanup = true;
         Self::push_actions_and_project(handle, projected_state, actions);
         self.apply_session_transport_disconnect_pause(handle, projected_state);
+    }
+
+    fn handle_terminal_session_transport_apply_failure(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        error: String,
+    ) {
+        self.handle_terminal_session_transport_failure(
+            handle,
+            projected_state,
+            format!("Inbound session transport message apply failed: {error}"),
+            system_time_seconds(),
+        );
     }
 
     fn pump_due_session_transport_reconnect(

@@ -445,6 +445,50 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_follows_server_authoritative_room_after_mismatched_room_response()
+ {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+
+    GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
+        .expect("room change should queue");
+    let _ = adapter
+        .flush_outbound_protocol_lines()
+        .expect("queued room change should encode");
+
+    adapter
+        .apply_message_json(r#"{"Set":{"room":{"name":"room3"}}}"#)
+        .expect("authoritative room response should apply");
+
+    adapter.prepare_transport_reconnect();
+    let reconnect_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("reconnect protocol lines should encode");
+    let hello = reconnect_lines
+        .iter()
+        .find_map(|line| {
+            match decode_message_line(line).expect("reconnect protocol lines should decode") {
+                ProtocolMessage::Hello(hello) => Some(hello),
+                _ => None,
+            }
+        })
+        .expect("reconnect protocol lines should include a Hello message");
+    assert_eq!(
+        hello.hello.room.name, "room3",
+        "future reconnects should follow the server-authoritative room once a room response arrives"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_before_first_hello()
  {
     let runtime_settings =

@@ -927,12 +927,12 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_server_hello() {
+fn gui_persisted_config_runtime_owner_disconnects_on_non_protocol_tcp_lines_before_server_hello() {
     use std::{
         io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     let listener =
@@ -940,8 +940,7 @@ fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_serv
     let address = listener
         .local_addr()
         .expect("test session transport listener should expose a local address");
-    let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
-    let (release_server_tx, release_server_rx) = mpsc::channel();
+    let (invalid_line_ready_tx, invalid_line_ready_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -961,26 +960,9 @@ fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_serv
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the first non-protocol line");
-        stream.write_all(br#"{"phase":"startup"}"#).expect(
-            "test session transport server should write a second non-protocol startup line",
-        );
-        stream
-            .write_all(b"\n")
-            .expect("test session transport server should terminate the second non-protocol line");
-        stream
-            .write_all(
-                br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
-            )
-            .expect("test session transport server should write one inbound hello line");
-        stream
-            .write_all(b"\n")
-            .expect("test session transport server should terminate the inbound hello line");
-        hello_ready_tx
+        invalid_line_ready_tx
             .send(())
-            .expect("test session transport server should signal hello readiness");
-        release_server_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("test session transport server should be releasable after hello handling");
+            .expect("test session transport server should signal invalid-line readiness");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -999,29 +981,36 @@ fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_serv
         &mut owner,
         &handle,
         &mut state,
-        &hello_ready_rx,
+        &invalid_line_ready_rx,
         Duration::from_secs(1),
-        "test session transport startup hello",
+        "test session transport invalid inbound line",
     );
-    pump_and_apply_runtime_owner_actions_until(
-        &mut owner,
-        &handle,
-        &mut state,
-        Duration::from_secs(1),
-        |state| state.main_window.playback.can_set_ready,
-        "room bootstrap after non-protocol TCP startup lines",
-    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while owner.session_active() {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the non-protocol TCP startup line to terminate the session",
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
-    assert!(state.main_window.playback.can_set_ready);
     assert!(
-        !state.notifications.iter().any(|notification| notification
+        state.notifications.iter().any(|notification| notification
             .message
-            .contains("Inbound session transport message apply failed")),
-        "non-protocol TCP startup lines should be dropped before session apply"
+            .contains("Session transport TCP received an invalid protocol line")),
+        "non-protocol TCP startup lines should surface a terminal transport error"
     );
-    release_server_tx
-        .send(())
-        .expect("test session transport server should be releasable");
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|notification| !notification.message.contains("Reconnect attempt")),
+        "protocol violations should terminate the session instead of scheduling a reconnect"
+    );
+    assert!(!state.main_window.playback.can_set_ready);
+    assert!(!state.commands.can_disconnect_session);
+    assert!(owner.session_transport_reconnect_due_at.is_none());
 
     server_thread
         .join()

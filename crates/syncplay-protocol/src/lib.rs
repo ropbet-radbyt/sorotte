@@ -922,8 +922,26 @@ pub fn encode_line(value: &Value) -> Result<String, ProtocolError> {
     serde_json::to_string(value).map_err(ProtocolError::from)
 }
 
+fn normalize_legacy_message_variants(value: &mut Value) {
+    if let Some(is_ready) = value.pointer_mut("/Set/ready/isReady")
+        && is_ready.is_null()
+    {
+        *is_ready = Value::Bool(false);
+    }
+
+    if value
+        .pointer("/Set/playlistIndex/index")
+        .is_some_and(Value::is_null)
+        && let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut)
+    {
+        set_payload.remove("playlistIndex");
+    }
+}
+
 pub fn decode_message_line(line: &str) -> Result<ProtocolMessage, ProtocolError> {
-    serde_json::from_str(line).map_err(ProtocolError::from)
+    let mut value = decode_line(line)?;
+    normalize_legacy_message_variants(&mut value);
+    serde_json::from_value(value).map_err(ProtocolError::from)
 }
 
 pub fn encode_message_line(message: &ProtocolMessage) -> Result<String, ProtocolError> {
@@ -1068,6 +1086,38 @@ mod tests {
             ProtocolMessage::Chat(chat) => assert!(matches!(chat.chat, ChatPayload::Message(_))),
             other => panic!("expected Chat message, found {}", other.kind()),
         }
+    }
+
+    #[test]
+    fn ready_message_with_null_is_ready_decodes_as_false() {
+        let message = decode_message_line(
+            r#"{"Set":{"ready":{"username":"alice","isReady":null,"manuallyInitiated":false}}}"#,
+        )
+        .expect("legacy nullable ready payload should decode");
+        let ProtocolMessage::Set(set_message) = message else {
+            panic!("expected Set message");
+        };
+        let ready = set_message
+            .set
+            .ready
+            .expect("set message should include a ready payload");
+        assert!(!ready.is_ready);
+        assert_eq!(ready.username.as_deref(), Some("alice"));
+        assert_eq!(ready.manually_initiated, Some(false));
+    }
+
+    #[test]
+    fn playlist_index_message_with_null_index_decodes_as_noop_set() {
+        let message =
+            decode_message_line(r#"{"Set":{"playlistIndex":{"user":null,"index":null}}}"#)
+                .expect("legacy nullable playlistIndex payload should decode");
+        let ProtocolMessage::Set(set_message) = message else {
+            panic!("expected Set message");
+        };
+        assert!(
+            set_message.set.playlist_index.is_none(),
+            "nullable legacy playlistIndex payload should be treated as absent"
+        );
     }
 
     #[test]

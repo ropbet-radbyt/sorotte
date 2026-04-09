@@ -744,8 +744,36 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn sync_pending_room_for_next_hello_from_session(&mut self) {
-        if self.pending_room_for_next_hello.as_deref() == self.current_room_name() {
+    fn message_updates_authoritative_local_room(&self, message: &ProtocolMessage) -> bool {
+        let local_username = self
+            .runtime
+            .session()
+            .username
+            .as_deref()
+            .unwrap_or(self.username.as_str());
+        match message {
+            ProtocolMessage::Hello(_) => true,
+            ProtocolMessage::Set(set_message) => {
+                set_message.set.room.is_some()
+                    || set_message
+                        .set
+                        .user
+                        .as_ref()
+                        .and_then(|users| users.get(local_username))
+                        .and_then(|user| user.room.as_ref())
+                        .is_some()
+            }
+            _ => false,
+        }
+    }
+
+    fn sync_pending_room_for_next_hello_from_session(
+        &mut self,
+        message_updates_authoritative_local_room: bool,
+    ) {
+        if message_updates_authoritative_local_room
+            || self.pending_room_for_next_hello.as_deref() == self.current_room_name()
+        {
             self.pending_room_for_next_hello = None;
         }
     }
@@ -923,6 +951,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let message = decode_message_line(json_line)
             .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
         let inbound_is_server_hello = matches!(&message, ProtocolMessage::Hello(_));
+        let message_updates_authoritative_local_room =
+            self.message_updates_authoritative_local_room(&message);
         let result = match message {
             ProtocolMessage::State(state_message) => {
                 let _ = self
@@ -967,7 +997,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             self.pending_ready_at_start_on_server_hello = false;
         }
         if result.is_ok() {
-            self.sync_pending_room_for_next_hello_from_session();
+            self.sync_pending_room_for_next_hello_from_session(
+                message_updates_authoritative_local_room,
+            );
         }
         self.sync_optimistic_room_playlist();
         result
