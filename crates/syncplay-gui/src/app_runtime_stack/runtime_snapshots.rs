@@ -235,6 +235,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) fn interaction_runtime_snapshot(
         &self,
         state: &SyncplayGuiShellAppState,
+        interaction_state: &SyncplayGuiShellAppState,
         playlist_len: usize,
     ) -> Option<GuiInteractionRuntimeSnapshot> {
         let selected_main_window_playlist = self.session_playlist_selection_index(playlist_len);
@@ -242,7 +243,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             return None;
         }
 
-        let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(state);
+        let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(interaction_state);
         snapshot.selection.selected_main_window_playlist = selected_main_window_playlist;
         Some(snapshot)
     }

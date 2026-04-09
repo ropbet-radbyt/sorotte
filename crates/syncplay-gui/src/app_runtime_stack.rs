@@ -1165,8 +1165,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.queue_periodic_state_sync_heartbeat_if_due();
 
         let main_window_runtime_snapshot = self.main_window_runtime_snapshot(state);
+        let mut interaction_state = state.clone();
+        if let Some(snapshot) = main_window_runtime_snapshot.as_ref() {
+            debug_assert!(
+                interaction_state.apply_main_window_runtime_snapshot(snapshot.clone()),
+                "runtime-projected main-window snapshots should remain shell-applicable"
+            );
+        }
         let interaction_runtime_snapshot = self.interaction_runtime_snapshot(
             state,
+            &interaction_state,
             main_window_runtime_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.playlist.len())

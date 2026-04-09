@@ -78,7 +78,11 @@ pub(crate) fn pump_and_apply_runtime_owner_actions(
     GuiQueuedRuntimeOwner::pump(owner, handle, state);
     let actions = handle.drain_actions();
     for action in actions.iter().cloned() {
-        assert!(state.apply(action));
+        if !state.apply(action.clone()) {
+            panic!(
+                "state.apply({action:?}) failed with state {state:?}",
+            );
+        }
     }
     actions
 }

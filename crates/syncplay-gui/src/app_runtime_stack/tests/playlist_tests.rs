@@ -226,10 +226,15 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_snapshot.shared_playlist_enabled = true;
     stale_snapshot.playlist = vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()];
+    stale_snapshot.users = vec![
+        browser_runtime_user("alice", "room1", true, false, false),
+        browser_runtime_user("bob", "room1", false, false, false),
+    ];
     stale_snapshot.can_manage_playlist = true;
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         stale_snapshot
     )));
+    assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
     let mut stale_interaction = GuiInteractionRuntimeSnapshot::from_shell_state(&state);
     stale_interaction.selection.selected_main_window_playlist = Some(1);
     assert!(
@@ -288,6 +293,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         interaction_snapshot.selection.selected_main_window_playlist,
         None
     );
+    assert_eq!(interaction_snapshot.selection.selected_main_window_user, Some(0));
     let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
         panic!("stale shared-playlist menu state should be corrected through a menu snapshot");
     };
@@ -318,6 +324,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
     assert!(state.main_window.playlist.is_empty());
     assert!(!state.main_window.playback.can_manage_playlist);
     assert_eq!(state.selection.selected_main_window_playlist, None);
+    assert_eq!(state.selection.selected_main_window_user, Some(0));
     assert!(
         state
             .menus
