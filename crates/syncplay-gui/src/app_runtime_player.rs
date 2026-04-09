@@ -1608,12 +1608,16 @@ impl GuiPersistedConfigRuntimeOwner {
         let sync_paused_state = (!suppress_stale_room_pause_sync)
             .then_some(playstate.paused)
             .flatten();
-        let allow_initial_self_origin_position_sync = force
-            && self.player_position_seconds.is_none()
-            && self.last_applied_attached_room_playstate.is_none();
+        let initial_room_playstate_sync = self.last_applied_attached_room_playstate.is_none();
+        let allow_initial_self_origin_position_sync =
+            force && self.player_position_seconds.is_none() && initial_room_playstate_sync;
+        let allow_initial_remote_position_sync =
+            initial_room_playstate_sync && !set_by_is_local_user;
         let user_offset_seconds = self.user_offset_seconds;
-        let should_seek_for_room_playstate =
-            force || playstate.do_seek == Some(true) || sync_paused_state == Some(true);
+        let should_seek_for_room_playstate = force
+            || playstate.do_seek == Some(true)
+            || sync_paused_state == Some(true)
+            || allow_initial_remote_position_sync;
 
         let mut state_changed = false;
         let mut room_playstate_sync_failed = false;
@@ -2294,7 +2298,12 @@ impl GuiPersistedConfigRuntimeOwner {
                         ) {
                             Ok(()) => {
                                 telemetry_synced = true;
-                                if let Err(error) = session.emit_immediate_playback_state_update() {
+                                if let Err(error) = session.finalize_local_player_unpause_attempt()
+                                {
+                                    sync_error = Some(error);
+                                } else if let Err(error) =
+                                    session.emit_immediate_playback_state_update()
+                                {
                                     sync_error = Some(error);
                                 }
                             }
@@ -2358,11 +2367,25 @@ impl GuiPersistedConfigRuntimeOwner {
             return Ok(None);
         };
         session.sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
-        if !session.undo_seek()? {
-            return Ok(None);
+        Ok(session.pending_undo_seek_target_position())
+    }
+
+    pub(super) fn commit_undo_seek_into_detached_session_impl(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        target_position_seconds: f64,
+    ) -> Result<(), String> {
+        self.ensure_detached_client_core_chat_session(state)?;
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        if !session.commit_undo_seek()? {
+            return Err(
+                "Playback undo seek is unavailable because no earlier seek target is recorded."
+                    .to_owned(),
+            );
         }
-        let target = session.local_position_seconds();
-        session.sync_local_playback_telemetry(self.player_paused, target)?;
-        Ok(target)
+        session.sync_local_playback_telemetry(self.player_paused, Some(target_position_seconds))?;
+        Ok(())
     }
 }

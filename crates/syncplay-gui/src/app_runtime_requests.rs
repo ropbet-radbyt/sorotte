@@ -101,14 +101,21 @@ impl GuiPersistedConfigRuntimeOwner {
                             };
                             match undo_result {
                                 Ok(()) => {
+                                    let commit_result = self.commit_undo_seek_into_detached_session(
+                                        projected_state,
+                                        target_position_seconds,
+                                    );
                                     self.player_position_seconds = Some(target_position_seconds);
                                     self.refresh_player_state();
-                                    Self::push_player_success(
-                                        handle,
-                                        format!(
-                                            "Undo seek applied via the attached {player_name} player (target {target_position_seconds:.3} seconds)."
+                                    match commit_result {
+                                        Ok(()) => Self::push_player_success(
+                                            handle,
+                                            format!(
+                                                "Undo seek applied via the attached {player_name} player (target {target_position_seconds:.3} seconds)."
+                                            ),
                                         ),
-                                    );
+                                        Err(error) => Self::push_player_error(handle, error),
+                                    }
                                 }
                                 Err(error) => Self::push_player_error(
                                     handle,

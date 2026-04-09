@@ -206,6 +206,14 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         Err("Attached session runtime does not support local seek undo.".to_owned())
     }
 
+    fn pending_undo_seek_target_position(&self) -> Option<f64> {
+        None
+    }
+
+    fn commit_undo_seek(&mut self) -> Result<bool, String> {
+        Ok(false)
+    }
+
     fn local_position_seconds(&self) -> Option<f64> {
         None
     }
@@ -263,6 +271,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         &mut self,
     ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
         Ok(GuiLocalPlayerUnpauseDecision::NotApplicable)
+    }
+
+    fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        Ok(())
     }
 
     fn attached_player_runtime_actions(
@@ -1579,6 +1591,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn pending_undo_seek_target_position(&self) -> Option<f64> {
+        self.runtime
+            .session()
+            .last_seek_position_before_manual_seek()
+    }
+
+    fn commit_undo_seek(&mut self) -> Result<bool, String> {
+        self.undo_seek()
+    }
+
     fn local_position_seconds(&self) -> Option<f64> {
         self.runtime.session().local_position_seconds()
     }
@@ -1708,6 +1730,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
         let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
         let is_playing_music = self.runtime.session().is_playing_music();
+        if self
+            .runtime
+            .session()
+            .instaplay_conditions_met(local_can_control, is_playing_music)
+        {
+            return Ok(GuiLocalPlayerUnpauseDecision::Allow);
+        }
+
         self.runtime
             .run_readiness_unpause_attempt(
                 system_time_seconds(),
@@ -1718,11 +1748,39 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| {
                 format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
             })?;
-        Ok(if self.runtime.session().local_paused() == Some(true) {
-            GuiLocalPlayerUnpauseDecision::Block
-        } else {
-            GuiLocalPlayerUnpauseDecision::Allow
-        })
+        Ok(GuiLocalPlayerUnpauseDecision::Block)
+    }
+
+    fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        if self
+            .current_room_playstate_for_attached_player_sync()
+            .and_then(|playstate| playstate.paused)
+            != Some(true)
+        {
+            return Ok(());
+        }
+
+        let readiness_supported = self
+            .runtime
+            .session()
+            .server_readiness_supported()
+            .unwrap_or(false);
+        if !readiness_supported {
+            return Ok(());
+        }
+
+        let local_can_control = self.runtime.session().local_can_control().unwrap_or(false);
+        let is_playing_music = self.runtime.session().is_playing_music();
+        self.runtime
+            .run_readiness_unpause_attempt(
+                system_time_seconds(),
+                readiness_supported,
+                local_can_control,
+                is_playing_music,
+            )
+            .map_err(|error| {
+                format!("Client-core session runtime readiness/unpause dispatch failed: {error}")
+            })
     }
 
     fn attached_player_runtime_actions(

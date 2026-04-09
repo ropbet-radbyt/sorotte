@@ -1267,6 +1267,14 @@ impl GuiPersistedConfigRuntimeOwner {
         self.undo_seek_target_position_from_detached_session_impl(state)
     }
 
+    fn commit_undo_seek_into_detached_session(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        target_position_seconds: f64,
+    ) -> Result<(), String> {
+        self.commit_undo_seek_into_detached_session_impl(state, target_position_seconds)
+    }
+
     pub(super) fn player_local_file_playlist_entries(&self) -> Vec<String> {
         self.player_local_file_playlist_entries_impl()
     }
