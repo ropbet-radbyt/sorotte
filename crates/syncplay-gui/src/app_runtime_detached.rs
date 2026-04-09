@@ -533,7 +533,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_local_file = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
-        self.last_applied_attached_room_playstate = None;
+        self.clear_session_attached_player_sync_state();
         if self.session_transport.is_none() {
             self.session_transport = Some(GuiQueuedSessionTransportHandle::default());
         }
@@ -577,7 +577,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_local_file = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
-        self.last_applied_attached_room_playstate = None;
+        self.clear_session_attached_player_sync_state();
 
         let mut actions = self.sessionless_projection_actions(projected_state);
         if let Some(error) = disconnect_error {

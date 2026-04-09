@@ -608,6 +608,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             self.session_projects_to_shell = true;
                             self.reset_session_transport_reconnect_state();
                             self.pending_room_change_request = None;
+                            self.clear_session_attached_player_sync_state();
                             self.last_published_local_file = None;
                             if let Some(driver) = replacement_transport_driver {
                                 if let Some(session_transport) = self.session_transport.as_ref() {

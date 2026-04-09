@@ -3,6 +3,7 @@ use std::{
     path::PathBuf,
 };
 
+use super::super::runtime_stack::GuiSessionRoomPlaystate;
 use super::GuiPersistedConfigRuntimeOwner;
 
 use crate::app::testing::support::{

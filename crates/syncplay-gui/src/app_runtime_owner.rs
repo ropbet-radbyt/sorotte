@@ -321,10 +321,14 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_media_search_build_roots.clear();
         self.unresolved_attached_media_target = None;
         self.last_attached_media_resolution_trigger = None;
+        self.clear_session_attached_player_sync_state();
+        self.playlist_auto_advance_eof_latched = false;
+    }
+
+    pub(super) fn clear_session_attached_player_sync_state(&mut self) {
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         self.pending_local_attached_pause_override = None;
-        self.playlist_auto_advance_eof_latched = false;
     }
 
     fn detach_player(&mut self) {
@@ -705,6 +709,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Self::push_actions_and_project(handle, projected_state, actions);
         self.apply_session_transport_disconnect_pause(handle, projected_state);
         self.pending_room_change_request = None;
+        self.clear_session_attached_player_sync_state();
 
         if let Some(delay_seconds) = reconnect_delay
             && !stop_reconnect_requested
@@ -831,8 +836,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_local_file = None;
         self.pending_attached_media_resolution = None;
         self.unresolved_attached_media_target = None;
-        self.last_applied_attached_room_playstate = None;
-        self.pending_local_attached_pause_override = None;
+        self.clear_session_attached_player_sync_state();
         self.reset_session_transport_reconnect_state();
 
         let actions = self.sessionless_projection_actions(projected_state);

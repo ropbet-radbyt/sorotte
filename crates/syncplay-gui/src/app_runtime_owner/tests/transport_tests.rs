@@ -1714,6 +1714,11 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
         }),
         "room changes should stay pending until the runtime confirms the transition",
     );
+    owner.suppressed_attached_room_playstate_after_playlist_reset = Some(GuiSessionRoomPlaystate {
+        paused: Some(true),
+        ..GuiSessionRoomPlaystate::default()
+    });
+    owner.pending_local_attached_pause_override = Some(false);
 
     release_first_tx
         .send(())
@@ -1746,6 +1751,16 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
     assert!(
         owner.pending_room_change_request.is_none(),
         "reconnect scheduling should clear stale room-change confirmation state",
+    );
+    assert!(
+        owner
+            .suppressed_attached_room_playstate_after_playlist_reset
+            .is_none(),
+        "reconnect scheduling should clear stale playlist-reset suppression state",
+    );
+    assert!(
+        owner.pending_local_attached_pause_override.is_none(),
+        "reconnect scheduling should clear stale local pause override state",
     );
     assert!(
         state
@@ -2247,6 +2262,11 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
     owner.pending_room_change_request = Some(GuiPendingRoomChangeRequest::Join {
         requested_room: "room2".to_owned(),
     });
+    owner.suppressed_attached_room_playstate_after_playlist_reset = Some(GuiSessionRoomPlaystate {
+        paused: Some(true),
+        ..GuiSessionRoomPlaystate::default()
+    });
+    owner.pending_local_attached_pause_override = Some(false);
 
     assert!(state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
@@ -2287,6 +2307,16 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
     assert!(
         owner.pending_room_change_request.is_none(),
         "public-server connect should clear stale room-change confirmation state",
+    );
+    assert!(
+        owner
+            .suppressed_attached_room_playstate_after_playlist_reset
+            .is_none(),
+        "public-server connect should clear stale playlist-reset suppression state",
+    );
+    assert!(
+        owner.pending_local_attached_pause_override.is_none(),
+        "public-server connect should clear stale local pause override state",
     );
     assert!(
         state
