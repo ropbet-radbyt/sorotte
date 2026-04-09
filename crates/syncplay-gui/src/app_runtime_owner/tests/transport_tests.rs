@@ -232,10 +232,11 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(
                 br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -279,9 +280,14 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
     for action in combined_actions.iter().cloned() {
         assert!(state.apply(action));
     }
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport server hello readiness",
+    );
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let hello_sync_actions = handle.drain_actions();
@@ -377,10 +383,11 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let _hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(
                 br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
@@ -416,9 +423,14 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport startup hello",
+    );
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -471,10 +483,11 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let _hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(
                 br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
@@ -511,9 +524,14 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport startup hello",
+    );
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -561,7 +579,7 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
 #[test]
 fn gui_persisted_config_runtime_owner_startup_saved_connect_uses_hostname_transport() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         thread,
@@ -583,10 +601,11 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_uses_hostname_transp
             .try_clone()
             .expect("startup hostname transport test should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("startup hostname transport test should read one startup hello line");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "startup hostname transport test",
+        );
         hello_tx
             .send(hello_line)
             .expect("startup hostname transport test should report the hello");
@@ -622,9 +641,14 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_uses_hostname_transp
         assert!(state.apply(action));
     }
 
-    let hello_line = hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("startup hostname transport test should observe the detached hello");
+    let hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_rx,
+        Duration::from_secs(1),
+        "startup hostname transport detached hello",
+    );
     assert!(hello_line.contains("\"Hello\""));
     assert!(hello_line.contains("\"room\":{\"name\":\"room1\"}"));
 
@@ -825,10 +849,11 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let _hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(
                 br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
@@ -868,9 +893,14 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport server hello readiness",
+    );
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -899,7 +929,7 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
 #[test]
 fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_server_hello() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::Duration,
@@ -920,10 +950,11 @@ fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_serv
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let _hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(br#"{"status":"connected"}"#)
             .expect("test session transport server should write one non-protocol startup line");
@@ -964,9 +995,14 @@ fn gui_persisted_config_runtime_owner_ignores_non_protocol_tcp_lines_before_serv
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport startup hello",
+    );
     pump_and_apply_runtime_owner_actions_until(
         &mut owner,
         &handle,
@@ -1099,10 +1135,11 @@ fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_tr
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         hello_tx
             .send(hello_line)
             .expect("test session transport server should report the startup hello");
@@ -1192,10 +1229,11 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
             .try_clone()
             .expect("test session transport server should clone the accepted stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("test session transport server should read one startup hello line");
+        let _hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "test session transport server",
+        );
         stream
             .write_all(
                 br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
@@ -1260,9 +1298,14 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    hello_ready_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should send its hello promptly");
+    recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_ready_rx,
+        Duration::from_secs(1),
+        "test session transport startup hello",
+    );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
@@ -1330,7 +1373,7 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
 #[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::{Duration, Instant},
@@ -1353,10 +1396,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
             .try_clone()
             .expect("reconnect test session transport server should clone the first stream");
         let mut first_reader = BufReader::new(first_reader_stream);
-        let mut first_hello = String::new();
-        first_reader
-            .read_line(&mut first_hello)
-            .expect("reconnect test session transport server should read the startup hello");
+        let first_hello = read_client_hello_after_optional_start_tls(
+            &mut first_reader,
+            &mut first_stream,
+            "reconnect test session transport server",
+        );
         first_hello_tx
             .send(first_hello)
             .expect("reconnect test session transport server should report the startup hello");
@@ -1384,10 +1428,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
             .try_clone()
             .expect("reconnect test session transport server should clone the reconnect stream");
         let mut second_reader = BufReader::new(second_reader_stream);
-        let mut reconnect_hello = String::new();
-        second_reader
-            .read_line(&mut reconnect_hello)
-            .expect("reconnect test session transport server should read the reconnect hello");
+        let reconnect_hello = read_client_hello_after_optional_start_tls(
+            &mut second_reader,
+            &mut second_stream,
+            "reconnect test session transport server",
+        );
         reconnect_hello_tx
             .send(reconnect_hello)
             .expect("reconnect test session transport server should report the reconnect hello");
@@ -1487,7 +1532,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
 #[test]
 fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::{Duration, Instant},
@@ -1509,10 +1554,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
             .try_clone()
             .expect("idle-timeout test session transport server should clone the first stream");
         let mut first_reader = BufReader::new(first_reader_stream);
-        let mut first_hello = String::new();
-        first_reader
-            .read_line(&mut first_hello)
-            .expect("idle-timeout test session transport server should read the startup hello");
+        let first_hello = read_client_hello_after_optional_start_tls(
+            &mut first_reader,
+            &mut first_stream,
+            "idle-timeout test session transport server",
+        );
         first_hello_tx
             .send(first_hello)
             .expect("idle-timeout test session transport server should report the startup hello");
@@ -1535,10 +1581,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
             .try_clone()
             .expect("idle-timeout test session transport server should clone the reconnect stream");
         let mut second_reader = BufReader::new(second_reader_stream);
-        let mut reconnect_hello = String::new();
-        second_reader
-            .read_line(&mut reconnect_hello)
-            .expect("idle-timeout test session transport server should read the reconnect hello");
+        let reconnect_hello = read_client_hello_after_optional_start_tls(
+            &mut second_reader,
+            &mut second_stream,
+            "idle-timeout test session transport server",
+        );
         reconnect_hello_tx
             .send(reconnect_hello)
             .expect("idle-timeout test session transport server should report the reconnect hello");
@@ -1637,12 +1684,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
 #[test]
 fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_public_server_connect()
 {
-    use std::{
-        io::{BufRead, BufReader},
-        net::TcpListener,
-        sync::mpsc,
-        time::Duration,
-    };
+    use std::{io::BufReader, net::TcpListener, sync::mpsc, time::Duration};
 
     let first_listener = TcpListener::bind("127.0.0.1:0")
         .expect("first test session transport listener should bind");
@@ -1658,14 +1700,18 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     let (first_hello_tx, first_hello_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first_server_thread = std::thread::spawn(move || {
-        let (stream, _) = first_listener
+        let (mut stream, _) = first_listener
             .accept()
             .expect("first test session transport server should accept one client");
-        let mut reader = BufReader::new(stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("first test session transport server should read one startup hello line");
+        let reader_stream = stream
+            .try_clone()
+            .expect("first test session transport server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "first test session transport server",
+        );
         first_hello_tx
             .send(hello_line)
             .expect("first test session transport server should report its hello");
@@ -1676,14 +1722,18 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
 
     let (second_hello_tx, second_hello_rx) = mpsc::channel();
     let second_server_thread = std::thread::spawn(move || {
-        let (stream, _) = second_listener
+        let (mut stream, _) = second_listener
             .accept()
             .expect("second test session transport server should accept one client");
-        let mut reader = BufReader::new(stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("second test session transport server should read one reconnect hello line");
+        let reader_stream = stream
+            .try_clone()
+            .expect("second test session transport server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "second test session transport server",
+        );
         second_hello_tx
             .send(hello_line)
             .expect("second test session transport server should report its hello");
@@ -1705,9 +1755,14 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         assert!(state.apply(action));
     }
 
-    let first_hello_line = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("first test session transport server should receive the startup hello");
+    let first_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "first test session transport startup hello",
+    );
     assert!(first_hello_line.contains("\"Hello\""));
     assert!(first_hello_line.contains("\"alice\""));
 
@@ -1825,9 +1880,14 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
             .is_some_and(|action| !action.enabled)
     );
 
-    let second_hello_line = second_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("second test session transport server should receive the reconnect hello");
+    let second_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_hello_rx,
+        Duration::from_secs(1),
+        "second test session transport reconnect hello",
+    );
     assert!(second_hello_line.contains("\"Hello\""));
     assert!(second_hello_line.contains("\"alice\""));
     assert!(second_hello_line.contains("\"room1\""));
@@ -1866,14 +1926,18 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
     let (first_hello_tx, first_hello_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first_server_thread = std::thread::spawn(move || {
-        let (stream, _) = first_listener
+        let (mut stream, _) = first_listener
             .accept()
             .expect("first test session transport server should accept one client");
-        let mut reader = BufReader::new(stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("first test session transport server should read the startup hello line");
+        let reader_stream = stream
+            .try_clone()
+            .expect("first test session transport server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "first test session transport server",
+        );
         first_hello_tx
             .send(hello_line)
             .expect("first test session transport server should report its hello");
@@ -1892,10 +1956,11 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
             .try_clone()
             .expect("second test session transport server should clone the reconnect stream");
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("second test session transport server should read the reconnect hello line");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "second test session transport server",
+        );
         second_hello_tx
             .send(hello_line)
             .expect("second test session transport server should report its hello");
@@ -1966,9 +2031,14 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
         assert!(state.apply(action));
     }
 
-    let first_hello_line = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("first test session transport server should receive the startup hello");
+    let first_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "first test session transport startup hello",
+    );
     assert!(first_hello_line.contains("\"Hello\""));
     assert!(first_hello_line.contains("\"alice\""));
 
@@ -1981,9 +2051,14 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
         assert!(state.apply(action));
     }
 
-    let second_hello_line = second_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("second test session transport server should receive the reconnect hello");
+    let second_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_hello_rx,
+        Duration::from_secs(1),
+        "second test session transport reconnect hello",
+    );
     assert!(second_hello_line.contains("\"Hello\""));
     assert!(second_hello_line.contains("\"alice\""));
     assert!(second_hello_line.contains("\"room1\""));

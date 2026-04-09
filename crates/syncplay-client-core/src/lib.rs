@@ -914,6 +914,10 @@ where
         &self.control
     }
 
+    pub fn control_mut(&mut self) -> &mut C {
+        &mut self.control
+    }
+
     pub fn player(&self) -> &P {
         &self.player
     }
@@ -1960,6 +1964,7 @@ pub struct ClientSession {
     reconnect_in_progress: bool,
     reconnect_connected_intent: bool,
     controlled_room_switch_intent: Option<String>,
+    pending_local_room_switch_target: Option<String>,
     controller_reidentify_intent: Option<(String, String)>,
     last_controller_auth_password_attempt: Option<String>,
     controlled_room_passwords: BTreeMap<String, String>,
@@ -2051,6 +2056,7 @@ impl Default for ClientSession {
             reconnect_in_progress: false,
             reconnect_connected_intent: false,
             controlled_room_switch_intent: None,
+            pending_local_room_switch_target: None,
             controller_reidentify_intent: None,
             last_controller_auth_password_attempt: None,
             controlled_room_passwords: BTreeMap::new(),
@@ -2520,7 +2526,16 @@ impl ClientSession {
                 self.apply_state_at(state_message.state, now_seconds)
             }
             ProtocolMessage::Chat(chat_message) => self.apply_chat(chat_message.chat),
-            ProtocolMessage::Error(_) | ProtocolMessage::Tls(_) => {}
+            ProtocolMessage::Error(error_message) => {
+                return Err(ProtocolError::ServerError {
+                    message: error_message.error.message,
+                });
+            }
+            ProtocolMessage::Tls(tls_message) => {
+                return Err(ProtocolError::UnexpectedTlsMessage {
+                    start_tls: tls_message.tls.start_tls,
+                });
+            }
         }
         Ok(())
     }
@@ -3154,6 +3169,9 @@ impl ClientSession {
 
     pub fn set_autoplay_enabled(&mut self, enabled: bool) {
         self.autoplay_enabled = enabled;
+        if !enabled {
+            self.stop_autoplay_countdown();
+        }
     }
 
     pub fn autoplay_timer_is_running(&self) -> bool {
@@ -3861,6 +3879,15 @@ impl ClientSession {
         }
         if let Some(password) = inline_password.as_deref() {
             self.remember_control_password_for_room(&room, password);
+        }
+        let tracked_room = self
+            .pending_local_room_switch_target
+            .as_deref()
+            .or(self.room.as_deref());
+        if tracked_room != Some(room.as_str()) {
+            self.pending_local_room_switch_target = Some(room.clone());
+            self.reset_playlist_index_transition_tracking();
+            self.set_autoplay_enabled(false);
         }
         let mut actions = vec![
             ClientRuntimeAction::SetRoom { room: room.clone() },
@@ -4801,6 +4828,7 @@ impl ClientSession {
         self.pending_controller_auth_notifications.clear();
         self.pending_user_change_notifications.clear();
         self.controlled_room_switch_intent = None;
+        self.pending_local_room_switch_target = None;
         self.controller_reidentify_intent = None;
         self.user_views.clear();
         self.known_rooms.clear();
@@ -5270,6 +5298,7 @@ impl ClientSession {
                 self.reconnect_playlist_restore_snapshot = None;
             }
 
+            let room_name = self.resolve_room_for_playlist_update(playlist_index.user.as_deref());
             let set_by_local = playlist_index
                 .user
                 .as_deref()
@@ -5279,15 +5308,18 @@ impl ClientSession {
                 self.last_advanced_at_seconds = now_seconds;
             }
 
-            let should_queue_playlist_reset = if !self.received_first_playlist_index {
-                self.received_first_playlist_index = true;
-                false
-            } else if set_by_local && self.suppress_next_self_playlist_index_reset {
-                self.suppress_next_self_playlist_index_reset = false;
-                false
-            } else {
-                true
-            };
+            let should_queue_playlist_reset =
+                if !self.should_track_playlist_index_transition_for_room(room_name.as_deref()) {
+                    false
+                } else if !self.received_first_playlist_index {
+                    self.received_first_playlist_index = true;
+                    false
+                } else if set_by_local && self.suppress_next_self_playlist_index_reset {
+                    self.suppress_next_self_playlist_index_reset = false;
+                    false
+                } else {
+                    true
+                };
             if should_queue_playlist_reset {
                 self.note_recent_rewind(
                     now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
@@ -5295,9 +5327,7 @@ impl ClientSession {
                 self.queue_playlist_index_reset_intent(false);
             }
 
-            if let Some(room_name) =
-                self.resolve_room_for_playlist_update(playlist_index.user.as_deref())
-            {
+            if let Some(room_name) = room_name {
                 let playlist = self.room_playlists.entry(room_name).or_default();
                 playlist.index = Some(playlist_index.index);
                 if playlist_index.user.is_some() {
@@ -5647,9 +5677,20 @@ impl ClientSession {
         Some((local_username, local_room))
     }
 
+    fn should_track_playlist_index_transition_for_room(&self, room_name: Option<&str>) -> bool {
+        let tracked_room = self
+            .pending_local_room_switch_target
+            .as_deref()
+            .or(self.room.as_deref());
+        matches!((tracked_room, room_name), (Some(tracked_room), Some(room_name)) if tracked_room == room_name)
+    }
+
     fn update_local_room(&mut self, room_name: String) {
         if self.room.as_deref() != Some(room_name.as_str()) {
             self.reset_playlist_index_transition_tracking();
+            self.pending_local_room_switch_target = None;
+        } else if self.pending_local_room_switch_target.as_deref() == Some(room_name.as_str()) {
+            self.pending_local_room_switch_target = None;
         }
         self.room = Some(room_name);
     }
@@ -5824,7 +5865,7 @@ impl ClientSession {
         })
     }
 
-    fn current_user_file_name(&self) -> Option<&str> {
+    pub fn current_user_file_name(&self) -> Option<&str> {
         self.username
             .as_deref()
             .and_then(|username| self.user_file_name(username))
@@ -6285,7 +6326,7 @@ mod tests {
     };
     use syncplay_protocol::{
         ChatPayload, IgnoringOnTheFlyPayload, ListPayload, PingPayload, PlaystatePayload,
-        ProtocolMessage, StatePayload, decode_line, decode_message_line,
+        ProtocolError, ProtocolMessage, StatePayload, decode_line, decode_message_line,
     };
 
     fn scenario_fixture_path(name: &str) -> PathBuf {
@@ -7513,6 +7554,34 @@ mod tests {
             !session.autoplay_timer_is_running(),
             "creating a controlled room should stop any running autoplay countdown"
         );
+    }
+
+    #[test]
+    fn client_session_apply_message_json_returns_server_error_payload() {
+        let mut session = ClientSession::default();
+
+        let error = session
+            .apply_message_json(r#"{"Error":{"message":"wrong-password-server-error"}}"#)
+            .expect_err("server error frames should surface to the caller");
+
+        assert!(matches!(
+            error,
+            ProtocolError::ServerError { message } if message == "wrong-password-server-error"
+        ));
+    }
+
+    #[test]
+    fn client_session_apply_message_json_rejects_unexpected_tls_frames() {
+        let mut session = ClientSession::default();
+
+        let error = session
+            .apply_message_json(r#"{"TLS":{"startTLS":"false"}}"#)
+            .expect_err("unexpected TLS frames should not be ignored by the session");
+
+        assert!(matches!(
+            error,
+            ProtocolError::UnexpectedTlsMessage { start_tls } if start_tls == "false"
+        ));
     }
 
     #[test]
@@ -16863,6 +16932,44 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_room_resets_autoplay_state_on_room_change() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        session.set_autoplay_enabled(true);
+        session.start_autoplay_countdown();
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_set_room("room2")
+                .expect("set room should not fail"),
+            "room changes should still dispatch Set.room"
+        );
+
+        assert!(
+            !runtime.session().autoplay_enabled(),
+            "room changes should clear autoplay"
+        );
+        assert!(
+            !runtime.session().autoplay_timer_is_running(),
+            "room changes should stop any running autoplay countdown"
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .pending_local_room_switch_target
+                .as_deref(),
+            Some("room2")
+        );
+    }
+
+    #[test]
     fn client_runtime_set_room_is_omitted_before_server_hello() {
         let session = ClientSession::default();
         let player = RecordingPlayer::default();
@@ -16961,6 +17068,98 @@ mod tests {
             panic!("expected queued List protocol message after unchanged room switch");
         };
         assert!(matches!(list_message.list, ListPayload::Request(_)));
+    }
+
+    #[test]
+    fn room_switch_ignores_old_room_playlist_index_until_destination_snapshot_arrives() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room1"}}}}}"#)
+            .expect("bob should join room1");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["room1-episode1.mkv","room1-episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("room1 playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("initial room1 playlist index should apply");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            None,
+            "the first playlist index in the room should not queue a reset intent"
+        );
+
+        let actions = session.runtime_actions_for_local_room_switch("room2".to_owned());
+        assert_eq!(
+            actions,
+            vec![
+                ClientRuntimeAction::SetRoom {
+                    room: "room2".to_owned(),
+                },
+                ClientRuntimeAction::RequestUserList,
+            ]
+        );
+        assert_eq!(
+            session.pending_local_room_switch_target.as_deref(),
+            Some("room2"),
+            "room switches should mark the destination room while waiting for the server echo"
+        );
+        assert!(
+            !session.received_first_playlist_index,
+            "room switches should reset playlist-index transition tracking immediately"
+        );
+
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("late old-room playlist traffic should still apply to bob's room state");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            None,
+            "late old-room playlist traffic should not queue a reset intent"
+        );
+        assert!(
+            !session.received_first_playlist_index,
+            "late old-room playlist traffic should not consume the first destination playlist index"
+        );
+        assert_eq!(
+            session
+                .room_playlist("room1")
+                .and_then(|playlist| playlist.index),
+            Some(1),
+            "old-room playlist state should still update in the background"
+        );
+
+        session
+            .apply_message_json(r#"{"Set":{"room":{"name":"room2"}}}"#)
+            .expect("room2 echo should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["room2-episode1.mkv","room2-episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("room2 playlist snapshot should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("first room2 playlist index should apply");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            None,
+            "the first destination playlist index after a room switch should not queue a reset"
+        );
+
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+            .expect("subsequent room2 playlist indexes should apply");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            Some(false),
+            "subsequent destination playlist indexes should restore normal reset behavior"
+        );
     }
 
     #[test]

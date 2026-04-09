@@ -189,7 +189,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
 #[test]
 fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         thread,
@@ -228,10 +228,11 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
                 .try_clone()
                 .expect("config connect test stream should clone"),
         );
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("config connect test should read the GUI hello");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "config connect test",
+        );
         hello_tx
             .send(hello_line)
             .expect("config connect test should report the hello");
@@ -316,9 +317,14 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
     );
     assert_eq!(persisted_settings.port, Some(connect_port));
 
-    let hello_line = hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("config connect test should observe a GUI hello");
+    let hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_rx,
+        Duration::from_secs(1),
+        "config connect test GUI hello",
+    );
     assert!(
         hello_line.contains("\"room\":{\"name\":\"room2\"}"),
         "config connect should send the updated room in the detached hello: {hello_line}",
@@ -336,7 +342,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
 #[test]
 fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         thread,
@@ -359,10 +365,11 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
                 .try_clone()
                 .expect("detached public-server connect test stream should clone"),
         );
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("detached public-server connect test should read the GUI hello");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "detached public-server connect test",
+        );
         hello_tx
             .send(hello_line)
             .expect("detached public-server connect test should report the hello");
@@ -427,9 +434,14 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
         "detached public-server connect should report the selected server connection"
     );
 
-    let hello_line = hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("detached public-server connect should emit a GUI hello");
+    let hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_rx,
+        Duration::from_secs(1),
+        "detached public-server connect GUI hello",
+    );
     assert!(hello_line.contains("\"Hello\""));
     assert!(hello_line.contains("\"alice\""));
     assert!(hello_line.contains("\"room1\""));
@@ -1061,10 +1073,11 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
                 .try_clone()
                 .expect("startup auth test stream should clone"),
         );
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("startup auth test should read the GUI hello");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "startup auth test",
+        );
         hello_tx
             .send(hello_line)
             .expect("startup auth test should report the hello");
@@ -1124,9 +1137,14 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         "startup saved-server connect",
     );
 
-    let hello_line = hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("startup auth test should observe a GUI hello");
+    let hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_rx,
+        Duration::from_secs(1),
+        "startup auth test GUI hello",
+    );
     assert!(hello_line.contains(canonical_room));
     assert!(
         !hello_line.contains("RH-273-303"),

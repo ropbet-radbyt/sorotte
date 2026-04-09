@@ -4860,7 +4860,18 @@ fn run_planned_local_runtime_action_legacy_compatible(
         Some(PlannedLocalRuntimeAction::SeekByOffset(offset_seconds)) => {
             Ok(runtime.run_seek_by_offset(offset_seconds)?)
         }
-        Some(PlannedLocalRuntimeAction::TogglePause) => Ok(runtime.run_toggle_pause()?),
+        Some(PlannedLocalRuntimeAction::TogglePause) => {
+            let player_paused = runtime.player().paused();
+            let player_position_seconds = runtime.player().position_seconds();
+            runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(
+                    &PlayerPlaybackTelemetryUpdate::default()
+                        .with_paused(player_paused)
+                        .with_position_seconds(player_position_seconds),
+                );
+            Ok(runtime.run_set_paused(!player_paused)?)
+        }
         Some(PlannedLocalRuntimeAction::ToggleReady) => Ok(runtime.run_toggle_ready(true)?),
         Some(PlannedLocalRuntimeAction::SetUserReady { username, ready }) => {
             Ok(runtime.run_set_ready_for_user(username, ready, true)?)

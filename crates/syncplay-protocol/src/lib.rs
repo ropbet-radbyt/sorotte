@@ -908,6 +908,10 @@ pub enum ProtocolError {
         expected: &'static str,
         found: &'static str,
     },
+    #[error("server error: {message}")]
+    ServerError { message: String },
+    #[error("unexpected TLS negotiation frame: startTLS='{start_tls}'")]
+    UnexpectedTlsMessage { start_tls: String },
 }
 
 pub fn decode_line(line: &str) -> Result<Value, ProtocolError> {

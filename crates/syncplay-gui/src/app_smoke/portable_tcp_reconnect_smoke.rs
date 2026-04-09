@@ -33,10 +33,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .expect("portable tcp churn smoke first server should clone stream");
         let mut reader = BufReader::new(reader_stream);
 
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("portable tcp churn smoke first server should read startup hello");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "portable tcp churn smoke first server",
+        );
         first_hello_tx
             .send(hello_line)
             .expect("portable tcp churn smoke first server should report startup hello");
@@ -60,10 +61,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .send("initial".to_owned())
             .expect("portable tcp churn smoke first server should signal initial state");
 
-        let mut first_chat_line = String::new();
-        reader
-            .read_line(&mut first_chat_line)
-            .expect("portable tcp churn smoke first server should read first chat");
+        let first_chat_line = read_protocol_line_matching(
+            &mut reader,
+            |line| line.contains("\"Chat\""),
+            "portable tcp churn smoke first server",
+        );
         first_chat_tx
             .send(first_chat_line)
             .expect("portable tcp churn smoke first server should report first chat");
@@ -86,10 +88,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .send("postchat".to_owned())
             .expect("portable tcp churn smoke first server should signal post-chat state");
 
-        let mut second_chat_line = String::new();
-        reader
-            .read_line(&mut second_chat_line)
-            .expect("portable tcp churn smoke first server should read second chat");
+        let second_chat_line = read_protocol_line_matching(
+            &mut reader,
+            |line| line.contains("\"Chat\""),
+            "portable tcp churn smoke first server",
+        );
         first_chat_tx
             .send(second_chat_line)
             .expect("portable tcp churn smoke first server should report second chat");
@@ -125,10 +128,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .expect("portable tcp churn smoke second server should clone stream");
         let mut reader = BufReader::new(reader_stream);
 
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("portable tcp churn smoke second server should read reconnect hello");
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "portable tcp churn smoke second server",
+        );
         second_hello_tx
             .send(hello_line)
             .expect("portable tcp churn smoke second server should report reconnect hello");
@@ -152,10 +156,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .send("initial".to_owned())
             .expect("portable tcp churn smoke second server should signal initial state");
 
-        let mut first_chat_line = String::new();
-        reader
-            .read_line(&mut first_chat_line)
-            .expect("portable tcp churn smoke second server should read first chat");
+        let first_chat_line = read_protocol_line_matching(
+            &mut reader,
+            |line| line.contains("\"Chat\""),
+            "portable tcp churn smoke second server",
+        );
         second_chat_tx
             .send(first_chat_line)
             .expect("portable tcp churn smoke second server should report first chat");
@@ -178,10 +183,11 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .send("postchat".to_owned())
             .expect("portable tcp churn smoke second server should signal post-chat state");
 
-        let mut second_chat_line = String::new();
-        reader
-            .read_line(&mut second_chat_line)
-            .expect("portable tcp churn smoke second server should read second chat");
+        let second_chat_line = read_protocol_line_matching(
+            &mut reader,
+            |line| line.contains("\"Chat\""),
+            "portable tcp churn smoke second server",
+        );
         second_chat_tx
             .send(second_chat_line)
             .expect("portable tcp churn smoke second server should report second chat");
@@ -218,9 +224,14 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let first_hello = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("portable tcp churn smoke first server should receive startup hello");
+    let first_hello = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "portable tcp churn smoke first startup hello",
+    );
     assert!(first_hello.contains("\"Hello\""));
     assert!(first_hello.contains("\"portable-user\""));
     assert_eq!(
@@ -389,9 +400,14 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
             .any(|action| matches!(action, GuiShellAction::CompleteSelectedPublicServerConnect))
     );
 
-    let second_hello = second_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("portable tcp churn smoke second server should receive reconnect hello");
+    let second_hello = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_hello_rx,
+        Duration::from_secs(1),
+        "portable tcp churn smoke second reconnect hello",
+    );
     assert!(second_hello.contains("\"Hello\""));
     assert!(second_hello.contains("\"portable-user\""));
     assert!(second_hello.contains("\"portable-room\""));

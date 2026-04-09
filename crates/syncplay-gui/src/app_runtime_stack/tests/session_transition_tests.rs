@@ -157,6 +157,68 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_state_without_media() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"bob"},"ping":{"latencyCalculation":123.0}}}"#,
+        )
+        .expect("first inbound state should apply");
+
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("first-state follow-up lines should encode");
+    assert!(
+        outbound_lines.iter().any(|line| line.contains(r#""List""#)),
+        "connecting without media should request the user list on the first inbound state"
+    );
+
+    adapter
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":11.0,"paused":true,"doSeek":false,"setBy":"bob"},"ping":{"latencyCalculation":124.0}}}"#,
+        )
+        .expect("second inbound state should apply");
+    let outbound_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("second-state follow-up lines should encode");
+    assert!(
+        !outbound_lines.iter().any(|line| line.contains(r#""List""#)),
+        "the automatic user-list request should only happen once"
+    );
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_stops_reconnect_on_server_error() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let error = adapter
+        .apply_message_json(r#"{"Error":{"message":"wrong-password-server-error"}}"#)
+        .expect_err("server error frames should fail the session adapter");
+
+    assert!(
+        error.contains("wrong-password-server-error"),
+        "server errors should surface the server-provided message"
+    );
+    assert!(
+        adapter.runtime.take_stop_reconnect_requested(),
+        "server error frames should stop the reconnect loop before the transport closes"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_to_system_chat() {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
@@ -507,9 +569,16 @@ fn gui_client_core_chat_session_runtime_adapter_reconciles_inbound_state_through
     let outbound_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("reconciled state response should encode");
-    assert_eq!(outbound_lines.len(), 1);
-    assert!(outbound_lines[0].contains("\"State\""));
-    assert!(outbound_lines[0].contains("\"position\":12.0"));
-    assert!(outbound_lines[0].contains("\"paused\":false"));
-    assert!(outbound_lines[0].contains("\"latencyCalculation\":123.0"));
+    assert_eq!(outbound_lines.len(), 2);
+    let state_line = outbound_lines
+        .iter()
+        .find(|line| line.contains("\"State\""))
+        .expect("state reconciliation should emit an outbound state line");
+    assert!(state_line.contains("\"position\":12.0"));
+    assert!(state_line.contains("\"paused\":false"));
+    assert!(state_line.contains("\"latencyCalculation\":123.0"));
+    assert!(
+        outbound_lines.iter().any(|line| line.contains("\"List\"")),
+        "first inbound state without local media should also request the user list",
+    );
 }

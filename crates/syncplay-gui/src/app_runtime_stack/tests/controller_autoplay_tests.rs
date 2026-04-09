@@ -236,6 +236,62 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_set_room_resets_autoplay_state() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true}}}}"#,
+        )
+        .expect("remote ready user should apply");
+    adapter.runtime.session_mut().set_autoplay_enabled(true);
+    adapter
+        .runtime
+        .session_mut()
+        .readiness_autoplay_config_mut()
+        .auto_play_threshold = Some(2);
+    adapter
+        .runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &syncplay_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+        );
+    adapter
+        .runtime
+        .update_autoplay_check(true, true, false, false);
+    assert!(
+        adapter.runtime.session().autoplay_timer_is_running(),
+        "precondition: autoplay countdown should be running before the room switch"
+    );
+
+    GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
+        .expect("room changes should dispatch through the session adapter");
+
+    assert!(
+        !adapter.runtime.session().autoplay_enabled(),
+        "room changes should clear autoplay state"
+    );
+    assert!(
+        !adapter.runtime.session().autoplay_timer_is_running(),
+        "room changes should stop any running autoplay countdown"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_notifications() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),

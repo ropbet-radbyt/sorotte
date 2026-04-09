@@ -28,7 +28,7 @@ use syncplay_client_app::app_boundary::state::{
 };
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientRuntimeAction,
-    ClientSession, DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl,
+    ClientRuntimeControl, ClientSession, DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl,
     ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
     SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
 };
@@ -353,6 +353,7 @@ pub(super) struct GuiClientCoreChatSessionRuntimeAdapter {
     pending_room_for_next_hello: Option<String>,
     dont_slow_down_with_me: bool,
     pending_ready_at_start_on_server_hello: bool,
+    request_user_list_on_first_state_without_media: bool,
     runtime_settings: StoredClientSettingsRuntimeSnapshot,
     pub(super) runtime: ClientRuntime<GuiNoopClientRuntimePlayer, QueuedRuntimeControl>,
     pending_startup_protocol_lines: VecDeque<String>,
@@ -394,6 +395,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             pending_room_for_next_hello: None,
             dont_slow_down_with_me: false,
             pending_ready_at_start_on_server_hello: false,
+            request_user_list_on_first_state_without_media: true,
             runtime_settings,
             runtime: ClientRuntime::new(
                 session,
@@ -680,6 +682,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .settings
             .ready_at_start
             .unwrap_or(false);
+        self.request_user_list_on_first_state_without_media = true;
         self.tracked_remote_usernames.clear();
         self.optimistic_room_playlist = None;
     }
@@ -921,7 +924,27 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                         state_message.state,
                         self.dont_slow_down_with_me,
                     );
+                if self.request_user_list_on_first_state_without_media {
+                    self.request_user_list_on_first_state_without_media = false;
+                    if self.runtime.session().current_user_file_name().is_none() {
+                        let _ = self
+                            .runtime
+                            .run_request_user_list()
+                            .map_err(|error| {
+                                format!(
+                                    "Client-core user-list request dispatch failed after first state: {error}"
+                                )
+                            })?;
+                    }
+                }
                 Ok(())
+            }
+            ProtocolMessage::Error(error_message) => {
+                self.runtime.control_mut().stop_reconnect();
+                Err(format!(
+                    "Inbound client-session message apply failed: server error: {}",
+                    error_message.error.message
+                ))
             }
             other => self
                 .runtime

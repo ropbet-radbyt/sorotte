@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
     use std::{
-        io::{BufRead, BufReader},
+        io::{BufRead, BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::Duration,
@@ -141,14 +141,18 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
     let (first_hello_tx, first_hello_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first_server_thread = std::thread::spawn(move || {
-        let (stream, _) = first_listener
+        let (mut stream, _) = first_listener
             .accept()
             .expect("portable smoke first tcp server should accept one client");
-        let mut reader = BufReader::new(stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("portable smoke first tcp server should read one startup hello line");
+        let reader_stream = stream
+            .try_clone()
+            .expect("portable smoke first tcp server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "portable smoke first tcp server",
+        );
         first_hello_tx
             .send(hello_line)
             .expect("portable smoke first tcp server should report its hello");
@@ -159,14 +163,18 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
 
     let (second_hello_tx, second_hello_rx) = mpsc::channel();
     let second_server_thread = std::thread::spawn(move || {
-        let (stream, _) = second_listener
+        let (mut stream, _) = second_listener
             .accept()
             .expect("portable smoke second tcp server should accept one client");
-        let mut reader = BufReader::new(stream);
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .expect("portable smoke second tcp server should read one reconnect hello line");
+        let reader_stream = stream
+            .try_clone()
+            .expect("portable smoke second tcp server should clone the accepted stream");
+        let mut reader = BufReader::new(reader_stream);
+        let hello_line = read_client_hello_after_optional_start_tls(
+            &mut reader,
+            &mut stream,
+            "portable smoke second tcp server",
+        );
         second_hello_tx
             .send(hello_line)
             .expect("portable smoke second tcp server should report its hello");
@@ -191,9 +199,14 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
     for action in tcp_handle.drain_actions() {
         assert!(tcp_state.apply(action));
     }
-    let first_hello_line = first_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("portable smoke first tcp server should receive startup hello");
+    let first_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut tcp_owner,
+        &tcp_handle,
+        &mut tcp_state,
+        &first_hello_rx,
+        Duration::from_secs(1),
+        "portable smoke first tcp startup hello",
+    );
     assert!(first_hello_line.contains("\"Hello\""));
     assert!(first_hello_line.contains("\"portable-user\""));
 
@@ -213,9 +226,14 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
         assert!(tcp_state.apply(action));
     }
 
-    let second_hello_line = second_hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("portable smoke second tcp server should receive reconnect hello");
+    let second_hello_line = recv_from_channel_while_pumping_runtime(
+        &mut tcp_owner,
+        &tcp_handle,
+        &mut tcp_state,
+        &second_hello_rx,
+        Duration::from_secs(1),
+        "portable smoke second tcp reconnect hello",
+    );
     assert!(second_hello_line.contains("\"Hello\""));
     assert!(second_hello_line.contains("\"portable-user\""));
     assert!(second_hello_line.contains("\"portable-room\""));
