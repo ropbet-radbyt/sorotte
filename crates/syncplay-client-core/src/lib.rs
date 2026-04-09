@@ -31,6 +31,9 @@ const DEFAULT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS: f64 = 2.0;
 const DEFAULT_AUTOPLAY_DELAY_SECONDS: f64 = 3.0;
 const AUTOPLAY_COUNTDOWN_STEP_SECONDS: f64 = 1.0;
 const RECENTLY_ADVANCED_GRACE_SECONDS: f64 = 5.0;
+const RECENT_REWIND_READINESS_SUPPRESSION_SECONDS: f64 = 5.0;
+const RECENT_REWIND_SEEK_SUPPRESSION_SECONDS: f64 = 1.0;
+const RECENT_REWIND_SEEK_IGNORE_POSITION_SECONDS: f64 = 5.0;
 const LEGACY_SHOW_DURATION_NOTIFICATION: bool = true;
 const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
 const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
@@ -871,6 +874,21 @@ where
         );
     }
 
+    fn dispatch_runtime_actions_with_session_rollback(
+        &mut self,
+        session_snapshot: ClientSessionLocalActionSnapshot,
+        actions: &[ClientRuntimeAction],
+    ) -> Result<(), PlayerError> {
+        match ClientSession::dispatch_runtime_actions(actions, &mut self.player, &mut self.control)
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.session.restore_local_action_state(session_snapshot);
+                Err(err)
+            }
+        }
+    }
+
     pub fn session(&self) -> &ClientSession {
         &self.session
     }
@@ -938,13 +956,14 @@ where
         is_playing_music: bool,
     ) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_readiness_unpause_attempt(
             now_seconds,
             readiness_supported,
             local_can_control,
             is_playing_music,
         );
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
     }
 
     pub fn update_autoplay_check(
@@ -971,13 +990,14 @@ where
         recently_advanced: bool,
     ) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.autoplay_countdown_tick(
             readiness_supported,
             local_can_control,
             is_playing_music,
             recently_advanced,
         );
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
     }
 
     pub fn run_reconnect_retry(&mut self, retries: u32) -> Result<(), PlayerError> {
@@ -1112,11 +1132,9 @@ where
             return Ok(());
         };
         let room_seeked = room_playstate.do_seek == Some(true);
-        let pause_mismatch = self
-            .session
-            .local_paused
-            .zip(room_playstate.paused)
-            .is_some_and(|(local_paused, room_paused)| local_paused != room_paused);
+        let pause_mismatch = room_playstate
+            .paused
+            .is_some_and(|room_paused| self.session.local_paused.unwrap_or(true) != room_paused);
         if !room_seeked && !pause_mismatch {
             return Ok(());
         }
@@ -1328,17 +1346,19 @@ where
 
     pub fn run_toggle_pause(&mut self) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_pause_toggle();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
             .map(|_| sent)
     }
 
     pub fn run_set_paused(&mut self, paused: bool) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_pause_set(paused);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
             .map(|_| sent)
     }
 
@@ -1445,34 +1465,38 @@ where
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
             .map(|_| sent)
     }
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
             .runtime_actions_for_local_seek_offset(offset_seconds);
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
             .map(|_| sent)
     }
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
         let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
             .map(|_| sent)
     }
 
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
         self.sync_player_playback_telemetry_into_session_and_buffer();
+        let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.handle_disconnect(now_seconds);
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
+        self.dispatch_runtime_actions_with_session_rollback(session_snapshot, &actions)
     }
 
     pub fn publish_local_file_legacy_compatible(
@@ -1903,6 +1927,7 @@ pub struct ClientSession {
     behind_first_detected_at_seconds: Option<f64>,
     last_paused_on_leave_at_seconds: Option<f64>,
     last_advanced_at_seconds: Option<f64>,
+    last_rewound_at_seconds: Option<f64>,
     user_views: BTreeMap<String, ClientUserView>,
     known_rooms: BTreeSet<String>,
     room_playlists: BTreeMap<String, RoomPlaylistView>,
@@ -1953,6 +1978,18 @@ pub struct ClientSession {
     server_ignoring_on_the_fly: u32,
 }
 
+#[derive(Debug, Clone)]
+struct ClientSessionLocalActionSnapshot {
+    user_views: BTreeMap<String, ClientUserView>,
+    local_position: Option<f64>,
+    local_paused: Option<bool>,
+    last_seek_position_before_manual_seek: Option<f64>,
+    last_paused_on_leave_at_seconds: Option<f64>,
+    last_rewound_at_seconds: Option<f64>,
+    autoplay_timer_running: bool,
+    autoplay_time_left_seconds: f64,
+}
+
 impl Default for ClientSession {
     fn default() -> Self {
         let readiness_autoplay_config = ReadinessAutoplayConfig::default();
@@ -1980,6 +2017,7 @@ impl Default for ClientSession {
             behind_first_detected_at_seconds: None,
             last_paused_on_leave_at_seconds: None,
             last_advanced_at_seconds: None,
+            last_rewound_at_seconds: None,
             user_views: BTreeMap::new(),
             known_rooms: BTreeSet::new(),
             room_playlists: BTreeMap::new(),
@@ -2034,6 +2072,30 @@ impl Default for ClientSession {
 }
 
 impl ClientSession {
+    fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
+        ClientSessionLocalActionSnapshot {
+            user_views: self.user_views.clone(),
+            local_position: self.local_position,
+            local_paused: self.local_paused,
+            last_seek_position_before_manual_seek: self.last_seek_position_before_manual_seek,
+            last_paused_on_leave_at_seconds: self.last_paused_on_leave_at_seconds,
+            last_rewound_at_seconds: self.last_rewound_at_seconds,
+            autoplay_timer_running: self.autoplay_timer_running,
+            autoplay_time_left_seconds: self.autoplay_time_left_seconds,
+        }
+    }
+
+    fn restore_local_action_state(&mut self, snapshot: ClientSessionLocalActionSnapshot) {
+        self.user_views = snapshot.user_views;
+        self.local_position = snapshot.local_position;
+        self.local_paused = snapshot.local_paused;
+        self.last_seek_position_before_manual_seek = snapshot.last_seek_position_before_manual_seek;
+        self.last_paused_on_leave_at_seconds = snapshot.last_paused_on_leave_at_seconds;
+        self.last_rewound_at_seconds = snapshot.last_rewound_at_seconds;
+        self.autoplay_timer_running = snapshot.autoplay_timer_running;
+        self.autoplay_time_left_seconds = snapshot.autoplay_time_left_seconds;
+    }
+
     pub fn apply_player_playback_telemetry_update(
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
@@ -2050,6 +2112,23 @@ impl ClientSession {
         self.received_first_playlist_index = false;
         self.pending_playlist_index_reset_pause_before_sync = None;
         self.suppress_next_self_playlist_index_reset = false;
+    }
+
+    fn note_recent_rewind(&mut self, now_seconds: f64) {
+        if now_seconds.is_finite() {
+            self.last_rewound_at_seconds = Some(now_seconds);
+        }
+    }
+
+    fn recently_rewound(&self, now_seconds: f64, threshold_seconds: f64) -> bool {
+        if !threshold_seconds.is_finite() || threshold_seconds <= 0.0 {
+            return false;
+        }
+        self.last_rewound_at_seconds
+            .is_some_and(|last_rewound_at_seconds| {
+                let elapsed = now_seconds - last_rewound_at_seconds;
+                elapsed >= 0.0 && elapsed < threshold_seconds
+            })
     }
 
     fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
@@ -2069,10 +2148,15 @@ impl ClientSession {
         self.queue_playlist_index_reset_intent(pause_before_sync);
         self.suppress_next_self_playlist_index_reset = true;
         self.last_advanced_at_seconds = Some(now_seconds);
+        self.note_recent_rewind(now_seconds);
     }
 
     pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
-        self.pending_playlist_index_reset_pause_before_sync.take()
+        let pending_reset = self.pending_playlist_index_reset_pause_before_sync.take();
+        if pending_reset.is_some() {
+            self.note_recent_rewind(unix_wall_clock_time_seconds_legacy_compatible());
+        }
+        pending_reset
     }
 
     pub fn has_pending_playlist_index_reset_intent(&self) -> bool {
@@ -4233,9 +4317,6 @@ impl ClientSession {
         &mut self,
         target_position: f64,
     ) -> Vec<ClientRuntimeAction> {
-        if !target_position.is_finite() {
-            return Vec::new();
-        }
         let previous_position = self
             .local_position
             .or_else(|| {
@@ -4243,6 +4324,30 @@ impl ClientSession {
                     .and_then(|playstate| playstate.position)
             })
             .unwrap_or(0.0);
+        self.runtime_actions_for_local_seek_with_previous_position(
+            target_position,
+            previous_position,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    fn runtime_actions_for_local_seek_with_previous_position(
+        &mut self,
+        target_position: f64,
+        previous_position: f64,
+        now_seconds: f64,
+    ) -> Vec<ClientRuntimeAction> {
+        if !target_position.is_finite() {
+            return Vec::new();
+        }
+
+        let target_position = target_position.max(0.0);
+        if self.recently_rewound(now_seconds, RECENT_REWIND_SEEK_SUPPRESSION_SECONDS)
+            && target_position > RECENT_REWIND_SEEK_IGNORE_POSITION_SECONDS
+        {
+            return Vec::new();
+        }
+
         self.last_seek_position_before_manual_seek = Some(previous_position);
         self.local_position = Some(target_position);
         vec![ClientRuntimeAction::SetPosition(target_position)]
@@ -4274,9 +4379,11 @@ impl ClientSession {
                     .and_then(|playstate| playstate.position)
             })
             .unwrap_or(target_position);
-        self.last_seek_position_before_manual_seek = Some(current_position);
-        self.local_position = Some(target_position);
-        vec![ClientRuntimeAction::SetPosition(target_position)]
+        self.runtime_actions_for_local_seek_with_previous_position(
+            target_position,
+            current_position,
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
     }
 
     fn evaluate_desync_correction_for_room_playstate(
@@ -4717,6 +4824,7 @@ impl ClientSession {
         self.client_ignoring_on_the_fly = 0;
         self.server_ignoring_on_the_fly = 0;
         self.clear_server_feature_support_state();
+        self.last_rewound_at_seconds = None;
 
         if let (Some(username), Some(room_name)) = (self.username.clone(), self.room.clone()) {
             self.set_user_room(&username, Some(room_name));
@@ -5181,6 +5289,9 @@ impl ClientSession {
                 true
             };
             if should_queue_playlist_reset {
+                self.note_recent_rewind(
+                    now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+                );
                 self.queue_playlist_index_reset_intent(false);
             }
 
@@ -5423,7 +5534,9 @@ impl ClientSession {
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
-            if !global_paused || recently_advanced {
+            if (!global_paused || recently_advanced)
+                && !self.recently_rewound(now_seconds, RECENT_REWIND_READINESS_SUPPRESSION_SECONDS)
+            {
                 let ready = !self.local_user_ready();
                 self.apply_local_ready_state_optimistically(ready);
                 actions.push(ClientRuntimeAction::SetReady {
@@ -12039,6 +12152,40 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_room_pause_sync_unpauses_without_local_pause_telemetry() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("remote state should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        runtime
+            .run_room_pause_sync_if_needed()
+            .expect("room pause sync should dispatch");
+
+        assert_eq!(
+            runtime.player().paused,
+            Some(false),
+            "missing local pause telemetry should still allow the first remote unpause correction"
+        );
+        assert_eq!(
+            runtime.session().local_paused,
+            Some(false),
+            "successful remote unpause correction should mirror the effective local pause state"
+        );
+    }
+
+    #[test]
     fn client_runtime_room_pause_sync_seeks_before_pausing_remote_pause() {
         let mut session = ClientSession::default();
         session
@@ -17070,6 +17217,86 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_set_paused_restores_session_state_when_player_pause_fails() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+            .expect("local ready should apply");
+        session.local_paused = Some(false);
+
+        let player = RecordingPlayer {
+            fail_set_paused: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let error = runtime
+            .run_set_paused(true)
+            .expect_err("pause failures should surface back to the caller");
+
+        assert_eq!(error, PlayerError::Unsupported("set_paused_failed"));
+        assert_eq!(
+            runtime.session().local_paused(),
+            Some(false),
+            "failed pause requests should restore the last confirmed local pause state"
+        );
+        assert_eq!(
+            runtime.session().user_ready("alice"),
+            Some(true),
+            "failed pause requests should roll back optimistic readiness changes too"
+        );
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "player failures should prevent any ready protocol messages from being queued"
+        );
+    }
+
+    #[test]
+    fn client_runtime_noncontroller_pause_toggle_suppresses_ready_flip_while_recently_rewound() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session.local_paused = Some(true);
+        session.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds_legacy_compatible());
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("remote unpaused room state should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_set_paused(false)
+                .expect("non-controller unpause attempt should not fail"),
+            "non-controller unpause attempt should still issue the player unpause"
+        );
+
+        assert_eq!(runtime.player().paused, Some(false));
+        assert!(
+            runtime.control().outbound_messages().is_empty(),
+            "a recent rewind should suppress the non-controller ready toggle"
+        );
+        assert_eq!(
+            runtime.session().user_ready("alice"),
+            Some(false),
+            "recent-rewind suppression should leave the local ready state unchanged"
+        );
+    }
+
+    #[test]
     fn client_runtime_request_user_list_dispatches_protocol_message() {
         let mut session = ClientSession::default();
         session
@@ -18338,6 +18565,80 @@ mod tests {
         assert!(
             runtime.control().outbound_messages().is_empty(),
             "local seek should not directly emit protocol lines"
+        );
+    }
+
+    #[test]
+    fn client_runtime_seek_to_position_clamps_negative_targets_to_zero() {
+        let session = ClientSession::default();
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            runtime
+                .run_seek_to_position(-3.0)
+                .expect("negative seek should not fail"),
+            "negative seek targets should still emit a clamped local SetPosition action"
+        );
+        assert_eq!(runtime.player().position, Some(0.0));
+        assert_eq!(runtime.session().local_position_seconds(), Some(0.0));
+        assert_eq!(
+            runtime.session().last_seek_position_before_manual_seek(),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn client_runtime_seek_to_position_suppresses_recent_rewind_stale_seek() {
+        let mut session = ClientSession::default();
+        session.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds_legacy_compatible());
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        assert!(
+            !runtime
+                .run_seek_to_position(10.0)
+                .expect("recent-rewind seek suppression should not fail"),
+            "late seeks beyond the rewind guard threshold should be ignored right after a rewind"
+        );
+        assert_eq!(runtime.player().position, None);
+        assert_eq!(runtime.session().local_position_seconds(), None);
+        assert_eq!(
+            runtime.session().last_seek_position_before_manual_seek(),
+            None
+        );
+    }
+
+    #[test]
+    fn client_runtime_seek_to_position_restores_session_state_when_player_seek_fails() {
+        let mut session = ClientSession::default();
+        session.local_position = Some(2.0);
+        session.last_seek_position_before_manual_seek = Some(1.0);
+
+        let player = RecordingPlayer {
+            fail_set_position: true,
+            ..RecordingPlayer::default()
+        };
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+
+        let error = runtime
+            .run_seek_to_position(9.0)
+            .expect_err("seek failures should surface back to the caller");
+
+        assert_eq!(error, PlayerError::Unsupported("set_position_failed"));
+        assert_eq!(
+            runtime.session().local_position_seconds(),
+            Some(2.0),
+            "failed seek requests should restore the previous local position snapshot"
+        );
+        assert_eq!(
+            runtime.session().last_seek_position_before_manual_seek(),
+            Some(1.0),
+            "failed seek requests should restore the previous seek history too"
         );
     }
 
