@@ -175,26 +175,40 @@ impl GuiWidgetEguiRenderer {
             .filter(|value| !value.is_empty())
     }
 
-    pub(super) fn pick_media_search_directory(state: &SyncplayGuiShellAppState) -> Option<String> {
-        if let Some(path) = Self::media_search_browse_override_path_from_lookup(&env_trimmed) {
-            return Some(path);
+    pub(super) fn pick_media_search_directories(
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<Vec<String>> {
+        if let Some(paths) = Self::media_search_browse_override_paths_from_lookup(&env_trimmed) {
+            return Some(paths);
         }
         let mut dialog = FileDialog::new().set_title("Select Media Search Directory");
         if let Some(directory) = Self::media_search_dialog_start_directory(state) {
             dialog = dialog.set_directory(directory);
         }
         dialog
-            .pick_folder()
-            .map(|path| path.to_string_lossy().into_owned())
+            .pick_folders()
+            .map(|paths| {
+                paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .filter(|paths: &Vec<String>| !paths.is_empty())
     }
 
-    pub(super) fn media_search_browse_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    pub(super) fn media_search_browse_override_paths_from_lookup<F>(
+        lookup: &F,
+    ) -> Option<Vec<String>>
     where
         F: Fn(&str) -> Option<String>,
     {
-        lookup("SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH")
-            .map(|value| value.trim().to_owned())
+        let paths = lookup("SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH")?
+            .split('|')
+            .map(str::trim)
             .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if paths.is_empty() { None } else { Some(paths) }
     }
 
     pub(super) fn media_search_dialog_start_directory(

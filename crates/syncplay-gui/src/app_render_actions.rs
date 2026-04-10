@@ -436,9 +436,10 @@ impl GuiWidgetEguiRenderer {
     fn actions_for_media_search_browse_click(
         state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
-        Self::pick_media_search_directory(state)
-            .map(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed)
+        Self::pick_media_search_directories(state)
             .into_iter()
+            .flatten()
+            .map(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed)
             .collect()
     }
 

@@ -11,7 +11,7 @@ use crate::app::shell_state::{
     MainWindowRuntimeUserSnapshot, SyncplayGuiShellAppState,
 };
 use crate::app::testing::support::{TEST_USERNAME, browser_runtime_user};
-use crate::app::widget_tree::GuiWidgetKind;
+use crate::app::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 
 #[test]
 fn gui_widget_egui_renderer_rebuilds_widget_tree_from_renderer_contract() {
@@ -22,6 +22,35 @@ fn gui_widget_egui_renderer_rebuilds_widget_tree_from_renderer_contract() {
     state.render_shell_widgets(&mut renderer);
 
     assert_eq!(renderer.root(), Some(&expected_tree));
+}
+
+#[test]
+fn gui_widget_egui_renderer_defaults_editable_fields_to_empty_text() {
+    let password_node = GuiWidgetNode::leaf(
+        "test:password",
+        "Password",
+        GuiWidgetKind::PasswordInput,
+        None,
+        true,
+        false,
+    );
+    let text_node = GuiWidgetNode::leaf(
+        "test:text",
+        "Text",
+        GuiWidgetKind::TextInput,
+        Some("value".to_owned()),
+        true,
+        false,
+    );
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::editable_text_value(&password_node),
+        ""
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::editable_text_value(&text_node),
+        "value"
+    );
 }
 
 #[test]
@@ -267,18 +296,21 @@ fn gui_widget_egui_renderer_prefers_last_media_dialog_directory_for_native_brows
 }
 
 #[test]
-fn gui_widget_egui_renderer_reads_media_search_browse_override_path_from_lookup() {
+fn gui_widget_egui_renderer_reads_media_search_browse_override_paths_from_lookup() {
     assert_eq!(
-        GuiWidgetEguiRenderer::media_search_browse_override_path_from_lookup(&|name| match name {
+        GuiWidgetEguiRenderer::media_search_browse_override_paths_from_lookup(&|name| match name {
             "SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH" => {
-                Some("  C:/Smoke/Media Search  ".to_owned())
+                Some("  C:/Smoke/Media Search  | | D:/Alt/Search  ".to_owned())
             }
             _ => None,
         }),
-        Some("C:/Smoke/Media Search".to_owned())
+        Some(vec![
+            "C:/Smoke/Media Search".to_owned(),
+            "D:/Alt/Search".to_owned(),
+        ])
     );
     assert_eq!(
-        GuiWidgetEguiRenderer::media_search_browse_override_path_from_lookup(&|_name| None),
+        GuiWidgetEguiRenderer::media_search_browse_override_paths_from_lookup(&|_name| None),
         None
     );
 }
