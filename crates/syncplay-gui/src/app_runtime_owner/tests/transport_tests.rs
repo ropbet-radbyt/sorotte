@@ -375,6 +375,7 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         .local_addr()
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let (ready_line_tx, ready_line_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -403,13 +404,18 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         reader
             .read_line(&mut ready_line)
             .expect("test session transport server should read one outbound ready line");
+        ready_line_tx
+            .send(ready_line)
+            .expect("test session transport server should report the outbound ready line");
         stream
             .write_all(br#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
             .expect("test session transport server should write one inbound ready line");
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound ready line");
-        ready_line
+        stream
+            .flush()
+            .expect("test session transport server should flush the inbound ready line");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -437,9 +443,14 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
     handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let ready_line = server_thread
-        .join()
-        .expect("test session transport server thread should complete");
+    let ready_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &ready_line_rx,
+        Duration::from_secs(1),
+        "the outbound readiness line over TCP transport",
+    );
     assert!(ready_line.contains("\"Set\""));
     assert!(ready_line.contains("\"ready\""));
     assert!(ready_line.contains("\"isReady\":true"));
@@ -458,6 +469,10 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         },
         "local readiness update over TCP transport",
     );
+
+    server_thread
+        .join()
+        .expect("test session transport server thread should complete");
 }
 
 #[test]
@@ -475,6 +490,7 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         .local_addr()
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let (outbound_lines_tx, outbound_lines_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -501,14 +517,37 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
             .expect("test session transport server should signal hello readiness");
 
         let mut outbound_lines = Vec::new();
-        for _ in 0..4 {
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("test session transport server should set a read timeout");
+        loop {
             let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("test session transport server should read one outbound media-open line");
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => panic!(
+                    "test session transport server should read outbound media-open lines: {error}"
+                ),
+            }
             outbound_lines.push(line);
+            if outbound_lines.iter().any(|line| line.contains("\"ready\""))
+                && outbound_lines.iter().any(|line| line.contains("\"file\""))
+            {
+                break;
+            }
         }
-        outbound_lines
+        outbound_lines_tx
+            .send(outbound_lines)
+            .expect("test session transport server should report outbound media-open lines");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -542,9 +581,14 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_lines = server_thread
-        .join()
-        .expect("test session transport server thread should complete");
+    let outbound_lines = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &outbound_lines_rx,
+        Duration::from_secs(2),
+        "the outbound media-open protocol lines over TCP transport",
+    );
     let ready_line = outbound_lines
         .iter()
         .find(|line| line.contains("\"ready\""))
@@ -574,6 +618,10 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         },
         "local open-media not-ready projection over TCP transport",
     );
+
+    server_thread
+        .join()
+        .expect("test session transport server thread should complete");
 }
 
 #[test]
