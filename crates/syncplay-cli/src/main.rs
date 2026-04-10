@@ -18340,6 +18340,7 @@ mod tests {
                     br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"chat":true}}}
 {"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"cli-user"}}}
 {"Set":{"playlistIndex":{"index":0,"user":"cli-user"}}}
+{"Set":{"user":{"cli-user":{"file":{"name":"episode1.mkv","duration":240.0}}}}}
 "#,
                 )
                 .await
