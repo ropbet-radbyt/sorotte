@@ -69,6 +69,81 @@ impl SyncplayGuiShellAppState {
             .map(|target| target.address.clone())
             .unwrap_or_else(|| "(not configured)".to_owned());
 
+        let player_setup_panel = self.player_setup_issue.as_ref().map(|issue| {
+            GuiWidgetNode::branch(
+                "main-window:player-setup",
+                "Playback Recovery",
+                GuiWidgetKind::Panel,
+                vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:player-setup:title",
+                        "Title",
+                        GuiWidgetKind::Status,
+                        self.player_setup_issue_title().map(str::to_owned),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:player-setup:summary",
+                        "Summary",
+                        GuiWidgetKind::Status,
+                        self.player_setup_issue_summary().map(str::to_owned),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "main-window:player-setup:detail",
+                        "Detail",
+                        GuiWidgetKind::Status,
+                        Some(issue.message.clone()),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::layout(
+                        "main-window:player-setup:actions",
+                        "Playback Recovery Actions",
+                        GuiLayoutMode::ButtonWrap {
+                            min_button_width: 140.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "main-window:player-setup:autodetect",
+                                "Auto-detect mpv",
+                                GuiWidgetKind::Button,
+                                None,
+                                self.pending_operation.is_none(),
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:player-setup:choose-path",
+                                "Choose mpv.exe",
+                                GuiWidgetKind::Button,
+                                None,
+                                self.pending_operation.is_none(),
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:player-setup:retry",
+                                "Retry mpv",
+                                GuiWidgetKind::Button,
+                                None,
+                                self.player_setup_retry_available(),
+                                false,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:player-setup:open-settings",
+                                "Open Settings",
+                                GuiWidgetKind::Button,
+                                None,
+                                self.pending_operation.is_none(),
+                                false,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        });
+
         let session_summary = GuiWidgetNode::branch(
             "main-window:connection",
             "Session Summary",
@@ -1017,58 +1092,61 @@ impl SyncplayGuiShellAppState {
             "main-window-root",
             "Main Window",
             GuiLayoutMode::Stack,
-            vec![
-                GuiWidgetNode::layout(
-                    "main-window:tabs",
-                    "Main Window Tabs",
-                    GuiLayoutMode::TabStrip {
-                        min_tab_width: 132.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "main-window:tab:overview",
-                            "Overview",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_main_window_tab == GuiMainWindowTab::Overview,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:tab:session",
-                            "Session",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_main_window_tab == GuiMainWindowTab::Session,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:tab:playback",
-                            "Playback",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_main_window_tab == GuiMainWindowTab::Playback,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:tab:playlist",
-                            "Playlist",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_main_window_tab == GuiMainWindowTab::Playlist,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:tab:chat",
-                            "Chat",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_main_window_tab == GuiMainWindowTab::Chat,
-                        ),
-                    ],
-                ),
-                selected_content,
-            ],
+            player_setup_panel
+                .into_iter()
+                .chain([
+                    GuiWidgetNode::layout(
+                        "main-window:tabs",
+                        "Main Window Tabs",
+                        GuiLayoutMode::TabStrip {
+                            min_tab_width: 132.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "main-window:tab:overview",
+                                "Overview",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_main_window_tab == GuiMainWindowTab::Overview,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:tab:session",
+                                "Session",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_main_window_tab == GuiMainWindowTab::Session,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:tab:playback",
+                                "Playback",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_main_window_tab == GuiMainWindowTab::Playback,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:tab:playlist",
+                                "Playlist",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_main_window_tab == GuiMainWindowTab::Playlist,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "main-window:tab:chat",
+                                "Chat",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_main_window_tab == GuiMainWindowTab::Chat,
+                            ),
+                        ],
+                    ),
+                    selected_content,
+                ])
+                .collect(),
         )
     }
 

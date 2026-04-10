@@ -158,15 +158,24 @@ impl GuiWidgetEguiRenderer {
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
-                    for (_, label, action) in Self::modal_actions(modal) {
-                        if ui.button(label).clicked() {
-                            self.actions.push(action);
+                    for (id, label) in Self::modal_actions(modal) {
+                        if ui
+                            .add_enabled(
+                                Self::modal_action_enabled(state, id),
+                                egui::Button::new(label),
+                            )
+                            .clicked()
+                        {
+                            self.actions
+                                .extend(Self::modal_button_actions(state, id, label));
                         }
                     }
                 });
-                ui.separator();
-                if ui.button("Close").clicked() {
-                    close_clicked = true;
+                if Self::modal_close_enabled(state, modal) {
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
                 }
             });
         if !open || close_clicked {
@@ -1717,6 +1726,7 @@ impl GuiWidgetEguiRenderer {
             GuiShellModal::TlsCertificatePrompt => "TLS Certificate Prompt",
             GuiShellModal::UpdateNotice => "Update Notice",
             GuiShellModal::About => "About Syncplay",
+            GuiShellModal::PlayerSetup => "mpv Setup Required",
         }
     }
 
@@ -1734,60 +1744,81 @@ impl GuiWidgetEguiRenderer {
                 "The reducer reports that the About dialog is open.".to_owned(),
                 "This modal now routes into the existing help and update actions.".to_owned(),
             ],
+            GuiShellModal::PlayerSetup => {
+                let mut lines = vec![
+                    state
+                        .player_setup_issue_title()
+                        .unwrap_or("mpv setup issue")
+                        .to_owned(),
+                    state
+                        .player_setup_issue_summary()
+                        .unwrap_or("Syncplay needs mpv before playback can start.")
+                        .to_owned(),
+                ];
+                if let Some(issue) = state.player_setup_issue.as_ref() {
+                    lines.push(issue.message.clone());
+                }
+                if state.connect_blocked_by_player_setup_issue()
+                    && let Some(message) = state.player_setup_connect_block_message()
+                {
+                    lines.push(message);
+                }
+                lines
+            }
         }
     }
 
-    pub(super) fn modal_actions(
-        modal: GuiShellModal,
-    ) -> Vec<(&'static str, &'static str, GuiShellAction)> {
+    pub(super) fn modal_actions(modal: GuiShellModal) -> Vec<(&'static str, &'static str)> {
         match modal {
             GuiShellModal::TlsCertificatePrompt => vec![
-                (
-                    "shell:modal:tls:trust",
-                    "Trust Certificate",
-                    GuiShellAction::TrustTlsCertificatePrompt,
-                ),
-                (
-                    "shell:modal:tls:reject",
-                    "Reject Certificate",
-                    GuiShellAction::RejectTlsCertificatePrompt,
-                ),
-                (
-                    "shell:modal:tls:help",
-                    "Open Help",
-                    GuiShellAction::AnnounceHelpRequested,
-                ),
+                ("shell:modal:tls:trust", "Trust Certificate"),
+                ("shell:modal:tls:reject", "Reject Certificate"),
+                ("shell:modal:tls:help", "Open Help"),
             ],
             GuiShellModal::UpdateNotice => vec![
-                (
-                    "shell:modal:update:dismiss",
-                    "Dismiss Notice",
-                    GuiShellAction::DismissUpdateNotice,
-                ),
-                (
-                    "shell:modal:update:help",
-                    "Open Help",
-                    GuiShellAction::AnnounceHelpRequested,
-                ),
-                (
-                    "shell:modal:update:check-again",
-                    "Check Again",
-                    GuiShellAction::AnnounceUpdateNoticeAvailable,
-                ),
+                ("shell:modal:update:dismiss", "Dismiss Notice"),
+                ("shell:modal:update:help", "Open Help"),
+                ("shell:modal:update:check-again", "Check Again"),
             ],
             GuiShellModal::About => vec![
-                (
-                    "shell:modal:about:help",
-                    "Open Help",
-                    GuiShellAction::AnnounceHelpRequested,
-                ),
-                (
-                    "shell:modal:about:update",
-                    "Check for Updates",
-                    GuiShellAction::AnnounceUpdateNoticeAvailable,
-                ),
+                ("shell:modal:about:help", "Open Help"),
+                ("shell:modal:about:update", "Check for Updates"),
+            ],
+            GuiShellModal::PlayerSetup => vec![
+                ("shell:modal:player-setup:autodetect", "Auto-detect mpv"),
+                ("shell:modal:player-setup:choose-path", "Choose mpv.exe"),
+                ("shell:modal:player-setup:retry", "Retry mpv"),
+                ("shell:modal:player-setup:open-settings", "Open Settings"),
             ],
         }
+    }
+
+    pub(super) fn modal_action_enabled(state: &SyncplayGuiShellAppState, id: &str) -> bool {
+        match id {
+            "shell:modal:player-setup:autodetect"
+            | "shell:modal:player-setup:choose-path"
+            | "shell:modal:player-setup:open-settings" => state.pending_operation.is_none(),
+            "shell:modal:player-setup:retry" => {
+                state.pending_operation.is_none() && state.player_setup_retry_available()
+            }
+            _ => true,
+        }
+    }
+
+    pub(super) fn modal_close_enabled(
+        state: &SyncplayGuiShellAppState,
+        modal: GuiShellModal,
+    ) -> bool {
+        modal != GuiShellModal::PlayerSetup || !state.connect_blocked_by_player_setup_issue()
+    }
+
+    fn modal_button_actions(
+        state: &SyncplayGuiShellAppState,
+        id: &str,
+        label: &str,
+    ) -> Vec<GuiShellAction> {
+        let node = GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false);
+        Self::actions_for_clicked_button(state, &node)
     }
 
     fn display_text(node: &GuiWidgetNode) -> String {

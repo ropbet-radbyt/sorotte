@@ -27,6 +27,14 @@ impl SyncplayGuiShellAppState {
                 self.menus.about_dialog_available,
                 self.open_modal == Some(GuiShellModal::About),
             ),
+            GuiWidgetNode::leaf(
+                "menus:dialog:player-setup",
+                "mpv Setup",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.player_setup_issue.is_some()).to_owned()),
+                self.player_setup_issue.is_some(),
+                self.open_modal == Some(GuiShellModal::PlayerSetup),
+            ),
         ];
         if let Some(message) = self.update_check.message.as_ref() {
             dialog_children.push(GuiWidgetNode::leaf(
@@ -124,31 +132,71 @@ impl SyncplayGuiShellAppState {
             true,
             false,
         )];
-        if modal == GuiShellModal::UpdateNotice {
-            if let Some(message) = self.update_check.message.as_ref() {
+        match modal {
+            GuiShellModal::UpdateNotice => {
+                if let Some(message) = self.update_check.message.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:update:message",
+                        "Message",
+                        GuiWidgetKind::Status,
+                        Some(message.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if let Some(url) = self.update_check.url.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:update:url",
+                        "Update URL",
+                        GuiWidgetKind::Status,
+                        Some(url.clone()),
+                        true,
+                        false,
+                    ));
+                }
+            }
+            GuiShellModal::PlayerSetup => {
                 children.push(GuiWidgetNode::leaf(
-                    "shell:modal:update:message",
-                    "Message",
+                    "shell:modal:player-setup:summary",
+                    "Summary",
                     GuiWidgetKind::Status,
-                    Some(message.clone()),
+                    self.player_setup_issue_summary().map(str::to_owned),
                     true,
                     false,
                 ));
+                if let Some(issue) = self.player_setup_issue.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:player-setup:detail",
+                        "Detail",
+                        GuiWidgetKind::Status,
+                        Some(issue.message.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if self.connect_blocked_by_player_setup_issue() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:player-setup:blocking",
+                        "Connect Status",
+                        GuiWidgetKind::Status,
+                        self.player_setup_connect_block_message(),
+                        true,
+                        false,
+                    ));
+                }
             }
-            if let Some(url) = self.update_check.url.as_ref() {
-                children.push(GuiWidgetNode::leaf(
-                    "shell:modal:update:url",
-                    "Update URL",
-                    GuiWidgetKind::Status,
-                    Some(url.clone()),
-                    true,
-                    false,
-                ));
-            }
+            _ => {}
         }
         children.extend(GuiWidgetEguiRenderer::modal_actions(modal).into_iter().map(
-            |(id, label, _)| {
-                GuiWidgetNode::leaf(id, label, GuiWidgetKind::Button, None, true, false)
+            |(id, label)| {
+                GuiWidgetNode::leaf(
+                    id,
+                    label,
+                    GuiWidgetKind::Button,
+                    None,
+                    GuiWidgetEguiRenderer::modal_action_enabled(self, id),
+                    false,
+                )
             },
         ));
         children.push(GuiWidgetNode::leaf(
@@ -156,7 +204,7 @@ impl SyncplayGuiShellAppState {
             "Close",
             GuiWidgetKind::Button,
             None,
-            true,
+            GuiWidgetEguiRenderer::modal_close_enabled(self, modal),
             false,
         ));
         GuiWidgetNode::branch("shell:modal", "Modal", GuiWidgetKind::Panel, children)

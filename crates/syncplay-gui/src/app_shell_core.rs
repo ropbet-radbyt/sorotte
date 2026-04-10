@@ -7,7 +7,7 @@ use syncplay_client_app::app_boundary::state::{
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigurationTab, GuiMainWindowTab,
+    GuiCommandAvailabilityState, GuiConfigurationTab, GuiMainWindowTab, GuiPlayerSetupIssueKind,
     GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal, GuiShellView,
     GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
@@ -58,6 +58,7 @@ impl SyncplayGuiShellAppState {
             playlist_undo_snapshot: None,
             playlist_shuffle_nonce: 0,
             media_index_status: Default::default(),
+            player_setup_issue: None,
             saved_configuration: shell_settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
             main_window: MainWindowShellState::from_stored_settings(&shell_settings),
@@ -135,6 +136,66 @@ impl SyncplayGuiShellAppState {
         } else {
             "Connect"
         }
+    }
+
+    pub(super) fn connect_blocked_by_player_setup_issue(&self) -> bool {
+        self.configuration.launch_mode == super::GuiLaunchMode::FirstRun
+            && self.player_setup_issue.is_some()
+    }
+
+    pub(super) fn player_setup_connect_block_message(&self) -> Option<String> {
+        if !self.connect_blocked_by_player_setup_issue() {
+            return None;
+        }
+        Some(
+            "Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path."
+                .to_owned(),
+        )
+    }
+
+    pub(super) fn player_setup_issue_title(&self) -> Option<&'static str> {
+        self.player_setup_issue
+            .as_ref()
+            .map(|issue| match issue.kind {
+                GuiPlayerSetupIssueKind::NotConfigured => "mpv setup required",
+                GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer => "Unsupported player",
+                GuiPlayerSetupIssueKind::MissingBinary => "Configured mpv not found",
+                GuiPlayerSetupIssueKind::LaunchFailed => "mpv failed to launch",
+                GuiPlayerSetupIssueKind::IpcAttachFailed => "mpv did not respond",
+                GuiPlayerSetupIssueKind::ExitedAfterLaunch => "mpv closed unexpectedly",
+            })
+    }
+
+    pub(super) fn player_setup_issue_summary(&self) -> Option<&'static str> {
+        self.player_setup_issue
+            .as_ref()
+            .map(|issue| match issue.kind {
+                GuiPlayerSetupIssueKind::NotConfigured => {
+                    "Syncplay needs mpv before it can play media."
+                }
+                GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer => {
+                    "The GUI currently supports mpv startup only."
+                }
+                GuiPlayerSetupIssueKind::MissingBinary => {
+                    "The configured Player Path does not point to an mpv binary."
+                }
+                GuiPlayerSetupIssueKind::LaunchFailed => {
+                    "Syncplay could not start mpv from the current Player Path."
+                }
+                GuiPlayerSetupIssueKind::IpcAttachFailed => {
+                    "mpv started or was targeted, but Syncplay could not attach to its JSON IPC."
+                }
+                GuiPlayerSetupIssueKind::ExitedAfterLaunch => {
+                    "mpv exited after it had already been launched."
+                }
+            })
+    }
+
+    pub(super) fn player_setup_retry_available(&self) -> bool {
+        self.player_setup_issue
+            .as_ref()
+            .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::NotConfigured)
+            && self.pending_operation.is_none()
     }
 
     pub(super) fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {
@@ -418,7 +479,9 @@ impl SyncplayGuiShellAppState {
             can_save_configuration: !busy && self.validation.issues.is_empty(),
             can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
-            can_connect_saved_server: !busy && self.saved_session_connect_target().is_some(),
+            can_connect_saved_server: !busy
+                && self.saved_session_connect_target().is_some()
+                && !self.connect_blocked_by_player_setup_issue(),
             can_disconnect_session: false,
             can_connect_public_server: !busy && self.public_servers.can_connect,
             can_refresh_public_servers: !busy && self.public_servers.can_refresh,

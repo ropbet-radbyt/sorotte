@@ -1,8 +1,9 @@
 use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::{
-    GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiShellAction,
-    GuiShellModal, GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
+    GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiPlayerSetupIssue,
+    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction, GuiShellModal,
+    GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 
@@ -78,6 +79,67 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
         .expect("save command should exist in widget tree");
     assert_eq!(save.kind, GuiWidgetKind::Button);
     assert!(save.enabled);
+}
+
+#[test]
+fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+            GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::NotConfigured,
+                    message: "Set playerPath to mpv before connecting.".to_owned(),
+                }),
+            },
+        ))
+    );
+
+    let configuration = state.configuration_widget_tree();
+    assert!(configuration.find("config-player-setup").is_some());
+    assert_eq!(
+        configuration
+            .find("config-player-setup:blocking")
+            .and_then(|node| node.value.as_deref()),
+        Some(
+            "Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path."
+        )
+    );
+    assert!(
+        !configuration
+            .find("config-command:connect")
+            .expect("connect button should exist")
+            .enabled
+    );
+    assert!(
+        !configuration
+            .find("config-player-setup:retry")
+            .expect("retry button should exist")
+            .enabled
+    );
+
+    let shell = state.shell_widget_tree();
+    assert_eq!(
+        shell
+            .find("shell:open-modal")
+            .and_then(|node| node.value.as_deref()),
+        Some("player-setup")
+    );
+    assert_eq!(
+        shell
+            .find("shell:modal:kind")
+            .and_then(|node| node.value.as_deref()),
+        Some("player-setup")
+    );
+    assert!(
+        !shell
+            .find("shell:modal:close")
+            .expect("first-run player setup modal close button should exist")
+            .enabled
+    );
 }
 
 #[test]
@@ -174,6 +236,56 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
     assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
+}
+
+#[test]
+fn gui_shell_app_state_projects_player_setup_into_main_window_widgets() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        player_path: Some("C:/missing/mpv.exe".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+            GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::ExitedAfterLaunch,
+                    message: "GUI-owned mpv exited with exit code 1.".to_owned(),
+                }),
+            },
+        ))
+    );
+
+    let main_window = state.main_window_widget_tree();
+    assert!(main_window.find("main-window:player-setup").is_some());
+    assert!(
+        main_window
+            .find("main-window:player-setup:retry")
+            .expect("retry button should exist")
+            .enabled
+    );
+    assert!(
+        main_window
+            .find("main-window:player-setup:open-settings")
+            .expect("open-settings button should exist")
+            .enabled
+    );
+
+    let shell = state.shell_widget_tree();
+    assert_eq!(
+        shell
+            .find("shell:open-modal")
+            .and_then(|node| node.value.as_deref()),
+        Some("player-setup")
+    );
+    assert!(
+        shell
+            .find("shell:modal:close")
+            .expect("player setup modal close button should exist")
+            .enabled
+    );
 }
 
 #[test]

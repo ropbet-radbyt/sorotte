@@ -5,6 +5,7 @@ use syncplay_client_app::app_boundary::{
     language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
 };
 
+use super::mpv_launch;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
     GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMainWindowTab,
@@ -189,6 +190,19 @@ impl GuiWidgetEguiRenderer {
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "config-player-setup:autodetect" | "main-window:player-setup:autodetect" => {
+                Self::actions_for_player_setup_autodetect()
+            }
+            "config-player-setup:choose-path" | "main-window:player-setup:choose-path" => {
+                Self::actions_for_player_setup_choose_path(state)
+            }
+            "config-player-setup:retry" | "main-window:player-setup:retry" => {
+                vec![GuiShellAction::RetryPlayerLaunch]
+            }
+            "main-window:player-setup:open-settings" => vec![
+                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+            ],
             "main-window:connection:connect" => vec![GuiShellAction::BeginSavedServerConnect],
             "main-window:connection:disconnect" => {
                 vec![GuiShellAction::BeginSessionDisconnect]
@@ -398,6 +412,24 @@ impl GuiWidgetEguiRenderer {
                     user_initiated: true,
                 }]
             }
+            "shell:modal:player-setup:autodetect" => {
+                let mut actions = Self::actions_for_player_setup_autodetect();
+                actions.push(GuiShellAction::CloseModal);
+                actions
+            }
+            "shell:modal:player-setup:choose-path" => {
+                let mut actions = Self::actions_for_player_setup_choose_path(state);
+                if !actions.is_empty() {
+                    actions.push(GuiShellAction::CloseModal);
+                }
+                actions
+            }
+            "shell:modal:player-setup:retry" => vec![GuiShellAction::RetryPlayerLaunch],
+            "shell:modal:player-setup:open-settings" => vec![
+                GuiShellAction::CloseModal,
+                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+            ],
             "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
             "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],
             "shell:modal:tls:help" => vec![GuiShellAction::AnnounceHelpRequested],
@@ -441,6 +473,57 @@ impl GuiWidgetEguiRenderer {
             .flatten()
             .map(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed)
             .collect()
+    }
+
+    fn actions_for_player_setup_autodetect() -> Vec<GuiShellAction> {
+        let Some(path) = mpv_launch::autodetect_mpv_player_path_legacy_compatible() else {
+            let message =
+                "Automatic mpv detection did not find an executable. Choose mpv.exe manually."
+                    .to_owned();
+            return vec![
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Warning,
+                    message: message.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(message),
+            ];
+        };
+        let message = format!("Player Path updated to detected mpv binary: {path}");
+        vec![
+            GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Player Path",
+                value: path,
+            },
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+            GuiShellAction::RetryPlayerLaunch,
+        ]
+    }
+
+    fn actions_for_player_setup_choose_path(
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_player_executable(state) else {
+            return Vec::new();
+        };
+        let message = format!("Player Path updated to: {path}");
+        vec![
+            GuiShellAction::EditConfigurationText {
+                section: "Connection",
+                label: "Player Path",
+                value: path,
+            },
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+            GuiShellAction::RetryPlayerLaunch,
+        ]
     }
 
     pub(super) fn is_open_media_file_menu_action(

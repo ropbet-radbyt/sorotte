@@ -1,4 +1,6 @@
 use std::{
+    env,
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -395,6 +397,55 @@ fn push_unique_pathbuf_legacy_compatible(paths: &mut Vec<PathBuf>, candidate: Pa
     }
 }
 
+pub(crate) fn autodetect_mpv_player_path_legacy_compatible() -> Option<String> {
+    autodetect_mpv_player_path_legacy_compatible_from_lookup(&|name| env::var(name).ok())
+}
+
+pub(crate) fn autodetect_mpv_player_path_legacy_compatible_from_lookup<F>(
+    lookup: &F,
+) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut candidates = Vec::new();
+
+    if let Some(path_env) = lookup("PATH")
+        && !path_env.trim().is_empty()
+    {
+        for directory in env::split_paths(&OsString::from(path_env)) {
+            for file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
+                push_unique_pathbuf_legacy_compatible(&mut candidates, directory.join(file_name));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        for env_name in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            let Some(root) = lookup(env_name)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            for candidate in [
+                PathBuf::from(&root).join("mpv").join("mpv.exe"),
+                PathBuf::from(&root)
+                    .join("Programs")
+                    .join("mpv")
+                    .join("mpv.exe"),
+            ] {
+                push_unique_pathbuf_legacy_compatible(&mut candidates, candidate);
+            }
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
 fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> PathBuf {
     let mut candidates = vec![requested.to_path_buf()];
     if requested.is_dir() || !requested.exists() {
@@ -514,6 +565,7 @@ mod tests {
 
     use super::{
         LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER, ManagedMpvSettingsDecision,
+        autodetect_mpv_player_path_legacy_compatible_from_lookup,
         legacy_syncplayintf_script_source_with_chat_input_bridge, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
@@ -610,5 +662,33 @@ mod tests {
                 "--profile=syncplay".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn autodetect_mpv_player_path_prefers_path_entries() {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("syncplay-mpv-autodetect-{unique_suffix}"));
+        std::fs::create_dir_all(&root).expect("autodetect temp root should exist");
+        let mpv_path = root.join(if cfg!(windows) { "mpv.exe" } else { "mpv" });
+        std::fs::write(&mpv_path, b"").expect("fake mpv should be written");
+
+        let path_value = std::env::join_paths([root.clone()])
+            .expect("path should join")
+            .to_string_lossy()
+            .into_owned();
+        let detected = autodetect_mpv_player_path_legacy_compatible_from_lookup(&|name| {
+            (name == "PATH").then_some(path_value.clone())
+        });
+
+        assert_eq!(
+            detected.as_deref(),
+            Some(mpv_path.to_string_lossy().as_ref())
+        );
+
+        let _ = std::fs::remove_file(&mpv_path);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

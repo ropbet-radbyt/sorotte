@@ -1233,10 +1233,14 @@ fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_tr
         ..StoredClientSettingsMvp::default()
     });
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let hello_line = hello_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("test session transport server should receive the startup hello");
+    let hello_line = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &hello_rx,
+        Duration::from_secs(2),
+        "the startup hello",
+    );
     assert!(hello_line.contains("\"Hello\""));
     assert!(hello_line.contains("\"alice\""));
     assert!(hello_line.contains("\"room1\""));

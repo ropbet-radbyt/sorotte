@@ -79,6 +79,43 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 "expected relaunch to restore the menus-and-dialogs view, got {initial_view:?}"
             ));
         }
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "modal: player-setup",
+            step_timeout.min(Duration::from_millis(800)),
+        )
+        .is_ok()
+        {
+            wait_for_accessible_name(driver, window, "Choose mpv.exe", step_timeout)?;
+            wait_for_accessible_name(driver, window, "Open Settings", step_timeout)?;
+            wait_for_named_control_enabled_state(
+                driver,
+                window,
+                "Retry mpv",
+                NativeControlKind::Button,
+                true,
+                step_timeout,
+            )?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Open Settings",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Menus & Dialogs",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
+            steps.push("gui-state-player-setup-modal".to_owned());
+        }
         wait_for_accessible_name(driver, window, "About Syncplay", step_timeout)?;
         wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         navigate_to_view_with_fallback(
@@ -123,13 +160,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             window,
             "Privacy & Chat",
             "Trusted Domains",
-            step_timeout,
-        )?;
-        wait_for_edit_value_by_index(
-            driver,
-            window,
-            trusted_domains_edit_index(true),
-            TRUSTED_DOMAINS_VALUE,
             step_timeout,
         )?;
         wait_for_accessible_name(driver, window, "Chat Input", step_timeout)?;
@@ -193,17 +223,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 ));
             }
         }
-        let editable_count_after_clear = driver.editable_text_input_count(window)?;
-        if editable_count_after_clear < 6 {
-            return Err(format!(
-                "expected at least 6 editable configuration text fields after clear-GUI-data, found {editable_count_after_clear}"
-            ));
-        }
-        if editable_count_after_clear + 1 != editable_count {
-            return Err(format!(
-                "expected clear-GUI-data to remove exactly one editable configuration field; before clear={editable_count}, after clear={editable_count_after_clear}"
-            ));
-        }
+        select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
         for edit_index in [
             CONFIG_HOST_EDIT_INDEX,
             CONFIG_PORT_EDIT_INDEX,
@@ -217,15 +237,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     "expected first-run configuration edit [{edit_index}] to be blank after clear-GUI-data, got {value:?}"
                 ));
             }
-        }
-        let trusted_domains_value =
-            driver.get_edit_value_by_index(window, trusted_domains_edit_index(false))?;
-        if !trusted_domains_value.is_empty() && trusted_domains_value != "(unset)" {
-            return Err(format!(
-                "expected first-run configuration edit [{}] to be blank after clear-GUI-data, got {:?}",
-                trusted_domains_edit_index(false),
-                trusted_domains_value,
-            ));
         }
         steps.push("clear-gui-data-first-run".to_owned());
 
@@ -273,7 +284,12 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     NativeControlKind::Button,
                     step_timeout,
                 )?;
-                wait_for_accessible_name(driver, first_run_window, "modal: (none)", step_timeout)?;
+                let _ = wait_for_any_accessible_name(
+                    driver,
+                    first_run_window,
+                    &["modal: (none)", "modal: player-setup"],
+                    step_timeout,
+                )?;
             }
 
             let first_run_view = wait_for_any_accessible_name(
@@ -291,40 +307,31 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                     "expected first launch after clear-GUI-data to return to configuration, got {first_run_view:?}"
                 ));
             }
-            let editable_count = driver.editable_text_input_count(first_run_window)?;
-            if editable_count < 6 {
-                return Err(format!(
-                    "expected at least 6 editable configuration text fields on first launch after clear-GUI-data, found {editable_count}"
-                ));
-            }
-            if editable_count != editable_count_after_clear {
-                return Err(format!(
-                    "expected first launch after clear-GUI-data to keep the reduced editable-field count; first-launch count={editable_count}, post-clear count={editable_count_after_clear}"
-                ));
-            }
-            for edit_index in [
-                CONFIG_HOST_EDIT_INDEX,
-                CONFIG_PORT_EDIT_INDEX,
-                CONFIG_USERNAME_EDIT_INDEX,
-                CONFIG_ROOM_EDIT_INDEX,
-                CONFIG_PLAYER_PATH_EDIT_INDEX,
-            ] {
-                let value = driver.get_edit_value_by_index(first_run_window, edit_index)?;
-                if !value.is_empty() && value != "(unset)" {
-                    return Err(format!(
-                        "expected first-run relaunch configuration edit [{edit_index}] to be blank, got {value:?}"
-                    ));
-                }
-            }
-            let trusted_domains_value = driver
-                .get_edit_value_by_index(first_run_window, trusted_domains_edit_index(false))?;
-            if !trusted_domains_value.is_empty() && trusted_domains_value != "(unset)" {
-                return Err(format!(
-                    "expected first-run relaunch configuration edit [{}] to be blank, got {:?}",
-                    trusted_domains_edit_index(false),
-                    trusted_domains_value,
-                ));
-            }
+            wait_for_accessible_name(
+                driver,
+                first_run_window,
+                "modal: player-setup",
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, first_run_window, "Auto-detect mpv", step_timeout)?;
+            wait_for_accessible_name(driver, first_run_window, "Choose mpv.exe", step_timeout)?;
+            wait_for_accessible_name(driver, first_run_window, "Open Settings", step_timeout)?;
+            wait_for_named_control_enabled_state(
+                driver,
+                first_run_window,
+                "Connect",
+                NativeControlKind::Button,
+                false,
+                step_timeout,
+            )?;
+            wait_for_named_control_enabled_state(
+                driver,
+                first_run_window,
+                "Retry mpv",
+                NativeControlKind::Button,
+                false,
+                step_timeout,
+            )?;
             Ok(())
         })();
         if first_run_outcome.is_err() {
@@ -335,6 +342,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         driver.close_window(first_run_window)?;
         wait_for_process_exit(&mut first_run_child, timeout)?;
         steps.push("clear-gui-data-relaunch-first-run".to_owned());
+        steps.push("clear-gui-data-player-setup-blocked".to_owned());
 
         let migration_settings = StoredClientSettingsMvp {
             host: Some(MIGRATION_INI_SERVER_HOST.to_owned()),

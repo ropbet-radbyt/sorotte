@@ -572,6 +572,7 @@ pub(super) enum GuiRuntimeRequest {
         files: Vec<String>,
         selected_index: Option<usize>,
     },
+    RetryPlayerLaunch,
     SendChatMessage(String),
     SeekOffset(f64),
     SeekToPosition(f64),
@@ -605,6 +606,10 @@ impl GuiRuntimeRequest {
                     None,
                 )
             }
+            Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
             Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
@@ -664,6 +669,10 @@ impl GuiRuntimeRequest {
                     GuiShellAction::AnnounceSystemChatEvent(message),
                 ]
             }
+            Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
             Self::UndoSeek => vec![
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,

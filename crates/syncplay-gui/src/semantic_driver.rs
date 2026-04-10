@@ -1,6 +1,7 @@
 use super::{
     GuiDroppedFilesTarget, GuiInteractionRuntimeSnapshot, GuiPendingCompletionRequest,
-    GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
+    GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPlayerSetupIssue,
+    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiPreviewRuntimeBridge,
     GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction,
     GuiWidgetEguiRenderer, GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeChatSnapshot,
     MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
@@ -16,6 +17,7 @@ mod tests;
 pub(super) enum GuiSemanticStep {
     ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot),
     ApplyMainWindowPlaylistSelection(Option<usize>),
+    ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
     OpenMediaFiles(Vec<String>),
     DropMediaFiles {
         target: GuiDroppedFilesTarget,
@@ -177,6 +179,18 @@ impl GuiSemanticStep {
             _ => return Err(format!("unknown pending-operation label {token:?}")),
         };
         Ok(Some(pending))
+    }
+
+    fn parse_player_setup_issue_kind(token: &str) -> Result<GuiPlayerSetupIssueKind, String> {
+        match token {
+            "not-configured" => Ok(GuiPlayerSetupIssueKind::NotConfigured),
+            "unsupported-player" => Ok(GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer),
+            "missing-binary" => Ok(GuiPlayerSetupIssueKind::MissingBinary),
+            "launch-failed" => Ok(GuiPlayerSetupIssueKind::LaunchFailed),
+            "ipc-attach-failed" => Ok(GuiPlayerSetupIssueKind::IpcAttachFailed),
+            "exited-after-launch" => Ok(GuiPlayerSetupIssueKind::ExitedAfterLaunch),
+            _ => Err(format!("unknown player-setup issue label {token:?}")),
+        }
     }
 
     fn split_list_token(token: &str) -> Vec<&str> {
@@ -355,6 +369,23 @@ impl GuiSemanticStep {
                 "apply-main-window-runtime" => Self::ApplyMainWindowRuntimeSnapshot(
                     Self::parse_main_window_runtime_snapshot(fields)?,
                 ),
+                "apply-player-setup-runtime" => {
+                    let kind =
+                        Self::parse_player_setup_issue_kind(fields.next().ok_or_else(|| {
+                            "apply-player-setup-runtime requires an issue kind".to_owned()
+                        })?)?;
+                    let message = Self::decode_text_token(fields.next().ok_or_else(|| {
+                        "apply-player-setup-runtime requires an issue message".to_owned()
+                    })?);
+                    if fields.next().is_some() {
+                        return Err(
+                            "apply-player-setup-runtime accepts exactly two arguments".to_owned()
+                        );
+                    }
+                    Self::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
+                        issue: Some(GuiPlayerSetupIssue { kind, message }),
+                    })
+                }
                 "apply-main-window-playlist-selection" => {
                     let index = Self::parse_optional_index(fields.next().ok_or_else(|| {
                         "apply-main-window-playlist-selection requires an index or 'none'"
@@ -633,6 +664,19 @@ impl GuiSemanticDriver {
         }
     }
 
+    fn dispatch_shell_actions(&mut self, actions: Vec<GuiShellAction>) {
+        let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(&self.state, actions);
+        self.apply_actions(dispatch_plan.shell_actions);
+        let mut runtime = GuiPreviewRuntimeBridge;
+        for request in dispatch_plan.runtime_requests {
+            self.apply_actions(GuiNativeRuntimeBridge::dispatch_runtime_request(
+                &mut runtime,
+                &self.state,
+                request,
+            ));
+        }
+    }
+
     fn activate_widget(&mut self, widget_id: &str) -> Result<(), String> {
         let widget = self.widget(widget_id)?;
         let actions = match widget.kind {
@@ -670,7 +714,7 @@ impl GuiSemanticDriver {
                 "semantic activation should map {widget_id} to at least one action",
             ));
         }
-        self.apply_actions(actions);
+        self.dispatch_shell_actions(actions);
         Ok(())
     }
 
@@ -687,16 +731,7 @@ impl GuiSemanticDriver {
                 "semantic text entry should map {widget_id} to at least one action",
             ));
         };
-        let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(&self.state, actions);
-        self.apply_actions(dispatch_plan.shell_actions);
-        let mut runtime = GuiPreviewRuntimeBridge;
-        for request in dispatch_plan.runtime_requests {
-            self.apply_actions(GuiNativeRuntimeBridge::dispatch_runtime_request(
-                &mut runtime,
-                &self.state,
-                request,
-            ));
-        }
+        self.dispatch_shell_actions(actions);
         Ok(())
     }
 
@@ -849,6 +884,11 @@ impl GuiSemanticDriver {
                     snapshot.selection.selected_main_window_playlist = *index;
                     self.apply_actions([GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
                         snapshot,
+                    )]);
+                }
+                GuiSemanticStep::ApplyPlayerSetupRuntimeSnapshot(snapshot) => {
+                    self.apply_actions([GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+                        snapshot.clone(),
                     )]);
                 }
                 GuiSemanticStep::OpenMediaFiles(paths) => self.open_media_files(paths.clone())?,

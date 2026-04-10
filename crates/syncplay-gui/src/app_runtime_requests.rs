@@ -79,6 +79,38 @@ impl GuiPersistedConfigRuntimeOwner {
                     target,
                 );
             }
+            GuiRuntimeRequest::RetryPlayerLaunch => {
+                let settings = projected_state.configuration.to_stored_settings();
+                self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+                self.refresh_player_state();
+
+                let (level, message) = if self.player.is_some() {
+                    (
+                        GuiTransientNotificationLevel::Success,
+                        "mpv is ready with the current player settings.".to_owned(),
+                    )
+                } else {
+                    (
+                        GuiTransientNotificationLevel::Error,
+                        self.player_unavailability_reason
+                            .clone()
+                            .unwrap_or_else(|| {
+                                "Retrying mpv launch did not attach a playback runtime.".to_owned()
+                            }),
+                    )
+                };
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![
+                        GuiShellAction::PushTransientNotification {
+                            level,
+                            message: message.clone(),
+                        },
+                        GuiShellAction::AnnounceSystemChatEvent(message),
+                    ],
+                );
+            }
             GuiRuntimeRequest::UndoSeek => {
                 self.refresh_player_state();
                 self.ensure_configured_player_attached();

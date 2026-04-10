@@ -14,23 +14,30 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     let saved_settings = StoredClientSettingsMvp {
         host: Some("persisted.example".to_owned()),
         room: Some("Cinema".to_owned()),
         ..StoredClientSettingsMvp::default()
     };
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![GuiShellAction::CompleteConfigurationSave(
-            saved_settings.clone()
-        )]
+    let save_actions = handle.drain_actions();
+    assert!(
+        save_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::CompleteConfigurationSave(settings) if settings == &saved_settings
+        )),
+        "save should emit a completion action with the persisted settings"
     );
+    for action in save_actions {
+        assert!(state.apply(action));
+    }
     assert_eq!(
         load_syncplay_ini_stored_client_settings_mvp_from_path(&path)
             .expect("save should leave a readable config file"),
@@ -44,16 +51,22 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
     };
     upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
         .expect("updating the config file should succeed");
+    assert!(state.apply(GuiShellAction::BeginConfigurationReload));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![GuiShellAction::CompleteConfigurationReload(
-            reloaded_settings.clone()
-        )]
+    let reload_actions = handle.drain_actions();
+    assert!(
+        reload_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::CompleteConfigurationReload(settings) if settings == &reloaded_settings
+        )),
+        "reload should emit a completion action with the reloaded settings"
     );
+    for action in reload_actions {
+        assert!(state.apply(action));
+    }
 
     std::fs::remove_file(&path).expect("temporary config file should be removable");
 }

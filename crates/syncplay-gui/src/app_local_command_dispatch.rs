@@ -34,6 +34,10 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::BeginLocalChatSend(message) => {
                     plan.extend(plan_chat_submit(state, message));
                 }
+                GuiShellAction::RetryPlayerLaunch => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RetryPlayerLaunch);
+                }
                 other => plan.shell_actions.push(other),
             }
         }

@@ -70,6 +70,9 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(snapshot) => {
                 self.apply_gui_media_index_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot) => {
+                self.apply_gui_player_setup_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => {
                 self.apply_gui_interaction_runtime_snapshot(snapshot)
             }
@@ -792,6 +795,10 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::BeginMissingMediaSearch => self.begin_missing_media_search(),
             GuiShellAction::CompleteMissingMediaSearch(found_path) => {
                 self.complete_missing_media_search(found_path)
+            }
+            GuiShellAction::RetryPlayerLaunch => {
+                self.clear_action_error_and_refresh();
+                true
             }
             GuiShellAction::ToggleMainWindowPlaybackButtons => {
                 self.toggle_main_window_playback_buttons()

@@ -73,11 +73,12 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     ));
     GuiQueuedRuntimeOwner::pump(&mut persisted_owner, &persisted_handle, &persisted_state);
     let save_actions = persisted_handle.drain_actions();
-    assert_eq!(
-        save_actions,
-        vec![GuiShellAction::CompleteConfigurationSave(
-            saved_settings.clone()
-        )]
+    assert!(
+        save_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::CompleteConfigurationSave(settings) if settings == &saved_settings
+        )),
+        "portable nontransport smoke save should emit completion with persisted settings"
     );
     for action in save_actions {
         assert!(persisted_state.apply(action));

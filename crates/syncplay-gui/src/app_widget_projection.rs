@@ -302,6 +302,7 @@ impl SyncplayGuiShellAppState {
         let playlist_undo_snapshot = self.playlist_undo_snapshot.clone();
         let playlist_shuffle_nonce = self.playlist_shuffle_nonce;
         let media_index_status = self.media_index_status.clone();
+        let player_setup_issue = self.player_setup_issue.clone();
         let saved_configuration = self.saved_configuration.clone();
         let tls_prompt_expected = self.menus.tls_prompt_expected;
         let update_notice_expected = self.menus.update_notice_expected;
@@ -351,6 +352,7 @@ impl SyncplayGuiShellAppState {
         self.playlist_undo_snapshot = playlist_undo_snapshot;
         self.playlist_shuffle_nonce = playlist_shuffle_nonce;
         self.media_index_status = media_index_status;
+        self.player_setup_issue = player_setup_issue;
         self.saved_configuration = saved_configuration;
         if preserve_tls_prompt_expected {
             self.menus.tls_prompt_expected = tls_prompt_expected;

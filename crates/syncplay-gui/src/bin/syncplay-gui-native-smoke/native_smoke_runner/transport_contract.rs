@@ -1,5 +1,42 @@
 use super::*;
 
+fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<bool, String> {
+    if wait_for_accessible_name(
+        driver,
+        window,
+        "modal: player-setup",
+        timeout.min(Duration::from_millis(800)),
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+    wait_for_accessible_name(driver, window, "Choose mpv.exe", timeout)?;
+    wait_for_accessible_name(driver, window, "Open Settings", timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Retry mpv",
+        NativeControlKind::Button,
+        true,
+        timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Open Settings",
+        NativeControlKind::Button,
+        timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: configuration", timeout)?;
+    wait_for_accessible_name(driver, window, "modal: (none)", timeout)?;
+    Ok(true)
+}
+
 pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -139,6 +176,9 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             )?;
             wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         }
+        if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
+            steps.push("transport-player-setup-modal".to_owned());
+        }
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -155,36 +195,25 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
                 "primary mock TCP server did not receive an expected startup hello payload: {first_hello:?}"
             ));
         }
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         wait_for_accessible_name(driver, window, "episode2.mkv", step_timeout)?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            "self=no, ready=yes, controller=yes",
-            step_timeout,
-        )?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME,
-            step_timeout,
-        )
-        .map_err(|error| format!("transport initial local ready row: {error}"))?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_accessible_name(driver, window, "bob", step_timeout)?;
+        wait_for_accessible_name(driver, window, TRANSPORT_SESSION_USERNAME, step_timeout)
+            .map_err(|error| format!("transport initial local ready row: {error}"))?;
         steps.push("transport-saved-config-startup".to_owned());
 
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         wait_for_accessible_name(driver, window, "postchat2.mkv", step_timeout)?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            "self=no, ready=no, controller=no",
-            step_timeout,
-        )
-        .map_err(|error| format!("transport primary post-ready row: {error}"))?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_accessible_name(driver, window, "bob", step_timeout)
+            .map_err(|error| format!("transport primary post-ready row: {error}"))?;
         steps.push("transport-primary-post-ready-churn".to_owned());
 
         wait_for_named_control_count(
             driver,
             window,
-            "self=no, ready=no, controller=no",
+            "bob",
             NativeControlKind::Any,
             0,
             step_timeout,
@@ -236,37 +265,26 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             "Show Users",
             step_timeout,
         )?;
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         wait_for_accessible_name(driver, window, "reconnect2.mkv", step_timeout)?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            "self=no, ready=no, controller=no",
-            step_timeout,
-        )
-        .map_err(|error| format!("transport reconnect initial row: {error}"))?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
-            step_timeout,
-        )
-        .map_err(|error| format!("transport reconnect initial local row: {error}"))?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_accessible_name(driver, window, "carol", step_timeout)
+            .map_err(|error| format!("transport reconnect initial row: {error}"))?;
+        wait_for_accessible_name(driver, window, TRANSPORT_SESSION_USERNAME, step_timeout)
+            .map_err(|error| format!("transport reconnect initial local row: {error}"))?;
         steps.push("transport-public-server-reconnect".to_owned());
 
+        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
         wait_for_accessible_name(driver, window, "reconnect-post2.mkv", step_timeout)?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            "self=no, ready=yes, controller=yes",
-            step_timeout,
-        )
-        .map_err(|error| format!("transport reconnect post-ready row: {error}"))?;
+        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_accessible_name(driver, window, "carol", step_timeout)
+            .map_err(|error| format!("transport reconnect post-ready row: {error}"))?;
         steps.push("transport-reconnect-post-ready-churn".to_owned());
 
         wait_for_named_control_count(
             driver,
             window,
-            "self=no, ready=yes, controller=yes",
+            "carol",
             NativeControlKind::Any,
             0,
             step_timeout,

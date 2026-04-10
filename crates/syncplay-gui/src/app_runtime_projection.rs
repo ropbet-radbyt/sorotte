@@ -3,8 +3,10 @@ use std::path::Path;
 use syncplay_player_api::LocalFileUpdate;
 
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
+use super::super::runtime_stack::GuiPlayerLaunchRuntimeState;
 use super::super::shell_state::{
-    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiShellAction,
+    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiPlayerSetupIssue,
+    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction,
     MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
     MenuSectionShellState, SyncplayGuiShellAppState,
 };
@@ -47,6 +49,43 @@ impl GuiPersistedConfigRuntimeOwner {
             .collect()
     }
 
+    fn player_setup_issue_impl(&self) -> Option<GuiPlayerSetupIssue> {
+        if self.player.is_some() {
+            return None;
+        }
+
+        let message = self.player_unavailability_reason.as_ref()?.clone();
+        let kind = match &self.player_launch_state {
+            GuiPlayerLaunchRuntimeState::None => GuiPlayerSetupIssueKind::NotConfigured,
+            GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {
+                GuiPlayerSetupIssueKind::UnsupportedConfiguredPlayer
+            }
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { .. } => {
+                GuiPlayerSetupIssueKind::IpcAttachFailed
+            }
+            GuiPlayerLaunchRuntimeState::ManagedMpv(_) => {
+                if message.contains("binary does not exist") {
+                    GuiPlayerSetupIssueKind::MissingBinary
+                } else if message.contains("JSON IPC attach failed") {
+                    GuiPlayerSetupIssueKind::IpcAttachFailed
+                } else if message.contains("exited") {
+                    GuiPlayerSetupIssueKind::ExitedAfterLaunch
+                } else {
+                    GuiPlayerSetupIssueKind::LaunchFailed
+                }
+            }
+            GuiPlayerLaunchRuntimeState::TestPlayer => return None,
+        };
+
+        Some(GuiPlayerSetupIssue { kind, message })
+    }
+
+    pub(super) fn player_setup_runtime_snapshot_impl(&self) -> GuiPlayerSetupRuntimeSnapshot {
+        GuiPlayerSetupRuntimeSnapshot {
+            issue: self.player_setup_issue_impl(),
+        }
+    }
+
     pub(super) fn command_availability_for_runtime_state_impl(
         &self,
         state: &SyncplayGuiShellAppState,
@@ -60,7 +99,9 @@ impl GuiPersistedConfigRuntimeOwner {
             can_save_configuration: !busy && state.validation.issues.is_empty(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
-            can_connect_saved_server: !busy && state.saved_session_connect_target().is_some(),
+            can_connect_saved_server: !busy
+                && state.saved_session_connect_target().is_some()
+                && !state.connect_blocked_by_player_setup_issue(),
             can_disconnect_session: !busy && self.session_active(),
             can_connect_public_server: !busy && state.public_servers.can_connect,
             can_refresh_public_servers: !busy && state.public_servers.can_refresh,
@@ -154,6 +195,13 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
                 desired_media_index_status,
+            ));
+        }
+
+        let desired_player_setup = self.player_setup_runtime_snapshot_impl();
+        if state.player_setup_issue != desired_player_setup.issue {
+            handle.push_action(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+                desired_player_setup,
             ));
         }
 

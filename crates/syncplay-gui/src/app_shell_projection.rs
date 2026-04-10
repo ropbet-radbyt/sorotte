@@ -975,6 +975,16 @@ impl SyncplayGuiShellAppState {
                 .unwrap_or_else(|| vec!["[Room History Edit] editing=(none)".to_owned()]),
         );
         lines.push(format!(
+            "[Player Setup] status={}",
+            self.player_setup_issue
+                .as_ref()
+                .map(|issue| issue.kind.label())
+                .unwrap_or("(none)")
+        ));
+        if let Some(issue) = self.player_setup_issue.as_ref() {
+            lines.push(format!("- detail: {}", issue.message));
+        }
+        lines.push(format!(
             "[Notifications] count={}",
             self.notifications.len()
         ));

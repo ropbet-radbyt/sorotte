@@ -100,11 +100,6 @@ const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE: &str = "gui-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO: &str = "gui-playlist-2.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE: &str = "python-playlist-1.mkv";
 const LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO: &str = "python-playlist-2.mkv";
-const LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME: &str = "self=yes, ready=no, controller=no";
-const LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME: &str = "self=yes, ready=no, controller=yes";
-const LIVE_PYTHON_INTEROP_LOCAL_READY_ROW_NAME: &str = "self=yes, ready=yes, controller=no";
-const LIVE_PYTHON_INTEROP_PEER_ROW_NAME: &str = "self=no, ready=no, controller=no";
-const LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME: &str = "self=no, ready=yes, controller=no";
 const MAIN_WINDOW_ROOM_BROWSER_NAME: &str = "Room Browser";
 #[cfg(target_os = "windows")]
 const MAIN_WINDOW_CONTROLS_CONTAINER_NAME: &str = "Controls";

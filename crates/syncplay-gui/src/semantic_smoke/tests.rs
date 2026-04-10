@@ -1,5 +1,8 @@
 use crate::app::render_io::GuiDroppedFilesTarget;
-use crate::app::semantic_driver::GuiSemanticStep;
+use crate::app::{
+    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot,
+    semantic_driver::GuiSemanticStep,
+};
 
 use super::{
     GuiSemanticOutputFormat, GuiSemanticScenarioSource, gui_semantic_output_format_from_lookup,
@@ -32,6 +35,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             "runtime-transport-churn-flow",
             "drag-and-drop-ingest-flow",
             "playlist-workflow-flow",
+            "player-setup-flow",
             "persistence-reset-flow",
             "detached-runtime-ownership-flow",
             "live-python-peer-connect-flow",
@@ -74,6 +78,11 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             .contains("main-window:playlist:edit")
     );
     assert!(
+        gui_semantic_scenario_script("player-setup-flow")
+            .expect("player setup scenario should expose a script")
+            .contains("apply-player-setup-runtime\tnot-configured")
+    );
+    assert!(
         gui_semantic_scenario_script("persistence-reset-flow")
             .expect("persistence/reset scenario should expose a script description")
             .contains("PersistenceRoom")
@@ -98,7 +107,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
         "unknown semantic scenario scripts should not resolve"
     );
     let descriptors = gui_semantic_scenario_descriptors();
-    assert_eq!(descriptors.len(), 11);
+    assert_eq!(descriptors.len(), 12);
     assert_eq!(descriptors[0].name, "configuration-surface-flow");
     assert!(descriptors[0].description.contains("configuration fields"));
     assert!(
@@ -141,26 +150,37 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
             .script
             .contains("main-window:playlist:add-url")
     );
-    assert_eq!(descriptors[7].name, "persistence-reset-flow");
-    assert!(descriptors[7].description.contains("clear-GUI-data"));
-    assert!(descriptors[7].script.contains("PersistenceRoom"));
-    assert_eq!(descriptors[8].name, "detached-runtime-ownership-flow");
+    assert_eq!(descriptors[7].name, "player-setup-flow");
+    assert!(descriptors[7].description.contains("Retry mpv"));
     assert!(
-        descriptors[8]
+        descriptors[7]
+            .script
+            .contains("shell:modal:player-setup:open-settings")
+    );
+    assert_eq!(descriptors[8].name, "persistence-reset-flow");
+    assert!(descriptors[8].description.contains("clear-GUI-data"));
+    assert!(descriptors[8].script.contains("PersistenceRoom"));
+    assert_eq!(descriptors[9].name, "detached-runtime-ownership-flow");
+    assert!(
+        descriptors[9]
             .description
             .contains("detached public-server connect")
     );
-    assert!(descriptors[8].script.contains("semantic-user"));
-    assert_eq!(descriptors[9].name, "live-python-peer-connect-flow");
-    assert!(descriptors[9].description.contains("Python reference peer"));
-    assert!(descriptors[9].script.contains("interop-room"));
-    assert_eq!(
-        descriptors[10].name,
-        "live-python-peer-controlled-room-flow"
-    );
-    assert!(descriptors[10].description.contains("controlled room"));
+    assert!(descriptors[9].script.contains("semantic-user"));
+    assert_eq!(descriptors[10].name, "live-python-peer-connect-flow");
     assert!(
         descriptors[10]
+            .description
+            .contains("Python reference peer")
+    );
+    assert!(descriptors[10].script.contains("interop-room"));
+    assert_eq!(
+        descriptors[11].name,
+        "live-python-peer-controlled-room-flow"
+    );
+    assert!(descriptors[11].description.contains("controlled room"));
+    assert!(
+        descriptors[11]
             .script
             .contains("+interop-room:447CE7E3548D")
     );
@@ -180,6 +200,7 @@ complete-pending\n\
 complete-pending-runtime\n\
 open-media-files\tC:/Media/open-target.mkv\n\
 drop-media-files\tplaylist\tC:/Media/episode1.mkv|C:/Media/episode2.mkv\n\
+apply-player-setup-runtime\tmissing-binary\tConfigured player path C:/missing/mpv.exe was not found.\n\
 close-modal\n\
 clear-notifications\n",
     )
@@ -201,6 +222,12 @@ clear-notifications\n",
                     "C:/Media/episode2.mkv".to_owned(),
                 ],
             },
+            GuiSemanticStep::ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::MissingBinary,
+                    message: "Configured player path C:/missing/mpv.exe was not found.".to_owned(),
+                }),
+            }),
             GuiSemanticStep::CloseModal,
             GuiSemanticStep::ClearNotifications,
         ]
@@ -344,7 +371,7 @@ assert-selected\tconfiguration-root\ttrue\n",
         run_gui_semantic_scenario_named("missing-scenario")
             .expect_err("unknown scenario should fail")
             .contains(
-                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
+                "Available: configuration-surface-flow, core-shell-smoke-flow, localized-runtime-flow, runtime-chat-flow, runtime-transport-churn-flow, drag-and-drop-ingest-flow, playlist-workflow-flow, player-setup-flow, persistence-reset-flow, detached-runtime-ownership-flow, live-python-peer-connect-flow, live-python-peer-controlled-room-flow"
             )
     );
 }
@@ -383,6 +410,7 @@ fn syncplay_gui_semantic_cli_wrapper_runs_explicit_args() {
     assert!(listed.contains("localized-runtime-flow"));
     assert!(listed.contains("runtime-chat-flow"));
     assert!(listed.contains("runtime-transport-churn-flow"));
+    assert!(listed.contains("player-setup-flow"));
     assert!(listed.contains("detached-runtime-ownership-flow"));
     assert!(listed.contains("live-python-peer-connect-flow"));
     assert!(listed.contains("live-python-peer-controlled-room-flow"));
@@ -445,6 +473,9 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
     assert!(described.contains("\"name\":\"runtime-transport-churn-flow\""));
     assert!(described.contains("\"description\":\"Applies startup/post-chat/reconnect runtime snapshots, verifies chat round-trips and user churn/removals, and completes local chat sends.\""));
     assert!(described.contains("\"script\":\"# Runtime-backed transport churn/reconnect flow without platform UI dependencies\\nsetting\\tusername\\tsmoke-user"));
+    assert!(described.contains("\"name\":\"player-setup-flow\""));
+    assert!(described.contains("\"description\":\"Applies first-run and recovery mpv setup runtime issues, verifies blocking modal behavior, then exercises Retry mpv through the semantic runtime dispatch path.\""));
+    assert!(described.contains("\"script\":\"# First-run and recovery player-setup flow\\napply-player-setup-runtime\\tnot-configured"));
     assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
     assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, switches the GUI between rooms and back, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
     assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
@@ -474,7 +505,18 @@ fn syncplay_gui_semantic_report_wrapper_runs_persistence_reset_flow() {
         .expect("persistence/reset semantic scenario should run");
     assert_eq!(report.scenario, "persistence-reset-flow");
     assert_eq!(report.view, "configuration");
-    assert_eq!(report.modal, "none");
+    assert_eq!(report.modal, "player-setup");
+    assert_eq!(report.pending, "none");
+    assert!(report.widgets > 0);
+}
+
+#[test]
+fn syncplay_gui_semantic_report_wrapper_runs_player_setup_flow() {
+    let report = run_gui_semantic_scenario_named("player-setup-flow")
+        .expect("player setup semantic scenario should run");
+    assert_eq!(report.scenario, "player-setup-flow");
+    assert_eq!(report.view, "configuration");
+    assert_eq!(report.modal, "player-setup");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);
 }

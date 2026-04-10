@@ -6,7 +6,8 @@ use super::shell_state::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
     GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot, GuiPendingOperationKind,
-    GuiPendingOperationState, GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
+    GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
+    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
     GuiRoomHistoryEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiShellView,
     GuiTextEditSessionState, GuiTransientNotification, GuiTransientNotificationLevel,
     GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
@@ -180,6 +181,42 @@ impl SyncplayGuiShellAppState {
 
         self.media_index_status.active = snapshot.active;
         self.media_index_status.message = message;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_gui_player_setup_runtime_snapshot(
+        &mut self,
+        snapshot: GuiPlayerSetupRuntimeSnapshot,
+    ) -> bool {
+        let previous_issue_kind = self.player_setup_issue.as_ref().map(|issue| issue.kind);
+        let issue = match snapshot.issue {
+            Some(issue) => {
+                let Some(message) = normalized_editable_text(&issue.message) else {
+                    return self.record_action_error(
+                        "GUI player-setup runtime snapshots cannot contain an empty issue message.",
+                    );
+                };
+                Some(GuiPlayerSetupIssue {
+                    kind: issue.kind,
+                    message,
+                })
+            }
+            None => None,
+        };
+
+        let next_issue_kind = issue.as_ref().map(|next| next.kind);
+        self.player_setup_issue = issue;
+        if self.player_setup_issue.is_none()
+            && self.open_modal == Some(super::GuiShellModal::PlayerSetup)
+        {
+            self.open_modal = None;
+        } else if next_issue_kind.is_some()
+            && next_issue_kind != previous_issue_kind
+            && self.open_modal.is_none()
+        {
+            self.open_modal = Some(super::GuiShellModal::PlayerSetup);
+        }
         self.clear_action_error_and_refresh();
         true
     }

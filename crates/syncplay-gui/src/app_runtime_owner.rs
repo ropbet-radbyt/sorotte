@@ -251,29 +251,37 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
+    fn no_player_configured_unavailability_reason(
+        launch_state: &GuiPlayerLaunchRuntimeState,
+    ) -> Option<String> {
+        matches!(launch_state, GuiPlayerLaunchRuntimeState::None).then_some(
+            "Set playerPath to mpv in GUI settings, or set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
+                .to_owned(),
+        )
+    }
+
     fn startup_player_unavailability_reason(
         launch_state: &GuiPlayerLaunchRuntimeState,
     ) -> Option<String> {
         if let Some(reason) = launch_state.default_unavailability_reason() {
             return Some(reason);
         }
-        let GuiPlayerLaunchRuntimeState::ManagedMpv(config) = launch_state else {
-            return None;
-        };
-        let program = &config.program;
-        let requires_existing_file = program.is_absolute()
-            || program
-                .to_string_lossy()
-                .chars()
-                .any(|character| matches!(character, '/' | '\\'));
-        if requires_existing_file && !program.is_file() {
-            return Some(format!(
-                "GUI-owned mpv launch failed from saved player path '{}': managed mpv binary does not exist: {}",
-                config.requested_player_path,
-                program.display()
-            ));
+        if let GuiPlayerLaunchRuntimeState::ManagedMpv(config) = launch_state {
+            let program = &config.program;
+            let requires_existing_file = program.is_absolute()
+                || program
+                    .to_string_lossy()
+                    .chars()
+                    .any(|character| matches!(character, '/' | '\\'));
+            if requires_existing_file && !program.is_file() {
+                return Some(format!(
+                    "GUI-owned mpv launch failed from saved player path '{}': managed mpv binary does not exist: {}",
+                    config.requested_player_path,
+                    program.display()
+                ));
+            }
         }
-        None
+        Self::no_player_configured_unavailability_reason(launch_state)
     }
 
     fn configure_startup_player_from_lookup_and_settings<F>(
@@ -340,7 +348,9 @@ impl GuiPersistedConfigRuntimeOwner {
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
         self.detach_player();
         self.player_launch_state = launch_state.clone();
-        self.player_unavailability_reason = launch_state.default_unavailability_reason();
+        self.player_unavailability_reason = launch_state
+            .default_unavailability_reason()
+            .or_else(|| Self::no_player_configured_unavailability_reason(&launch_state));
         match launch_state {
             GuiPlayerLaunchRuntimeState::None => {}
             GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
@@ -1356,19 +1366,9 @@ impl GuiPersistedConfigRuntimeOwner {
 
 impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
-        let mut owner = Self::with_config_path_and_startup_player(
+        Self::with_config_path_and_startup_player(
             resolve_syncplay_gui_config_path_legacy_compatible(),
-        );
-        if owner.player.is_none()
-            && owner.player_unavailability_reason.is_none()
-            && !owner.player_launch_state.can_attach_on_demand()
-        {
-            owner.player_unavailability_reason = Some(
-                "Set playerPath to mpv in GUI settings, or set SYNCPLAY_CLIENT_MPV_IPC_PATH or SYNCPLAY_MPV_IPC_PATH to attach an mpv JSON IPC endpoint."
-                    .to_owned(),
-            );
-        }
-        owner
+        )
     }
 }
 

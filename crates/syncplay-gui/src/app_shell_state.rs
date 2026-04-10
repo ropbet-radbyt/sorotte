@@ -115,6 +115,40 @@ pub(super) struct GuiMediaIndexRuntimeSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiPlayerSetupIssueKind {
+    NotConfigured,
+    UnsupportedConfiguredPlayer,
+    MissingBinary,
+    LaunchFailed,
+    IpcAttachFailed,
+    ExitedAfterLaunch,
+}
+
+impl GuiPlayerSetupIssueKind {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not-configured",
+            Self::UnsupportedConfiguredPlayer => "unsupported-player",
+            Self::MissingBinary => "missing-binary",
+            Self::LaunchFailed => "launch-failed",
+            Self::IpcAttachFailed => "ipc-attach-failed",
+            Self::ExitedAfterLaunch => "exited-after-launch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlayerSetupIssue {
+    pub(super) kind: GuiPlayerSetupIssueKind,
+    pub(super) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct GuiPlayerSetupRuntimeSnapshot {
+    pub(super) issue: Option<GuiPlayerSetupIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PublicServerBrowserRuntimeFlags {
     pub(super) can_connect: bool,
     pub(super) can_refresh: bool,
@@ -200,6 +234,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) playlist_undo_snapshot: Option<Vec<String>>,
     pub(super) playlist_shuffle_nonce: u64,
     pub(super) media_index_status: GuiMediaIndexStatusState,
+    pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,
     pub(super) saved_configuration: StoredClientSettingsMvp,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
     pub(super) main_window: MainWindowShellState,
@@ -649,6 +684,7 @@ pub(super) enum GuiShellModal {
     About,
     UpdateNotice,
     TlsCertificatePrompt,
+    PlayerSetup,
 }
 
 impl GuiShellModal {
@@ -657,6 +693,7 @@ impl GuiShellModal {
             Self::About => "about",
             Self::UpdateNotice => "update-notice",
             Self::TlsCertificatePrompt => "tls-certificate-prompt",
+            Self::PlayerSetup => "player-setup",
         }
     }
 }
@@ -687,6 +724,7 @@ pub(super) enum GuiShellAction {
     ApplyGuiErrorRuntimeSnapshot(GuiErrorRuntimeSnapshot),
     ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot),
     ApplyGuiMediaIndexRuntimeSnapshot(GuiMediaIndexRuntimeSnapshot),
+    ApplyGuiPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
     ApplyGuiInteractionRuntimeSnapshot(GuiInteractionRuntimeSnapshot),
     ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot),
     ApplyGuiConfigurationDraftRuntimeSnapshot(GuiConfigurationDraftRuntimeSnapshot),
@@ -852,6 +890,7 @@ pub(super) enum GuiShellAction {
     AnnounceMediaSearchDirectoryBrowsed(String),
     BeginMissingMediaSearch,
     CompleteMissingMediaSearch(Option<String>),
+    RetryPlayerLaunch,
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,
     ToggleMainWindowHideEmptyRooms,

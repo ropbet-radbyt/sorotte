@@ -109,6 +109,8 @@ where
 mod live_python_smoke;
 #[path = "app_smoke/managed_mpv_smoke.rs"]
 mod managed_mpv_smoke;
+#[path = "app_smoke/player_setup_smoke.rs"]
+mod player_setup_smoke;
 #[path = "app_smoke/portable_persistence_transport_smoke.rs"]
 mod portable_persistence_transport_smoke;
 #[path = "app_smoke/portable_script_parity_smoke.rs"]

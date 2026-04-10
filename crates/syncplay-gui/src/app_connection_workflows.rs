@@ -83,6 +83,9 @@ impl SyncplayGuiShellAppState {
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
+        if let Some(message) = self.player_setup_connect_block_message() {
+            return self.record_action_error(message);
+        }
         if self.active_view == GuiShellView::Configuration && !self.validation.issues.is_empty() {
             return self.record_action_error(
                 "Configuration connect is unavailable while validation issues remain.",

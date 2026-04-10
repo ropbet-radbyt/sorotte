@@ -187,3 +187,41 @@ fn gui_semantic_driver_runs_playlist_workflow_scenario_without_platform_ui() {
     assert!(driver.state().playlist_url_edit_session.is_none());
     assert!(driver.state().media_url_edit_session.is_none());
 }
+
+#[test]
+fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
+    let scenario = gui_semantic_scenario_named("player-setup-flow")
+        .expect("player setup semantic scenario should exist");
+    let driver = scenario
+        .run()
+        .unwrap_or_else(|error| panic!("{} should execute successfully: {error}", scenario.name()));
+
+    assert_eq!(driver.active_view_label(), "configuration");
+    assert_eq!(driver.active_modal_label(), "player-setup");
+    assert_eq!(
+        driver
+            .state()
+            .player_setup_issue
+            .as_ref()
+            .map(|issue| issue.kind.label()),
+        Some("missing-binary")
+    );
+    assert!(
+        driver
+            .widget("config-player-setup:retry")
+            .expect("player setup retry button should exist")
+            .enabled
+    );
+    assert!(
+        !driver
+            .widget("config-command:connect")
+            .expect("connect button should exist")
+            .enabled
+    );
+    assert!(
+        driver.state().notifications.iter().any(|notification| {
+            notification.message == "Retrying mpv launch with the current player settings."
+        }),
+        "retry button should route through runtime preview dispatch"
+    );
+}

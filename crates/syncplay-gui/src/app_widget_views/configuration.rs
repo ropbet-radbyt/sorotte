@@ -71,6 +71,84 @@ impl SyncplayGuiShellAppState {
                 })
                 .collect::<Vec<_>>();
 
+        let player_setup_panel = self.player_setup_issue.as_ref().map(|issue| {
+            let mut content = vec![
+                GuiWidgetNode::leaf(
+                    "config-player-setup:title",
+                    "Title",
+                    GuiWidgetKind::Status,
+                    self.player_setup_issue_title().map(str::to_owned),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-player-setup:summary",
+                    "Summary",
+                    GuiWidgetKind::Status,
+                    self.player_setup_issue_summary().map(str::to_owned),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "config-player-setup:detail",
+                    "Detail",
+                    GuiWidgetKind::Status,
+                    Some(issue.message.clone()),
+                    true,
+                    false,
+                ),
+            ];
+            if self.connect_blocked_by_player_setup_issue() {
+                content.push(GuiWidgetNode::leaf(
+                    "config-player-setup:blocking",
+                    "Connect Status",
+                    GuiWidgetKind::Status,
+                    self.player_setup_connect_block_message(),
+                    true,
+                    false,
+                ));
+            }
+            content.push(GuiWidgetNode::layout(
+                "config-player-setup:actions",
+                "Player Setup Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 140.0,
+                },
+                vec![
+                    GuiWidgetNode::leaf(
+                        "config-player-setup:autodetect",
+                        "Auto-detect mpv",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-player-setup:choose-path",
+                        "Choose mpv.exe",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-player-setup:retry",
+                        "Retry mpv",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.player_setup_retry_available(),
+                        false,
+                    ),
+                ],
+            ));
+            GuiWidgetNode::branch(
+                "config-player-setup",
+                "mpv Setup",
+                GuiWidgetKind::Panel,
+                content,
+            )
+        });
+
         let commands_panel = GuiWidgetNode::branch(
             "config-commands",
             "Commands",
@@ -272,59 +350,64 @@ impl SyncplayGuiShellAppState {
             "configuration-root",
             "Configuration",
             GuiLayoutMode::Stack,
-            vec![
-                commands_panel,
-                GuiWidgetNode::layout(
-                    "configuration:tabs",
-                    "Configuration Tabs",
-                    GuiLayoutMode::TabStrip {
-                        min_tab_width: 132.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "configuration:tab:overview",
-                            "Overview",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_configuration_tab == GuiConfigurationTab::Overview,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "configuration:tab:connection",
-                            "Connection",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_configuration_tab == GuiConfigurationTab::Connection,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "configuration:tab:playback-search",
-                            "Playback & Search",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_configuration_tab == GuiConfigurationTab::PlaybackSearch,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "configuration:tab:privacy-chat",
-                            "Privacy & Chat",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_configuration_tab == GuiConfigurationTab::PrivacyChat,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "configuration:tab:interface-system",
-                            "Interface & System",
-                            GuiWidgetKind::Button,
-                            None,
-                            true,
-                            self.selected_configuration_tab == GuiConfigurationTab::InterfaceSystem,
-                        ),
-                    ],
-                ),
-                selected_content,
-            ],
+            player_setup_panel
+                .into_iter()
+                .chain([
+                    commands_panel,
+                    GuiWidgetNode::layout(
+                        "configuration:tabs",
+                        "Configuration Tabs",
+                        GuiLayoutMode::TabStrip {
+                            min_tab_width: 132.0,
+                        },
+                        vec![
+                            GuiWidgetNode::leaf(
+                                "configuration:tab:overview",
+                                "Overview",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_configuration_tab == GuiConfigurationTab::Overview,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "configuration:tab:connection",
+                                "Connection",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_configuration_tab == GuiConfigurationTab::Connection,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "configuration:tab:playback-search",
+                                "Playback & Search",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_configuration_tab
+                                    == GuiConfigurationTab::PlaybackSearch,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "configuration:tab:privacy-chat",
+                                "Privacy & Chat",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_configuration_tab == GuiConfigurationTab::PrivacyChat,
+                            ),
+                            GuiWidgetNode::leaf(
+                                "configuration:tab:interface-system",
+                                "Interface & System",
+                                GuiWidgetKind::Button,
+                                None,
+                                true,
+                                self.selected_configuration_tab
+                                    == GuiConfigurationTab::InterfaceSystem,
+                            ),
+                        ],
+                    ),
+                    selected_content,
+                ])
+                .collect(),
         )
     }
 }

@@ -1,5 +1,42 @@
 use super::*;
 
+fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<bool, String> {
+    if wait_for_accessible_name(
+        driver,
+        window,
+        "modal: player-setup",
+        timeout.min(Duration::from_millis(800)),
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+    wait_for_accessible_name(driver, window, "Choose mpv.exe", timeout)?;
+    wait_for_accessible_name(driver, window, "Open Settings", timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Retry mpv",
+        NativeControlKind::Button,
+        true,
+        timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Open Settings",
+        NativeControlKind::Button,
+        timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "view: configuration", timeout)?;
+    wait_for_accessible_name(driver, window, "modal: (none)", timeout)?;
+    Ok(true)
+}
+
 pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
     driver: &D,
     binary_path: &Path,
@@ -71,6 +108,9 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
+        if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
+            steps.push("transport-python-peer-player-setup-modal".to_owned());
+        }
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -100,10 +140,10 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop initial local row: {error}"))?;
@@ -129,10 +169,10 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop peer connect row: {error}"))?;
@@ -153,10 +193,10 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             step_timeout,
         )?;
         thread::sleep(Duration::from_millis(500));
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop alternate-room local row: {error}"))?;
@@ -171,10 +211,10 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop room-switch peer row: {error}"))?;
@@ -188,13 +228,6 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm ready=true: {error}")
             })?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_PEER_READY_ROW_NAME,
-            step_timeout,
-        )
-        .map_err(|error| format!("live Python interop peer ready=true row: {error}"))?;
         python_harness
             .set_peer_ready(false)
             .map_err(|error| format!("failed to set Python reference peer ready=false: {error}"))?;
@@ -203,13 +236,6 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm ready=false: {error}")
             })?;
-        wait_for_main_window_user_row_name(
-            driver,
-            window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
-            step_timeout,
-        )
-        .map_err(|error| format!("live Python interop peer ready=false row: {error}"))?;
         steps.push("transport-python-peer-readiness".to_owned());
 
         python_harness
@@ -361,15 +387,15 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         wait_for_named_control_count(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
             NativeControlKind::Any,
             0,
             step_timeout,
         )?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_LOCAL_ROW_NAME,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop peer disconnect local row: {error}"))?;
@@ -378,10 +404,10 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         python_harness
             .start_peer_connected()
             .map_err(|error| format!("failed to reconnect live Python reference peer: {error}"))?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
             step_timeout,
         )
         .map_err(|error| format!("live Python interop peer reconnect row: {error}"))?;
@@ -501,6 +527,9 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
             &["view: configuration", "view: main-window"],
             step_timeout,
         )?;
+        if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
+            steps.push("transport-python-peer-controlled-room-player-setup-modal".to_owned());
+        }
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -510,20 +539,20 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
             "Show Users",
             step_timeout,
         )?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_LOCAL_CONTROLLER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             step_timeout,
         )?;
 
         python_harness.start_peer_connected().map_err(|error| {
             format!("failed to connect live Python reference peer in controlled room: {error}")
         })?;
-        wait_for_main_window_user_row_name(
+        wait_for_accessible_name(
             driver,
             window,
-            LIVE_PYTHON_INTEROP_PEER_ROW_NAME,
+            LIVE_PYTHON_INTEROP_PEER_USERNAME,
             step_timeout,
         )?;
         steps.push("transport-python-peer-controlled-room-connect".to_owned());

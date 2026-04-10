@@ -212,56 +212,37 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::TlsCertificatePrompt),
         vec![
-            (
-                "shell:modal:tls:trust",
-                "Trust Certificate",
-                GuiShellAction::TrustTlsCertificatePrompt,
-            ),
-            (
-                "shell:modal:tls:reject",
-                "Reject Certificate",
-                GuiShellAction::RejectTlsCertificatePrompt,
-            ),
-            (
-                "shell:modal:tls:help",
-                "Open Help",
-                GuiShellAction::AnnounceHelpRequested,
-            ),
+            ("shell:modal:tls:trust", "Trust Certificate"),
+            ("shell:modal:tls:reject", "Reject Certificate"),
+            ("shell:modal:tls:help", "Open Help"),
         ]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::UpdateNotice),
         vec![
-            (
-                "shell:modal:update:dismiss",
-                "Dismiss Notice",
-                GuiShellAction::DismissUpdateNotice,
-            ),
-            (
-                "shell:modal:update:help",
-                "Open Help",
-                GuiShellAction::AnnounceHelpRequested,
-            ),
-            (
-                "shell:modal:update:check-again",
-                "Check Again",
-                GuiShellAction::AnnounceUpdateNoticeAvailable,
-            ),
+            ("shell:modal:update:dismiss", "Dismiss Notice"),
+            ("shell:modal:update:help", "Open Help"),
+            ("shell:modal:update:check-again", "Check Again"),
         ]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::About),
         vec![
-            (
-                "shell:modal:about:help",
-                "Open Help",
-                GuiShellAction::AnnounceHelpRequested,
-            ),
-            (
-                "shell:modal:about:update",
-                "Check for Updates",
-                GuiShellAction::AnnounceUpdateNoticeAvailable,
-            ),
+            ("shell:modal:about:help", "Open Help"),
+            ("shell:modal:about:update", "Check for Updates"),
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::modal_window_title(GuiShellModal::PlayerSetup),
+        "mpv Setup Required"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::modal_actions(GuiShellModal::PlayerSetup),
+        vec![
+            ("shell:modal:player-setup:autodetect", "Auto-detect mpv"),
+            ("shell:modal:player-setup:choose-path", "Choose mpv.exe"),
+            ("shell:modal:player-setup:retry", "Retry mpv"),
+            ("shell:modal:player-setup:open-settings", "Open Settings"),
         ]
     );
 }

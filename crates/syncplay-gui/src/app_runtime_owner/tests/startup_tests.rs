@@ -20,7 +20,13 @@ fn gui_persisted_config_runtime_owner_startup_player_lookup_honors_test_player_e
         &|_name| None,
     );
     assert!(detached_owner.player.is_none());
-    assert_eq!(detached_owner.player_unavailability_reason, None);
+    assert!(
+        detached_owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|message| message.contains("Set playerPath to mpv")),
+        "startup owner should surface explicit mpv setup guidance when no player is configured"
+    );
 }
 
 #[test]
@@ -111,4 +117,32 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
         Some("test"),
         "active session pumps should auto-attach the configured player runtime"
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_retry_without_player_path_keeps_setup_guidance() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+        Some(PathBuf::from("C:/Config/syncplay.ini")),
+        &|_name| None,
+    );
+    let initial_reason = owner.player_unavailability_reason.clone();
+
+    assert!(owner.player.is_none());
+    assert_eq!(owner.player_launch_state, GuiPlayerLaunchRuntimeState::None);
+    assert!(
+        initial_reason
+            .as_deref()
+            .is_some_and(|message| message.contains("Set playerPath to mpv")),
+        "startup owner should surface explicit mpv setup guidance when no player is configured"
+    );
+
+    owner.sync_player_from_lookup_and_settings(
+        &|_name| None,
+        Some(&StoredClientSettingsMvp::default()),
+        true,
+    );
+
+    assert!(owner.player.is_none());
+    assert_eq!(owner.player_launch_state, GuiPlayerLaunchRuntimeState::None);
+    assert_eq!(owner.player_unavailability_reason, initial_reason);
 }

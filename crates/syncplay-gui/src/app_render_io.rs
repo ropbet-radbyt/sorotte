@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use eframe::egui;
 use rfd::FileDialog;
 
@@ -129,6 +131,32 @@ impl GuiWidgetEguiRenderer {
         if paths.is_empty() { None } else { Some(paths) }
     }
 
+    pub(super) fn pick_player_executable(state: &SyncplayGuiShellAppState) -> Option<String> {
+        if let Some(path) = Self::player_executable_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        let mut dialog = FileDialog::new().set_title("Select mpv Executable");
+        if let Some(directory) = Self::player_executable_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        #[cfg(windows)]
+        {
+            dialog = dialog.add_filter("executables", &["exe", "com"]);
+        }
+        dialog
+            .pick_file()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    pub(super) fn player_executable_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SYNCPLAY_GUI_TEST_PLAYER_EXECUTABLE_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
     pub(super) fn pick_playlist_load_file(state: &SyncplayGuiShellAppState) -> Option<String> {
         if let Some(path) = Self::playlist_load_override_path_from_lookup(&env_trimmed) {
             return Some(path);
@@ -222,6 +250,21 @@ impl GuiWidgetEguiRenderer {
                 .or_else(|| state.media_search.directories.first())
                 .map(|row| row.path.as_str())
         })
+    }
+
+    fn player_executable_dialog_start_directory(
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<String> {
+        state
+            .configuration
+            .control_value("Connection", "Player Path")
+            .and_then(normalized_editable_text)
+            .and_then(|path| {
+                Path::new(&path)
+                    .parent()
+                    .map(|directory| directory.to_string_lossy().into_owned())
+            })
+            .or_else(|| Self::media_search_dialog_start_directory(state).map(str::to_owned))
     }
 }
 

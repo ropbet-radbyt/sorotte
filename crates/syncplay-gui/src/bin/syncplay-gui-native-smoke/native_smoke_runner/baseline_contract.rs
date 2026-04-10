@@ -36,6 +36,43 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             "expected at least 6 editable configuration text fields, found {editable_count}"
         ));
     }
+    if wait_for_accessible_name(
+        driver,
+        window,
+        "modal: player-setup",
+        step_timeout.min(Duration::from_millis(800)),
+    )
+    .is_ok()
+    {
+        wait_for_accessible_name(driver, window, "Choose mpv.exe", step_timeout)?;
+        wait_for_accessible_name(driver, window, "Open Settings", step_timeout)?;
+        wait_for_named_control_enabled_state(
+            driver,
+            window,
+            "Retry mpv",
+            NativeControlKind::Button,
+            true,
+            step_timeout,
+        )?;
+        wait_for_named_control_enabled_state(
+            driver,
+            window,
+            "Open Settings",
+            NativeControlKind::Button,
+            true,
+            step_timeout,
+        )?;
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Open Settings",
+            NativeControlKind::Button,
+            step_timeout,
+        )?;
+        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+        wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        steps.push("player-setup-existing-config-modal".to_owned());
+    }
     invoke_named_control_with_wait(
         driver,
         window,

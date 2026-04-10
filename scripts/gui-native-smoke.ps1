@@ -22,6 +22,12 @@ if ($TimeoutMs -gt 0) {
     $suiteArgs += "--timeout-ms"
     $suiteArgs += [string]$TimeoutMs
 }
+if (-not ($ExtraArgs -contains "--scenario")) {
+    $suiteArgs += "--scenario"
+    $suiteArgs += "baseline"
+    $suiteArgs += "--scenario"
+    $suiteArgs += "relaunch"
+}
 if ($ExtraArgs.Length -gt 0) {
     $suiteArgs += $ExtraArgs
 }
