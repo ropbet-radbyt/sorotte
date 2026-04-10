@@ -644,7 +644,9 @@ impl eframe::App for GuiNativeApp {
         if let Some(request) = dropped_files_request {
             state_changed |= self.apply_dropped_files_request(request);
         }
-        if pending_completion_requested {
+        let auto_pending_completion_requested =
+            !show_manual_pending_controls && self.state.pending_operation.is_some();
+        if pending_completion_requested || auto_pending_completion_requested {
             for action in self.runtime.actions_for_pending_completion(&self.state) {
                 state_changed |= self.state.apply(action);
             }
@@ -747,7 +749,7 @@ impl GuiEframeNativeHost {
         config_path: Option<PathBuf>,
     ) -> Self {
         Self::with_queued_runtime_owner(
-            true,
+            false,
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path),
         )
     }
@@ -765,7 +767,7 @@ impl GuiEframeNativeHost {
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_session_runtime(username, room)?;
         Ok((
-            Self::with_queued_runtime_owner(true, owner),
+            Self::with_queued_runtime_owner(false, owner),
             session_transport,
         ))
     }
@@ -786,7 +788,7 @@ impl GuiEframeNativeHost {
         let owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_loopback_session_runtime(username, room)?;
-        Ok(Self::with_queued_runtime_owner(true, owner))
+        Ok(Self::with_queued_runtime_owner(false, owner))
     }
 
     #[allow(dead_code)]
@@ -806,7 +808,7 @@ impl GuiEframeNativeHost {
         let owner =
             GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(config_path)
                 .with_client_core_chat_tcp_session_runtime(username, room, host_arg)?;
-        Ok(Self::with_queued_runtime_owner(true, owner))
+        Ok(Self::with_queued_runtime_owner(false, owner))
     }
 
     #[allow(dead_code)]

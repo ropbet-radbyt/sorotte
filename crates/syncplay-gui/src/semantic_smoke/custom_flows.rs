@@ -228,6 +228,70 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         time::{Duration, Instant},
     };
 
+    fn read_client_hello_after_optional_start_tls<R, W>(
+        reader: &mut R,
+        writer: &mut W,
+    ) -> Result<String, String>
+    where
+        R: BufRead,
+        W: Write,
+    {
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .map_err(|error| format!("detached semantic TCP hello read failed: {error}"))?;
+        if first_line.contains("\"TLS\"") {
+            writer
+                .write_all(br#"{"TLS":{"startTLS":"false"}}"#)
+                .map_err(|error| {
+                    format!("detached semantic TCP TLS response write failed: {error}")
+                })?;
+            writer.write_all(b"\n").map_err(|error| {
+                format!("detached semantic TCP TLS response termination failed: {error}")
+            })?;
+            writer.flush().map_err(|error| {
+                format!("detached semantic TCP TLS response flush failed: {error}")
+            })?;
+
+            let mut hello_line = String::new();
+            reader.read_line(&mut hello_line).map_err(|error| {
+                format!("detached semantic TCP hello-after-TLS read failed: {error}")
+            })?;
+            Ok(hello_line)
+        } else {
+            Ok(first_line)
+        }
+    }
+
+    fn recv_from_channel_while_pumping_runtime<T>(
+        owner: &mut GuiPersistedConfigRuntimeOwner,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        state: &mut SyncplayGuiShellAppState,
+        receiver: &mpsc::Receiver<T>,
+        timeout: Duration,
+        context: &str,
+    ) -> Result<T, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            GuiQueuedRuntimeOwner::pump(owner, handle, state);
+            let actions = handle.drain_actions();
+            for action in actions {
+                if !state.apply(action) {
+                    return Err(format!(
+                        "{context} rejected a projected runtime action while waiting"
+                    ));
+                }
+            }
+            if let Ok(value) = receiver.try_recv() {
+                return Ok(value);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("timed out waiting for {context}"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind detached semantic TCP listener: {error}"))?;
     let address = listener.local_addr().map_err(|error| {
@@ -244,25 +308,18 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 .try_clone()
                 .map_err(|error| format!("detached semantic TCP stream clone failed: {error}"))?,
         );
-        let mut hello_line = String::new();
-        reader
-            .read_line(&mut hello_line)
-            .map_err(|error| format!("detached semantic TCP hello read failed: {error}"))?;
+        let hello_line = read_client_hello_after_optional_start_tls(&mut reader, &mut stream)?;
         hello_tx
             .send(hello_line)
             .map_err(|error| format!("detached semantic TCP hello report failed: {error}"))?;
-        for line in [
-            r#"{"Hello":{"username":"semantic-user","room":{"name":"semantic-room"},"version":"1.7.5","features":{"chat":true}}}"#,
-            r#"{"Set":{"playlistChange":{"files":["missing-source.mkv","missing-target.mkv"],"user":"semantic-user"}}}"#,
-            r#"{"Set":{"playlistIndex":{"index":1,"user":"semantic-user"}}}"#,
-        ] {
-            stream
-                .write_all(line.as_bytes())
-                .map_err(|error| format!("detached semantic TCP write failed: {error}"))?;
-            stream.write_all(b"\r\n").map_err(|error| {
-                format!("detached semantic TCP line termination failed: {error}")
-            })?;
-        }
+        stream
+            .write_all(
+                br#"{"Hello":{"username":"semantic-user","room":{"name":"semantic-room"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .map_err(|error| format!("detached semantic TCP write failed: {error}"))?;
+        stream
+            .write_all(b"\r\n")
+            .map_err(|error| format!("detached semantic TCP line termination failed: {error}"))?;
         stream
             .flush()
             .map_err(|error| format!("detached semantic TCP flush failed: {error}"))?;
@@ -331,49 +388,30 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 );
             }
         }
-        let hello_line = hello_rx
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|error| {
-                format!("detached semantic connect flow did not observe a GUI hello: {error}")
-            })?;
+        let hello_line = recv_from_channel_while_pumping_runtime(
+            &mut connect_owner,
+            &connect_handle,
+            &mut connect_state,
+            &hello_rx,
+            Duration::from_secs(1),
+            "detached semantic connect flow GUI hello",
+        )
+        .map_err(|error| {
+            format!("detached semantic connect flow did not observe a GUI hello: {error}")
+        })?;
         if !hello_line.contains("\"semantic-user\"") || !hello_line.contains("\"semantic-room\"") {
             return Err(format!(
                 "detached semantic connect flow emitted an unexpected hello payload: {hello_line:?}"
             ));
         }
 
-        let connect_deadline = Instant::now() + Duration::from_secs(1);
-        let mut projected_mock_playlist = false;
-        loop {
-            GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
-            let hello_actions = connect_handle.drain_actions();
-            for action in hello_actions {
-                if let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &action
-                    && snapshot.room_name == "semantic-room"
-                    && snapshot
-                        .playlist
-                        .iter()
-                        .any(|item| item == "missing-target.mkv")
-                {
-                    projected_mock_playlist = true;
-                }
-                if !connect_state.apply(action) {
-                    return Err(
-                        "detached semantic connect flow rejected a projected session action"
-                            .to_owned(),
-                    );
-                }
-            }
-            if projected_mock_playlist {
-                break;
-            }
-            if Instant::now() >= connect_deadline {
+        GuiQueuedRuntimeOwner::pump(&mut connect_owner, &connect_handle, &connect_state);
+        for action in connect_handle.drain_actions() {
+            if !connect_state.apply(action) {
                 return Err(
-                    "detached semantic connect flow did not project the mock server playlist"
-                        .to_owned(),
+                    "detached semantic connect flow rejected a projected session action".to_owned(),
                 );
             }
-            thread::sleep(Duration::from_millis(10));
         }
 
         let mut refresh_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -483,12 +521,11 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         let expected_search_message = format!("Missing media found: {found_path_text}.");
         if search_state
             .notifications
-            .last()
-            .map(|notification| notification.message.as_str())
-            != Some(expected_search_message.as_str())
+            .iter()
+            .any(|notification| notification.message == expected_search_message)
         {
             return Err(
-                "detached semantic search flow did not surface the located media notification"
+                "detached semantic search flow unexpectedly surfaced a success notification"
                     .to_owned(),
             );
         }

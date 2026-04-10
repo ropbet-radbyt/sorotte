@@ -15,7 +15,7 @@ use super::runtime_bridge::{
     GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiPendingCompletionRequest,
     GuiQueuedRuntimeOwner, GuiRuntimeRequest,
 };
-use super::shell_state::{GuiShellAction, SyncplayGuiShellAppState};
+use super::shell_state::{GuiPendingOperationKind, GuiShellAction, SyncplayGuiShellAppState};
 use super::support::{nonempty_room_name_text, normalized_editable_text};
 
 type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
@@ -161,6 +161,7 @@ impl GuiQueuedRuntimeBridgeHandle {
 pub(super) struct GuiQueuedRuntimeBridge {
     handle: GuiQueuedRuntimeBridgeHandle,
     show_manual_pending_controls: bool,
+    queued_pending_completion: Option<GuiPendingOperationKind>,
 }
 
 #[allow(dead_code)]
@@ -177,8 +178,49 @@ impl GuiQueuedRuntimeBridge {
             Self {
                 handle: handle.clone(),
                 show_manual_pending_controls,
+                queued_pending_completion: None,
             },
             handle,
+        )
+    }
+
+    fn queue_pending_completion_if_needed(&mut self, state: &SyncplayGuiShellAppState) {
+        let pending_kind = state.pending_operation.as_ref().map(|pending| pending.kind);
+        let Some(request) = GuiPendingCompletionRequest::from_state(state) else {
+            self.queued_pending_completion = None;
+            return;
+        };
+        if self.queued_pending_completion == pending_kind {
+            return;
+        }
+        self.handle
+            .push_request(GuiRuntimeRequest::CompletePendingOperation(request));
+        self.queued_pending_completion = pending_kind;
+    }
+
+    fn runtime_action_clears_pending_operation(action: &GuiShellAction) -> bool {
+        matches!(
+            action,
+            GuiShellAction::CompleteConfigurationSave(_)
+                | GuiShellAction::CancelConfigurationSave
+                | GuiShellAction::CompleteConfigurationReset(_)
+                | GuiShellAction::CancelConfigurationReset
+                | GuiShellAction::CompleteConfigurationReload(_)
+                | GuiShellAction::CancelConfigurationReload
+                | GuiShellAction::CompleteClearGuiData
+                | GuiShellAction::CancelClearGuiData
+                | GuiShellAction::CompletePendingOperation
+                | GuiShellAction::CancelPendingOperation
+                | GuiShellAction::CompleteSavedServerConnect
+                | GuiShellAction::CancelSavedServerConnect
+                | GuiShellAction::CompleteSessionDisconnect
+                | GuiShellAction::CancelSessionDisconnect
+                | GuiShellAction::CompleteSelectedPublicServerConnect
+                | GuiShellAction::CompletePublicServerRefresh(_)
+                | GuiShellAction::CompleteMissingMediaSearch(_)
+                | GuiShellAction::CompletePlaybackPauseToggle
+                | GuiShellAction::CancelPlaybackPauseToggle
+                | GuiShellAction::CompleteLocalChatSend
         )
     }
 }
@@ -189,7 +231,14 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
     }
 
     fn drain_runtime_actions(&mut self) -> Vec<GuiShellAction> {
-        self.handle.drain_actions()
+        let actions = self.handle.drain_actions();
+        if actions
+            .iter()
+            .any(Self::runtime_action_clears_pending_operation)
+        {
+            self.queued_pending_completion = None;
+        }
+        actions
     }
 
     fn dispatch_runtime_request(
@@ -405,10 +454,7 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
         &mut self,
         state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
-        if let Some(request) = GuiPendingCompletionRequest::from_state(state) {
-            self.handle
-                .push_request(GuiRuntimeRequest::CompletePendingOperation(request));
-        }
+        self.queue_pending_completion_if_needed(state);
         Vec::new()
     }
 

@@ -36,28 +36,19 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
     assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
     assert!(state.menus.tls_prompt_expected);
     assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("TLS certificate prompt opened.")
-    );
+    assert!(state.main_window.chat.is_empty());
 
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
     assert!(state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
-    assert_eq!(state.open_modal, Some(GuiShellModal::About));
+    assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
+    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceHelpRequested));
     assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Help opened.")
-    );
+    assert!(state.notifications.is_empty());
 }
 
 #[test]
@@ -69,10 +60,7 @@ fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
     assert!(state.apply(GuiShellAction::DismissUpdateNotice));
     assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Update notice dismissed.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
     assert!(state.apply(GuiShellAction::CloseModal));
@@ -82,14 +70,7 @@ fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
     assert!(state.apply(GuiShellAction::TrustTlsCertificatePrompt));
     assert!(!state.menus.tls_prompt_expected);
     assert_eq!(state.open_modal, None);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("TLS certificate trusted for this session.")
-    );
+    assert!(state.main_window.chat.is_empty());
 }
 
 #[test]
@@ -109,7 +90,7 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
     )));
 
     assert!(state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert_eq!(state.open_modal, None);
     assert_eq!(
         state.update_check.message.as_deref(),
         Some("A new version of Syncplay is available.")
@@ -131,10 +112,7 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
             .map(|row| (row.label.as_str(), row.address.as_str())),
         Some(("Primary", "syncplay.pl:8999"))
     );
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("A new version of Syncplay is available.")
-    );
+    assert!(state.notifications.is_empty());
 }
 
 #[test]
@@ -159,10 +137,7 @@ fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when
         state.update_check.message.as_deref(),
         Some("Syncplay is up to date")
     );
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Syncplay is up to date")
-    );
+    assert!(state.notifications.is_empty());
 }
 
 #[test]
@@ -178,7 +153,7 @@ fn gui_shell_app_state_auto_opens_new_runtime_prompt_flags() {
             about_dialog_available: true,
         },
     )));
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert_eq!(state.open_modal, None);
 
     assert!(state.apply(GuiShellAction::DismissUpdateNotice));
     assert_eq!(state.open_modal, None);

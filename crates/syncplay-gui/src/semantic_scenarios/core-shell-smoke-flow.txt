@@ -13,15 +13,11 @@ assert-enabled	menus:action:0:0	false
 assert-enabled	shell:quick:open-media-file	false
 assert-enabled	menus:action:3:0	false
 activate	menus:action:4:0
-assert-value	shell:open-modal	about
-close-modal
+assert-value	shell:active-view	menus-and-dialogs
 assert-value	shell:open-modal	(none)
 activate	menus:action:4:2
-assert-value	shell:open-modal	update-notice
-assert-value	shell:modal:kind	update-notice
-activate	shell:modal:update:dismiss
 assert-value	shell:open-modal	(none)
-assert-value	menus:dialog:update	no
+assert-value	menus:dialog:update	yes
 activate	menus:action:2:4
 assert-value	shell:open-modal	tls-certificate-prompt
 assert-value	shell:modal:kind	tls-certificate-prompt
@@ -44,7 +40,6 @@ activate	config-command:save
 assert-pending	save-configuration
 complete-pending
 assert-pending	none
-assert-value	shell:notification:1	Configuration saved.
 clear-notifications
 activate	public-servers-root
 assert-selected	public-servers-root	true
@@ -61,7 +56,6 @@ activate	public-servers:command:refresh
 assert-pending	refresh-public-servers
 complete-pending-runtime
 assert-pending	none
-assert-value	shell:notification:1	Public servers refreshed: 2 entries.
 clear-notifications
 activate	public-servers:command:add-custom
 enter-text	public-servers:edit:label	false	Custom

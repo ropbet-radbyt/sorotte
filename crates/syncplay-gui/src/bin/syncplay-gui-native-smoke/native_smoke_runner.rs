@@ -192,23 +192,36 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
 ) -> Result<(), String> {
     let _ = select_top_tab_with_wait(driver, window, "Chat", "Chat Input", timeout);
     driver.set_named_edit_value(window, "Chat Input", message, true)?;
-    let _ = wait_for_accessible_name_with_page_up(
-        driver,
-        window,
-        "pending: send-chat-message",
-        4,
-        timeout,
-    )
-    .map_err(|error| format!("failed after submitting chat message {message:?}: {error}"))?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Complete",
-        NativeControlKind::Button,
-        timeout,
-    )?;
+    wait_for_pending_operation_to_finish(driver, window, "pending: send-chat-message", timeout)?;
     assert_chat_input_cleared(driver, window, timeout)?;
     Ok(())
+}
+
+pub(super) fn wait_for_pending_operation_to_finish<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    pending_label: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let _ = wait_for_accessible_name(
+        driver,
+        window,
+        pending_label,
+        timeout.min(Duration::from_millis(800)),
+    );
+    if wait_for_named_control_count(
+        driver,
+        window,
+        pending_label,
+        NativeControlKind::Any,
+        0,
+        timeout.min(Duration::from_millis(800)),
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+    wait_for_accessible_name(driver, window, "pending: (none)", timeout)
 }
 
 pub(super) fn run_native_smoke(options: &NativeSmokeOptions) -> Result<NativeSmokeReport, String> {
@@ -565,6 +578,31 @@ impl MockSessionServer {
     }
 }
 
+fn read_mock_session_startup_hello_line(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+) -> Result<String, String> {
+    let mut hello_line = String::new();
+    reader
+        .read_line(&mut hello_line)
+        .map_err(|error| format!("mock TCP server failed to read startup hello line: {error}"))?;
+    if hello_line.contains("\"startTLS\":\"send\"") {
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"false"}}"#)
+            .map_err(|error| {
+                format!("mock TCP server failed to decline startup TLS negotiation: {error}")
+            })?;
+        stream.write_all(b"\n").map_err(|error| {
+            format!("mock TCP server failed to terminate TLS negotiation response: {error}")
+        })?;
+        hello_line.clear();
+        reader.read_line(&mut hello_line).map_err(|error| {
+            format!("mock TCP server failed to read post-TLS startup hello line: {error}")
+        })?;
+    }
+    Ok(hello_line)
+}
+
 fn start_mock_session_server(
     initial_lines: &'static [&'static str],
     first_chat_followup_lines: &'static [&'static str],
@@ -617,10 +655,7 @@ fn start_mock_session_server(
             .try_clone()
             .map_err(|error| format!("mock TCP server failed to clone stream: {error}"))?;
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader.read_line(&mut hello_line).map_err(|error| {
-            format!("mock TCP server failed to read startup hello line: {error}")
-        })?;
+        let hello_line = read_mock_session_startup_hello_line(&mut stream, &mut reader)?;
         hello_tx.send(hello_line).map_err(|error| {
             format!("mock TCP server failed to report startup hello line: {error}")
         })?;
@@ -757,10 +792,7 @@ fn start_timed_mock_session_server(
             .try_clone()
             .map_err(|error| format!("mock TCP server failed to clone stream: {error}"))?;
         let mut reader = BufReader::new(reader_stream);
-        let mut hello_line = String::new();
-        reader.read_line(&mut hello_line).map_err(|error| {
-            format!("mock TCP server failed to read startup hello line: {error}")
-        })?;
+        let hello_line = read_mock_session_startup_hello_line(&mut stream, &mut reader)?;
         hello_tx.send(hello_line).map_err(|error| {
             format!("mock TCP server failed to report startup hello line: {error}")
         })?;

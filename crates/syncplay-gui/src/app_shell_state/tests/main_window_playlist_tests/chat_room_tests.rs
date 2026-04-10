@@ -51,10 +51,7 @@ fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.outgoing_chat_message, None);
     assert!(state.main_window.chat.is_empty());
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Chat sent.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::AnnounceRemoteChatMessage {
         sender: "alice".to_owned(),

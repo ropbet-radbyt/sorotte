@@ -25,23 +25,16 @@ impl SyncplayGuiShellAppState {
         if !self.menus.about_dialog_available {
             return self.record_action_error("The About dialog is unavailable.");
         }
-        self.open_modal = Some(GuiShellModal::About);
-        self.push_system_chat_message("About dialog opened.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "About dialog opened.".to_owned(),
-        );
+        self.active_view = GuiShellView::MenusAndDialogs;
+        if self.open_modal == Some(GuiShellModal::About) {
+            self.open_modal = None;
+        }
         self.clear_action_error_and_refresh();
         true
     }
 
     pub(super) fn announce_help_requested(&mut self) -> bool {
         self.active_view = GuiShellView::MenusAndDialogs;
-        self.push_system_chat_message("Help requested.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Help opened.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }

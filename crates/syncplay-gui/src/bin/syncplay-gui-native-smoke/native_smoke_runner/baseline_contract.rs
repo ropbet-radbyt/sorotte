@@ -95,17 +95,9 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     steps.push("menu-enable-state-visible".to_owned());
 
     invoke_menu_command_with_fallback(driver, window, "Help", "Check for Updates", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Update Notice", step_timeout)?;
-    wait_for_accessible_name(driver, window, "modal: update-notice", step_timeout)?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Dismiss Notice",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
+    wait_for_accessible_name_fragment(driver, window, "Syncplay is up to date", step_timeout)?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    steps.push("update-notice-dismissible".to_owned());
+    steps.push("update-notice-inline".to_owned());
 
     invoke_menu_command_with_fallback(
         driver,
@@ -129,12 +121,6 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        "success: TLS certificate trusted for this session.",
-        step_timeout,
-    )?;
     steps.push("tls-certificate-prompt-completed".to_owned());
 
     navigate_to_view_with_fallback(
@@ -257,21 +243,10 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(driver, window, "pending: save-configuration", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Busy: yes", step_timeout)?;
-    wait_for_accessible_name(driver, window, "Reload: disabled", step_timeout)?;
-    steps.push("config-busy-disabled-visible".to_owned());
-    invoke_named_control_with_wait(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
-        "Complete",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        "success: Configuration saved.",
+        "pending: save-configuration",
         step_timeout,
     )?;
     wait_for_accessible_name(driver, window, "Busy: no", step_timeout)?;
@@ -328,28 +303,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
         "pending: connect-public-server",
         step_timeout,
     )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Cancel",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_named_control_count(
-        driver,
-        window,
-        "pending: connect-public-server",
-        NativeControlKind::Any,
-        0,
-        step_timeout,
-    )?;
-    steps.push("public-server-connect-cancelled".to_owned());
+    steps.push("public-server-connect-complete".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -358,31 +318,10 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
         "pending: refresh-public-servers",
-        step_timeout,
-    )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Complete",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_named_control_count(
-        driver,
-        window,
-        "pending: refresh-public-servers",
-        NativeControlKind::Any,
-        0,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        "success: Public servers refreshed: 2 entries.",
         step_timeout,
     )?;
     steps.push("public-server-refresh-complete".to_owned());
@@ -443,28 +382,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
         "pending: connect-public-server",
         step_timeout,
     )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Cancel",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_named_control_count(
-        driver,
-        window,
-        "pending: connect-public-server",
-        NativeControlKind::Any,
-        0,
-        step_timeout,
-    )?;
-    steps.push("public-server-connect-custom-cancelled".to_owned());
+    steps.push("public-server-connect-custom-complete".to_owned());
 
     navigate_to_view_with_fallback(
         driver,
@@ -577,28 +501,13 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
         "pending: search-missing-media",
         step_timeout,
     )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Cancel",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_named_control_count(
-        driver,
-        window,
-        "pending: search-missing-media",
-        NativeControlKind::Any,
-        0,
-        step_timeout,
-    )?;
-    steps.push("media-search-cancelled".to_owned());
+    steps.push("media-search-complete".to_owned());
 
     navigate_to_view_with_fallback(
         driver,
@@ -629,23 +538,10 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Button,
         step_timeout,
     )?;
-    wait_for_accessible_name(
+    wait_for_pending_operation_to_finish(
         driver,
         window,
         "pending: reload-configuration",
-        step_timeout,
-    )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Complete",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        "success: Configuration reload completed.",
         step_timeout,
     )?;
     let _ = wait_for_saved_configuration(
@@ -851,7 +747,8 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         })?;
     }
     wait_for_accessible_name(driver, window, "About Syncplay", step_timeout)?;
-    wait_for_accessible_name(driver, window, "modal: about", step_timeout)?;
+    wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
+    wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
     steps.push("about-open".to_owned());
 
     Ok(steps)

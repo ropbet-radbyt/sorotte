@@ -46,7 +46,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         gui_semantic_scenario_script("core-shell-smoke-flow")
             .expect("built-in core shell smoke scenario should expose a script")
-            .contains("close-modal")
+            .contains("menus:dialog:update\tyes")
     );
     assert!(
         gui_semantic_scenario_script("localized-runtime-flow")
@@ -118,7 +118,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         descriptors[2]
             .script
-            .contains("shell:modal:update:message\tSyncplay est a jour")
+            .contains("menus:update:message\tSyncplay est a jour")
     );
     assert_eq!(descriptors[4].name, "runtime-transport-churn-flow");
     assert!(

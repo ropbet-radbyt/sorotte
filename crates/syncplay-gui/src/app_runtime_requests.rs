@@ -456,14 +456,9 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::SendChatMessage(message) => {
                 if let Some(session) = self.session.as_mut() {
                     match session.send_chat_message(message) {
-                        Ok(()) => Self::push_actions_and_project(
-                            handle,
-                            projected_state,
-                            vec![GuiShellAction::PushTransientNotification {
-                                level: GuiTransientNotificationLevel::Success,
-                                message: "Chat sent.".to_owned(),
-                            }],
-                        ),
+                        Ok(()) => {
+                            Self::push_actions_and_project(handle, projected_state, Vec::new())
+                        }
                         Err(error) => Self::push_runtime_unavailable(
                             handle,
                             format!(

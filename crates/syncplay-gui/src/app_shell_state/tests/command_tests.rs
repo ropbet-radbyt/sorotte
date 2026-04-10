@@ -101,7 +101,7 @@ fn gui_shell_app_state_handles_media_search_event_actions() {
     assert_eq!(state.pending_operation, None);
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),
-        Some("Missing media found: movie.mkv.")
+        Some("Media search directory added: D:/Archive.")
     );
 
     assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
@@ -169,10 +169,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
         Some(GuiPendingOperationKind::SaveConfiguration)
     );
     assert!(!state.commands.can_save_configuration);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Configuration save started.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::CancelConfigurationSave));
     assert_eq!(state.pending_operation, None);
@@ -186,14 +183,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
         state.configuration.to_stored_settings(),
     )));
     assert_eq!(state.pending_operation, None);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("Configuration saved.")
-    );
+    assert!(state.main_window.chat.is_empty());
 
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert_eq!(
@@ -203,20 +193,13 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
     assert!(!state.commands.can_toggle_pause);
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),
-        Some("Playback pause requested.")
+        Some("Configuration save canceled.")
     );
 
     assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));
     assert_eq!(state.pending_operation, None);
     assert!(state.main_window.playback_paused);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("Playback paused.")
-    );
+    assert!(state.main_window.chat.is_empty());
 
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert!(state.apply(GuiShellAction::CancelPlaybackPauseToggle));
@@ -298,10 +281,7 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
         Some(GuiPendingOperationKind::ResetConfiguration)
     );
     assert!(!state.commands.can_reset_configuration);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Configuration reset started.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::CancelConfigurationReset));
     assert_eq!(state.pending_operation, None);
@@ -325,14 +305,7 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
         Some("SavedRoom")
     );
     assert!(!state.commands.can_reset_configuration);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("Configuration reset to the last saved state.")
-    );
+    assert!(state.main_window.chat.is_empty());
 }
 
 #[test]
@@ -394,10 +367,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
         Some(GuiPendingOperationKind::ReloadConfiguration)
     );
     assert!(!state.commands.can_reload_configuration);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Configuration reload started.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::CancelConfigurationReload));
     assert_eq!(state.pending_operation, None);
@@ -433,14 +403,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert_eq!(state.configuration.to_stored_settings(), replacement);
     assert_eq!(state.saved_configuration, replacement);
     assert!(!state.commands.can_reset_configuration);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("Configuration snapshot loaded.")
-    );
+    assert!(state.main_window.chat.is_empty());
     assert_eq!(state.active_view, GuiShellView::Configuration);
     assert!(state.menus.tls_prompt_expected);
     assert!(state.menus.update_notice_expected);
@@ -502,10 +465,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
         state.pending_operation.as_ref().map(|pending| pending.kind),
         Some(GuiPendingOperationKind::ClearGuiData)
     );
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Clear GUI data started.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::CancelClearGuiData));
     assert_eq!(state.pending_operation, None);
@@ -527,14 +487,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
     assert!(state.public_servers.servers.is_empty());
     assert!(state.media_search.directories.is_empty());
     assert_eq!(state.last_media_dialog_directory, None);
-    assert_eq!(
-        state
-            .main_window
-            .chat
-            .last()
-            .map(|row| row.message.as_str()),
-        Some("GUI data cleared. First-run configuration restored.")
-    );
+    assert!(state.main_window.chat.is_empty());
 }
 
 #[test]

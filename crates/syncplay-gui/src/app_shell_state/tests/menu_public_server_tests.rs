@@ -93,10 +93,7 @@ fn gui_shell_app_state_handles_public_server_browser_event_actions() {
     );
     assert!(state.apply(GuiShellAction::CompleteSelectedPublicServerConnect));
     assert_eq!(state.pending_operation, None);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Connected to public server: Primary.")
-    );
+    assert_eq!(state.active_view, GuiShellView::Configuration);
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
     assert_eq!(

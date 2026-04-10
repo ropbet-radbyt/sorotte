@@ -71,10 +71,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::SearchMissingMedia,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Missing-media search started.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -90,13 +86,7 @@ impl SyncplayGuiShellAppState {
 
         let found_path = found_path.and_then(|path| normalized_editable_text(&path));
         match found_path {
-            Some(path) => {
-                self.push_system_chat_message(format!("Missing media found: {path}."));
-                self.push_transient_notification(
-                    GuiTransientNotificationLevel::Success,
-                    format!("Missing media found: {path}."),
-                );
-            }
+            Some(_) => {}
             None => {
                 self.push_system_chat_message(
                     "Missing media search completed: no match found.".to_owned(),

@@ -3,7 +3,7 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
     GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
-    GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    SyncplayGuiShellAppState,
 };
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -49,10 +49,7 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
             &fallback_state,
             GuiRuntimeRequest::SendChatMessage("preview hello".to_owned()),
         ),
-        vec![GuiShellAction::PushTransientNotification {
-            level: GuiTransientNotificationLevel::Success,
-            message: "Chat sent.".to_owned(),
-        }]
+        Vec::new()
     );
 }
 

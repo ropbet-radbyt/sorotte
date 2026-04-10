@@ -480,17 +480,13 @@ impl SyncplayGuiShellAppState {
     pub(super) fn open_newly_expected_modal_if_needed(
         &mut self,
         previous_tls_prompt_expected: bool,
-        previous_update_notice_expected: bool,
+        _previous_update_notice_expected: bool,
     ) {
         if self.open_modal.is_some() {
             return;
         }
         if self.menus.tls_prompt_expected && !previous_tls_prompt_expected {
             self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
-            return;
-        }
-        if self.menus.update_notice_expected && !previous_update_notice_expected {
-            self.open_modal = Some(GuiShellModal::UpdateNotice);
         }
     }
 

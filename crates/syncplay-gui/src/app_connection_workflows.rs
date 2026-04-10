@@ -93,7 +93,7 @@ impl SyncplayGuiShellAppState {
                 "Configured server connect requires a saved host and a valid port.",
             );
         }
-        let Some(target) = self.saved_session_connect_target() else {
+        let Some(_target) = self.saved_session_connect_target() else {
             return self.record_action_error(
                 "Configured server connect requires a saved host and a valid port.",
             );
@@ -103,10 +103,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ConnectSavedServer,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            format!("Connecting to configured server: {}.", target.address),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -120,7 +116,7 @@ impl SyncplayGuiShellAppState {
             return self
                 .record_action_error("No configured-server connect is currently in progress.");
         }
-        let Some(target) = self.saved_session_connect_target() else {
+        let Some(_target) = self.saved_session_connect_target() else {
             self.pending_operation = None;
             self.pending_saved_server_connect_saves_configuration = false;
             return self.record_action_error(
@@ -130,14 +126,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = None;
         self.pending_saved_server_connect_saves_configuration = false;
         self.active_view = GuiShellView::MainWindow;
-        self.push_system_chat_message(format!(
-            "Connected to configured server: {}.",
-            target.address
-        ));
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            format!("Connected to configured server: {}.", target.address),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -174,10 +162,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::DisconnectSession,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Disconnecting the current session.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -190,11 +174,6 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("No session disconnect is currently in progress.");
         }
         self.pending_operation = None;
-        self.push_system_chat_message("Session disconnected.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            "Session disconnected.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -234,11 +213,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ConnectPublicServer,
         });
-        let row = self.public_servers.servers[index].clone();
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            format!("Connecting to public server: {}.", row.label),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -254,16 +228,11 @@ impl SyncplayGuiShellAppState {
             self.pending_operation = None;
             return self.record_action_error("No public server is currently selected.");
         };
-        let Some(row) = self.public_servers.servers.get(index).cloned() else {
+        let Some(_row) = self.public_servers.servers.get(index).cloned() else {
             self.pending_operation = None;
             return self.record_action_error("No public server exists at the requested index.");
         };
         self.pending_operation = None;
-        self.push_system_chat_message(format!("Connected to public server: {}.", row.label));
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            format!("Connected to public server: {}.", row.label),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -297,10 +266,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::RefreshPublicServers,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Refreshing public servers.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -341,7 +306,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = None;
         if self.public_servers.servers.is_empty() {
             self.set_selected_public_server_index(None);
-            self.push_system_chat_message("Public servers refreshed: none available.".to_owned());
             self.push_transient_notification(
                 GuiTransientNotificationLevel::Warning,
                 "Public servers refreshed: none available.".to_owned(),
@@ -349,17 +313,6 @@ impl SyncplayGuiShellAppState {
         } else {
             self.set_selected_public_server_index(Some(0));
             let _ = self.apply_public_server_selection(0);
-            self.push_system_chat_message(format!(
-                "Public servers refreshed: {} entries.",
-                self.public_servers.servers.len()
-            ));
-            self.push_transient_notification(
-                GuiTransientNotificationLevel::Success,
-                format!(
-                    "Public servers refreshed: {} entries.",
-                    self.public_servers.servers.len()
-                ),
-            );
         }
         self.clear_action_error_and_refresh();
         true

@@ -605,10 +605,7 @@ impl GuiRuntimeRequest {
                     None,
                 )
             }
-            Self::SendChatMessage(_message) => vec![GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Success,
-                message: "Chat sent.".to_owned(),
-            }],
+            Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
                 vec![
@@ -620,13 +617,7 @@ impl GuiRuntimeRequest {
                 ]
             }
             Self::AdvancePlaylistIndex => Vec::new(),
-            Self::TogglePlaybackPause => {
-                if state.main_window.playback_paused {
-                    vec![GuiShellAction::AnnouncePlaybackResumed]
-                } else {
-                    vec![GuiShellAction::AnnouncePlaybackPaused]
-                }
-            }
+            Self::TogglePlaybackPause => vec![GuiShellAction::CompletePlaybackPauseToggle],
             Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer)
                 if state.pending_saved_server_connect_saves_configuration =>
             {

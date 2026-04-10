@@ -82,6 +82,8 @@ struct MockSessionServer {
 mod native_smoke_runner;
 const DEFAULT_PUBLIC_SERVERS_SPEC: &str =
     "[['Alpha', 'alpha.example:8999'], ['Beta', 'beta.example:9000']]";
+const DEFAULT_UPDATE_CHECK_RESPONSE: &str =
+    r#"{"version-status":"uptodate","version-message":"Syncplay is up to date."}"#;
 const DLL_INIT_FAILED_STATUS: u32 = 0xC000_0142;
 const LAUNCH_ATTEMPTS: usize = 2;
 const TRANSPORT_SESSION_USERNAME: &str = "smoke-user";
@@ -370,6 +372,7 @@ fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Resul
         "SYNCPLAY_MPV_IPC_PATH",
         "SYNCPLAY_GUI_TEST_DROP_FILE_PATHS",
         "SYNCPLAY_GUI_TEST_DROP_TARGET",
+        "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE",
     ] {
         command.env_remove(name);
     }
@@ -385,6 +388,10 @@ fn launch_syncplay_gui(binary_path: &Path, launch: GuiLaunchConfig<'_>) -> Resul
     command.env(
         "SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH",
         launch.media_search_browse_path.display().to_string(),
+    );
+    command.env(
+        "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE",
+        DEFAULT_UPDATE_CHECK_RESPONSE,
     );
     if let Some(drop_file_paths_spec) = launch.drop_file_paths_spec {
         command.env("SYNCPLAY_GUI_TEST_DROP_FILE_PATHS", drop_file_paths_spec);

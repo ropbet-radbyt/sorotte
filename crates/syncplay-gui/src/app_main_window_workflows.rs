@@ -412,14 +412,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::TogglePlaybackPause,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            if self.main_window.playback_paused {
-                "Playback resume requested.".to_owned()
-            } else {
-                "Playback pause requested.".to_owned()
-            },
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -433,7 +425,7 @@ impl SyncplayGuiShellAppState {
         }
 
         self.pending_operation = None;
-        self.announce_playback_pause_state(!self.main_window.playback_paused)
+        self.set_playback_pause_state(!self.main_window.playback_paused, false)
     }
 
     pub(super) fn cancel_playback_pause_toggle(&mut self) -> bool {
@@ -453,7 +445,7 @@ impl SyncplayGuiShellAppState {
         true
     }
 
-    pub(super) fn announce_playback_pause_state(&mut self, paused: bool) -> bool {
+    fn set_playback_pause_state(&mut self, paused: bool, announce: bool) -> bool {
         if !self.main_window.playback.can_toggle_pause {
             return self.record_action_error(
                 "Playback pause state cannot change when pause controls are unavailable.",
@@ -468,21 +460,27 @@ impl SyncplayGuiShellAppState {
         }
 
         self.main_window.playback_paused = paused;
-        self.push_system_chat_message(if paused {
-            "Playback paused.".to_owned()
-        } else {
-            "Playback resumed.".to_owned()
-        });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            if paused {
+        if announce {
+            self.push_system_chat_message(if paused {
                 "Playback paused.".to_owned()
             } else {
                 "Playback resumed.".to_owned()
-            },
-        );
+            });
+            self.push_transient_notification(
+                GuiTransientNotificationLevel::Info,
+                if paused {
+                    "Playback paused.".to_owned()
+                } else {
+                    "Playback resumed.".to_owned()
+                },
+            );
+        }
         self.clear_action_error_and_refresh();
         true
+    }
+
+    pub(super) fn announce_playback_pause_state(&mut self, paused: bool) -> bool {
+        self.set_playback_pause_state(paused, true)
     }
 
     pub(super) fn announce_local_user_ready_state(&mut self, ready: bool) -> bool {

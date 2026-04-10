@@ -57,11 +57,10 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
         let step_timeout = timeout.min(Duration::from_millis(6_000));
         let mut steps = Vec::new();
 
-        let initial_state = wait_for_any_accessible_name(
+        let _initial_state = wait_for_any_accessible_name(
             driver,
             window,
             &[
-                "modal: update-notice",
                 "modal: tls-certificate-prompt",
                 "view: configuration",
                 "view: main-window",
@@ -69,16 +68,6 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             ],
             step_timeout,
         )?;
-        if initial_state == "modal: update-notice" {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                "Dismiss Notice",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-        }
         if wait_for_accessible_name(
             driver,
             window,
@@ -153,25 +142,10 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_pending_operation_to_finish(
             driver,
             window,
             "pending: search-missing-media",
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Complete",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_named_control_count(
-            driver,
-            window,
-            "pending: search-missing-media",
-            NativeControlKind::Any,
-            0,
             step_timeout,
         )?;
         if wait_for_accessible_name(
@@ -300,9 +274,31 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
         wait_for_any_accessible_name(
             driver,
             window,
-            &["view: configuration", "view: main-window"],
+            &[
+                "modal: tls-certificate-prompt",
+                "view: menus-and-dialogs",
+                "view: configuration",
+                "view: main-window",
+            ],
             step_timeout,
         )?;
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "modal: tls-certificate-prompt",
+            step_timeout.min(Duration::from_millis(800)),
+        )
+        .is_ok()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Trust Certificate",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -349,25 +345,10 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_pending_operation_to_finish(
             driver,
             window,
             "pending: search-missing-media",
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Complete",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
-        wait_for_named_control_count(
-            driver,
-            window,
-            "pending: search-missing-media",
-            NativeControlKind::Any,
-            0,
             step_timeout,
         )?;
         if wait_for_accessible_name(

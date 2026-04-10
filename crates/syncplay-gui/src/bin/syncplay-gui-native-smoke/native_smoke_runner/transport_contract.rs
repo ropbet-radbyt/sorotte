@@ -114,9 +114,31 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         wait_for_any_accessible_name(
             driver,
             window,
-            &["view: configuration", "view: main-window"],
+            &[
+                "modal: tls-certificate-prompt",
+                "view: menus-and-dialogs",
+                "view: configuration",
+                "view: main-window",
+            ],
             step_timeout,
         )?;
+        if wait_for_accessible_name(
+            driver,
+            window,
+            "modal: tls-certificate-prompt",
+            step_timeout.min(Duration::from_millis(800)),
+        )
+        .is_ok()
+        {
+            invoke_named_control_with_wait(
+                driver,
+                window,
+                "Trust Certificate",
+                NativeControlKind::Button,
+                step_timeout,
+            )?;
+            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        }
         navigate_to_view_with_fallback(
             driver,
             window,
@@ -192,17 +214,10 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_pending_operation_to_finish(
             driver,
             window,
             "pending: connect-public-server",
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Complete",
-            NativeControlKind::Button,
             step_timeout,
         )?;
 

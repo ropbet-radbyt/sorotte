@@ -79,9 +79,7 @@ pub(crate) fn pump_and_apply_runtime_owner_actions(
     let actions = handle.drain_actions();
     for action in actions.iter().cloned() {
         if !state.apply(action.clone()) {
-            panic!(
-                "state.apply({action:?}) failed with state {state:?}",
-            );
+            panic!("state.apply({action:?}) failed with state {state:?}",);
         }
     }
     actions

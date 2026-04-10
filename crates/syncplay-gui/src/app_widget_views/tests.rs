@@ -226,8 +226,9 @@ fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
         .expect("about dialog status should exist");
     assert_eq!(about.kind, GuiWidgetKind::Status);
     assert!(about.enabled);
-    assert!(about.selected);
+    assert!(!about.selected);
     assert_eq!(about.value.as_deref(), Some("yes"));
+    assert!(tree.find("menus:about:summary").is_some());
 }
 
 #[test]

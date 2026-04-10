@@ -33,28 +33,18 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let step_timeout = timeout.min(Duration::from_millis(4_000));
         let mut steps = Vec::new();
 
-        let initial_state = wait_for_any_accessible_name(
+        let _initial_state = wait_for_any_accessible_name(
             driver,
             window,
             &[
-                "modal: update-notice",
                 "modal: tls-certificate-prompt",
+                "view: menus-and-dialogs",
                 "view: media-search",
                 "view: configuration",
                 "view: main-window",
             ],
             step_timeout,
         )?;
-        if initial_state == "modal: update-notice" {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                "Dismiss Notice",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-        }
         if wait_for_accessible_name(
             driver,
             window,
@@ -77,17 +67,29 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             driver,
             window,
             &[
+                "view: menus-and-dialogs",
                 "view: media-search",
                 "view: configuration",
                 "view: main-window",
             ],
             step_timeout,
         )?;
-        if initial_view != "view: media-search" {
+        if initial_view != "view: menus-and-dialogs" {
             return Err(format!(
-                "expected relaunch to restore the media-search view, got {initial_view:?}"
+                "expected relaunch to restore the menus-and-dialogs view, got {initial_view:?}"
             ));
         }
+        wait_for_accessible_name(driver, window, "About Syncplay", step_timeout)?;
+        wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
+        navigate_to_view_with_fallback(
+            driver,
+            window,
+            "Media Search",
+            "view: media-search",
+            "File",
+            "Open Media Search",
+            step_timeout,
+        )?;
         wait_for_accessible_name(driver, window, "First File Timeout: 3.00s", step_timeout)?;
         wait_for_accessible_name(driver, window, "Search Timeout: 30.00s", step_timeout)?;
         wait_for_accessible_name(driver, window, &media_search_directory_value, step_timeout)?;
@@ -165,12 +167,10 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "pending: clear-gui-data", step_timeout)?;
-        invoke_named_control_with_wait(
+        wait_for_pending_operation_to_finish(
             driver,
             window,
-            "Complete",
-            NativeControlKind::Button,
+            "pending: clear-gui-data",
             step_timeout,
         )?;
         let clear_deadline = Instant::now() + step_timeout;
@@ -247,11 +247,10 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let (mut first_run_child, first_run_window) =
             launch_syncplay_gui_with_retry(driver, binary_path, first_run_launch, timeout)?;
         let first_run_outcome = (|| -> Result<(), String> {
-            let initial_state = wait_for_any_accessible_name(
+            let _initial_state = wait_for_any_accessible_name(
                 driver,
                 first_run_window,
                 &[
-                    "modal: update-notice",
                     "modal: tls-certificate-prompt",
                     "view: configuration",
                     "view: public-servers",
@@ -259,16 +258,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 ],
                 step_timeout,
             )?;
-            if initial_state == "modal: update-notice" {
-                invoke_named_control_with_wait(
-                    driver,
-                    first_run_window,
-                    "Dismiss Notice",
-                    NativeControlKind::Button,
-                    step_timeout,
-                )?;
-                wait_for_accessible_name(driver, first_run_window, "modal: (none)", step_timeout)?;
-            }
             if wait_for_accessible_name(
                 driver,
                 first_run_window,
@@ -391,11 +380,10 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let (mut migration_child, migration_window) =
             launch_syncplay_gui_with_retry(driver, binary_path, migration_launch, timeout)?;
         let migration_outcome = (|| -> Result<(), String> {
-            let migration_initial_state = wait_for_any_accessible_name(
+            let _migration_initial_state = wait_for_any_accessible_name(
                 driver,
                 migration_window,
                 &[
-                    "modal: update-notice",
                     "modal: tls-certificate-prompt",
                     "view: public-servers",
                     "view: configuration",
@@ -403,16 +391,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 ],
                 step_timeout,
             )?;
-            if migration_initial_state == "modal: update-notice" {
-                invoke_named_control_with_wait(
-                    driver,
-                    migration_window,
-                    "Dismiss Notice",
-                    NativeControlKind::Button,
-                    step_timeout,
-                )?;
-                wait_for_accessible_name(driver, migration_window, "modal: (none)", step_timeout)?;
-            }
             if wait_for_accessible_name(
                 driver,
                 migration_window,

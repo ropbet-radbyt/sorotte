@@ -2,6 +2,72 @@ use super::*;
 
 impl SyncplayGuiShellAppState {
     pub(crate) fn menu_dialog_widget_tree(&self) -> GuiWidgetNode {
+        let mut dialog_children = vec![
+            GuiWidgetNode::leaf(
+                "menus:dialog:tls",
+                "TLS Certificate Prompt",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.menus.tls_prompt_expected).to_owned()),
+                true,
+                self.open_modal == Some(GuiShellModal::TlsCertificatePrompt),
+            ),
+            GuiWidgetNode::leaf(
+                "menus:dialog:update",
+                "Update Notice",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.menus.update_notice_expected).to_owned()),
+                true,
+                self.open_modal == Some(GuiShellModal::UpdateNotice),
+            ),
+            GuiWidgetNode::leaf(
+                "menus:dialog:about",
+                "About Dialog",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.menus.about_dialog_available).to_owned()),
+                self.menus.about_dialog_available,
+                self.open_modal == Some(GuiShellModal::About),
+            ),
+        ];
+        if let Some(message) = self.update_check.message.as_ref() {
+            dialog_children.push(GuiWidgetNode::leaf(
+                "menus:update:message",
+                "Update Message",
+                GuiWidgetKind::Status,
+                Some(message.clone()),
+                true,
+                false,
+            ));
+        }
+        if let Some(url) = self.update_check.url.as_ref() {
+            dialog_children.push(GuiWidgetNode::leaf(
+                "menus:update:url",
+                "Update URL",
+                GuiWidgetKind::Status,
+                Some(url.clone()),
+                true,
+                false,
+            ));
+        }
+        dialog_children.push(GuiWidgetNode::leaf(
+            "menus:about:summary",
+            "About Syncplay",
+            GuiWidgetKind::Status,
+            Some("Rust native GUI shell for Syncplay.".to_owned()),
+            self.menus.about_dialog_available,
+            false,
+        ));
+        dialog_children.push(GuiWidgetNode::leaf(
+            "menus:about:details",
+            "About Details",
+            GuiWidgetKind::Status,
+            Some(
+                "Use Help and Check for Updates from this surface; only TLS opens a modal."
+                    .to_owned(),
+            ),
+            self.menus.about_dialog_available,
+            false,
+        ));
+
         let mut children = self
             .menus
             .sections
@@ -35,32 +101,7 @@ impl SyncplayGuiShellAppState {
             "menus:dialogs",
             "Dialogs",
             GuiWidgetKind::Panel,
-            vec![
-                GuiWidgetNode::leaf(
-                    "menus:dialog:tls",
-                    "TLS Certificate Prompt",
-                    GuiWidgetKind::Status,
-                    Some(bool_label(self.menus.tls_prompt_expected).to_owned()),
-                    true,
-                    self.open_modal == Some(GuiShellModal::TlsCertificatePrompt),
-                ),
-                GuiWidgetNode::leaf(
-                    "menus:dialog:update",
-                    "Update Notice",
-                    GuiWidgetKind::Status,
-                    Some(bool_label(self.menus.update_notice_expected).to_owned()),
-                    true,
-                    self.open_modal == Some(GuiShellModal::UpdateNotice),
-                ),
-                GuiWidgetNode::leaf(
-                    "menus:dialog:about",
-                    "About Dialog",
-                    GuiWidgetKind::Status,
-                    Some(bool_label(self.menus.about_dialog_available).to_owned()),
-                    self.menus.about_dialog_available,
-                    self.open_modal == Some(GuiShellModal::About),
-                ),
-            ],
+            dialog_children,
         ));
 
         GuiWidgetNode::branch(

@@ -47,10 +47,6 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("No local chat send is currently in progress.");
         }
         self.pending_operation = None;
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            "Chat sent.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -104,18 +100,12 @@ impl SyncplayGuiShellAppState {
     pub(super) fn announce_tls_certificate_prompt_required(&mut self) -> bool {
         self.menus.tls_prompt_expected = true;
         self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
-        self.push_system_chat_message("TLS certificate prompt opened.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Warning,
-            "TLS certificate prompt opened.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
 
     pub(super) fn announce_update_notice_available(&mut self) -> bool {
         self.menus.update_notice_expected = true;
-        self.open_modal = Some(GuiShellModal::UpdateNotice);
         if self.update_check.message.is_none() {
             self.update_check.message = Some(
                 localized_update_notice_available_message_legacy_compatible(Some(
@@ -124,11 +114,6 @@ impl SyncplayGuiShellAppState {
                 .to_owned(),
             );
         }
-        self.push_system_chat_message("Update notice opened.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Update notice opened.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -161,12 +146,15 @@ impl SyncplayGuiShellAppState {
             user_initiated: result.user_initiated,
         };
         self.menus.update_notice_expected = self.update_check.should_open_modal();
-        self.open_modal = self
-            .update_check
-            .should_open_modal()
-            .then_some(GuiShellModal::UpdateNotice);
-        self.push_system_chat_message(result.message.clone());
-        self.push_transient_notification(self.update_check.status_level(), result.message);
+        if self.open_modal == Some(GuiShellModal::UpdateNotice) {
+            self.open_modal = None;
+        }
+        if matches!(
+            self.update_check.status_level(),
+            GuiTransientNotificationLevel::Warning | GuiTransientNotificationLevel::Error
+        ) {
+            self.push_transient_notification(self.update_check.status_level(), result.message);
+        }
         self.clear_action_error_and_refresh();
         true
     }
@@ -193,16 +181,11 @@ impl SyncplayGuiShellAppState {
         if self.open_modal == Some(GuiShellModal::UpdateNotice) {
             self.open_modal = None;
         }
-        self.push_system_chat_message("Update notice dismissed.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Update notice dismissed.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
 
-    pub(super) fn complete_tls_certificate_prompt(&mut self, trusted: bool) -> bool {
+    pub(super) fn complete_tls_certificate_prompt(&mut self, _trusted: bool) -> bool {
         let had_prompt = self.menus.tls_prompt_expected
             || self.open_modal == Some(GuiShellModal::TlsCertificatePrompt);
         if !had_prompt {
@@ -213,20 +196,6 @@ impl SyncplayGuiShellAppState {
         if self.open_modal == Some(GuiShellModal::TlsCertificatePrompt) {
             self.open_modal = None;
         }
-        let message = if trusted {
-            "TLS certificate trusted for this session."
-        } else {
-            "TLS certificate rejected."
-        };
-        self.push_system_chat_message(message.to_owned());
-        self.push_transient_notification(
-            if trusted {
-                GuiTransientNotificationLevel::Success
-            } else {
-                GuiTransientNotificationLevel::Warning
-            },
-            message.to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }

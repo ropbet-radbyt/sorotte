@@ -426,13 +426,6 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert!(
-        state
-            .notifications
-            .iter()
-            .any(|notification| notification.message == "Connected to public server: Primary."),
-        "detached public-server connect should report the selected server connection"
-    );
 
     let hello_line = recv_from_channel_while_pumping_runtime(
         &mut owner,
@@ -511,13 +504,8 @@ fn gui_persisted_config_runtime_owner_refreshes_public_servers_without_session()
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert_eq!(
-        state
-            .notifications
-            .last()
-            .map(|notification| notification.message.as_str()),
-        Some("Public servers refreshed: 2 entries.")
-    );
+    assert_eq!(state.public_servers.servers.len(), 2);
+    assert_eq!(state.selected_public_server_index(), Some(0));
 }
 
 #[test]
@@ -616,12 +604,12 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
         ))]
     );
     assert!(state.pending_operation.is_none());
-    assert_eq!(
+    assert!(
         state
             .notifications
-            .last()
-            .map(|notification| notification.message.as_str()),
-        Some(expected_message.as_str())
+            .iter()
+            .all(|notification| notification.message != expected_message),
+        "detached missing-media completion should not emit a success notification"
     );
 
     let _ = std::fs::remove_dir_all(&root);
@@ -1309,8 +1297,8 @@ fn gui_persisted_config_runtime_owner_manual_disconnect_applies_pause_on_leave()
         state
             .notifications
             .iter()
-            .any(|notification| notification.message == "Session disconnected."),
-        "disconnect completion should still report the success notification"
+            .all(|notification| notification.message != "Session disconnected."),
+        "disconnect completion should no longer emit a success notification"
     );
 }
 

@@ -589,10 +589,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::SaveConfiguration,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Configuration save started.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -612,11 +608,6 @@ impl SyncplayGuiShellAppState {
         self.saved_configuration = settings;
         self.pending_operation = None;
         self.pending_saved_server_connect_saves_configuration = false;
-        self.push_system_chat_message("Configuration saved.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            "Configuration saved.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -634,10 +625,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ResetConfiguration,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Configuration reset started.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -658,11 +645,6 @@ impl SyncplayGuiShellAppState {
         self.pending_saved_server_connect_saves_configuration = false;
         self.resync_from_settings(settings.clone());
         self.saved_configuration = settings;
-        self.push_system_chat_message("Configuration reset to the last saved state.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Configuration reset completed.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -693,10 +675,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ReloadConfiguration,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Info,
-            "Configuration reload started.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -717,11 +695,6 @@ impl SyncplayGuiShellAppState {
         self.pending_saved_server_connect_saves_configuration = false;
         self.resync_from_settings(settings.clone());
         self.saved_configuration = settings;
-        self.push_system_chat_message("Configuration snapshot loaded.".to_owned());
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            "Configuration reload completed.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -734,10 +707,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ClearGuiData,
         });
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Warning,
-            "Clear GUI data started.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -754,13 +723,6 @@ impl SyncplayGuiShellAppState {
 
         self.reset_to_first_run_state(StoredClientSettingsMvp::default());
         self.pending_saved_server_connect_saves_configuration = false;
-        self.push_transient_notification(
-            GuiTransientNotificationLevel::Success,
-            "GUI data cleared. First-run configuration restored.".to_owned(),
-        );
-        self.push_system_chat_message(
-            "GUI data cleared. First-run configuration restored.".to_owned(),
-        );
         self.clear_action_error_and_refresh();
         true
     }

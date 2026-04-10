@@ -1380,9 +1380,11 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         |state| state.main_window.room_name == "room2",
         "room join before default-room return",
     );
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Room joined: room2.")
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|item| item.message != "Room joined: room2.")
     );
 
     handle.push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
@@ -1422,9 +1424,11 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
     assert!(leave_line.contains("\"room1\""));
     assert!(leave_list_line.contains("\"List\""));
     assert_eq!(state.main_window.room_name, "room1");
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Returned to default room: room1.")
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|item| item.message != "Returned to default room: room1.")
     );
     assert_eq!(
         state.configuration.to_stored_settings().room.as_deref(),

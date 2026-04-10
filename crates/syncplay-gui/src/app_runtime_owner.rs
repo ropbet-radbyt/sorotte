@@ -1116,29 +1116,16 @@ impl GuiPersistedConfigRuntimeOwner {
             return Vec::new();
         };
 
-        let (level, message) = match request {
-            GuiPendingRoomChangeRequest::Join { .. } => (
-                GuiTransientNotificationLevel::Success,
-                format!("Room joined: {next_room}."),
-            ),
-            GuiPendingRoomChangeRequest::ReturnToDefault { .. } => (
-                GuiTransientNotificationLevel::Info,
-                format!("Returned to default room: {next_room}."),
-            ),
-        };
+        match request {
+            GuiPendingRoomChangeRequest::Join { .. }
+            | GuiPendingRoomChangeRequest::ReturnToDefault { .. } => {}
+        }
 
-        vec![
-            GuiShellAction::EditConfigurationText {
-                section: "Connection",
-                label: "Room",
-                value: next_room.to_owned(),
-            },
-            GuiShellAction::PushTransientNotification {
-                level,
-                message: message.clone(),
-            },
-            GuiShellAction::AnnounceSystemChatEvent(message),
-        ]
+        vec![GuiShellAction::EditConfigurationText {
+            section: "Connection",
+            label: "Room",
+            value: next_room.to_owned(),
+        }]
     }
 
     fn request_room_join_runtime(

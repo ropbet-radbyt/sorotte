@@ -284,13 +284,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         assert!(no_runtime_state.apply(action));
     }
     assert!(no_runtime_state.pending_operation.is_none());
-    assert_eq!(
-        no_runtime_state
-            .notifications
-            .last()
-            .map(|notification| notification.message.as_str()),
-        Some("Public servers refreshed: 2 entries.")
-    );
+    assert_eq!(no_runtime_state.public_servers.servers.len(), 2);
 
     assert!(
         no_runtime_state.apply(GuiShellAction::AnnounceMediaSearchDirectoryBrowsed(

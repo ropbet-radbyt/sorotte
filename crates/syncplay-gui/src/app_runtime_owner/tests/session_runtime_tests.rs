@@ -236,13 +236,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     handle.push_request(GuiRuntimeRequest::SendChatMessage("slash hello".to_owned()));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let direct_chat_actions = handle.drain_actions();
-    assert_eq!(
-        direct_chat_actions,
-        vec![GuiShellAction::PushTransientNotification {
-            level: GuiTransientNotificationLevel::Success,
-            message: "Chat sent.".to_owned(),
-        }]
-    );
+    assert!(direct_chat_actions.is_empty());
     for action in direct_chat_actions {
         assert!(state.apply(action));
     }
@@ -352,9 +346,12 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         "Missing media found: {}.",
         found_media_path.to_string_lossy()
     );
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some(expected_missing_media_message.as_str())
+    assert!(
+        state
+            .notifications
+            .iter()
+            .all(|item| item.message != expected_missing_media_message),
+        "attached-session missing-media completion should not emit a success notification"
     );
 
     handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
