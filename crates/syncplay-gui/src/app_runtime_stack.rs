@@ -69,9 +69,9 @@ pub(super) enum GuiLocalPlayerUnpauseDecision {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiAttachedPlayerRuntimeAction {
-    SetPaused(bool),
-    SetPosition(f64),
-    SetPlaybackRate(f64),
+    Paused(bool),
+    Position(f64),
+    PlaybackRate(f64),
 }
 
 pub(super) trait GuiSessionRuntimeAdapter: Send {
@@ -1537,14 +1537,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .into_iter()
             .filter_map(|action| match action {
                 ClientRuntimeAction::SetPaused(paused) => {
-                    Some(GuiAttachedPlayerRuntimeAction::SetPaused(paused))
+                    Some(GuiAttachedPlayerRuntimeAction::Paused(paused))
                 }
-                ClientRuntimeAction::SetPosition(position_seconds) => Some(
-                    GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds),
-                ),
-                ClientRuntimeAction::SetPlaybackRate(playback_rate) => Some(
-                    GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate),
-                ),
+                ClientRuntimeAction::SetPosition(position_seconds) => {
+                    Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
+                }
+                ClientRuntimeAction::SetPlaybackRate(playback_rate) => {
+                    Some(GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate))
+                }
                 _ => None,
             })
             .collect())
@@ -1946,12 +1946,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(actions
             .into_iter()
             .filter_map(|action| match action {
-                ClientRuntimeAction::SetPosition(position_seconds) => Some(
-                    GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds),
-                ),
-                ClientRuntimeAction::SetPlaybackRate(playback_rate) => Some(
-                    GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate),
-                ),
+                ClientRuntimeAction::SetPosition(position_seconds) => {
+                    Some(GuiAttachedPlayerRuntimeAction::Position(position_seconds))
+                }
+                ClientRuntimeAction::SetPlaybackRate(playback_rate) => {
+                    Some(GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate))
+                }
                 _ => None,
             })
             .collect())

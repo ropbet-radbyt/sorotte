@@ -77,7 +77,7 @@ pub(crate) fn pump_and_apply_runtime_owner_actions(
 ) -> Vec<GuiShellAction> {
     GuiQueuedRuntimeOwner::pump(owner, handle, state);
     let actions = handle.drain_actions();
-    for action in actions.iter().cloned() {
+    for action in &actions {
         if !state.apply(action.clone()) {
             panic!("state.apply({action:?}) failed with state {state:?}",);
         }

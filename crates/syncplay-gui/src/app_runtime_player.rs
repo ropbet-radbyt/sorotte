@@ -432,7 +432,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         for action in attached_player_actions {
             match action {
-                GuiAttachedPlayerRuntimeAction::SetPaused(paused) => {
+                GuiAttachedPlayerRuntimeAction::Paused(paused) => {
                     if let Some(player) = self.player.as_mut() {
                         player.set_paused(paused).map_err(|error| {
                             format!(
@@ -442,7 +442,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                     self.player_paused = Some(paused);
                 }
-                GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds) => {
+                GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
                     if let Some(player) = self.player.as_mut() {
                         player.set_position(position_seconds).map_err(|error| {
                             format!(
@@ -453,7 +453,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.player_position_seconds = Some(position_seconds);
                     self.clamp_player_position_to_file_duration();
                 }
-                GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate) => {
+                GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
                     if let Some(player) = self.player.as_mut() {
                         player.set_playback_rate(playback_rate).map_err(|error| {
                             format!(
@@ -1751,7 +1751,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(Ok(actions)) => {
                     for action in actions {
                         match action {
-                            GuiAttachedPlayerRuntimeAction::SetPaused(paused) => {
+                            GuiAttachedPlayerRuntimeAction::Paused(paused) => {
                                 match self
                                     .player
                                     .as_mut()
@@ -1781,7 +1781,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                     }
                                 }
                             }
-                            GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds) => {
+                            GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
                                 let sync_position_seconds =
                                     (position_seconds + user_offset_seconds).max(0.0);
                                 match self
@@ -1811,7 +1811,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                     }
                                 }
                             }
-                            GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate) => {
+                            GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
                                 if let Err(error) = self
                                     .player
                                     .as_mut()
