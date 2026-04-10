@@ -889,6 +889,7 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         .local_addr()
         .expect("test session transport listener should expose a local address");
     let (hello_ready_tx, hello_ready_rx) = mpsc::channel();
+    let (room_lines_tx, room_lines_rx) = mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -921,13 +922,18 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         reader
             .read_line(&mut list_line)
             .expect("test session transport server should read one outbound room-list line");
+        room_lines_tx
+            .send((room_line, list_line))
+            .expect("test session transport server should report outbound room-change lines");
         stream
             .write_all(br#"{"Set":{"room":{"name":"room2"}}}"#)
             .expect("test session transport server should write one inbound room line");
         stream
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound room line");
-        (room_line, list_line)
+        stream
+            .flush()
+            .expect("test session transport server should flush the inbound room line");
     });
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -955,9 +961,14 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let (room_line, list_line) = server_thread
-        .join()
-        .expect("test session transport server thread should complete");
+    let (room_line, list_line) = recv_from_channel_while_pumping_runtime(
+        &mut owner,
+        &handle,
+        &mut state,
+        &room_lines_rx,
+        Duration::from_secs(1),
+        "the outbound room-change protocol lines over TCP transport",
+    );
     assert!(room_line.contains("\"Set\""));
     assert!(room_line.contains("\"room\""));
     assert!(room_line.contains("\"room2\""));
@@ -972,6 +983,10 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         "room change over TCP transport",
     );
     assert_eq!(state.main_window.room_name, "room2");
+
+    server_thread
+        .join()
+        .expect("test session transport server thread should complete");
 }
 
 #[test]
