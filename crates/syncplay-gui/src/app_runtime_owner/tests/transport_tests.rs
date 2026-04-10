@@ -289,11 +289,14 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         "test session transport server hello readiness",
     );
 
-    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let hello_sync_actions = handle.drain_actions();
-    for action in hello_sync_actions.iter().cloned() {
-        assert!(state.apply(action));
-    }
+    let hello_sync_actions = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.commands.can_send_chat_message,
+        "TCP chat capability after the server hello",
+    );
     combined_actions.extend(hello_sync_actions);
 
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned())));
@@ -438,7 +441,14 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         "test session transport startup hello",
     );
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "local readiness capability after the server hello",
+    );
 
     handle.push_request(GuiRuntimeRequest::SetLocalReady(true));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -572,7 +582,14 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         "test session transport startup hello",
     );
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "open-media transport capability after the server hello",
+    );
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/movie.mkv".to_owned()],
@@ -956,7 +973,14 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         "test session transport server hello readiness",
     );
 
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "room-change transport capability after the server hello",
+    );
 
     handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1435,7 +1459,14 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
         Duration::from_secs(1),
         "test session transport startup hello",
     );
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        Duration::from_secs(1),
+        |state| state.main_window.playback.can_set_ready,
+        "default-room transport capability after the server hello",
+    );
 
     handle.push_request(GuiRuntimeRequest::SetRoom("room2".to_owned()));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
