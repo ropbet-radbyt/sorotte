@@ -410,6 +410,68 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_position_seconds = Some(position_seconds.clamp(0.0, duration_seconds));
     }
 
+    pub(in super::super) fn advance_playlist_index_for_attached_player_impl(
+        &mut self,
+    ) -> Result<(), String> {
+        let attached_player_actions = {
+            let Some(session) = self.session.as_mut() else {
+                return Err(
+                    "Advancing the shared playlist requires an active session runtime.".to_owned(),
+                );
+            };
+            session.advance_playlist_index_attached_player_actions()?
+        };
+        if attached_player_actions.is_empty() {
+            let Some(session) = self.session.as_mut() else {
+                return Err(
+                    "Advancing the shared playlist requires an active session runtime.".to_owned(),
+                );
+            };
+            return session.advance_playlist_index();
+        }
+
+        for action in attached_player_actions {
+            match action {
+                GuiAttachedPlayerRuntimeAction::SetPaused(paused) => {
+                    if let Some(player) = self.player.as_mut() {
+                        player.set_paused(paused).map_err(|error| {
+                            format!(
+                                "Attached player shared-playlist advance pause dispatch failed: {error}"
+                            )
+                        })?;
+                    }
+                    self.player_paused = Some(paused);
+                }
+                GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds) => {
+                    if let Some(player) = self.player.as_mut() {
+                        player.set_position(position_seconds).map_err(|error| {
+                            format!(
+                                "Attached player shared-playlist advance seek dispatch failed: {error}"
+                            )
+                        })?;
+                    }
+                    self.player_position_seconds = Some(position_seconds);
+                    self.clamp_player_position_to_file_duration();
+                }
+                GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate) => {
+                    if let Some(player) = self.player.as_mut() {
+                        player.set_playback_rate(playback_rate).map_err(|error| {
+                            format!(
+                                "Attached player shared-playlist advance playback-rate dispatch failed: {error}"
+                            )
+                        })?;
+                    }
+                }
+            }
+        }
+
+        if let Some(session) = self.session.as_mut() {
+            session
+                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn take_playlist_auto_advance_eof_trigger_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -1689,6 +1751,36 @@ impl GuiPersistedConfigRuntimeOwner {
                 Some(Ok(actions)) => {
                     for action in actions {
                         match action {
+                            GuiAttachedPlayerRuntimeAction::SetPaused(paused) => {
+                                match self
+                                    .player
+                                    .as_mut()
+                                    .expect(
+                                        "player should exist while applying attached pause correction",
+                                    )
+                                    .set_paused(paused)
+                                {
+                                    Ok(()) => {
+                                        self.player_paused = Some(paused);
+                                        state_changed = true;
+                                        if let Some(session) = self.session.as_mut()
+                                            && let Err(error) = session.sync_local_playback_telemetry(
+                                                Some(paused),
+                                                self.player_position_seconds,
+                                            )
+                                        {
+                                            eprintln!(
+                                                "warning: failed to mirror attached-player pause correction into the session runtime: {error}"
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!(
+                                            "warning: failed to apply attached-player pause correction: {error}"
+                                        );
+                                    }
+                                }
+                            }
                             GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds) => {
                                 let sync_position_seconds =
                                     (position_seconds + user_offset_seconds).max(0.0);

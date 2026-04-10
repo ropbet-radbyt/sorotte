@@ -71,6 +71,11 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .apply_message_json(line)
             .expect("selection echo should apply");
     }
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+        )
+        .expect("local file update should apply");
 
     GuiSessionRuntimeAdapter::advance_playlist_index(&mut adapter)
         .expect("playlist advancement should dispatch");
@@ -156,6 +161,47 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
         .expect("playlist should exist after the echoed operations");
     assert_eq!(playlist.files, vec!["episode3.mkv", "episode2.mkv"]);
     assert_eq!(playlist.index, Some(1));
+}
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_as_auto_advanceable()
+ {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .runtime
+        .session_mut()
+        .behavior_config_mut()
+        .loop_single_files = true;
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+        )
+        .expect("local file update should apply");
+
+    assert!(
+        GuiSessionRuntimeAdapter::can_auto_advance_to_next_playlist_item(&adapter),
+        "single-item loop playlists should be eligible for EOF auto-advance when the local player is on the selected item"
+    );
 }
 
 #[test]
@@ -293,7 +339,10 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         interaction_snapshot.selection.selected_main_window_playlist,
         None
     );
-    assert_eq!(interaction_snapshot.selection.selected_main_window_user, Some(0));
+    assert_eq!(
+        interaction_snapshot.selection.selected_main_window_user,
+        Some(0)
+    );
     let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
         panic!("stale shared-playlist menu state should be corrected through a menu snapshot");
     };

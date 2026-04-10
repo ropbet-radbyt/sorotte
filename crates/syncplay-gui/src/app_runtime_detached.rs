@@ -114,59 +114,69 @@ impl GuiPersistedConfigRuntimeOwner {
             playlist_control_available,
             can_auto_advance_to_next_playlist_item,
         );
+        let pending_local_attached_pause_override_update = {
+            let Some(session) = self.session.as_mut() else {
+                return Ok(());
+            };
+            let previous_session_paused = session.local_pause_state();
+            let mut pending_local_attached_pause_override_update = None;
+            session.sync_runtime_settings(&runtime_settings)?;
+            if session.supports_playback_pause_changes()
+                && let Some(target_paused) = self.player_paused
+                && previous_session_paused != Some(target_paused)
+            {
+                session.sync_local_playback_telemetry(
+                    previous_session_paused,
+                    self.player_position_seconds,
+                )?;
+                let _ = session.set_playback_paused(target_paused)?;
+                if let Some(corrected_paused) = session.local_pause_state()
+                    && Some(corrected_paused) != self.player_paused
+                {
+                    if let Some(player) = self.player.as_mut() {
+                        player
+                            .set_paused(corrected_paused)
+                            .map_err(|error| {
+                                format!(
+                                    "Attached player readiness/pause correction failed while restoring the paused state: {error}"
+                                )
+                            })?;
+                    }
+                    self.player_paused = Some(corrected_paused);
+                }
+                session.sync_local_playback_telemetry(
+                    self.player_paused,
+                    self.player_position_seconds,
+                )?;
+                pending_local_attached_pause_override_update = Some(
+                    match (
+                        session.local_pause_state(),
+                        session
+                            .current_room_playstate_for_attached_player_sync()
+                            .and_then(|playstate| playstate.paused),
+                    ) {
+                        (Some(session_pause_state), Some(room_pause_state))
+                            if room_pause_state != session_pause_state =>
+                        {
+                            Some(session_pause_state)
+                        }
+                        _ => None,
+                    },
+                );
+            } else {
+                session.sync_local_playback_telemetry(
+                    self.player_paused,
+                    self.player_position_seconds,
+                )?;
+            }
+            pending_local_attached_pause_override_update
+        };
+        if auto_advance_playlist_at_eof {
+            self.advance_playlist_index_for_attached_player_impl()?;
+        }
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        let previous_session_paused = session.local_pause_state();
-        let mut pending_local_attached_pause_override_update = None;
-        session.sync_runtime_settings(&runtime_settings)?;
-        if session.supports_playback_pause_changes()
-            && let Some(target_paused) = self.player_paused
-            && previous_session_paused != Some(target_paused)
-        {
-            session.sync_local_playback_telemetry(
-                previous_session_paused,
-                self.player_position_seconds,
-            )?;
-            let _ = session.set_playback_paused(target_paused)?;
-            if let Some(corrected_paused) = session.local_pause_state()
-                && Some(corrected_paused) != self.player_paused
-            {
-                if let Some(player) = self.player.as_mut() {
-                    player
-                        .set_paused(corrected_paused)
-                        .map_err(|error| {
-                            format!(
-                                "Attached player readiness/pause correction failed while restoring the paused state: {error}"
-                            )
-                        })?;
-                }
-                self.player_paused = Some(corrected_paused);
-            }
-            session
-                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
-            pending_local_attached_pause_override_update = Some(
-                match (
-                    session.local_pause_state(),
-                    session
-                        .current_room_playstate_for_attached_player_sync()
-                        .and_then(|playstate| playstate.paused),
-                ) {
-                    (Some(session_pause_state), Some(room_pause_state))
-                        if room_pause_state != session_pause_state =>
-                    {
-                        Some(session_pause_state)
-                    }
-                    _ => None,
-                },
-            );
-        } else {
-            session
-                .sync_local_playback_telemetry(self.player_paused, self.player_position_seconds)?;
-        }
-        if auto_advance_playlist_at_eof {
-            session.advance_playlist_index()?;
-        }
         session.set_autoplay_enabled(state.main_window.autoplay_active)?;
         session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
         if file_publish_pending && session.server_handshake_completed() {

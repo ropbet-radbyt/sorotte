@@ -3887,7 +3887,6 @@ impl ClientSession {
         if tracked_room != Some(room.as_str()) {
             self.pending_local_room_switch_target = Some(room.clone());
             self.reset_playlist_index_transition_tracking();
-            self.set_autoplay_enabled(false);
         }
         let mut actions = vec![
             ClientRuntimeAction::SetRoom { room: room.clone() },
@@ -3988,6 +3987,9 @@ impl ClientSession {
             return Vec::new();
         };
         if current_index >= playlist.files.len() {
+            return Vec::new();
+        }
+        if self.current_user_file_name() != Some(playlist.files[current_index].as_str()) {
             return Vec::new();
         }
 
@@ -16932,7 +16934,7 @@ mod tests {
     }
 
     #[test]
-    fn client_runtime_set_room_resets_autoplay_state_on_room_change() {
+    fn client_runtime_set_room_preserves_autoplay_state_on_room_change() {
         let mut session = ClientSession::default();
         session
             .apply_hello_json(
@@ -16953,12 +16955,12 @@ mod tests {
         );
 
         assert!(
-            !runtime.session().autoplay_enabled(),
-            "room changes should clear autoplay"
+            runtime.session().autoplay_enabled(),
+            "room changes should preserve autoplay"
         );
         assert!(
-            !runtime.session().autoplay_timer_is_running(),
-            "room changes should stop any running autoplay countdown"
+            runtime.session().autoplay_timer_is_running(),
+            "room changes should preserve any running autoplay countdown"
         );
         assert_eq!(
             runtime
@@ -17867,6 +17869,11 @@ mod tests {
         session
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
             .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
 
         let player = RecordingPlayer::default();
         let control = QueuedRuntimeControl::default();
@@ -17938,6 +17945,11 @@ mod tests {
         session
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
             .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
 
         let player = RecordingPlayer::default();
         let control = QueuedRuntimeControl::default();
@@ -17967,6 +17979,11 @@ mod tests {
         session
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
             .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
 
         let player = RecordingPlayer::default();
         let control = QueuedRuntimeControl::default();
@@ -17996,6 +18013,11 @@ mod tests {
         session
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
             .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode2.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
         session.behavior_config_mut().loop_at_end_of_playlist = true;
 
         let player = RecordingPlayer::default();
@@ -18085,6 +18107,11 @@ mod tests {
         session
             .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
             .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
         session.behavior_config_mut().loop_single_files = true;
 
         let player = RecordingPlayer::default();
@@ -18099,6 +18126,34 @@ mod tests {
         assert_eq!(runtime.player().position, Some(0.0));
         assert_eq!(runtime.player().paused, Some(false));
         assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_playlist_next_is_omitted_when_local_file_mismatches_current_index() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"alice":{"file":{"name":"episode2.mkv","duration":240.0}}}}}"#,
+            )
+            .expect("local file update should apply");
+
+        assert!(
+            session.runtime_actions_for_local_playlist_next().is_empty(),
+            "playlist next should be suppressed until the local player reports the current shared-playlist item"
+        );
     }
 
     #[test]

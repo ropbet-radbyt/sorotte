@@ -425,8 +425,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
             GuiRuntimeRequest::AdvancePlaylistIndex => {
-                if let Some(session) = self.session.as_mut() {
-                    if let Err(error) = session.advance_playlist_index() {
+                if self.session.is_some() {
+                    if let Err(error) = self.advance_playlist_index_for_attached_player_impl() {
                         handle.push_action(GuiShellAction::PushTransientNotification {
                             level: GuiTransientNotificationLevel::Error,
                             message: error,

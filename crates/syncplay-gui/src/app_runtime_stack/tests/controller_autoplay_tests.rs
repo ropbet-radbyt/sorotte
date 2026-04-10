@@ -236,7 +236,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_set_room_resets_autoplay_state() {
+fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_state() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -282,12 +282,12 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_resets_autoplay_state()
         .expect("room changes should dispatch through the session adapter");
 
     assert!(
-        !adapter.runtime.session().autoplay_enabled(),
-        "room changes should clear autoplay state"
+        adapter.runtime.session().autoplay_enabled(),
+        "room changes should preserve autoplay state"
     );
     assert!(
-        !adapter.runtime.session().autoplay_timer_is_running(),
-        "room changes should stop any running autoplay countdown"
+        adapter.runtime.session().autoplay_timer_is_running(),
+        "room changes should preserve any running autoplay countdown"
     );
 }
 

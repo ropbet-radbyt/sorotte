@@ -69,6 +69,7 @@ pub(super) enum GuiLocalPlayerUnpauseDecision {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiAttachedPlayerRuntimeAction {
+    SetPaused(bool),
     SetPosition(f64),
     SetPlaybackRate(f64),
 }
@@ -145,6 +146,12 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
 
     fn advance_playlist_index(&mut self) -> Result<(), String> {
         Err("Attached session runtime does not support shared playlist advancement.".to_owned())
+    }
+
+    fn advance_playlist_index_attached_player_actions(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
     }
 
     fn delete_playlist_index(&mut self, _index: usize) -> Result<(), String> {
@@ -1513,6 +1520,36 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn advance_playlist_index_attached_player_actions(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        let actions = self
+            .runtime
+            .session()
+            .runtime_actions_for_local_playlist_next();
+        if actions
+            .iter()
+            .any(|action| matches!(action, ClientRuntimeAction::SetPlaylistIndex { .. }))
+        {
+            return Ok(Vec::new());
+        }
+        Ok(actions
+            .into_iter()
+            .filter_map(|action| match action {
+                ClientRuntimeAction::SetPaused(paused) => {
+                    Some(GuiAttachedPlayerRuntimeAction::SetPaused(paused))
+                }
+                ClientRuntimeAction::SetPosition(position_seconds) => Some(
+                    GuiAttachedPlayerRuntimeAction::SetPosition(position_seconds),
+                ),
+                ClientRuntimeAction::SetPlaybackRate(playback_rate) => Some(
+                    GuiAttachedPlayerRuntimeAction::SetPlaybackRate(playback_rate),
+                ),
+                _ => None,
+            })
+            .collect())
+    }
+
     fn delete_playlist_index(&mut self, index: usize) -> Result<(), String> {
         let Ok(index) = i64::try_from(index) else {
             return Err("Requested shared playlist index exceeds the supported range.".to_owned());
@@ -1756,16 +1793,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn can_auto_advance_to_next_playlist_item(&self) -> bool {
-        self.runtime
+        !self
+            .runtime
             .session()
             .runtime_actions_for_local_playlist_next()
-            .iter()
-            .any(|action| {
-                matches!(
-                    action,
-                    syncplay_client_core::ClientRuntimeAction::SetPlaylistIndex { .. }
-                )
-            })
+            .is_empty()
     }
 
     fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
