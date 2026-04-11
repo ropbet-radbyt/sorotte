@@ -704,41 +704,52 @@ impl GuiWidgetEguiRenderer {
         let text = Self::display_text(node).to_owned();
         let selection_action = Self::action_for_list_item_node(node);
 
-        let response = if can_drag_reorder {
-            let drag_id = egui::Id::new(("main-window:playlist:drag", index));
-            let inner = ui.dnd_drag_source(drag_id, GuiDraggedPlaylistRow { index }, |ui| {
-                ui.add_enabled_ui(node.enabled, |ui| {
-                    ui.add_sized(
-                        [ui.available_width().max(0.0), 0.0],
-                        egui::Button::new(text.clone()).selected(node.selected),
-                    )
-                })
-                .inner
-            });
-            if inner.inner.clicked()
-                && let Some(action) = selection_action.clone()
-            {
-                self.actions.push(action);
-            }
-            inner.response
-        } else {
-            let response = ui.add_enabled_ui(node.enabled, |ui| {
-                ui.add_sized(
-                    [ui.available_width().max(0.0), 0.0],
-                    egui::Button::new(text).selected(node.selected),
-                )
-            });
-            if response.inner.clicked()
-                && let Some(action) = selection_action
-            {
-                self.actions.push(action);
-            }
-            response.response
-        };
+        let (button_response, interaction_response) = ui
+            .push_id(&node.id, |ui| {
+                if can_drag_reorder {
+                    let drag_id = egui::Id::new(("main-window:playlist:drag", index));
+                    let inner =
+                        ui.dnd_drag_source(drag_id, GuiDraggedPlaylistRow { index }, |ui| {
+                            ui.add_enabled_ui(node.enabled, |ui| {
+                                ui.add_sized(
+                                    [ui.available_width().max(0.0), 0.0],
+                                    egui::Button::new(text.clone()).selected(node.selected),
+                                )
+                            })
+                            .inner
+                        });
+                    (inner.inner, inner.response)
+                } else {
+                    let response = ui.add_enabled_ui(node.enabled, |ui| {
+                        ui.add_sized(
+                            [ui.available_width().max(0.0), 0.0],
+                            egui::Button::new(text).selected(node.selected),
+                        )
+                    });
+                    (response.inner, response.response)
+                }
+            })
+            .inner;
 
-        self.update_playlist_drop_target_slot(ui, &response, index);
-        self.render_playlist_drop_indicator(ui, &response, index, playlist_len);
-        Some(response.rect)
+        if (button_response.clicked() || button_response.double_clicked())
+            && let Some(action) = selection_action
+        {
+            button_response.request_focus();
+            self.actions.push(action);
+        }
+
+        self.actions.extend(Self::playlist_row_shortcut_actions(
+            state,
+            index,
+            node.enabled,
+            button_response.has_focus(),
+            ui.input(|input| input.key_pressed(egui::Key::Enter)),
+            ui.input(|input| input.key_pressed(egui::Key::Delete)),
+        ));
+
+        self.update_playlist_drop_target_slot(ui, &interaction_response, index);
+        self.render_playlist_drop_indicator(ui, &interaction_response, index, playlist_len);
+        Some(interaction_response.rect)
     }
 
     fn render_room_browser(
@@ -1395,6 +1406,33 @@ impl GuiWidgetEguiRenderer {
             from_index,
             to_index,
         })
+    }
+
+    pub(super) fn playlist_row_shortcut_actions(
+        state: &SyncplayGuiShellAppState,
+        index: usize,
+        row_enabled: bool,
+        row_focused: bool,
+        enter_pressed: bool,
+        delete_pressed: bool,
+    ) -> Vec<GuiShellAction> {
+        if !row_enabled || !row_focused {
+            return Vec::new();
+        }
+
+        if delete_pressed
+            && state.pending_operation.is_none()
+            && state.main_window.playback.can_manage_playlist
+            && state.selection.selected_main_window_playlist == Some(index)
+        {
+            return vec![GuiShellAction::RemoveSelectedMainWindowPlaylist];
+        }
+
+        if enter_pressed {
+            return vec![GuiShellAction::SelectMainWindowPlaylist(index)];
+        }
+
+        Vec::new()
     }
 
     fn render_text_input(

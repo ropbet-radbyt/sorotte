@@ -981,6 +981,55 @@ fn gui_widget_egui_renderer_maps_playlist_drag_targets_to_row_moves() {
 }
 
 #[test]
+fn gui_widget_egui_renderer_maps_playlist_row_shortcuts_to_selection_and_delete_actions() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1.mkv".to_owned(),
+            "Episode 2.mkv".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_shortcut_actions(&state, 1, true, true, true, false),
+        vec![GuiShellAction::SelectMainWindowPlaylist(1)]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_shortcut_actions(&state, 1, true, true, false, true),
+        vec![GuiShellAction::RemoveSelectedMainWindowPlaylist]
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_ignores_playlist_row_shortcuts_without_focus_or_delete_permission() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1.mkv".to_owned(),
+            "Episode 2.mkv".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+    assert!(
+        GuiWidgetEguiRenderer::playlist_row_shortcut_actions(&state, 1, true, false, true, true)
+            .is_empty()
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::playlist_row_shortcut_actions(&state, 1, true, true, false, true),
+        Vec::<GuiShellAction>::new()
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let configuration_tree = state.configuration_widget_tree();
