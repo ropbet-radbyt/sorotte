@@ -1315,7 +1315,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
         previous_position_seconds: f64,
         target_position_seconds: f64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         self.sync_manual_seek_into_detached_session_impl(
             state,
             previous_position_seconds,

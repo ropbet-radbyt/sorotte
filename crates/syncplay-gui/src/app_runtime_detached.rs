@@ -334,7 +334,7 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.can_toggle_pause = player_runtime_available;
         snapshot.can_seek = player_runtime_available;
         snapshot.can_undo_seek = false;
-        snapshot.can_set_offset = player_runtime_available;
+        snapshot.can_set_offset = true;
         snapshot.can_toggle_autoplay = true;
         snapshot.can_adjust_autoplay_threshold = true;
         snapshot.can_manage_playlist = player_runtime_available && snapshot.shared_playlist_enabled;

@@ -163,7 +163,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let main_window_changed = state.main_window.playback.can_toggle_pause
             != player_runtime_available
             || state.main_window.playback.can_seek != player_runtime_available
-            || state.main_window.playback.can_set_offset != player_runtime_available
+            || !state.main_window.playback.can_set_offset
             || state.main_window.playback.can_manage_playlist != can_manage_playlist
             || desired_playlist.is_some()
             || desired_paused.is_some_and(|paused| state.main_window.playback_paused != paused)
@@ -175,7 +175,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
             desired_main_window.can_toggle_pause = player_runtime_available;
             desired_main_window.can_seek = player_runtime_available;
-            desired_main_window.can_set_offset = player_runtime_available;
+            desired_main_window.can_set_offset = true;
             desired_main_window.can_manage_playlist = can_manage_playlist;
             if let Some(desired_playlist) = desired_playlist {
                 desired_main_window.playlist = desired_playlist;
@@ -246,7 +246,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
         let current_offset_enabled = Self::menu_action_enabled(advanced_section, "Set Offset");
-        let desired_offset_enabled = state.pending_operation.is_none() && player_attached;
+        let desired_offset_enabled = state.pending_operation.is_none();
         if current_offset_enabled
             .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
         {

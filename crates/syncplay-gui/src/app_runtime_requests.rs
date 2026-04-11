@@ -168,13 +168,6 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::SetOffset(command) => {
                 self.refresh_player_state();
                 self.ensure_configured_player_attached();
-                if self.player.is_none() {
-                    Self::push_runtime_unavailable(
-                        handle,
-                        "Playback offset changes require a playback runtime connection.".to_owned(),
-                    );
-                    return false;
-                }
                 let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                 let dispatch = plan_local_offset_runtime_dispatch_legacy_compatible(
                     self.user_offset_seconds,
@@ -187,49 +180,47 @@ impl GuiPersistedConfigRuntimeOwner {
                 else {
                     return false;
                 };
-                let (player_name, offset_result) = {
-                    let player = self.player.as_mut().expect("player should exist");
-                    (
-                        player.name(),
-                        player.set_position(target_player_position_seconds),
+                self.user_offset_seconds = dispatch
+                    .updated_user_offset_seconds
+                    .unwrap_or(self.user_offset_seconds);
+                self.player_position_seconds = Some(previous_position_seconds);
+                if let Err(error) = self.ensure_detached_client_core_chat_session(projected_state) {
+                    Self::push_player_error(handle, error);
+                    return false;
+                }
+                if let Some(session) = self.session.as_mut()
+                    && let Err(error) = session.sync_local_playback_telemetry(
+                        self.player_paused,
+                        Some(previous_position_seconds),
                     )
-                };
-                match offset_result {
-                    Ok(()) => {
-                        self.user_offset_seconds = dispatch
-                            .updated_user_offset_seconds
-                            .unwrap_or(self.user_offset_seconds);
-                        self.player_position_seconds = Some(previous_position_seconds);
-                        self.refresh_player_state();
-                        if let Err(error) =
-                            self.ensure_detached_client_core_chat_session(projected_state)
-                        {
-                            Self::push_player_error(handle, error);
-                        } else if let Some(session) = self.session.as_mut()
-                            && let Err(error) = session.sync_local_playback_telemetry(
-                                self.player_paused,
-                                Some(previous_position_seconds),
-                            )
-                        {
-                            Self::push_player_error(handle, error);
+                {
+                    Self::push_player_error(handle, error);
+                }
+                let message = dispatch.line_to_emit.unwrap_or_else(|| {
+                    localized_current_offset_message_legacy_compatible(
+                        self.user_offset_seconds,
+                        None,
+                    )
+                });
+                if let Some(player) = self.player.as_mut() {
+                    let player_name = player.name();
+                    match player.set_position(target_player_position_seconds) {
+                        Ok(()) => {
+                            self.refresh_player_state();
+                            Self::push_player_success(
+                                handle,
+                                format!("{message} Applied via the attached {player_name} player."),
+                            );
                         }
-                        let message = dispatch.line_to_emit.unwrap_or_else(|| {
-                            localized_current_offset_message_legacy_compatible(
-                                self.user_offset_seconds,
-                                None,
-                            )
-                        });
-                        Self::push_player_success(
+                        Err(error) => Self::push_player_error(
                             handle,
-                            format!("{message} Applied via the attached {player_name} player."),
-                        );
-                    }
-                    Err(error) => Self::push_player_error(
-                        handle,
-                        format!(
-                            "Playback offset change through the attached {player_name} player failed: {error}"
+                            format!(
+                                "{message} Applying it to the attached {player_name} player failed: {error}"
+                            ),
                         ),
-                    ),
+                    }
+                } else {
+                    Self::push_player_success(handle, message);
                 }
             }
             GuiRuntimeRequest::SetAutoplayEnabled(enabled) => {
@@ -261,6 +252,22 @@ impl GuiPersistedConfigRuntimeOwner {
                     let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                     let target_position_seconds =
                         (previous_position_seconds + offset_seconds).max(0.0);
+                    if let Err(error) =
+                        self.ensure_detached_client_core_chat_session(projected_state)
+                    {
+                        Self::push_player_error(handle, error);
+                        return false;
+                    }
+                    if let Some(session) = self.session.as_ref() {
+                        match session.manual_seek_to_position_allowed(target_position_seconds) {
+                            Ok(true) => {}
+                            Ok(false) => return false,
+                            Err(error) => {
+                                Self::push_player_error(handle, error);
+                                return false;
+                            }
+                        }
+                    }
                     let player_target_position_seconds = self
                         .player_target_position_seconds_for_global_position(
                             target_position_seconds,
@@ -276,12 +283,14 @@ impl GuiPersistedConfigRuntimeOwner {
                         Ok(()) => {
                             self.player_position_seconds = Some(target_position_seconds);
                             self.refresh_player_state();
-                            if let Err(error) = self.sync_manual_seek_into_detached_session(
+                            match self.sync_manual_seek_into_detached_session(
                                 projected_state,
                                 previous_position_seconds,
                                 target_position_seconds,
                             ) {
-                                Self::push_player_error(handle, error);
+                                Ok(true) => {}
+                                Ok(false) => return false,
+                                Err(error) => Self::push_player_error(handle, error),
                             }
                             Self::push_player_success(
                                 handle,
@@ -312,6 +321,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 if self.player.is_some() {
                     let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
                     let target_position_seconds = target_position_seconds.max(0.0);
+                    if let Err(error) =
+                        self.ensure_detached_client_core_chat_session(projected_state)
+                    {
+                        Self::push_player_error(handle, error);
+                        return false;
+                    }
+                    if let Some(session) = self.session.as_ref() {
+                        match session.manual_seek_to_position_allowed(target_position_seconds) {
+                            Ok(true) => {}
+                            Ok(false) => return false,
+                            Err(error) => {
+                                Self::push_player_error(handle, error);
+                                return false;
+                            }
+                        }
+                    }
                     let player_target_position_seconds = self
                         .player_target_position_seconds_for_global_position(
                             target_position_seconds,
@@ -327,12 +352,14 @@ impl GuiPersistedConfigRuntimeOwner {
                         Ok(()) => {
                             self.player_position_seconds = Some(target_position_seconds);
                             self.refresh_player_state();
-                            if let Err(error) = self.sync_manual_seek_into_detached_session(
+                            match self.sync_manual_seek_into_detached_session(
                                 projected_state,
                                 previous_position_seconds,
                                 target_position_seconds,
                             ) {
-                                Self::push_player_error(handle, error);
+                                Ok(true) => {}
+                                Ok(false) => return false,
+                                Err(error) => Self::push_player_error(handle, error),
                             }
                             Self::push_player_success(
                                 handle,

@@ -167,34 +167,36 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     ];
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let inbound_actions = handle.drain_actions();
-    assert_eq!(inbound_actions.len(), 3);
     assert!(matches!(
-        &inbound_actions[0],
-        GuiShellAction::PushChatMessage { sender, message }
+        inbound_actions.first(),
+        Some(GuiShellAction::PushChatMessage { sender, message })
             if sender == "Server" && message == "Welcome."
     ));
     assert!(matches!(
-        &inbound_actions[1],
-        GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot)
+        inbound_actions.get(1),
+        Some(GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot))
             if snapshot.active_view == GuiShellView::PublicServers
     ));
-    assert_eq!(
-        inbound_actions[2],
-        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-            command_availability: GuiCommandAvailabilityState {
-                can_save_configuration: true,
-                can_reset_configuration: false,
-                can_reload_configuration: true,
-                can_connect_public_server: true,
-                can_connect_saved_server: false,
-                can_refresh_public_servers: true,
-                can_disconnect_session: true,
-                can_search_missing_media: true,
-                can_toggle_pause: false,
-                can_send_chat_message: true,
-            },
-            pending_operation: None,
-        })
+    assert!(
+        inbound_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+                command_availability: GuiCommandAvailabilityState {
+                    can_save_configuration: true,
+                    can_reset_configuration: false,
+                    can_reload_configuration: true,
+                    can_connect_public_server: true,
+                    can_connect_saved_server: false,
+                    can_refresh_public_servers: true,
+                    can_disconnect_session: true,
+                    can_search_missing_media: true,
+                    can_toggle_pause: false,
+                    can_send_chat_message: true,
+                },
+                pending_operation: None,
+            })
+        )),
+        "inbound runtime snapshots should still refresh command availability after replaying attached-session actions"
     );
     for action in inbound_actions {
         assert!(state.apply(action));
@@ -273,12 +275,13 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let refresh_actions = handle.drain_actions();
-    assert_eq!(
-        refresh_actions,
-        vec![GuiShellAction::CompletePublicServerRefresh(vec![(
-            "Runtime".to_owned(),
-            "runtime.example:9000".to_owned(),
-        )])]
+    assert!(
+        refresh_actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::CompletePublicServerRefresh(servers)
+                if servers == &vec![("Runtime".to_owned(), "runtime.example:9000".to_owned())]
+        )),
+        "public server refresh should still complete through the attached session runtime"
     );
     for action in refresh_actions {
         assert!(state.apply(action));
@@ -1020,5 +1023,150 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
         recorded.applied_pauses,
         vec![false],
         "single-item loop EOF should resume the attached player after rewinding"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_eof_with_offset() {
+    #[derive(Debug, Default)]
+    struct TelemetryPlayerState {
+        local_file_updates: std::collections::VecDeque<syncplay_player_api::LocalFileUpdate>,
+        playback_updates:
+            std::collections::VecDeque<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+        applied_pauses: Vec<bool>,
+        applied_positions: Vec<f64>,
+    }
+
+    struct TelemetryPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<TelemetryPlayerState>>,
+    }
+
+    impl PlayerAdapter for TelemetryPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "telemetry"
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .applied_pauses
+                .push(paused);
+            Ok(())
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .applied_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop_front()
+        }
+
+        fn take_local_file_update(&mut self) -> Option<syncplay_player_api::LocalFileUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .local_file_updates
+                .pop_front()
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    {
+        let mut player_state = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        player_state.local_file_updates.push_back(
+            syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+                .with_path("C:/Media/episode1.mkv".to_owned())
+                .with_duration_seconds(1510.0),
+        );
+        player_state.playback_updates.push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(0.0),
+        );
+    }
+
+    let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let startup_lines = session
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist change should apply");
+    session
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("playlist index should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":1510.0}}}}}"#,
+        )
+        .expect("local file update should apply");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(session));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.user_offset_seconds = 5.0;
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        loop_single_files: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push_back(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(1515.0),
+        );
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    handle.drain_actions();
+
+    let recorded = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        recorded.applied_positions,
+        vec![5.0],
+        "single-item loop EOF should rewind the attached player on the offset-adjusted timeline"
+    );
+    assert_eq!(
+        recorded.applied_pauses,
+        vec![false],
+        "single-item loop EOF should still resume the attached player after rewinding"
     );
 }

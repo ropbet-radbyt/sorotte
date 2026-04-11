@@ -4360,22 +4360,36 @@ impl ClientSession {
         )
     }
 
-    fn runtime_actions_for_local_seek_with_previous_position(
-        &mut self,
-        target_position: f64,
-        previous_position: f64,
-        now_seconds: f64,
-    ) -> Vec<ClientRuntimeAction> {
+    pub fn local_seek_target_allowed(&self, target_position: f64, now_seconds: f64) -> bool {
+        self.normalized_local_seek_target(target_position, now_seconds)
+            .is_some()
+    }
+
+    fn normalized_local_seek_target(&self, target_position: f64, now_seconds: f64) -> Option<f64> {
         if !target_position.is_finite() {
-            return Vec::new();
+            return None;
         }
 
         let target_position = target_position.max(0.0);
         if self.recently_rewound(now_seconds, RECENT_REWIND_SEEK_SUPPRESSION_SECONDS)
             && target_position > RECENT_REWIND_SEEK_IGNORE_POSITION_SECONDS
         {
-            return Vec::new();
+            return None;
         }
+
+        Some(target_position)
+    }
+
+    fn runtime_actions_for_local_seek_with_previous_position(
+        &mut self,
+        target_position: f64,
+        previous_position: f64,
+        now_seconds: f64,
+    ) -> Vec<ClientRuntimeAction> {
+        let Some(target_position) = self.normalized_local_seek_target(target_position, now_seconds)
+        else {
+            return Vec::new();
+        };
 
         self.last_seek_position_before_manual_seek = Some(previous_position);
         self.local_position = Some(target_position);

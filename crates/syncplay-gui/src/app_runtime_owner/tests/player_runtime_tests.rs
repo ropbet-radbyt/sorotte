@@ -992,6 +992,159 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_allows_offset_changes_without_a_player() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_position_seconds = Some(100.0);
+    owner.player_paused = Some(false);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        state.main_window.playback.can_set_offset,
+        "offset controls should stay available even without an attached player"
+    );
+
+    handle.push_request(GuiRuntimeRequest::SetOffset(
+        syncplay_client_app::app_boundary::commands::LocalOffsetCommand::Absolute(5.0),
+    ));
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert_eq!(owner.user_offset_seconds, 5.0);
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(100.0),
+        "offset changes without a player should preserve the stored global position"
+    );
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds()),
+        Some(100.0),
+        "offset changes without a player should still keep detached-session telemetry on the global timeline"
+    );
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if *level == GuiTransientNotificationLevel::Success
+                    && message.contains("offset")
+        )),
+        "offset changes without a player should still report success"
+    );
+    assert!(
+        !actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if *level == GuiTransientNotificationLevel::Error
+                    && message.contains("offset")
+        )),
+        "offset changes without a player should not surface a runtime-unavailable error"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_suppresses_attached_seeks_after_recent_rewind() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+    owner.player_position_seconds = Some(2.0);
+    owner.player_paused = Some(false);
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    {
+        let session = owner.session.as_mut().expect("session should exist");
+        session
+            .sync_local_playback_telemetry(Some(false), Some(2.0))
+            .expect("initial local telemetry should sync");
+        session.note_local_playlist_index_reset_intent(true);
+    }
+
+    handle.push_request(GuiRuntimeRequest::SeekToPosition(10.0));
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        !actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if (*level == GuiTransientNotificationLevel::Success
+                    || *level == GuiTransientNotificationLevel::Error)
+                    && message.contains("seek")
+        )),
+        "recent-rewind seek suppression should not emit a seek success or error notification"
+    );
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_positions
+            .is_empty(),
+        "recent-rewind seek suppression should prevent the attached player seek"
+    );
+    assert_eq!(
+        owner.player_position_seconds,
+        Some(2.0),
+        "suppressed attached seeks should leave the stored global position unchanged"
+    );
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.local_position_seconds()),
+        Some(2.0),
+        "suppressed attached seeks should not advance detached-session telemetry"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_before_applying_fresh_room_playstate()
  {
     #[derive(Debug, Default)]

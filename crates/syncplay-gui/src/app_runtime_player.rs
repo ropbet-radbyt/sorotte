@@ -443,12 +443,16 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.player_paused = Some(paused);
                 }
                 GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
+                    let player_target_position_seconds = self
+                        .player_target_position_seconds_for_global_position_impl(position_seconds);
                     if let Some(player) = self.player.as_mut() {
-                        player.set_position(position_seconds).map_err(|error| {
+                        player
+                            .set_position(player_target_position_seconds)
+                            .map_err(|error| {
                             format!(
                                 "Attached player shared-playlist advance seek dispatch failed: {error}"
                             )
-                        })?;
+                            })?;
                     }
                     self.player_position_seconds = Some(position_seconds);
                     self.clamp_player_position_to_file_duration();
@@ -2323,16 +2327,19 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
         previous_position_seconds: f64,
         target_position_seconds: f64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         self.ensure_detached_client_core_chat_session(state)?;
         let Some(session) = self.session.as_mut() else {
-            return Ok(());
+            return Ok(true);
         };
         session
             .sync_local_playback_telemetry(self.player_paused, Some(previous_position_seconds))?;
-        let _ = session.record_manual_seek_to_position(target_position_seconds)?;
+        let seek_recorded = session.record_manual_seek_to_position(target_position_seconds)?;
+        if !seek_recorded {
+            return Ok(false);
+        }
         session.sync_local_playback_telemetry(self.player_paused, Some(target_position_seconds))?;
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn sync_playback_pause_into_detached_session_impl(

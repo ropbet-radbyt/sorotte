@@ -207,6 +207,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         false
     }
 
+    fn manual_seek_to_position_allowed(&self, _position_seconds: f64) -> Result<bool, String> {
+        Ok(true)
+    }
+
     fn record_manual_seek_to_position(&mut self, _position_seconds: f64) -> Result<bool, String> {
         Err("Attached session runtime does not support local seek history.".to_owned())
     }
@@ -1705,6 +1709,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn supports_playback_pause_changes(&self) -> bool {
         true
+    }
+
+    fn manual_seek_to_position_allowed(&self, position_seconds: f64) -> Result<bool, String> {
+        Ok(self
+            .runtime
+            .session()
+            .local_seek_target_allowed(position_seconds, system_time_seconds()))
     }
 
     fn record_manual_seek_to_position(&mut self, position_seconds: f64) -> Result<bool, String> {

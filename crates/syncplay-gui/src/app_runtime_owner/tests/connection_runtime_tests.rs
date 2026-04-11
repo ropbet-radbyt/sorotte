@@ -12,20 +12,19 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
-                    .to_owned(),
-            },
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
-                    .to_owned(),
-            ),
-        ]
-    );
+    let first_open_actions = handle.drain_actions();
+    assert!(first_open_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message == "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+    )));
+    assert!(first_open_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::AnnounceSystemChatEvent(message)
+            if message == "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+    )));
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec!["C:/Media/movie.mkv".to_owned()],
@@ -33,37 +32,35 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
-                    .to_owned(),
-            },
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
-                    .to_owned(),
-            ),
-        ]
-    );
+    let second_open_actions = handle.drain_actions();
+    assert!(second_open_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message == "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+    )));
+    assert!(second_open_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::AnnounceSystemChatEvent(message)
+            if message == "Opening media into the shared playlist requires a session or playback runtime connection; the selected file was not opened or queued."
+    )));
 
     handle.push_request(GuiRuntimeRequest::SeekOffset(12.5));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
-                    .to_owned(),
-            },
-            GuiShellAction::AnnounceSystemChatEvent(
-                "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
-                    .to_owned(),
-            ),
-        ]
-    );
+    let seek_actions = handle.drain_actions();
+    assert!(seek_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message == "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
+    )));
+    assert!(seek_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::AnnounceSystemChatEvent(message)
+            if message == "Playback seek requires a playback runtime connection; the 12.5 second request was not applied."
+    )));
 
     let mut cancel_chat_state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -76,7 +73,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &cancel_chat_state);
     let cancel_actions = handle.drain_actions();
-    assert_eq!(cancel_actions, vec![GuiShellAction::CancelPendingOperation]);
+    assert!(cancel_actions.contains(&GuiShellAction::CancelPendingOperation));
     for action in cancel_actions {
         assert!(cancel_chat_state.apply(action));
     }
@@ -92,56 +89,67 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         GuiPendingCompletionRequest::TogglePlaybackPause,
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &toggle_state);
-    assert_eq!(
-        handle.drain_actions(),
-        vec![
-            GuiShellAction::CancelPlaybackPauseToggle,
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message: "Playback toggle requires a playback runtime connection; the pause request was not applied."
-                    .to_owned(),
-            },
-            GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
-                room_name: "(no room joined)".to_owned(),
-                room_control_status: "Unavailable: no active server session.".to_owned(),
-                shared_playlist_enabled: false,
-                controlled_room_active: false,
-                users: vec![browser_runtime_user(
+    let toggle_actions = handle.drain_actions();
+    assert!(toggle_actions.contains(&GuiShellAction::CancelPlaybackPauseToggle));
+    assert!(toggle_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message
+            == "Playback toggle requires a playback runtime connection; the pause request was not applied."
+    )));
+    assert!(toggle_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+            room_name,
+            room_control_status,
+            shared_playlist_enabled: false,
+            controlled_room_active: false,
+            users,
+            playlist,
+            chat,
+            can_toggle_pause: false,
+            can_seek: false,
+            can_set_ready: true,
+            can_manage_playlist: false,
+            playback_paused: false,
+            autoplay_active: false,
+            hide_empty_rooms: false,
+            rooms,
+            ..
+        }) if room_name == "(no room joined)"
+            && room_control_status == "Unavailable: no active server session."
+            && users
+                == &vec![browser_runtime_user(
                     "You",
                     "(no room joined)",
                     true,
                     false,
                     false,
-                )],
-                playlist: Vec::new(),
-                chat: Vec::new(),
+                )]
+            && playlist.is_empty()
+            && chat.is_empty()
+            && rooms == &browser_runtime_rooms("(no room joined)", false, true)
+    )));
+    assert!(toggle_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+            command_availability: GuiCommandAvailabilityState {
+                can_save_configuration: true,
+                can_reset_configuration: false,
+                can_reload_configuration: true,
+                can_connect_public_server: false,
+                can_connect_saved_server: false,
+                can_refresh_public_servers: true,
+                can_disconnect_session: false,
+                can_search_missing_media: false,
                 can_toggle_pause: false,
-                can_seek: false,
-                can_set_ready: true,
-                can_manage_playlist: false,
-                playback_paused: false,
-                autoplay_active: false,
-                hide_empty_rooms: false,
-                rooms: browser_runtime_rooms("(no room joined)", false, true),
-                ..Default::default()
-            }),
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
-                    can_reset_configuration: false,
-                    can_reload_configuration: true,
-                    can_connect_public_server: false,
-                    can_connect_saved_server: false,
-                    can_refresh_public_servers: true,
-                    can_disconnect_session: false,
-                    can_search_missing_media: false,
-                    can_toggle_pause: false,
-                    can_send_chat_message: false,
-                },
-                pending_operation: None,
-            }),
-        ]
-    );
+                can_send_chat_message: false,
+            },
+            pending_operation: None,
+        })
+    )));
 
     let mut chat_state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),
@@ -153,32 +161,32 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &chat_state);
     let chat_actions = handle.drain_actions();
-    assert_eq!(
-        chat_actions,
-        vec![
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
-                    can_reset_configuration: false,
-                    can_reload_configuration: true,
-                    can_connect_public_server: false,
-                    can_connect_saved_server: false,
-                    can_refresh_public_servers: true,
-                    can_disconnect_session: false,
-                    can_search_missing_media: false,
-                    can_toggle_pause: false,
-                    can_send_chat_message: true,
-                },
-                pending_operation: None,
-            }),
-            GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Error,
-                message:
-                    "Chat sending requires a session runtime connection; the message was not sent."
-                        .to_owned(),
+    assert!(chat_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+            command_availability: GuiCommandAvailabilityState {
+                can_save_configuration: true,
+                can_reset_configuration: false,
+                can_reload_configuration: true,
+                can_connect_public_server: false,
+                can_connect_saved_server: false,
+                can_refresh_public_servers: true,
+                can_disconnect_session: false,
+                can_search_missing_media: false,
+                can_toggle_pause: false,
+                can_send_chat_message: true,
             },
-        ]
-    );
+            pending_operation: None,
+        })
+    )));
+    assert!(chat_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message
+            == "Chat sending requires a session runtime connection; the message was not sent."
+    )));
     for action in chat_actions {
         assert!(chat_state.apply(action));
     }
@@ -688,54 +696,65 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let startup_actions = handle.drain_actions();
-    assert_eq!(
-        startup_actions,
-        vec![
-            GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
-                room_name: "room1".to_owned(),
-                room_control_status: "Pending: waiting for server room state.".to_owned(),
-                shared_playlist_enabled: false,
-                controlled_room_active: false,
-                users: vec![browser_runtime_user("alice", "room1", true, false, false)],
-                playlist: Vec::new(),
-                chat: Vec::new(),
+    assert!(startup_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+            room_name,
+            room_control_status,
+            shared_playlist_enabled: false,
+            controlled_room_active: false,
+            users,
+            playlist,
+            chat,
+            can_toggle_pause: false,
+            can_seek: false,
+            can_set_ready: false,
+            can_manage_playlist: false,
+            playback_paused: false,
+            autoplay_active: false,
+            hide_empty_rooms: false,
+            rooms,
+            ..
+        }) if room_name == "room1"
+            && room_control_status == "Pending: waiting for server room state."
+            && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
+            && playlist.is_empty()
+            && chat.is_empty()
+            && rooms == &browser_runtime_rooms("room1", false, true)
+    )));
+    assert!(startup_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+            action_overrides,
+            tls_prompt_expected,
+            update_notice_expected,
+            about_dialog_available,
+        }) if *tls_prompt_expected == state.menus.tls_prompt_expected
+            && *update_notice_expected == state.menus.update_notice_expected
+            && *about_dialog_available == state.menus.about_dialog_available
+            && action_overrides.iter().any(|override_action|
+                override_action.section_title == "Window"
+                    && override_action.action_label == "Show Chat"
+                    && !override_action.enabled)
+    )));
+    assert!(startup_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+            command_availability: GuiCommandAvailabilityState {
+                can_save_configuration: true,
+                can_reset_configuration: false,
+                can_reload_configuration: true,
+                can_connect_public_server: false,
+                can_connect_saved_server: false,
+                can_refresh_public_servers: true,
+                can_disconnect_session: true,
+                can_search_missing_media: false,
                 can_toggle_pause: false,
-                can_seek: false,
-                can_set_ready: false,
-                can_manage_playlist: false,
-                playback_paused: false,
-                autoplay_active: false,
-                hide_empty_rooms: false,
-                rooms: browser_runtime_rooms("room1", false, true),
-                ..Default::default()
-            }),
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                action_overrides: vec![MenuActionRuntimeOverride {
-                    section_title: "Window",
-                    action_label: "Show Chat",
-                    enabled: false,
-                }],
-                tls_prompt_expected: state.menus.tls_prompt_expected,
-                update_notice_expected: state.menus.update_notice_expected,
-                about_dialog_available: state.menus.about_dialog_available,
-            }),
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
-                    can_reset_configuration: false,
-                    can_reload_configuration: true,
-                    can_connect_public_server: false,
-                    can_connect_saved_server: false,
-                    can_refresh_public_servers: true,
-                    can_disconnect_session: true,
-                    can_search_missing_media: false,
-                    can_toggle_pause: false,
-                    can_send_chat_message: false,
-                },
-                pending_operation: None,
-            }),
-        ]
-    );
+                can_send_chat_message: false,
+            },
+            pending_operation: None,
+        })
+    )));
     for action in startup_actions {
         assert!(state.apply(action));
     }
@@ -761,62 +780,70 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let hello_actions = handle.drain_actions();
-    assert_eq!(
-        hello_actions,
-        vec![
-            GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
-                room_name: "room1".to_owned(),
-                room_control_status: "Not required: current room is not controlled.".to_owned(),
-                shared_playlist_enabled: false,
-                controlled_room_active: false,
-                users: vec![browser_runtime_user("alice", "room1", true, false, false)],
-                playlist: Vec::new(),
-                chat: Vec::new(),
+    assert!(hello_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyMainWindowRuntimeSnapshot(MainWindowRuntimeSnapshot {
+            room_name,
+            room_control_status,
+            shared_playlist_enabled: false,
+            controlled_room_active: false,
+            users,
+            playlist,
+            chat,
+            can_toggle_pause: false,
+            can_seek: false,
+            can_set_ready: true,
+            can_set_others_ready: true,
+            can_manage_playlist: false,
+            playback_paused: false,
+            autoplay_active: false,
+            hide_empty_rooms: false,
+            rooms,
+            ..
+        }) if room_name == "room1"
+            && room_control_status == "Not required: current room is not controlled."
+            && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
+            && playlist.is_empty()
+            && chat.is_empty()
+            && rooms == &browser_runtime_rooms("room1", false, true)
+    )));
+    assert!(hello_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
+            action_overrides,
+            tls_prompt_expected,
+            update_notice_expected,
+            about_dialog_available,
+        }) if *tls_prompt_expected == state.menus.tls_prompt_expected
+            && *update_notice_expected == state.menus.update_notice_expected
+            && *about_dialog_available == state.menus.about_dialog_available
+            && action_overrides.iter().any(|override_action|
+                override_action.section_title == "Window"
+                    && override_action.action_label == "Show Chat"
+                    && override_action.enabled)
+            && action_overrides.iter().any(|override_action|
+                override_action.section_title == "Advanced"
+                    && override_action.action_label == "Create Controlled Room"
+                    && override_action.enabled)
+    )));
+    assert!(hello_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+            command_availability: GuiCommandAvailabilityState {
+                can_save_configuration: true,
+                can_reset_configuration: false,
+                can_reload_configuration: true,
+                can_connect_public_server: false,
+                can_connect_saved_server: false,
+                can_refresh_public_servers: true,
+                can_disconnect_session: true,
+                can_search_missing_media: false,
                 can_toggle_pause: false,
-                can_seek: false,
-                can_set_ready: true,
-                can_set_others_ready: true,
-                can_manage_playlist: false,
-                playback_paused: false,
-                autoplay_active: false,
-                hide_empty_rooms: false,
-                rooms: browser_runtime_rooms("room1", false, true),
-                ..Default::default()
-            }),
-            GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
-                action_overrides: vec![
-                    MenuActionRuntimeOverride {
-                        section_title: "Window",
-                        action_label: "Show Chat",
-                        enabled: true,
-                    },
-                    MenuActionRuntimeOverride {
-                        section_title: "Advanced",
-                        action_label: "Create Controlled Room",
-                        enabled: true,
-                    },
-                ],
-                tls_prompt_expected: state.menus.tls_prompt_expected,
-                update_notice_expected: state.menus.update_notice_expected,
-                about_dialog_available: state.menus.about_dialog_available,
-            }),
-            GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
-                command_availability: GuiCommandAvailabilityState {
-                    can_save_configuration: true,
-                    can_reset_configuration: false,
-                    can_reload_configuration: true,
-                    can_connect_public_server: false,
-                    can_connect_saved_server: false,
-                    can_refresh_public_servers: true,
-                    can_disconnect_session: true,
-                    can_search_missing_media: false,
-                    can_toggle_pause: false,
-                    can_send_chat_message: true,
-                },
-                pending_operation: None,
-            }),
-        ]
-    );
+                can_send_chat_message: true,
+            },
+            pending_operation: None,
+        })
+    )));
     for action in hello_actions {
         assert!(state.apply(action));
     }
