@@ -724,6 +724,9 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
             ],
             playlist: vec!["Episode 1".to_owned()],
             can_toggle_pause: true,
+            can_seek: true,
+            can_undo_seek: true,
+            can_set_offset: true,
             can_set_ready: true,
             can_set_others_ready: true,
             ..Default::default()
@@ -744,7 +747,13 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let room_set_button = shell_tree.find("main-window:room:set").unwrap();
     let room_join_button = shell_tree.find("main-window:room:join").unwrap();
     let room_leave_button = shell_tree.find("main-window:room:leave").unwrap();
-    let pause_button = shell_tree.find("main-window:control:toggle-pause").unwrap();
+    let play_button = shell_tree.find("main-window:control:play").unwrap();
+    let pause_button = shell_tree.find("main-window:control:pause").unwrap();
+    let toggle_pause_button = shell_tree.find("main-window:control:toggle-pause").unwrap();
+    let seek_button = shell_tree.find("main-window:control:seek").unwrap();
+    let undo_seek_button = shell_tree.find("main-window:control:undo-seek").unwrap();
+    let set_offset_button = shell_tree.find("main-window:control:set-offset").unwrap();
+    let local_ready_button = shell_tree.find("main-window:control:set-ready").unwrap();
     let playlist_add_input = shell_tree.find("main-window:playlist:new").unwrap();
     let playlist_add_button = shell_tree.find("main-window:playlist:add").unwrap();
     let playlist_remove_button = shell_tree.find("main-window:playlist:remove").unwrap();
@@ -829,8 +838,32 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         vec![GuiShellAction::LeaveMainWindowRoom]
     );
     assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, play_button),
+        vec![GuiShellAction::BeginPlaybackResume]
+    );
+    assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, pause_button),
+        vec![GuiShellAction::BeginPlaybackPause]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, toggle_pause_button),
         vec![GuiShellAction::BeginPlaybackPauseToggle]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, seek_button),
+        vec![GuiShellAction::RequestSeekPrompt]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_seek_button),
+        vec![GuiShellAction::RequestPlaybackUndoSeek]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, set_offset_button),
+        vec![GuiShellAction::RequestOffsetPrompt]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, local_ready_button),
+        vec![GuiShellAction::AnnounceLocalUserReady]
     );
     assert_eq!(playlist_add_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(

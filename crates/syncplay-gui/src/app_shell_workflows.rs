@@ -435,6 +435,13 @@ impl SyncplayGuiShellAppState {
             .selected_main_window_playlist
             .and_then(|index| self.main_window.playlist.get(index))
             .map(|row| row.label.clone());
+        let pending_local_ready_target = self.pending_local_ready_target.filter(|target| {
+            snapshot.can_set_ready
+                && normalized_users
+                    .iter()
+                    .find(|user| user.is_self)
+                    .is_some_and(|user| user.is_ready != *target)
+        });
 
         self.main_window = MainWindowShellState {
             room_name,
@@ -465,6 +472,7 @@ impl SyncplayGuiShellAppState {
             show_playback_buttons: snapshot.show_playback_buttons,
             show_autoplay_controls: snapshot.show_autoplay_controls,
         };
+        self.pending_local_ready_target = pending_local_ready_target;
         self.set_menu_action_selected(
             "Window",
             "Playback Buttons",

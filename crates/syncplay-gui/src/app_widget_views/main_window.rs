@@ -388,26 +388,45 @@ impl SyncplayGuiShellAppState {
                 ),
             ]);
         }
-        control_buttons.push(GuiWidgetNode::leaf(
+        let local_user_ready = self.displayed_local_main_window_user_ready();
+        let ready_button = GuiWidgetNode::leaf(
             "main-window:control:set-ready",
-            "Set Ready",
+            if local_user_ready {
+                "Ready"
+            } else {
+                "Not Ready"
+            },
             GuiWidgetKind::Button,
             None,
-            self.main_window.playback.can_set_ready && self.pending_operation.is_none(),
+            self.main_window.playback.can_set_ready
+                && self.pending_operation.is_none()
+                && !self.local_ready_transition_pending(),
             false,
-        ));
+        );
         let controls_panel = GuiWidgetNode::branch(
             "main-window:controls",
             "Controls",
             GuiWidgetKind::Panel,
-            vec![GuiWidgetNode::layout(
-                "main-window:controls:buttons",
-                "Playback Controls",
-                GuiLayoutMode::ButtonWrap {
-                    min_button_width: 140.0,
-                },
-                control_buttons,
-            )],
+            vec![
+                GuiWidgetNode::layout(
+                    "main-window:controls:playback-actions",
+                    "Playback Controls",
+                    GuiLayoutMode::CompactButtonWrap {
+                        button_width: 40.0,
+                        button_height: 36.0,
+                        gap: 8.0,
+                    },
+                    control_buttons,
+                ),
+                GuiWidgetNode::layout(
+                    "main-window:controls:ready",
+                    "Playback Ready",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    vec![ready_button],
+                ),
+            ],
         );
 
         let autoplay_panel = self.main_window.show_autoplay_controls.then(|| {

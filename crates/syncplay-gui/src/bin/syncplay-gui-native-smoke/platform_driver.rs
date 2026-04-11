@@ -110,6 +110,28 @@ pub(super) trait NativeGuiDriver {
 }
 
 #[cfg(target_os = "windows")]
+fn is_local_ready_button_request(name: &str) -> bool {
+    name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+}
+
+#[cfg(target_os = "windows")]
+fn is_local_ready_button_name(name: &str) -> bool {
+    matches!(
+        name,
+        MAIN_WINDOW_LOCAL_READY_BUTTON_NAME | "Ready" | "Not Ready"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn matches_control_name(requested_name: &str, current_name: &str) -> bool {
+    if is_local_ready_button_request(requested_name) {
+        is_local_ready_button_name(current_name)
+    } else {
+        current_name == requested_name
+    }
+}
+
+#[cfg(target_os = "windows")]
 type PlatformWindowHandle = windows_sys::Win32::Foundation::HWND;
 
 #[cfg(not(target_os = "windows"))]
@@ -657,7 +679,7 @@ impl PlatformNativeGuiDriver {
                 })?
             };
             let controls_rect = if control_kind == NativeControlKind::Button
-                && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+                && is_local_ready_button_request(name)
             {
                 let mut rect = None;
                 for index in 0..length {
@@ -711,7 +733,7 @@ impl PlatformNativeGuiDriver {
                         Err(_) => continue,
                     }
                 };
-                if current_name != name {
+                if !matches_control_name(name, &current_name) {
                     continue;
                 }
 
@@ -757,7 +779,7 @@ impl PlatformNativeGuiDriver {
                 };
                 let rect = unsafe { element.CurrentBoundingRectangle().ok() };
                 if control_kind == NativeControlKind::Button
-                    && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+                    && is_local_ready_button_request(name)
                     && (automation_id == MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID
                         || if let (
                             Some((controls_left, controls_top, controls_right, controls_bottom)),
@@ -799,9 +821,7 @@ impl PlatformNativeGuiDriver {
                 ));
             }
 
-            if control_kind == NativeControlKind::Button
-                && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
-            {
+            if control_kind == NativeControlKind::Button && is_local_ready_button_request(name) {
                 candidates.sort_by_key(|element| unsafe {
                     element
                         .CurrentBoundingRectangle()
@@ -836,8 +856,7 @@ impl PlatformNativeGuiDriver {
                     candidate_errors.push(focus_result.err().unwrap_or_default());
                 }
 
-                if control_kind == NativeControlKind::Button
-                    && name == MAIN_WINDOW_LOCAL_READY_BUTTON_NAME
+                if control_kind == NativeControlKind::Button && is_local_ready_button_request(name)
                 {
                     let click_result = Self::click_element_center(window, &candidate, name);
                     if click_result.is_ok() {
@@ -970,7 +989,7 @@ impl PlatformNativeGuiDriver {
                             Err(_) => continue,
                         }
                     };
-                    if current_name != name {
+                    if !matches_control_name(name, &current_name) {
                         continue;
                     }
 
@@ -1086,7 +1105,7 @@ impl PlatformNativeGuiDriver {
                             Err(_) => continue,
                         }
                     };
-                    if current_name != name {
+                    if !matches_control_name(name, &current_name) {
                         continue;
                     }
 
@@ -1156,7 +1175,7 @@ impl PlatformNativeGuiDriver {
                             Err(_) => continue,
                         }
                     };
-                    if current_name != name {
+                    if !matches_control_name(name, &current_name) {
                         continue;
                     }
 

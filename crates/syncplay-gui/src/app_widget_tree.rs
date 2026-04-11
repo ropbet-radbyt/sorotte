@@ -22,6 +22,11 @@ pub(super) enum GuiLayoutMode {
     ButtonWrap {
         min_button_width: f32,
     },
+    CompactButtonWrap {
+        button_width: f32,
+        button_height: f32,
+        gap: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

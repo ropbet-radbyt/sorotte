@@ -271,6 +271,22 @@ impl SyncplayGuiShellAppState {
         self.main_window.users.iter().position(|user| user.is_self)
     }
 
+    pub(super) fn actual_local_main_window_user_ready(&self) -> bool {
+        self.local_main_window_user_index()
+            .and_then(|index| self.main_window.users.get(index))
+            .map(|user| user.is_ready)
+            .unwrap_or(false)
+    }
+
+    pub(super) fn displayed_local_main_window_user_ready(&self) -> bool {
+        self.pending_local_ready_target
+            .unwrap_or_else(|| self.actual_local_main_window_user_ready())
+    }
+
+    pub(super) fn local_ready_transition_pending(&self) -> bool {
+        self.pending_local_ready_target.is_some()
+    }
+
     pub(super) fn current_joined_main_window_room_name(&self) -> Option<&str> {
         joined_room_name_text(&self.main_window.room_name)
     }
@@ -506,6 +522,7 @@ impl SyncplayGuiShellAppState {
         }
 
         user.is_ready = ready;
+        self.pending_local_ready_target = Some(ready);
         self.push_system_chat_message(if ready {
             "You are now marked ready.".to_owned()
         } else {

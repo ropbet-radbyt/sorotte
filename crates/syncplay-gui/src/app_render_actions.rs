@@ -370,13 +370,7 @@ impl GuiWidgetEguiRenderer {
                 vec![GuiShellAction::CancelControllerAuthEdit]
             }
             "main-window:control:set-ready" => {
-                let local_user_ready = state
-                    .main_window
-                    .users
-                    .iter()
-                    .find(|user| user.is_self)
-                    .map(|user| user.is_ready)
-                    .unwrap_or(false);
+                let local_user_ready = state.displayed_local_main_window_user_ready();
                 vec![if local_user_ready {
                     GuiShellAction::AnnounceLocalUserNotReady
                 } else {

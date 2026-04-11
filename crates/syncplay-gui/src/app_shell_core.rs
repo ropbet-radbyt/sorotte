@@ -36,6 +36,7 @@ impl SyncplayGuiShellAppState {
             runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
             commands: GuiCommandAvailabilityState::default(),
             pending_operation: None,
+            pending_local_ready_target: None,
             pending_saved_server_connect_saves_configuration: false,
             outgoing_chat_message: None,
             new_main_window_user_draft: String::new(),

@@ -1,5 +1,6 @@
 use super::{GuiLayoutMode, GuiWidgetRenderer};
 
+use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
     GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiPlayerSetupIssue,
     GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction, GuiShellModal,
@@ -236,6 +237,71 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
     assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
     assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
+}
+
+#[test]
+fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.can_toggle_pause = true;
+    snapshot.can_seek = true;
+    snapshot.can_undo_seek = true;
+    snapshot.can_set_offset = true;
+    snapshot.can_set_ready = true;
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    let playback_actions = tree
+        .find("main-window:controls:playback-actions")
+        .expect("compact playback controls should exist");
+    assert_eq!(
+        playback_actions.layout_mode,
+        Some(GuiLayoutMode::CompactButtonWrap {
+            button_width: 40.0,
+            button_height: 36.0,
+            gap: 8.0,
+        })
+    );
+    assert_eq!(playback_actions.children.len(), 6);
+    assert_eq!(
+        tree.find("main-window:control:set-ready")
+            .expect("ready button should exist")
+            .label,
+        "Not Ready"
+    );
+
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, true, false)];
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:control:set-ready")
+            .expect("ready button should still exist")
+            .label,
+        "Ready"
+    );
+
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+    state.pending_local_ready_target = Some(true);
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+
+    let tree = state.main_window_widget_tree();
+    let ready_button = tree
+        .find("main-window:control:set-ready")
+        .expect("ready button should exist while readiness is pending");
+    assert_eq!(ready_button.label, "Ready");
+    assert!(!ready_button.enabled);
 }
 
 #[test]
