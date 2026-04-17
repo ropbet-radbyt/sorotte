@@ -322,28 +322,14 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         .expect("inbound server hello should apply");
 
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
-    assert_eq!(actions.len(), 3);
+    assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("stale shared-playlist state should be corrected through a main-window snapshot");
     };
     assert!(!snapshot.shared_playlist_enabled);
     assert!(snapshot.playlist.is_empty());
     assert!(!snapshot.can_manage_playlist);
-    let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction_snapshot) = &actions[1]
-    else {
-        panic!(
-            "stale shared-playlist selection should be corrected through an interaction snapshot"
-        );
-    };
-    assert_eq!(
-        interaction_snapshot.selection.selected_main_window_playlist,
-        None
-    );
-    assert_eq!(
-        interaction_snapshot.selection.selected_main_window_user,
-        Some(0)
-    );
-    let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
+    let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[1] else {
         panic!("stale shared-playlist menu state should be corrected through a menu snapshot");
     };
     assert_eq!(
@@ -437,17 +423,13 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     .expect("playlist replace should dispatch");
 
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
-    assert_eq!(actions.len(), 3);
+    assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("local playlist replace should project a main-window runtime snapshot");
     };
     assert!(snapshot.shared_playlist_enabled);
     assert_eq!(snapshot.playlist, vec!["episode1.mkv".to_owned()]);
-    let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction) = &actions[1] else {
-        panic!("local playlist replace should project a playlist selection");
-    };
-    assert_eq!(interaction.selection.selected_main_window_playlist, Some(0));
-    let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
+    let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[1] else {
         panic!("local playlist replace should surface playlist menu availability");
     };
     assert_eq!(

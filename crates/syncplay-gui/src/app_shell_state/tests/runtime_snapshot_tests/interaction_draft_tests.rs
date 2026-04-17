@@ -270,6 +270,50 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
 }
 
 #[test]
+fn gui_shell_app_state_preserves_local_playlist_selection_across_stale_interaction_snapshots() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "One".to_owned(),
+            "Two".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    assert!(state.main_window_playlist_selection_is_local);
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
+            GuiInteractionRuntimeSnapshot {
+                selection: GuiSelectionState {
+                    selected_main_window_user: Some(1),
+                    selected_main_window_playlist: Some(0),
+                    selected_menu_action: state.selection.selected_menu_action,
+                    selected_media_search_directory: state.selection.selected_media_search_directory,
+                },
+                selected_public_server_index: None,
+                focused_configuration_control: None,
+                public_server_edit_session: None,
+                main_window_user_edit_session: None,
+                text_edit_session: None,
+                playlist_text_edit_session: None,
+                playlist_url_edit_session: None,
+                media_url_edit_session: None,
+            }
+        ))
+    );
+
+    assert_eq!(state.selection.selected_main_window_user, Some(1));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert!(state.main_window_playlist_selection_is_local);
+    assert!(state.main_window.playlist[1].is_selected);
+    assert!(!state.main_window.playlist[0].is_selected);
+}
+
+#[test]
 fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_runtime_snapshots() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),

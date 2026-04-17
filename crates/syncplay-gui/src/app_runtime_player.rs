@@ -296,16 +296,33 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn selected_shared_playlist_target(state: &SyncplayGuiShellAppState) -> Option<String> {
+    fn playlist_target_for_index(
+        state: &SyncplayGuiShellAppState,
+        index: usize,
+    ) -> Option<String> {
         if !state.main_window.shared_playlist_enabled {
             return None;
         }
 
         state
-            .selection
-            .selected_main_window_playlist
-            .and_then(|index| state.main_window.playlist.get(index))
+            .main_window
+            .playlist
+            .get(index)
             .and_then(|target| normalized_editable_text(&target.label))
+    }
+
+    fn current_shared_playlist_target(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<String> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.current_room_playlist_index())
+            .and_then(|index| Self::playlist_target_for_index(state, index))
+            .or_else(|| {
+                self.active_shared_playlist_index
+                    .and_then(|index| Self::playlist_target_for_index(state, index))
+            })
     }
 
     pub(super) fn current_player_matches_media_target(&self, target: &str) -> bool {
@@ -1441,7 +1458,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         state: &SyncplayGuiShellAppState,
     ) -> SelectedPlaylistMediaSyncOutcome {
-        let Some(target) = Self::selected_shared_playlist_target(state) else {
+        let Some(target) = self.current_shared_playlist_target(state) else {
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
@@ -1544,7 +1561,8 @@ impl GuiPersistedConfigRuntimeOwner {
         if !opened_selected_media {
             return;
         }
-        if Self::selected_shared_playlist_target(state)
+        if self
+            .current_shared_playlist_target(state)
             .as_deref()
             .is_some_and(|target| !self.current_player_matches_media_target(target))
         {
@@ -1578,6 +1596,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_position_seconds = Some(0.0);
                 state_changed = true;
             }
+            Err(error) if Self::attached_player_playlist_reset_error_is_transient(&error) => {
+                if let Some(session) = self.session.as_mut() {
+                    session.note_local_playlist_index_reset_intent(pause_before_sync);
+                }
+                return;
+            }
             Err(error) => {
                 eprintln!(
                     "warning: failed to rewind the attached player for a playlist switch reset: {error}"
@@ -1589,6 +1613,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(()) => {
                     self.player_paused = Some(true);
                     state_changed = true;
+                }
+                Err(error) if Self::attached_player_playlist_reset_error_is_transient(&error) => {
+                    if let Some(session) = self.session.as_mut() {
+                        session.note_local_playlist_index_reset_intent(true);
+                    }
+                    return;
                 }
                 Err(error) => {
                     eprintln!(
@@ -1613,12 +1643,23 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn attached_player_playlist_reset_error_is_transient(
+        error: &syncplay_player_api::PlayerError,
+    ) -> bool {
+        let syncplay_player_api::PlayerError::OperationFailed(message) = error else {
+            return false;
+        };
+        let lower = message.to_ascii_lowercase();
+        lower.contains("property unavailable") || lower.contains("no file loaded")
+    }
+
     pub(super) fn sync_session_playstate_to_attached_player_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
         force: bool,
     ) {
-        if Self::selected_shared_playlist_target(state)
+        if self
+            .current_shared_playlist_target(state)
             .as_deref()
             .is_some_and(|target| !self.current_player_matches_media_target(target))
         {
@@ -1921,7 +1962,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|index| index.min(entries.len().saturating_sub(1)));
         projected_state.main_window.shared_playlist_enabled = true;
         projected_state.remember_shared_playlist_undo_snapshot_if_changed(&entries);
-        projected_state.apply_shared_playlist_entries(entries.clone(), selected_index);
+        projected_state.apply_shared_playlist_entries(entries.clone(), selected_index, false);
         true
     }
 
@@ -2069,6 +2110,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
                 return;
             }
+            self.active_shared_playlist_index = selected_playlist_index;
             Self::push_actions_and_project(
                 handle,
                 projected_state,
@@ -2127,6 +2169,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .expect("session should exist")
             .replace_playlist(playlist_entries.clone(), selected_playlist_index);
         let session_success = session_result.is_ok();
+        if session_success {
+            self.active_shared_playlist_index = selected_playlist_index;
+        }
         let selected_media_sync = if session_success
             && Self::project_loaded_shared_playlist_into_state(
                 projected_state,

@@ -340,7 +340,7 @@ impl eframe::App for GuiNativeApp {
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
         let mut playlist_entry_commits = Vec::new();
         let mut appended_playlist_entries = Vec::new();
-        let mut playlist_selection_changes = Vec::new();
+        let mut playlist_activation_requests = Vec::new();
         let mut playlist_deletions = Vec::new();
         let mut playlist_reorder_requested = false;
         let mut playlist_replace_requested = false;
@@ -407,7 +407,10 @@ impl eframe::App for GuiNativeApp {
                 }
                 GuiShellAction::SelectMainWindowPlaylist(index) => {
                     selected_playlist_index = Some(*index);
-                    playlist_selection_changes.push(*index);
+                }
+                GuiShellAction::ActivateMainWindowPlaylist(index) => {
+                    selected_playlist_index = Some(*index);
+                    playlist_activation_requests.push(*index);
                 }
                 GuiShellAction::MoveMainWindowPlaylistRow { .. } => {
                     playlist_reorder_requested = true;
@@ -534,10 +537,10 @@ impl eframe::App for GuiNativeApp {
                 }
             }
         }
-        for index in playlist_selection_changes {
+        for index in playlist_activation_requests {
             for action in self
                 .runtime
-                .actions_for_playlist_selection_change(&self.state, index)
+                .actions_for_playlist_activation(&self.state, index)
             {
                 state_changed |= self.state.apply(action);
             }

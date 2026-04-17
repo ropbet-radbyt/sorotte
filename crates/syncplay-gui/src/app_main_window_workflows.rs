@@ -37,7 +37,7 @@ impl SyncplayGuiShellAppState {
         self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
         let moved_row = self.main_window.playlist.remove(from_index);
         self.main_window.playlist.insert(to_index, moved_row);
-        self.selection.selected_main_window_playlist = Some(to_index);
+        self.set_main_window_playlist_selection(Some(to_index), true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
         true
@@ -66,7 +66,7 @@ impl SyncplayGuiShellAppState {
         };
         self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
         self.main_window.playlist.swap(index, target_index);
-        self.selection.selected_main_window_playlist = Some(target_index);
+        self.set_main_window_playlist_selection(Some(target_index), true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
         true
@@ -86,13 +86,16 @@ impl SyncplayGuiShellAppState {
         }
 
         self.main_window.playlist.remove(index);
-        self.selection.selected_main_window_playlist = if self.main_window.playlist.is_empty() {
-            None
-        } else if index >= self.main_window.playlist.len() {
-            Some(self.main_window.playlist.len() - 1)
-        } else {
-            Some(index)
-        };
+        self.set_main_window_playlist_selection(
+            if self.main_window.playlist.is_empty() {
+                None
+            } else if index >= self.main_window.playlist.len() {
+                Some(self.main_window.playlist.len() - 1)
+            } else {
+                Some(index)
+            },
+            true,
+        );
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
         true

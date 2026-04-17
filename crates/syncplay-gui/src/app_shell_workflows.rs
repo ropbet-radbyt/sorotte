@@ -435,6 +435,16 @@ impl SyncplayGuiShellAppState {
             .selected_main_window_playlist
             .and_then(|index| self.main_window.playlist.get(index))
             .map(|row| row.label.clone());
+        let playlist_runtime_context_changed =
+            self.main_window.room_name != room_name
+                || self.main_window.shared_playlist_enabled != snapshot.shared_playlist_enabled
+                || self.main_window.playlist.len() != normalized_playlist.len()
+                || self
+                    .main_window
+                    .playlist
+                    .iter()
+                    .zip(normalized_playlist.iter())
+                    .any(|(current, projected)| current.label != projected.label);
         let pending_local_ready_target = self.pending_local_ready_target.filter(|target| {
             snapshot.can_set_ready
                 && normalized_users
@@ -498,15 +508,22 @@ impl SyncplayGuiShellAppState {
                     .position(|user| user.username == username)
             })
             .or_else(|| (!self.main_window.users.is_empty()).then_some(0));
-        self.selection.selected_main_window_playlist = previously_selected_playlist
-            .as_deref()
-            .and_then(|label| {
-                self.main_window
-                    .playlist
-                    .iter()
-                    .position(|row| row.label == label)
-            })
-            .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0));
+        self.set_main_window_playlist_selection(
+            previously_selected_playlist
+                .as_deref()
+                .and_then(|label| {
+                    self.main_window
+                        .playlist
+                        .iter()
+                        .position(|row| row.label == label)
+                })
+                .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
+            if playlist_runtime_context_changed {
+                false
+            } else {
+                self.main_window_playlist_selection_is_local
+            },
+        );
         self.main_window_user_edit_session = previous_main_window_user_edit_session;
         self.normalize_main_window_user_edit_session();
         self.normalize_selection();

@@ -251,6 +251,10 @@ pub(super) trait GuiSessionRuntimeAdapter: Send {
         self.current_room_playstate()
     }
 
+    fn current_room_playlist_index(&self) -> Option<usize> {
+        None
+    }
+
     fn note_local_playlist_index_reset_intent(&mut self, _pause_before_sync: bool) {}
 
     fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
@@ -1783,6 +1787,12 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 do_seek: playstate.do_seek,
                 set_by: playstate.set_by,
             })
+    }
+
+    fn current_room_playlist_index(&self) -> Option<usize> {
+        self.projected_current_room_playlist()
+            .and_then(|playlist| playlist.index)
+            .and_then(|index| usize::try_from(index).ok())
     }
 
     fn note_local_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {

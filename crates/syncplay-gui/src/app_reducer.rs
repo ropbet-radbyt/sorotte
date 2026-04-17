@@ -657,12 +657,13 @@ impl SyncplayGuiShellAppState {
                 self.toggle_selected_main_window_user_controller()
             }
             GuiShellAction::RemoveSelectedMainWindowUser => self.remove_selected_main_window_user(),
-            GuiShellAction::SelectMainWindowPlaylist(index) => {
+            GuiShellAction::SelectMainWindowPlaylist(index)
+            | GuiShellAction::ActivateMainWindowPlaylist(index) => {
                 if index >= self.main_window.playlist.len() {
                     return self
                         .record_action_error("No playlist row exists at the requested index.");
                 }
-                self.selection.selected_main_window_playlist = Some(index);
+                self.set_main_window_playlist_selection(Some(index), true);
                 self.apply_selection_to_surfaces();
                 self.clear_action_error_and_refresh();
                 true

@@ -427,7 +427,18 @@ impl SyncplayGuiShellAppState {
             None => None,
         };
 
+        let preserved_local_playlist_selection = self
+            .main_window_playlist_selection_is_local
+            .then_some(self.selection.selected_main_window_playlist)
+            .flatten()
+            .filter(|&index| index < self.main_window.playlist.len());
+
         self.selection = snapshot.selection;
+        self.main_window_playlist_selection_is_local = false;
+        if let Some(index) = preserved_local_playlist_selection {
+            self.selection.selected_main_window_playlist = Some(index);
+            self.main_window_playlist_selection_is_local = true;
+        }
         self.set_selected_public_server_index(snapshot.selected_public_server_index);
         self.focused_configuration_control = focused_configuration_control;
         self.public_server_edit_session = public_server_edit_session;

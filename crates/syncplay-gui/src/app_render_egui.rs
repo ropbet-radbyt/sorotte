@@ -745,9 +745,12 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
     ) {
+        let playlist_focus_id = Self::playlist_focus_id();
+        let playlist_focused = ui.ctx().memory(|mem| mem.has_focus(playlist_focus_id));
         let playlist_len = node.children.len();
         let mut first_row_rect = None;
         let mut last_row_rect = None;
+        let mut playlist_focus_requested = false;
         let response = egui::Frame::group(ui.style()).show(ui, |ui| {
             if let Some(min_content_height) = node.min_content_height {
                 ui.set_min_height(min_content_height);
@@ -757,7 +760,14 @@ impl GuiWidgetEguiRenderer {
                 ui.label("No items.");
             } else {
                 for child in &node.children {
-                    let row_rect = self.render_playlist_list_item(ui, child, state, playlist_len);
+                    let row_rect = self.render_playlist_list_item(
+                        ui,
+                        child,
+                        state,
+                        playlist_len,
+                        playlist_focused,
+                        &mut playlist_focus_requested,
+                    );
                     if first_row_rect.is_none() {
                         first_row_rect = row_rect;
                     }
@@ -778,6 +788,14 @@ impl GuiWidgetEguiRenderer {
                 }
             }
         });
+        let playlist_focus_response = ui.interact(
+            response.response.rect,
+            playlist_focus_id,
+            Self::playlist_focus_sense(),
+        );
+        if playlist_focus_requested {
+            playlist_focus_response.request_focus();
+        }
         self.playlist_drop_target_rect = Some(response.response.rect);
         self.playlist_drop_target_hovered = response.response.hovered();
     }
@@ -788,6 +806,8 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
         playlist_len: usize,
+        playlist_focused: bool,
+        playlist_focus_requested: &mut bool,
     ) -> Option<egui::Rect> {
         let Some(index) = node
             .id
@@ -799,54 +819,51 @@ impl GuiWidgetEguiRenderer {
         };
         let can_drag_reorder = node.enabled && state.main_window.playback.can_manage_playlist;
         let text = Self::display_text(node).to_owned();
-        let selection_action = Self::action_for_list_item_node(node);
 
-        let (button_response, interaction_response) = ui
+        let button_response = ui
             .push_id(&node.id, |ui| {
-                if can_drag_reorder {
-                    let drag_id = egui::Id::new(("main-window:playlist:drag", index));
-                    let inner =
-                        ui.dnd_drag_source(drag_id, GuiDraggedPlaylistRow { index }, |ui| {
-                            ui.add_enabled_ui(node.enabled, |ui| {
-                                ui.add_sized(
-                                    [ui.available_width().max(0.0), 0.0],
-                                    egui::Button::new(text.clone()).selected(node.selected),
-                                )
-                            })
-                            .inner
-                        });
-                    (inner.inner, inner.response)
-                } else {
-                    let response = ui.add_enabled_ui(node.enabled, |ui| {
-                        ui.add_sized(
-                            [ui.available_width().max(0.0), 0.0],
-                            egui::Button::new(text).selected(node.selected),
-                        )
-                    });
-                    (response.inner, response.response)
-                }
+                ui.add_enabled_ui(node.enabled, |ui| {
+                    ui.add_sized(
+                        [ui.available_width().max(0.0), 0.0],
+                        egui::Button::new(text)
+                            .selected(node.selected)
+                            .sense(Self::playlist_row_sense(can_drag_reorder)),
+                    )
+                })
+                .inner
             })
             .inner;
 
-        if (button_response.clicked() || button_response.double_clicked())
-            && let Some(action) = selection_action
-        {
-            button_response.request_focus();
-            self.actions.push(action);
+        if can_drag_reorder {
+            if button_response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            button_response.dnd_set_drag_payload(GuiDraggedPlaylistRow { index });
+        }
+
+        let pointer_actions = Self::playlist_row_pointer_actions(
+            index,
+            button_response.clicked(),
+            button_response.double_clicked(),
+        );
+        if !pointer_actions.is_empty() {
+            button_response.surrender_focus();
+            *playlist_focus_requested = true;
+            self.actions.extend(pointer_actions);
         }
 
         self.actions.extend(Self::playlist_row_shortcut_actions(
             state,
             index,
             node.enabled,
-            button_response.has_focus(),
+            playlist_focused,
             ui.input(|input| input.key_pressed(egui::Key::Enter)),
             ui.input(|input| input.key_pressed(egui::Key::Delete)),
         ));
 
-        self.update_playlist_drop_target_slot(ui, &interaction_response, index);
-        self.render_playlist_drop_indicator(ui, &interaction_response, index, playlist_len);
-        Some(interaction_response.rect)
+        self.update_playlist_drop_target_slot(ui, &button_response, index);
+        self.render_playlist_drop_indicator(ui, &button_response, index, playlist_len);
+        Some(button_response.rect)
     }
 
     fn render_room_browser(
@@ -1477,6 +1494,37 @@ impl GuiWidgetEguiRenderer {
         })
     }
 
+    fn playlist_row_pointer_actions(
+        index: usize,
+        clicked: bool,
+        double_clicked: bool,
+    ) -> Vec<GuiShellAction> {
+        let mut actions = Vec::new();
+        if clicked || double_clicked {
+            actions.push(GuiShellAction::SelectMainWindowPlaylist(index));
+        }
+        if double_clicked {
+            actions.push(GuiShellAction::ActivateMainWindowPlaylist(index));
+        }
+        actions
+    }
+
+    fn playlist_focus_id() -> egui::Id {
+        egui::Id::new("main-window:playlist:keyboard")
+    }
+
+    fn playlist_focus_sense() -> egui::Sense {
+        egui::Sense::focusable_noninteractive()
+    }
+
+    fn playlist_row_sense(can_drag_reorder: bool) -> egui::Sense {
+        if can_drag_reorder {
+            egui::Sense::click_and_drag()
+        } else {
+            egui::Sense::click()
+        }
+    }
+
     pub(super) fn playlist_row_move_action(
         from_index: usize,
         target_slot: usize,
@@ -1500,11 +1548,14 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         index: usize,
         row_enabled: bool,
-        row_focused: bool,
+        playlist_focused: bool,
         enter_pressed: bool,
         delete_pressed: bool,
     ) -> Vec<GuiShellAction> {
-        if !row_enabled || !row_focused {
+        if !row_enabled
+            || !playlist_focused
+            || state.selection.selected_main_window_playlist != Some(index)
+        {
             return Vec::new();
         }
 
@@ -1517,7 +1568,7 @@ impl GuiWidgetEguiRenderer {
         }
 
         if enter_pressed {
-            return vec![GuiShellAction::SelectMainWindowPlaylist(index)];
+            return vec![GuiShellAction::ActivateMainWindowPlaylist(index)];
         }
 
         Vec::new()

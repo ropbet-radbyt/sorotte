@@ -594,7 +594,8 @@ fn gui_persisted_config_runtime_owner_opens_inbound_selected_shared_playlist_med
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_local_playlist_selection_switches_media_before_server_echo() {
+fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_before_server_echo()
+{
     let root = test_temp_root("shared-playlist-local-select-before-echo");
     let current_media_path = root.join("episode1.mkv");
     let selected_media_path = root.join("episode2.mkv");
@@ -651,6 +652,16 @@ fn gui_persisted_config_runtime_owner_local_playlist_selection_switches_media_be
     );
 
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some(current_media_path.to_string_lossy().as_ref()),
+        "plain local playlist selection should not switch the attached player before activation",
+    );
+
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while std::time::Instant::now() < deadline {

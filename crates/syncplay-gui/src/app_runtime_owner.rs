@@ -92,6 +92,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_local_attached_pause_override: Option<bool>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
+    pub(super) active_shared_playlist_index: Option<usize>,
     pub(super) playlist_auto_advance_eof_latched: bool,
     pub(super) user_offset_seconds: f64,
 }
@@ -221,6 +222,7 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_local_attached_pause_override: None,
             player_position_seconds: None,
             player_paused: None,
+            active_shared_playlist_index: None,
             playlist_auto_advance_eof_latched: false,
             user_offset_seconds: 0.0,
         }

@@ -176,6 +176,59 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selection_when_session_playlist_index_changes()
+{
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("playlist-change set message should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+        .expect("initial playlist-index set message should apply");
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("follow-up playlist-index set message should apply");
+
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    assert!(
+        actions
+            .iter()
+            .all(|action| !matches!(action, GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_))),
+        "session playlist-index changes should not overwrite an existing local playlist selection"
+    );
+    for action in actions {
+        assert!(state.apply(action));
+    }
+    assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_chat_events() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),

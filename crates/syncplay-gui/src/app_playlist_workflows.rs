@@ -135,6 +135,7 @@ impl SyncplayGuiShellAppState {
         &mut self,
         entries: Vec<String>,
         selected_index: Option<usize>,
+        selection_is_local: bool,
     ) {
         self.main_window.playlist = entries
             .iter()
@@ -143,8 +144,10 @@ impl SyncplayGuiShellAppState {
                 is_selected: false,
             })
             .collect();
-        self.selection.selected_main_window_playlist =
-            selected_index.filter(|index| *index < self.main_window.playlist.len());
+        self.set_main_window_playlist_selection(
+            selected_index.filter(|index| *index < self.main_window.playlist.len()),
+            selection_is_local,
+        );
         self.apply_selection_to_surfaces();
     }
 
@@ -206,7 +209,7 @@ impl SyncplayGuiShellAppState {
             )
         };
         self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
-        self.apply_shared_playlist_entries(entries.clone(), target_index);
+        self.apply_shared_playlist_entries(entries.clone(), target_index, true);
         let message = if entries.is_empty() {
             "Shared playlist cleared.".to_owned()
         } else {
@@ -232,7 +235,7 @@ impl SyncplayGuiShellAppState {
         );
         playlist_entries.extend(entries.iter().cloned());
         let selected_index = playlist_entries.len().checked_sub(1);
-        self.apply_shared_playlist_entries(playlist_entries, selected_index);
+        self.apply_shared_playlist_entries(playlist_entries, selected_index, true);
         let message = if entries.len() == 1 {
             format!("Shared playlist entry added: {}.", entries[0])
         } else {
@@ -269,7 +272,7 @@ impl SyncplayGuiShellAppState {
             )
         };
         self.playlist_undo_snapshot = Some(current_entries);
-        self.apply_shared_playlist_entries(previous_entries, target_index);
+        self.apply_shared_playlist_entries(previous_entries, target_index, true);
         self.push_system_chat_message("Shared playlist undo requested.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -303,7 +306,7 @@ impl SyncplayGuiShellAppState {
                 .record_action_error("No remaining shared playlist entries can be shuffled.");
         }
         self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
-        self.apply_shared_playlist_entries(shuffled_entries, Some(current_index));
+        self.apply_shared_playlist_entries(shuffled_entries, Some(current_index), true);
         self.push_system_chat_message("Remaining shared playlist entries shuffled.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -326,7 +329,7 @@ impl SyncplayGuiShellAppState {
         let seed = self.next_shared_playlist_shuffle_seed(&current_entries, current_index, false);
         shuffle_playlist_entries_in_place(&mut shuffled_entries, seed);
         self.remember_shared_playlist_undo_snapshot_if_changed(&shuffled_entries);
-        self.apply_shared_playlist_entries(shuffled_entries, Some(0));
+        self.apply_shared_playlist_entries(shuffled_entries, Some(0), true);
         self.push_system_chat_message("Shared playlist shuffled.".to_owned());
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -446,7 +449,7 @@ impl SyncplayGuiShellAppState {
         }
         let target_index = (!entries.is_empty()).then_some(0);
         self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
-        self.apply_shared_playlist_entries(entries, target_index);
+        self.apply_shared_playlist_entries(entries, target_index, true);
         let message = if shuffled {
             format!("Shared playlist loaded and shuffled from file: {path}.")
         } else {
@@ -476,7 +479,7 @@ impl SyncplayGuiShellAppState {
         let entries = Self::normalize_shared_playlist_entries(entries);
         self.remember_shared_playlist_undo_snapshot_if_changed(&entries);
         if entries.is_empty() {
-            self.apply_shared_playlist_entries(Vec::new(), None);
+            self.apply_shared_playlist_entries(Vec::new(), None, false);
             self.push_system_chat_message("Shared playlist cleared.".to_owned());
             self.push_transient_notification(
                 GuiTransientNotificationLevel::Info,
@@ -486,7 +489,7 @@ impl SyncplayGuiShellAppState {
             return true;
         }
 
-        self.apply_shared_playlist_entries(entries, Some(0));
+        self.apply_shared_playlist_entries(entries, Some(0), false);
         self.push_system_chat_message(format!(
             "Shared playlist loaded ({} entries).",
             self.main_window.playlist.len()
@@ -513,7 +516,7 @@ impl SyncplayGuiShellAppState {
         playlist_entries.push(entry.clone());
         self.remember_shared_playlist_undo_snapshot_if_changed(&playlist_entries);
         let selected_index = playlist_entries.len().checked_sub(1);
-        self.apply_shared_playlist_entries(playlist_entries, selected_index);
+        self.apply_shared_playlist_entries(playlist_entries, selected_index, false);
         self.push_system_chat_message(format!("Shared playlist entry added: {entry}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Info,
@@ -531,7 +534,7 @@ impl SyncplayGuiShellAppState {
             return self
                 .record_action_error("No shared playlist entry exists at the requested index.");
         }
-        self.selection.selected_main_window_playlist = Some(index);
+        self.set_main_window_playlist_selection(Some(index), false);
         self.apply_selection_to_surfaces();
         let label = self.main_window.playlist[index].label.clone();
         self.push_system_chat_message(format!("Shared playlist selection changed: {label}."));
@@ -565,7 +568,7 @@ impl SyncplayGuiShellAppState {
         } else {
             Some(index)
         };
-        self.apply_shared_playlist_entries(playlist_entries, next_selection);
+        self.apply_shared_playlist_entries(playlist_entries, next_selection, false);
         self.push_system_chat_message(format!("Shared playlist entry removed: {label}."));
         self.push_transient_notification(
             GuiTransientNotificationLevel::Warning,

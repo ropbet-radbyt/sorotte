@@ -137,7 +137,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
     );
     assert!(
         runtime
-            .actions_for_playlist_selection_change(&state, 1)
+            .actions_for_playlist_activation(&state, 1)
             .is_empty()
     );
     assert_eq!(

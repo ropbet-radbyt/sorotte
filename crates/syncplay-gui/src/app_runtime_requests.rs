@@ -434,13 +434,30 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             }
             GuiRuntimeRequest::SetPlaylistIndex(index) => {
-                if let Some(session) = self.session.as_mut()
-                    && let Err(error) = session.set_playlist_index(index)
-                {
-                    handle.push_action(GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Error,
-                        message: error,
-                    });
+                if let Some(session) = self.session.as_mut() {
+                    match session.set_playlist_index(index) {
+                        Ok(()) => {
+                            self.active_shared_playlist_index = Some(index);
+                        }
+                        Err(error) => {
+                            handle.push_action(GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: error,
+                            });
+                        }
+                    }
+                } else if projected_state.main_window.playlist.get(index).is_some() {
+                    self.active_shared_playlist_index = Some(index);
+                    let selected_media_sync = self
+                        .sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
+                    self.apply_pending_playlist_index_reset_to_attached_player_impl(
+                        projected_state,
+                        selected_media_sync.selection_ready(),
+                    );
+                    self.sync_session_playstate_to_attached_player_impl(
+                        projected_state,
+                        selected_media_sync.selection_ready(),
+                    );
                 }
             }
             GuiRuntimeRequest::DeletePlaylistIndex(index) => {

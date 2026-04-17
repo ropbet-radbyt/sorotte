@@ -208,6 +208,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) open_modal: Option<GuiShellModal>,
     pub(super) selection: GuiSelectionState,
+    pub(super) main_window_playlist_selection_is_local: bool,
     pub(super) runtime_menu_action_overrides: Vec<MenuActionRuntimeOverride>,
     pub(super) runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride,
     pub(super) commands: GuiCommandAvailabilityState,
@@ -845,6 +846,7 @@ pub(super) enum GuiShellAction {
     ToggleSelectedMainWindowUserController,
     RemoveSelectedMainWindowUser,
     SelectMainWindowPlaylist(usize),
+    ActivateMainWindowPlaylist(usize),
     MoveMainWindowPlaylistRow {
         from_index: usize,
         to_index: usize,

@@ -234,12 +234,17 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn interaction_runtime_snapshot(
         &self,
-        state: &SyncplayGuiShellAppState,
+        _state: &SyncplayGuiShellAppState,
         interaction_state: &SyncplayGuiShellAppState,
         playlist_len: usize,
     ) -> Option<GuiInteractionRuntimeSnapshot> {
+        if interaction_state.main_window_playlist_selection_is_local {
+            return None;
+        }
+
         let selected_main_window_playlist = self.session_playlist_selection_index(playlist_len);
-        if state.selection.selected_main_window_playlist == selected_main_window_playlist {
+        if interaction_state.selection.selected_main_window_playlist == selected_main_window_playlist
+        {
             return None;
         }
 

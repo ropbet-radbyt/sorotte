@@ -2216,14 +2216,6 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
     assert!(
         reconnect_actions.iter().any(|action| matches!(
             action,
-            GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot)
-                if snapshot.selection.selected_main_window_playlist.is_none()
-        )),
-        "public-server reconnect should clear stale playlist selection before the new server replies"
-    );
-    assert!(
-        reconnect_actions.iter().any(|action| matches!(
-            action,
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot)
                 if snapshot.action_overrides.contains(&MenuActionRuntimeOverride {
                     section_title: "Window",

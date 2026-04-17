@@ -145,7 +145,7 @@ pub(super) trait GuiNativeRuntimeBridge {
         Vec::new()
     }
 
-    fn actions_for_playlist_selection_change(
+    fn actions_for_playlist_activation(
         &mut self,
         _state: &SyncplayGuiShellAppState,
         _index: usize,

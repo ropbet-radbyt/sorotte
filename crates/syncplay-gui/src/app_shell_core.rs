@@ -32,6 +32,7 @@ impl SyncplayGuiShellAppState {
             selected_configuration_tab: GuiConfigurationTab::Overview,
             open_modal: None,
             selection: GuiSelectionState::default(),
+            main_window_playlist_selection_is_local: false,
             runtime_menu_action_overrides: Vec::new(),
             runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
             commands: GuiCommandAvailabilityState::default(),
@@ -221,12 +222,14 @@ impl SyncplayGuiShellAppState {
     pub(super) fn default_selection_from_surfaces(&mut self) {
         self.selection.selected_main_window_user =
             (!self.main_window.users.is_empty()).then_some(0);
-        self.selection.selected_main_window_playlist = self
-            .main_window
-            .playlist
-            .iter()
-            .position(|row| row.is_selected)
-            .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0));
+        self.set_main_window_playlist_selection(
+            self.main_window
+                .playlist
+                .iter()
+                .position(|row| row.is_selected)
+                .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
+            false,
+        );
         self.selection.selected_menu_action =
             self.menus
                 .sections
@@ -271,8 +274,10 @@ impl SyncplayGuiShellAppState {
             .selected_main_window_playlist
             .is_some_and(|index| index >= self.main_window.playlist.len())
         {
-            self.selection.selected_main_window_playlist =
-                (!self.main_window.playlist.is_empty()).then_some(0);
+            self.set_main_window_playlist_selection(
+                (!self.main_window.playlist.is_empty()).then_some(0),
+                false,
+            );
         }
         if self
             .selection
@@ -301,6 +306,15 @@ impl SyncplayGuiShellAppState {
             self.selection.selected_media_search_directory =
                 (!self.media_search.directories.is_empty()).then_some(0);
         }
+    }
+
+    pub(super) fn set_main_window_playlist_selection(
+        &mut self,
+        selected_index: Option<usize>,
+        is_local: bool,
+    ) {
+        self.selection.selected_main_window_playlist = selected_index;
+        self.main_window_playlist_selection_is_local = is_local && selected_index.is_some();
     }
 
     pub(super) fn normalize_selected_menu_action_after_runtime_update(&mut self) {
