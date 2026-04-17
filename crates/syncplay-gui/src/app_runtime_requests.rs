@@ -449,14 +449,21 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else if projected_state.main_window.playlist.get(index).is_some() {
                     self.active_shared_playlist_index = Some(index);
                     let selected_media_sync = self
-                        .sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
+                        .sync_selected_shared_playlist_media_to_attached_player_impl(
+                            projected_state,
+                        );
+                    let selection_handoff_ready = selected_media_sync.selection_handoff_ready(
+                        self.session.as_ref().is_some_and(|session| {
+                            session.has_pending_playlist_index_reset_intent()
+                        }),
+                    );
                     self.apply_pending_playlist_index_reset_to_attached_player_impl(
                         projected_state,
-                        selected_media_sync.selection_ready(),
+                        selection_handoff_ready,
                     );
                     self.sync_session_playstate_to_attached_player_impl(
                         projected_state,
-                        selected_media_sync.selection_ready(),
+                        selection_handoff_ready,
                     );
                 }
             }

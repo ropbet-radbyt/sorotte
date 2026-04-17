@@ -826,11 +826,13 @@ impl GuiSemanticDriver {
         target: GuiDroppedFilesTarget,
         paths: Vec<String>,
     ) -> Result<(), String> {
+        let playlist_insert_slot = matches!(target, GuiDroppedFilesTarget::Playlist)
+            .then_some(self.state.main_window.playlist.len());
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
             Some(&self.state),
             paths,
             target.load_into_shared_playlist(&self.state),
-            None,
+            playlist_insert_slot,
         );
         if actions.is_empty() {
             return Err(

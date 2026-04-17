@@ -78,6 +78,10 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -127,7 +131,7 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
                 .iter()
                 .map(|row| row.label.as_str())
                 .eq(["episode1.mkv", "episode2.mkv", "episode3.mkv"])
-                && state.selection.selected_main_window_playlist == Some(1)
+                && state.selection.selected_main_window_playlist == Some(0)
         },
         "shared-playlist insert at requested slot",
     );
@@ -154,13 +158,109 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
             "episode3.mkv".to_owned(),
         ]
     );
-    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
     assert_eq!(
         owner
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref()),
-        Some("C:/Media/episode2.mkv")
+        Some("C:/Media/episode1.mkv")
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_switching_selection() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::ReplacePlaylist {
+        files: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+        selected_index: Some(0),
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq(["episode1.mkv", "episode2.mkv"])
+                && state.selection.selected_main_window_playlist == Some(0)
+        },
+        "shared-playlist seed before append",
+    );
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/episode3.mkv".to_owned()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(2),
+    });
+    let actions = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq(["episode1.mkv", "episode2.mkv", "episode3.mkv"])
+                && state.selection.selected_main_window_playlist == Some(0)
+        },
+        "shared-playlist append preserves selection",
+    );
+
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushTransientNotification { level, message }
+                if *level == GuiTransientNotificationLevel::Success
+                    && message == "Loaded 1 selected media entry into the shared playlist."
+        )),
+        "shared-playlist append should report a runtime-backed success"
+    );
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "episode1.mkv".to_owned(),
+            "episode2.mkv".to_owned(),
+            "episode3.mkv".to_owned(),
+        ]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some("C:/Media/episode1.mkv")
     );
 }
 

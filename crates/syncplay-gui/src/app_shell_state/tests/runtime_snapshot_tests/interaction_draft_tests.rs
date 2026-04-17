@@ -292,7 +292,9 @@ fn gui_shell_app_state_preserves_local_playlist_selection_across_stale_interacti
                     selected_main_window_user: Some(1),
                     selected_main_window_playlist: Some(0),
                     selected_menu_action: state.selection.selected_menu_action,
-                    selected_media_search_directory: state.selection.selected_media_search_directory,
+                    selected_media_search_directory: state
+                        .selection
+                        .selected_media_search_directory,
                 },
                 selected_public_server_index: None,
                 focused_configuration_control: None,

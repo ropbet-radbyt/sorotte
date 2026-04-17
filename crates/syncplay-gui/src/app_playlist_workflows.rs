@@ -53,6 +53,7 @@ impl SyncplayGuiShellAppState {
 
     pub(super) fn shared_playlist_entries_after_media_open(
         current_entries: &[String],
+        current_index: Option<usize>,
         opened_entries: Vec<String>,
         insert_slot: Option<usize>,
     ) -> (Vec<String>, Option<usize>) {
@@ -64,7 +65,17 @@ impl SyncplayGuiShellAppState {
             let mut playlist_entries = current_entries.to_vec();
             let insert_slot = insert_slot.min(playlist_entries.len());
             playlist_entries.splice(insert_slot..insert_slot, opened_entries);
-            return (playlist_entries, Some(insert_slot));
+            return (
+                playlist_entries.clone(),
+                Some(
+                    Self::shared_playlist_target_index_from_changed_entries(
+                        current_entries,
+                        current_index,
+                        &playlist_entries,
+                    )
+                    .min(playlist_entries.len().saturating_sub(1)),
+                ),
+            );
         }
         (opened_entries, Some(0))
     }
@@ -76,6 +87,7 @@ impl SyncplayGuiShellAppState {
     ) -> (Vec<String>, Option<usize>) {
         Self::shared_playlist_entries_after_media_open(
             &self.current_shared_playlist_entries(),
+            self.selection.selected_main_window_playlist,
             opened_entries,
             insert_slot,
         )

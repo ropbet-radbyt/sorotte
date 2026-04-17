@@ -56,9 +56,31 @@ impl SelectedPlaylistMediaSyncOutcome {
     pub(super) fn selection_ready(self) -> bool {
         !matches!(self, Self::NoChange)
     }
+
+    pub(super) fn selection_handoff_ready(self, pending_playlist_reset: bool) -> bool {
+        matches!(self, Self::OpenedNewMedia)
+            || (matches!(self, Self::MatchedCurrentTarget) && pending_playlist_reset)
+    }
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn selected_opened_entry_offset(
+        selected_playlist_index: Option<usize>,
+        opened_entry_count: usize,
+        playlist_insert_slot: Option<usize>,
+    ) -> Option<usize> {
+        let selected_index = selected_playlist_index?;
+        if opened_entry_count == 0 {
+            return None;
+        }
+        match playlist_insert_slot {
+            Some(insert_slot) => selected_index
+                .checked_sub(insert_slot)
+                .filter(|offset| *offset < opened_entry_count),
+            None => Some(selected_index).filter(|offset| *offset < opened_entry_count),
+        }
+    }
+
     pub(crate) fn sync_pending_local_attached_pause_override_from_session(&mut self) {
         let session_pause_state = self
             .session
@@ -296,10 +318,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn playlist_target_for_index(
-        state: &SyncplayGuiShellAppState,
-        index: usize,
-    ) -> Option<String> {
+    fn playlist_target_for_index(state: &SyncplayGuiShellAppState, index: usize) -> Option<String> {
         if !state.main_window.shared_playlist_enabled {
             return None;
         }
@@ -311,10 +330,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(|target| normalized_editable_text(&target.label))
     }
 
-    fn current_shared_playlist_target(
-        &self,
-        state: &SyncplayGuiShellAppState,
-    ) -> Option<String> {
+    fn current_shared_playlist_target(&self, state: &SyncplayGuiShellAppState) -> Option<String> {
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
@@ -2088,6 +2104,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 dispatch.playlist_entries.clone(),
                 playlist_insert_slot,
             );
+        let selected_opened_entry_offset = Self::selected_opened_entry_offset(
+            selected_playlist_index,
+            dispatch.playlist_entries.len(),
+            playlist_insert_slot,
+        );
 
         if self.session.is_none() {
             self.ensure_configured_player_attached();
@@ -2119,18 +2140,23 @@ impl GuiPersistedConfigRuntimeOwner {
                 )],
             );
 
-            let selected_media_sync = dispatch
-                .player_paths
-                .as_deref()
-                .map(|player_paths| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(
-                        player_paths,
-                    )
+            let selected_media_sync = selected_opened_entry_offset
+                .and_then(|offset| {
+                    dispatch
+                        .player_paths
+                        .as_ref()
+                        .and_then(|player_paths| player_paths.get(offset).cloned())
+                })
+                .map(|selected_path| {
+                    self.open_selected_playlist_media_path_through_attached_player_impl(&[
+                        selected_path,
+                    ])
                 })
                 .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange);
+            let selection_handoff_ready = selected_media_sync.selection_handoff_ready(false);
             self.sync_session_playstate_to_attached_player_impl(
                 projected_state,
-                selected_media_sync.selection_ready(),
+                selection_handoff_ready,
             );
 
             let success_message = Self::shared_playlist_open_success_message(&dispatch);
@@ -2178,13 +2204,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 playlist_entries.clone(),
                 selected_playlist_index,
             ) {
-            dispatch
-                .player_paths
-                .as_deref()
-                .map(|player_paths| {
-                    self.open_selected_playlist_media_path_through_attached_player_impl(
-                        player_paths,
-                    )
+            selected_opened_entry_offset
+                .and_then(|offset| {
+                    dispatch
+                        .player_paths
+                        .as_ref()
+                        .and_then(|player_paths| player_paths.get(offset).cloned())
+                })
+                .map(|selected_path| {
+                    self.open_selected_playlist_media_path_through_attached_player_impl(&[
+                        selected_path,
+                    ])
                 })
                 .unwrap_or(SelectedPlaylistMediaSyncOutcome::NoChange)
         } else {
@@ -2195,13 +2225,18 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             session.note_local_playlist_index_reset_intent(true);
         }
+        let selection_handoff_ready = selected_media_sync.selection_handoff_ready(
+            self.session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_playlist_index_reset_intent()),
+        );
         self.apply_pending_playlist_index_reset_to_attached_player_impl(
             projected_state,
-            selected_media_sync.selection_ready(),
+            selection_handoff_ready,
         );
         self.sync_session_playstate_to_attached_player_impl(
             projected_state,
-            selected_media_sync.selection_ready(),
+            selection_handoff_ready,
         );
 
         let mut actions = Vec::new();

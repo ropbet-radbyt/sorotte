@@ -177,7 +177,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selection_when_session_playlist_index_changes()
-{
+ {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -217,9 +217,10 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selecti
 
     let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
     assert!(
-        actions
-            .iter()
-            .all(|action| !matches!(action, GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_))),
+        actions.iter().all(|action| !matches!(
+            action,
+            GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_)
+        )),
         "session playlist-index changes should not overwrite an existing local playlist selection"
     );
     for action in actions {

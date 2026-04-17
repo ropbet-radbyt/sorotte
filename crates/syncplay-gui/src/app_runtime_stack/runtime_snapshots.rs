@@ -243,7 +243,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
 
         let selected_main_window_playlist = self.session_playlist_selection_index(playlist_len);
-        if interaction_state.selection.selected_main_window_playlist == selected_main_window_playlist
+        if interaction_state.selection.selected_main_window_playlist
+            == selected_main_window_playlist
         {
             return None;
         }

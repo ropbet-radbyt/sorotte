@@ -4179,7 +4179,8 @@ impl ClientSession {
             })
             .unwrap_or(0);
 
-        if !playlist_changed && current_index == Some(target_index) {
+        let playlist_index_changed = current_index != Some(target_index);
+        if !playlist_changed && !playlist_index_changed {
             return Vec::new();
         }
 
@@ -4187,9 +4188,11 @@ impl ClientSession {
         if playlist_changed {
             actions.push(ClientRuntimeAction::SetPlaylist { files });
         }
-        actions.push(ClientRuntimeAction::SetPlaylistIndex {
-            index: target_index as i64,
-        });
+        if playlist_index_changed {
+            actions.push(ClientRuntimeAction::SetPlaylistIndex {
+                index: target_index as i64,
+            });
+        }
         actions
     }
 
@@ -17788,6 +17791,86 @@ mod tests {
             .expect("playlist index payload should be present");
         assert_eq!(playlist_index.index, 0);
         assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
+    fn client_runtime_replace_playlist_preserves_existing_selection_without_redundant_index_update()
+    {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_replace_playlist(
+                    vec![
+                        "episode1.mkv".to_owned(),
+                        "episode2.mkv".to_owned(),
+                        "episode3.mkv".to_owned(),
+                    ],
+                    Some(0),
+                )
+                .expect("replace playlist should not fail"),
+            "playlist replace should emit a protocol message when the playlist contents change"
+        );
+        assert_eq!(
+            runtime
+                .session_mut()
+                .take_pending_playlist_index_reset_intent(),
+            None,
+            "preserving the existing selection during playlist replace should not queue a reset"
+        );
+
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("local playlist replace should update the current room playlist immediately");
+        assert_eq!(
+            playlist.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert_eq!(
+            playlist.index,
+            Some(0),
+            "playlist replace should preserve the existing room playlist selection"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(
+            control.outbound_messages().len(),
+            1,
+            "playlist replace should omit a redundant playlistIndex update when the selected index is unchanged"
+        );
+        let ProtocolMessage::Set(playlist_change_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_change = playlist_change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("playlist change payload should be present");
+        assert_eq!(
+            playlist_change.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert!(
+            playlist_change_message.set.playlist_index.is_none(),
+            "playlist replace should not send playlistIndex when the selected row is already current"
+        );
     }
 
     #[test]

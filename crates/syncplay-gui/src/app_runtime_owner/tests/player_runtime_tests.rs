@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use syncplay_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 fn write_persisted_media_search_root_index(
     gui_root: &std::path::Path,
@@ -2359,7 +2361,7 @@ fn gui_persisted_config_runtime_owner_skips_self_origin_room_position_sync_for_a
         syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
-    owner.player_position_seconds = Some(0.0);
+    owner.player_position_seconds = Some(41.0);
 
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         username: Some("alice".to_owned()),
@@ -2492,6 +2494,154 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
         "room playstate should seek once the attached player reports a local file"
     );
     assert_eq!(recorded.set_paused_values, vec![true]);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playlist_target_without_reset_intent()
+ {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let root = test_temp_root("matched-playlist-target-no-reset");
+    let media_path = root.join("episode1.mkv");
+    std::fs::write(&media_path, b"test").expect("playlist target fixture should be written");
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(media_path.to_string_lossy().into_owned()),
+    );
+    owner.player_position_seconds = Some(0.0);
+    owner.player_paused = Some(false);
+
+    let stored_settings = StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
+        rewind_on_desync: Some(false),
+        fastforward_on_desync: Some(false),
+        slow_on_desync: Some(false),
+        ..StoredClientSettingsMvp::default()
+    };
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&stored_settings);
+    state.apply_shared_playlist_entries(vec!["episode1.mkv".to_owned()], Some(0), false);
+    owner.active_shared_playlist_index = Some(0);
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .sync_runtime_settings(&stored_client_settings_runtime_snapshot_legacy_compatible(
+            &stored_settings,
+        ))
+        .expect("runtime settings should sync");
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"State":{"playstate":{"position":41.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+        )
+        .expect("room playstate should apply");
+
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    {
+        let mut recorded = player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recorded.set_positions.clear();
+        recorded.set_paused_values.clear();
+    }
+    owner.player_position_seconds = Some(42.0);
+
+    let selected_media_sync =
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    assert_eq!(
+        selected_media_sync,
+        SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+    );
+
+    let selection_handoff_ready = selected_media_sync.selection_handoff_ready(
+        owner
+            .session
+            .as_ref()
+            .expect("session should exist")
+            .has_pending_playlist_index_reset_intent(),
+    );
+    assert!(
+        !selection_handoff_ready,
+        "matched playlist targets without a pending reset should not force a room playstate handoff"
+    );
+
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+        &state,
+        selection_handoff_ready,
+    );
+    owner.sync_session_playstate_to_attached_player_impl(&state, selection_handoff_ready);
+
+    let recorded = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        recorded.set_positions.is_empty(),
+        "playlist updates that keep the current target selected should not rewind the attached player; recorded={recorded:?}"
+    );
+    assert!(
+        recorded.set_paused_values.is_empty(),
+        "playlist updates that keep the current target selected should not toggle pause state; recorded={recorded:?}"
+    );
+    assert_eq!(owner.player_position_seconds, Some(42.0));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
