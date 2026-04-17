@@ -41,7 +41,6 @@ impl SyncplayGuiShellAppState {
             pending_saved_server_connect_saves_configuration: false,
             outgoing_chat_message: None,
             new_main_window_user_draft: String::new(),
-            new_playlist_entry_draft: String::new(),
             focused_configuration_control: None,
             public_server_edit_session: None,
             main_window_user_edit_session: None,
@@ -531,7 +530,7 @@ impl SyncplayGuiShellAppState {
         );
         self.set_menu_action_enabled(
             "Playback",
-            "Playlist Actions",
+            "Shared Playlist",
             !busy && self.main_window.playback.can_manage_playlist,
         );
         self.set_menu_action_enabled(

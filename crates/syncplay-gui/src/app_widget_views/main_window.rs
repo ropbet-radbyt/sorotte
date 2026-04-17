@@ -15,14 +15,7 @@ impl SyncplayGuiShellAppState {
         let can_manage_playlist =
             self.main_window.playback.can_manage_playlist && self.pending_operation.is_none();
         let selected_playlist_index = self.selection.selected_main_window_playlist;
-        let can_move_playlist_up =
-            can_manage_playlist && selected_playlist_index.is_some_and(|index| index > 0);
-        let can_move_playlist_down = can_manage_playlist
-            && selected_playlist_index
-                .is_some_and(|index| index + 1 < self.main_window.playlist.len());
         let can_remove_playlist = can_manage_playlist && selected_playlist_index.is_some();
-        let can_add_playlist_entry =
-            can_manage_playlist && !self.new_playlist_entry_draft.trim().is_empty();
         let selected_playlist_entry = self.selected_shared_playlist_entry().map(str::to_owned);
         let selected_playlist_is_url = selected_playlist_entry
             .as_deref()
@@ -426,6 +419,21 @@ impl SyncplayGuiShellAppState {
                     },
                     vec![ready_button],
                 ),
+                GuiWidgetNode::layout(
+                    "main-window:controls:media-open",
+                    "Media Open",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    vec![GuiWidgetNode::leaf(
+                        "main-window:control:open-url",
+                        "Open URL",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
+                        false,
+                    )],
+                ),
             ],
         );
 
@@ -495,7 +503,7 @@ impl SyncplayGuiShellAppState {
 
         let playlist_panel = GuiWidgetNode::branch(
             "main-window:playlist",
-            "Playlist",
+            "Entries",
             GuiWidgetKind::List,
             self.main_window
                 .playlist
@@ -515,183 +523,185 @@ impl SyncplayGuiShellAppState {
         )
         .with_min_content_height(220.0);
 
-        let playlist_actions = GuiWidgetNode::branch(
-            "main-window:playlist-actions",
-            "Playlist Actions",
-            GuiWidgetKind::Panel,
+        let mut playlist_add_menu = GuiWidgetNode::branch(
+            "main-window:playlist:add-menu",
+            "Add",
+            GuiWidgetKind::Button,
             vec![
-                GuiWidgetNode::layout(
-                    "main-window:playlist-actions:form",
-                    "Playlist Action Form",
-                    GuiLayoutMode::FormGrid {
-                        label_width: 160.0,
-                        min_field_width: 220.0,
-                    },
-                    vec![GuiWidgetNode::leaf(
-                        "main-window:playlist:new",
-                        "New Entry",
-                        GuiWidgetKind::TextInput,
-                        Some(self.new_playlist_entry_draft.clone()),
-                        can_manage_playlist,
-                        false,
-                    )],
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:add-files",
+                    "Choose Files…",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
                 ),
-                GuiWidgetNode::layout(
-                    "main-window:playlist-actions:buttons",
-                    "Playlist Action Buttons",
-                    GuiLayoutMode::ButtonWrap {
-                        min_button_width: 140.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:add",
-                            "Add Entry",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_add_playlist_entry,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:up",
-                            "Move Selected Up",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_move_playlist_up,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:down",
-                            "Move Selected Down",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_move_playlist_down,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:remove",
-                            "Remove Selected",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_remove_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:add-files",
-                            "Add Files",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_manage_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:add-url",
-                            "Add URLs",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_manage_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:open-url",
-                            "Open URL",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.pending_operation.is_none(),
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:open-selected",
-                            "Open Selected",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_open_selected_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:open-selected-folder",
-                            "Open Selected Folder",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_open_selected_playlist_folder,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:trust-selected",
-                            selected_playlist_domain
-                                .as_deref()
-                                .map(|domain| format!("Trust {domain}"))
-                                .unwrap_or_else(|| "Trust Selected Domain".to_owned()),
-                            GuiWidgetKind::Button,
-                            None,
-                            can_trust_selected_playlist_domain,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:shuffle-remaining",
-                            "Shuffle Remaining",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_shuffle_remaining,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:shuffle-entire",
-                            "Shuffle Entire",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_shuffle_entire,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:undo",
-                            "Undo Playlist",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_undo_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:edit",
-                            "Edit Playlist",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_manage_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:load",
-                            "Load Playlist",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_manage_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:load-shuffle",
-                            "Load + Shuffle",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_manage_playlist,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:playlist:save",
-                            "Save Playlist",
-                            GuiWidgetKind::Button,
-                            None,
-                            can_save_playlist,
-                            false,
-                        ),
-                    ],
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:add-url",
+                    "Paste URLs…",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
                 ),
             ],
+        );
+        playlist_add_menu.enabled = can_manage_playlist;
+
+        let mut playlist_more_menu = GuiWidgetNode::branch(
+            "main-window:playlist:more-menu",
+            "More",
+            GuiWidgetKind::Button,
+            vec![
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:undo",
+                    "Undo",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_undo_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:shuffle-remaining",
+                    "Shuffle Remaining",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_shuffle_remaining,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:shuffle-entire",
+                    "Shuffle Entire",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_shuffle_entire,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:edit",
+                    "Edit Playlist",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:load",
+                    "Load Playlist…",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:load-shuffle",
+                    "Load + Shuffle…",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_manage_playlist,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "main-window:playlist:save",
+                    "Save Playlist…",
+                    GuiWidgetKind::Button,
+                    None,
+                    can_save_playlist,
+                    false,
+                ),
+            ],
+        );
+        playlist_more_menu.enabled = can_manage_playlist || can_save_playlist || can_undo_playlist;
+
+        let playlist_header = GuiWidgetNode::branch(
+            "main-window:playlist-header",
+            "Shared Playlist",
+            GuiWidgetKind::Panel,
+            vec![GuiWidgetNode::layout(
+                "main-window:playlist-header:actions",
+                "Playlist Header Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 140.0,
+                },
+                vec![playlist_add_menu, playlist_more_menu],
+            )],
+        );
+
+        let playlist_selection_bar = selected_playlist_entry.as_ref().map(|_| {
+            let mut selection_actions = vec![GuiWidgetNode::leaf(
+                "main-window:playlist:open-selected",
+                "Open",
+                GuiWidgetKind::Button,
+                None,
+                can_open_selected_playlist,
+                false,
+            )];
+            if can_open_selected_playlist_folder {
+                selection_actions.push(GuiWidgetNode::leaf(
+                    "main-window:playlist:open-selected-folder",
+                    "Open Folder",
+                    GuiWidgetKind::Button,
+                    None,
+                    true,
+                    false,
+                ));
+            }
+            if can_trust_selected_playlist_domain {
+                selection_actions.push(GuiWidgetNode::leaf(
+                    "main-window:playlist:trust-selected",
+                    selected_playlist_domain
+                        .as_deref()
+                        .map(|domain| format!("Trust {domain}"))
+                        .unwrap_or_else(|| "Trust Selected Domain".to_owned()),
+                    GuiWidgetKind::Button,
+                    None,
+                    true,
+                    false,
+                ));
+            }
+            selection_actions.push(GuiWidgetNode::leaf(
+                "main-window:playlist:remove",
+                "Remove",
+                GuiWidgetKind::Button,
+                None,
+                can_remove_playlist,
+                false,
+            ));
+
+            GuiWidgetNode::layout(
+                "main-window:playlist-selection:actions",
+                "Selected Playlist Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 140.0,
+                },
+                selection_actions,
+            )
+        });
+
+        let playlist_surface = GuiWidgetNode::branch(
+            "main-window:playlist-surface",
+            "Shared Playlist",
+            GuiWidgetKind::Panel,
+            playlist_selection_bar
+                .clone()
+                .into_iter()
+                .fold(
+                    vec![playlist_header.clone()],
+                    |mut children, selection_bar| {
+                        children.push(selection_bar);
+                        children
+                    },
+                )
+                .into_iter()
+                .chain([playlist_panel.clone()])
+                .collect(),
         );
 
         let playlist_column = GuiWidgetNode::layout(
             "main-window:playlist-column",
             "Playlist Column",
             GuiLayoutMode::Stack,
-            vec![playlist_panel.clone(), playlist_actions.clone()],
+            vec![playlist_surface.clone()],
         );
 
         let chat_panel = GuiWidgetNode::branch(
@@ -738,6 +748,14 @@ impl SyncplayGuiShellAppState {
                 GuiWidgetKind::Panel,
                 vec![
                     GuiWidgetNode::leaf(
+                        "main-window:playlist-edit:close",
+                        "Close",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
                         "main-window:playlist-edit:text",
                         "Playlist Entries",
                         GuiWidgetKind::TextArea,
@@ -751,24 +769,14 @@ impl SyncplayGuiShellAppState {
                         GuiLayoutMode::ButtonWrap {
                             min_button_width: 140.0,
                         },
-                        vec![
-                            GuiWidgetNode::leaf(
-                                "main-window:playlist-edit:commit",
-                                "Apply Playlist",
-                                GuiWidgetKind::Button,
-                                None,
-                                session.is_dirty,
-                                false,
-                            ),
-                            GuiWidgetNode::leaf(
-                                "main-window:playlist-edit:cancel",
-                                "Cancel Playlist Edit",
-                                GuiWidgetKind::Button,
-                                None,
-                                true,
-                                false,
-                            ),
-                        ],
+                        vec![GuiWidgetNode::leaf(
+                            "main-window:playlist-edit:commit",
+                            "Apply Playlist",
+                            GuiWidgetKind::Button,
+                            None,
+                            session.is_dirty,
+                            false,
+                        )],
                     ),
                 ],
             )
@@ -780,6 +788,14 @@ impl SyncplayGuiShellAppState {
                 "Playlist URLs",
                 GuiWidgetKind::Panel,
                 vec![
+                    GuiWidgetNode::leaf(
+                        "main-window:playlist-url-edit:close",
+                        "Close",
+                        GuiWidgetKind::Button,
+                        None,
+                        true,
+                        false,
+                    ),
                     GuiWidgetNode::leaf(
                         "main-window:playlist-url-edit:text",
                         "URLs",
@@ -794,24 +810,14 @@ impl SyncplayGuiShellAppState {
                         GuiLayoutMode::ButtonWrap {
                             min_button_width: 140.0,
                         },
-                        vec![
-                            GuiWidgetNode::leaf(
-                                "main-window:playlist-url-edit:commit",
-                                "Add URLs To Playlist",
-                                GuiWidgetKind::Button,
-                                None,
-                                session.is_dirty,
-                                false,
-                            ),
-                            GuiWidgetNode::leaf(
-                                "main-window:playlist-url-edit:cancel",
-                                "Cancel URL Entry",
-                                GuiWidgetKind::Button,
-                                None,
-                                true,
-                                false,
-                            ),
-                        ],
+                        vec![GuiWidgetNode::leaf(
+                            "main-window:playlist-url-edit:commit",
+                            "Add URLs To Playlist",
+                            GuiWidgetKind::Button,
+                            None,
+                            session.is_dirty,
+                            false,
+                        )],
                     ),
                 ],
             )
@@ -1075,7 +1081,7 @@ impl SyncplayGuiShellAppState {
             playback_children,
         );
 
-        let mut playlist_children = vec![playlist_panel.clone(), playlist_actions.clone()];
+        let mut playlist_children = vec![playlist_surface.clone()];
         if let Some(panel) = playlist_text_edit_panel.clone() {
             playlist_children.push(panel);
         }

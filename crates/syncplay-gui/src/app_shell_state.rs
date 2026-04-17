@@ -217,7 +217,6 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) pending_saved_server_connect_saves_configuration: bool,
     pub(super) outgoing_chat_message: Option<String>,
     pub(super) new_main_window_user_draft: String,
-    pub(super) new_playlist_entry_draft: String,
     pub(super) focused_configuration_control: Option<GuiFocusedConfigurationControlState>,
     pub(super) public_server_edit_session: Option<GuiPublicServerEditSessionState>,
     pub(super) main_window_user_edit_session: Option<GuiMainWindowUserEditSessionState>,
@@ -798,8 +797,6 @@ pub(super) enum GuiShellAction {
     CancelControllerAuthEdit,
     UpdateNewMainWindowUserDraft(String),
     CommitNewMainWindowUser,
-    UpdateNewPlaylistEntryDraft(String),
-    CommitNewPlaylistEntry,
     AppendSharedPlaylistEntries(Vec<String>),
     ReplaceSharedPlaylistEntries(Vec<String>),
     LoadSharedPlaylistFromFile {

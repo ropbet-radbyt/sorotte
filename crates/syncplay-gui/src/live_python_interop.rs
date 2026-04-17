@@ -805,10 +805,9 @@ fn request_local_playlist_queue(
     entry: &str,
     select_after_queue: bool,
 ) -> Result<(), LivePythonPeerInteropError> {
-    if !state.apply(GuiShellAction::UpdateNewPlaylistEntryDraft(
+    if !state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
         entry.to_owned(),
-    )) || !state.apply(GuiShellAction::CommitNewPlaylistEntry)
-    {
+    ])) {
         return Err(LivePythonPeerInteropError::Gui(format!(
             "failed to queue a local shared playlist entry {entry:?}; room={:?}",
             state.main_window.room_name

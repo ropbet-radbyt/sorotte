@@ -1981,6 +1981,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state.main_window.shared_playlist_enabled = true;
         projected_state.remember_shared_playlist_undo_snapshot_if_changed(&entries);
         projected_state.apply_shared_playlist_entries(entries.clone(), selected_index, false);
+        projected_state.main_window.active_playlist_index = selected_index;
         true
     }
 

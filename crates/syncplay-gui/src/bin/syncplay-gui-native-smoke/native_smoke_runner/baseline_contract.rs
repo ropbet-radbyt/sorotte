@@ -108,7 +108,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Playlist Actions",
+        "Shared Playlist",
         NativeControlKind::Button,
         false,
         step_timeout,

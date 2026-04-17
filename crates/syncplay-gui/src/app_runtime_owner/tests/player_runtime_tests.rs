@@ -528,6 +528,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                active_playlist_index: Some(0),
                 chat: Vec::new(),
                 can_toggle_pause: false,
                 can_seek: false,
@@ -572,6 +573,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     false,
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
+                active_playlist_index: Some(0),
                 chat: Vec::new(),
                 can_toggle_pause: true,
                 can_seek: true,
@@ -608,7 +610,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     },
                     MenuActionRuntimeOverride {
                         section_title: "Playback",
-                        action_label: "Playlist Actions",
+                        action_label: "Shared Playlist",
                         enabled: true,
                     },
                     MenuActionRuntimeOverride {

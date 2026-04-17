@@ -134,7 +134,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
             },
             MenuActionRuntimeOverride {
                 section_title: "Playback",
-                action_label: "Playlist Actions",
+                action_label: "Shared Playlist",
                 enabled: true,
             },
         ]
@@ -168,7 +168,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
                 section
                     .actions
                     .iter()
-                    .find(|action| action.label == "Playlist Actions")
+                    .find(|action| action.label == "Shared Playlist")
             })
             .is_some_and(|action| action.enabled)
     );

@@ -169,6 +169,19 @@ impl SyncplayGuiShellAppState {
         selected_index: Option<usize>,
         selection_is_local: bool,
     ) {
+        let current_entries = self.current_shared_playlist_entries();
+        let active_playlist_index = self
+            .main_window
+            .active_playlist_index
+            .filter(|index| *index < current_entries.len())
+            .map(|current_index| {
+                Self::shared_playlist_target_index_from_changed_entries(
+                    &current_entries,
+                    Some(current_index),
+                    &entries,
+                )
+                .min(entries.len().saturating_sub(1))
+            });
         self.main_window.playlist = entries
             .iter()
             .map(|label| MainWindowPlaylistRow {
@@ -176,6 +189,7 @@ impl SyncplayGuiShellAppState {
                 is_selected: false,
             })
             .collect();
+        self.main_window.active_playlist_index = active_playlist_index;
         self.set_main_window_playlist_selection(
             selected_index.filter(|index| *index < self.main_window.playlist.len()),
             selection_is_local,

@@ -226,7 +226,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 state.pending_operation.is_none() && state.main_window.playback.can_undo_seek,
             ),
             (
-                "Playlist Actions",
+                "Shared Playlist",
                 self.session
                     .as_ref()
                     .map(|session| {

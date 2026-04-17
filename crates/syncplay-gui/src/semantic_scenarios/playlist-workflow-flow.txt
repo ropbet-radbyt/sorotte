@@ -18,7 +18,8 @@ assert-selected	main-window:playlist:0	true
 activate	main-window:playlist:undo
 assert-label	main-window:playlist:0	episode3.mkv
 assert-selected	main-window:playlist:0	true
-activate	main-window:playlist:open-url
+activate	main-window:tab:playback
+activate	main-window:control:open-url
 assert-enabled	main-window:media-url-edit:text	true
 enter-text	main-window:media-url-edit:text	false	https://media.example/stream
 activate	main-window:media-url-edit:cancel

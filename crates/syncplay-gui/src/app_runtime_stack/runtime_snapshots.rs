@@ -160,6 +160,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .iter()
             .map(|row| row.label.clone())
             .collect();
+        snapshot.active_playlist_index = None;
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
         snapshot.can_set_others_ready = baseline_main_window.playback.can_set_others_ready;
         snapshot.playback_paused = baseline_main_window.playback_paused;
@@ -188,8 +189,13 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             snapshot.shared_playlist_enabled = true;
             snapshot.playlist = playlist.files.clone();
+            snapshot.active_playlist_index = playlist
+                .index
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < snapshot.playlist.len());
         } else if !shared_playlist_server_supported {
             snapshot.playlist.clear();
+            snapshot.active_playlist_index = None;
         }
         snapshot.can_manage_playlist =
             snapshot.shared_playlist_enabled && self.shared_playlist_control_available();
@@ -331,7 +337,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 section
                     .actions
                     .iter()
-                    .find(|action| action.label == "Playlist Actions")
+                    .find(|action| action.label == "Shared Playlist")
             })
             .map(|action| action.enabled);
         let desired_playlist_actions_enabled =
@@ -341,7 +347,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             action_overrides.push(MenuActionRuntimeOverride {
                 section_title: "Playback",
-                action_label: "Playlist Actions",
+                action_label: "Shared Playlist",
                 enabled: desired_playlist_actions_enabled,
             });
         }

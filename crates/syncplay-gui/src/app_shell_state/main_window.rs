@@ -62,6 +62,7 @@ pub(in crate::app) struct MainWindowShellState {
     pub(in crate::app) rooms: Vec<MainWindowRoomRow>,
     pub(in crate::app) users: Vec<MainWindowUserRow>,
     pub(in crate::app) playlist: Vec<MainWindowPlaylistRow>,
+    pub(in crate::app) active_playlist_index: Option<usize>,
     pub(in crate::app) chat: Vec<MainWindowChatRow>,
     pub(in crate::app) playback: MainWindowPlaybackControls,
     pub(in crate::app) playback_paused: bool,
@@ -114,6 +115,7 @@ pub(in crate::app) struct MainWindowRuntimeSnapshot {
     pub(in crate::app) rooms: Vec<MainWindowRuntimeRoomSnapshot>,
     pub(in crate::app) users: Vec<MainWindowRuntimeUserSnapshot>,
     pub(in crate::app) playlist: Vec<String>,
+    pub(in crate::app) active_playlist_index: Option<usize>,
     pub(in crate::app) chat: Vec<MainWindowRuntimeChatSnapshot>,
     pub(in crate::app) can_toggle_pause: bool,
     pub(in crate::app) can_seek: bool,
@@ -144,6 +146,7 @@ impl Default for MainWindowRuntimeSnapshot {
             rooms: Vec::new(),
             users: Vec::new(),
             playlist: Vec::new(),
+            active_playlist_index: None,
             chat: Vec::new(),
             can_toggle_pause: false,
             can_seek: false,
@@ -203,6 +206,7 @@ impl MainWindowRuntimeSnapshot {
                 })
                 .collect(),
             playlist: state.playlist.iter().map(|row| row.label.clone()).collect(),
+            active_playlist_index: state.active_playlist_index,
             chat: state
                 .chat
                 .iter()

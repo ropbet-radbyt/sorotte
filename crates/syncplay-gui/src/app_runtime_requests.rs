@@ -16,7 +16,8 @@ use super::super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
-    GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    GuiShellAction, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
+    SyncplayGuiShellAppState,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::normalized_editable_text;
@@ -438,6 +439,12 @@ impl GuiPersistedConfigRuntimeOwner {
                     match session.set_playlist_index(index) {
                         Ok(()) => {
                             self.active_shared_playlist_index = Some(index);
+                            projected_state.main_window.active_playlist_index = Some(index);
+                            handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                                MainWindowRuntimeSnapshot::from_shell_state(
+                                    &projected_state.main_window,
+                                ),
+                            ));
                         }
                         Err(error) => {
                             handle.push_action(GuiShellAction::PushTransientNotification {
@@ -448,6 +455,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 } else if projected_state.main_window.playlist.get(index).is_some() {
                     self.active_shared_playlist_index = Some(index);
+                    projected_state.main_window.active_playlist_index = Some(index);
+                    handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+                        MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                    ));
                     let selected_media_sync = self
                         .sync_selected_shared_playlist_media_to_attached_player_impl(
                             projected_state,

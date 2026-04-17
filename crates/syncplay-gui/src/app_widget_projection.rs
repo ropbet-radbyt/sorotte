@@ -93,6 +93,13 @@ impl SyncplayGuiShellAppState {
                 })
                 .collect();
         }
+        if current_snapshot.playlist != previous_baseline.playlist
+            || current_snapshot.active_playlist_index != previous_baseline.active_playlist_index
+        {
+            self.main_window.active_playlist_index = current_snapshot
+                .active_playlist_index
+                .filter(|index| *index < self.main_window.playlist.len());
+        }
         if current_snapshot.chat != previous_baseline.chat {
             self.main_window.chat = current_snapshot
                 .chat
@@ -285,7 +292,6 @@ impl SyncplayGuiShellAppState {
         let pending_operation = self.pending_operation.clone();
         let outgoing_chat_message = self.outgoing_chat_message.clone();
         let new_main_window_user_draft = self.new_main_window_user_draft.clone();
-        let new_playlist_entry_draft = self.new_playlist_entry_draft.clone();
         let focused_configuration_control = self.focused_configuration_control.clone();
         let public_server_edit_session = self.public_server_edit_session.clone();
         let main_window_user_edit_session = self.main_window_user_edit_session.clone();
@@ -336,7 +342,6 @@ impl SyncplayGuiShellAppState {
         self.pending_operation = pending_operation;
         self.outgoing_chat_message = outgoing_chat_message;
         self.new_main_window_user_draft = new_main_window_user_draft;
-        self.new_playlist_entry_draft = new_playlist_entry_draft;
         self.focused_configuration_control = focused_configuration_control;
         self.public_server_edit_session = public_server_edit_session;
         self.main_window_user_edit_session = main_window_user_edit_session;

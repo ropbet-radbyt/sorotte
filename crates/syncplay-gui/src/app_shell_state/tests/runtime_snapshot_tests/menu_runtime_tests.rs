@@ -685,7 +685,7 @@ fn gui_shell_app_state_syncs_playback_menu_actions_from_gui_command_runtime_snap
         playback
             .actions
             .iter()
-            .find(|action| action.label == "Playlist Actions")
+            .find(|action| action.label == "Shared Playlist")
             .is_some_and(|action| !action.enabled && !action.is_selected)
     );
 }

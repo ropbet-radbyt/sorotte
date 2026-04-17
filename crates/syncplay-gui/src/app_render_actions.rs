@@ -207,6 +207,7 @@ impl GuiWidgetEguiRenderer {
             "main-window:connection:disconnect" => {
                 vec![GuiShellAction::BeginSessionDisconnect]
             }
+            "main-window:control:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
             "main-window:control:play" => vec![GuiShellAction::BeginPlaybackResume],
             "main-window:control:pause" => vec![GuiShellAction::BeginPlaybackPause],
             "main-window:control:toggle-pause" => vec![GuiShellAction::BeginPlaybackPauseToggle],
@@ -252,7 +253,6 @@ impl GuiWidgetEguiRenderer {
             "main-window:user:remove" => vec![GuiShellAction::RemoveSelectedMainWindowUser],
             "main-window:user-edit:commit" => vec![GuiShellAction::CommitMainWindowUserEdit],
             "main-window:user-edit:cancel" => vec![GuiShellAction::CancelMainWindowUserEdit],
-            "main-window:playlist:add" => vec![GuiShellAction::CommitNewPlaylistEntry],
             "main-window:playlist:up" => vec![GuiShellAction::MoveSelectedMainWindowPlaylistUp],
             "main-window:playlist:down" => {
                 vec![GuiShellAction::MoveSelectedMainWindowPlaylistDown]
@@ -261,7 +261,6 @@ impl GuiWidgetEguiRenderer {
                 vec![GuiShellAction::RemoveSelectedMainWindowPlaylist]
             }
             "main-window:playlist:add-url" => vec![GuiShellAction::BeginSharedPlaylistUrlEdit],
-            "main-window:playlist:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
             "main-window:playlist:open-selected" => state
                 .selected_shared_playlist_entry()
                 .map(|target| {
@@ -302,7 +301,7 @@ impl GuiWidgetEguiRenderer {
                     GuiShellAction::CancelSharedPlaylistTextEdit,
                 ]
             }
-            "main-window:playlist-edit:cancel" => {
+            "main-window:playlist-edit:close" => {
                 vec![GuiShellAction::CancelSharedPlaylistTextEdit]
             }
             "main-window:playlist-url-edit:commit" => {
@@ -316,7 +315,7 @@ impl GuiWidgetEguiRenderer {
                     GuiShellAction::CancelSharedPlaylistUrlEdit,
                 ]
             }
-            "main-window:playlist-url-edit:cancel" => {
+            "main-window:playlist-url-edit:close" => {
                 vec![GuiShellAction::CancelSharedPlaylistUrlEdit]
             }
             "main-window:media-url-edit:commit" => state
@@ -661,19 +660,6 @@ impl GuiWidgetEguiRenderer {
             }
             if submitted && normalized_editable_text(value).is_some() {
                 actions.push(GuiShellAction::CommitNewMainWindowUser);
-            }
-            return (!actions.is_empty()).then_some(actions);
-        }
-
-        if node.id == "main-window:playlist:new" {
-            let mut actions = Vec::new();
-            if changed {
-                actions.push(GuiShellAction::UpdateNewPlaylistEntryDraft(
-                    value.to_owned(),
-                ));
-            }
-            if submitted && normalized_editable_text(value).is_some() {
-                actions.push(GuiShellAction::CommitNewPlaylistEntry);
             }
             return (!actions.is_empty()).then_some(actions);
         }

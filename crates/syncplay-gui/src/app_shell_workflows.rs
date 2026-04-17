@@ -95,10 +95,10 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            ("Playback", "Playlist Actions") => {
+            ("Playback", "Shared Playlist") => {
                 self.active_view = GuiShellView::MainWindow;
                 self.select_main_window_tab(GuiMainWindowTab::Playlist);
-                self.push_system_chat_message("Playlist actions opened.".to_owned());
+                self.push_system_chat_message("Shared playlist opened.".to_owned());
                 self.clear_action_error_and_refresh();
                 true
             }
@@ -408,6 +408,14 @@ impl SyncplayGuiShellAppState {
                 is_selected: false,
             });
         }
+        if snapshot
+            .active_playlist_index
+            .is_some_and(|index| index >= normalized_playlist.len())
+        {
+            return self.record_action_error(
+                "Main-window runtime snapshots cannot activate a missing playlist row.",
+            );
+        }
 
         let mut normalized_chat = Vec::with_capacity(snapshot.chat.len());
         for row in snapshot.chat {
@@ -454,6 +462,7 @@ impl SyncplayGuiShellAppState {
             rooms: normalized_rooms,
             users: normalized_users,
             playlist: normalized_playlist,
+            active_playlist_index: snapshot.active_playlist_index,
             chat: normalized_chat,
             playback: MainWindowPlaybackControls {
                 can_toggle_pause: snapshot.can_toggle_pause,

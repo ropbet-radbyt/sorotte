@@ -429,6 +429,7 @@ impl MainWindowShellState {
                 is_selected: true,
             }],
             playlist,
+            active_playlist_index: None,
             chat: if settings.chat_output_enabled.unwrap_or(false) {
                 vec![MainWindowChatRow {
                     sender: "system".to_owned(),
@@ -625,7 +626,7 @@ impl MenuDialogShellState {
                             is_selected: false,
                         },
                         MenuActionShellItem {
-                            label: "Playlist Actions",
+                            label: "Shared Playlist",
                             enabled: false,
                             is_selected: false,
                         },

@@ -393,9 +393,9 @@ fn localize_exact_message(message: &str, language: Option<&str>) -> Option<Strin
             "Qingqiu tuichu",
             "jonglyo yocheong",
         ),
-        "Playlist actions opened" => localized_literal(
+        "Shared playlist opened" => localized_literal(
             language,
-            "Playlist actions opened",
+            "Shared playlist opened",
             "Playlist-Aktionen geoeffnet",
             "Acciones de lista de reproduccion abiertas",
             "Agoj de ludlisto malfermitaj",

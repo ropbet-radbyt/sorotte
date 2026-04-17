@@ -426,19 +426,6 @@ impl SyncplayGuiShellAppState {
                 self.new_main_window_user_draft.clear();
                 true
             }
-            GuiShellAction::UpdateNewPlaylistEntryDraft(buffer) => {
-                self.new_playlist_entry_draft = buffer;
-                self.clear_action_error_and_refresh();
-                true
-            }
-            GuiShellAction::CommitNewPlaylistEntry => {
-                if !self.announce_shared_playlist_entry_added(self.new_playlist_entry_draft.clone())
-                {
-                    return false;
-                }
-                self.new_playlist_entry_draft.clear();
-                true
-            }
             GuiShellAction::AppendSharedPlaylistEntries(entries) => {
                 self.append_shared_playlist_entries_locally(entries)
             }

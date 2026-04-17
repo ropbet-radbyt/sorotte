@@ -360,7 +360,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
                 },
                 MenuActionRuntimeOverride {
                     section_title: "Playback",
-                    action_label: "Playlist Actions",
+                    action_label: "Shared Playlist",
                     enabled: true,
                 },
             ],
@@ -404,7 +404,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
             },
             MenuActionRuntimeOverride {
                 section_title: "Playback",
-                action_label: "Playlist Actions",
+                action_label: "Shared Playlist",
                 enabled: false,
             },
             MenuActionRuntimeOverride {
@@ -446,7 +446,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
                 section
                     .actions
                     .iter()
-                    .find(|action| action.label == "Playlist Actions")
+                    .find(|action| action.label == "Shared Playlist")
             })
             .is_some_and(|action| !action.enabled)
     );
@@ -504,7 +504,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
             },
             MenuActionRuntimeOverride {
                 section_title: "Playback",
-                action_label: "Playlist Actions",
+                action_label: "Shared Playlist",
                 enabled: true,
             },
         ]

@@ -219,16 +219,19 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .expect("selected playlist row should exist in widget tree");
     assert_eq!(playlist.kind, GuiWidgetKind::ListItem);
     assert!(playlist.selected);
-    let new_playlist = tree
-        .find("main-window:playlist:new")
-        .expect("new playlist input should exist in widget tree");
-    assert_eq!(new_playlist.kind, GuiWidgetKind::TextInput);
-    assert_eq!(new_playlist.value.as_deref(), Some(""));
-    let playlist_add = tree
-        .find("main-window:playlist:add")
-        .expect("playlist add button should exist in widget tree");
-    assert_eq!(playlist_add.kind, GuiWidgetKind::Button);
-    assert!(!playlist_add.enabled);
+    let playlist_add_menu = tree
+        .find("main-window:playlist:add-menu")
+        .expect("playlist add menu should exist in widget tree");
+    assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
+    assert_eq!(playlist_add_menu.children.len(), 2);
+    let playlist_selection_bar = tree
+        .find("main-window:playlist-selection:actions")
+        .expect("playlist selection actions should exist when an entry is selected");
+    assert_eq!(playlist_selection_bar.kind, GuiWidgetKind::Layout);
+    assert!(tree.find("main-window:playlist:count").is_none());
+    assert!(tree.find("main-window:playlist-empty").is_none());
+    assert!(tree.find("main-window:playlist:new").is_none());
+    assert!(tree.find("main-window:playlist:add").is_none());
     assert!(tree.find("main-window:user:add").is_none());
 
     let chat_input = tree

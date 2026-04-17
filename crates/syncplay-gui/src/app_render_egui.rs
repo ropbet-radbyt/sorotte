@@ -395,7 +395,10 @@ impl GuiWidgetEguiRenderer {
                     if let Some(min_content_height) = node.min_content_height {
                         ui.set_min_height(min_content_height);
                     }
-                    ui.horizontal_wrapped(|ui| {
+                    let close_button = node.children.iter().find(|child| {
+                        child.kind == GuiWidgetKind::Button && child.id.ends_with(":close")
+                    });
+                    ui.horizontal(|ui| {
                         ui.strong(&node.label);
                         if node.selected {
                             ui.label(egui::RichText::new("active").small().strong());
@@ -403,8 +406,15 @@ impl GuiWidgetEguiRenderer {
                         if !node.enabled {
                             ui.label(egui::RichText::new("disabled").small());
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(close_button) = close_button {
+                                self.render_panel_close_button(ui, close_button, state);
+                            }
+                        });
                     });
-                    for child in &node.children {
+                    for child in node.children.iter().filter(|child| {
+                        !(child.kind == GuiWidgetKind::Button && child.id.ends_with(":close"))
+                    }) {
                         self.render_node(ui, child, state);
                     }
                 });
@@ -819,16 +829,36 @@ impl GuiWidgetEguiRenderer {
         };
         let can_drag_reorder = node.enabled && state.main_window.playback.can_manage_playlist;
         let text = Self::display_text(node).to_owned();
+        let is_room_active = state.main_window.active_playlist_index == Some(index);
 
         let button_response = ui
             .push_id(&node.id, |ui| {
                 ui.add_enabled_ui(node.enabled, |ui| {
-                    ui.add_sized(
-                        [ui.available_width().max(0.0), 0.0],
-                        egui::Button::new(text)
-                            .selected(node.selected)
+                    let response = ui.add_sized(
+                        [ui.available_width().max(0.0), 38.0],
+                        egui::Button::new("")
+                            .frame(false)
                             .sense(Self::playlist_row_sense(can_drag_reorder)),
-                    )
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            response.enabled(),
+                            text.clone(),
+                        )
+                    });
+                    let truncated = Self::paint_playlist_row(
+                        ui,
+                        &response,
+                        &text,
+                        node.selected,
+                        is_room_active,
+                    );
+                    if truncated {
+                        response.on_hover_text(text.clone())
+                    } else {
+                        response
+                    }
                 })
                 .inner
             })
@@ -864,6 +894,29 @@ impl GuiWidgetEguiRenderer {
         self.update_playlist_drop_target_slot(ui, &button_response, index);
         self.render_playlist_drop_indicator(ui, &button_response, index, playlist_len);
         Some(button_response.rect)
+    }
+
+    fn render_panel_close_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let response = ui.add_enabled(
+            node.enabled,
+            egui::Button::new("")
+                .frame(false)
+                .min_size(egui::vec2(36.0, 36.0))
+                .corner_radius(18),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+        });
+        let response = Self::attach_hover_text(response, node.label.clone());
+        Self::paint_panel_close_button(ui, &response);
+        if response.clicked() {
+            self.handle_button_node_click(state, node);
+        }
     }
 
     fn render_room_browser(
@@ -1847,12 +1900,24 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
     ) {
+        if !node.children.is_empty() {
+            ui.add_enabled_ui(node.enabled, |ui| {
+                ui.menu_button(Self::display_text(node), |ui| {
+                    self.render_menu_section(ui, node, state);
+                });
+            });
+            return;
+        }
         if Self::playback_control_icon(node).is_some() {
             self.render_playback_icon_button(ui, node, state);
             return;
         }
         if node.id == "main-window:control:set-ready" {
             self.render_playback_ready_button(ui, node, state);
+            return;
+        }
+        if node.id.ends_with(":close") {
+            self.render_panel_close_button(ui, node, state);
             return;
         }
         let mut clicked = false;
@@ -2224,6 +2289,176 @@ impl GuiWidgetEguiRenderer {
                 .circle(dot_center, dot_radius, indicator_fill, indicator_stroke);
         }
         ui.painter().galley(text_pos, galley, text_color);
+    }
+
+    fn paint_playlist_row(
+        ui: &egui::Ui,
+        response: &egui::Response,
+        label: &str,
+        is_selected: bool,
+        is_room_active: bool,
+    ) -> bool {
+        let visuals = ui.style().interact(response);
+        let selection_visuals = &ui.visuals().selection;
+        let active_color = egui::Color32::from_rgb(65, 145, 92);
+        let fill = if is_selected {
+            selection_visuals
+                .bg_fill
+                .gamma_multiply(if is_room_active { 0.32 } else { 0.22 })
+        } else if is_room_active {
+            active_color.gamma_multiply(0.10)
+        } else if response.enabled() && response.hovered() {
+            visuals.bg_fill.linear_multiply(1.05)
+        } else {
+            visuals.bg_fill
+        };
+        let stroke_color = if is_room_active {
+            active_color
+        } else if is_selected {
+            selection_visuals.stroke.color
+        } else {
+            visuals.bg_stroke.color
+        };
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter().rect(
+            rect,
+            8,
+            fill,
+            egui::Stroke::new(
+                if is_room_active {
+                    1.5
+                } else {
+                    visuals.bg_stroke.width.max(1.0)
+                },
+                stroke_color,
+            ),
+            egui::StrokeKind::Inside,
+        );
+
+        if is_room_active {
+            let icon_center = egui::pos2(rect.left() + 14.0, rect.center().y);
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(icon_center.x - 3.0, icon_center.y - 5.0),
+                    egui::pos2(icon_center.x + 5.0, icon_center.y),
+                    egui::pos2(icon_center.x - 3.0, icon_center.y + 5.0),
+                ],
+                active_color,
+                egui::Stroke::NONE,
+            ));
+        }
+
+        let text_color = if is_selected || is_room_active {
+            stroke_color
+        } else {
+            visuals.text_color()
+        };
+        let text_left = rect.left() + if is_room_active { 28.0 } else { 12.0 };
+        let text_right = (rect.right() - 12.0).max(text_left);
+        let text_width = (text_right - text_left).max(0.0);
+        let (display_label, truncated) = Self::truncate_single_line_text_for_width(
+            ui,
+            label,
+            egui::TextStyle::Button.resolve(ui.style()),
+            text_color,
+            text_width,
+        );
+        let galley = ui.painter().layout_no_wrap(
+            display_label,
+            egui::TextStyle::Button.resolve(ui.style()),
+            text_color,
+        );
+        let text_pos = egui::pos2(text_left, rect.center().y - (galley.size().y * 0.5));
+        ui.painter()
+            .with_clip_rect(rect.shrink2(egui::vec2(8.0, 4.0)))
+            .galley(text_pos, galley, text_color);
+        truncated
+    }
+
+    fn paint_panel_close_button(ui: &egui::Ui, response: &egui::Response) {
+        let accent = ui.visuals().warn_fg_color;
+        let fill = if response.is_pointer_button_down_on() {
+            accent.gamma_multiply(0.28)
+        } else if response.hovered() {
+            accent.gamma_multiply(0.22)
+        } else {
+            accent.gamma_multiply(0.14)
+        };
+        let stroke = egui::Stroke::new(
+            if response.hovered() { 1.6 } else { 1.2 },
+            accent.gamma_multiply(if response.enabled() { 0.92 } else { 0.45 }),
+        );
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter()
+            .rect(rect, 18, fill, stroke, egui::StrokeKind::Inside);
+
+        let line_stroke = egui::Stroke::new(
+            if response.hovered() { 2.3 } else { 2.0 },
+            accent.gamma_multiply(if response.enabled() { 1.0 } else { 0.55 }),
+        );
+        let icon_rect = rect.shrink2(egui::vec2(11.0, 11.0));
+        ui.painter().line_segment(
+            [icon_rect.left_top(), icon_rect.right_bottom()],
+            line_stroke,
+        );
+        ui.painter().line_segment(
+            [icon_rect.right_top(), icon_rect.left_bottom()],
+            line_stroke,
+        );
+    }
+
+    fn truncate_single_line_text_for_width(
+        ui: &egui::Ui,
+        text: &str,
+        font_id: egui::FontId,
+        text_color: egui::Color32,
+        max_width: f32,
+    ) -> (String, bool) {
+        if text.is_empty() || max_width <= 0.0 {
+            return (String::new(), !text.is_empty());
+        }
+
+        let painter = ui.painter();
+        let fits = |candidate: &str| {
+            painter
+                .layout_no_wrap(candidate.to_owned(), font_id.clone(), text_color)
+                .size()
+                .x
+                <= max_width
+        };
+
+        if fits(text) {
+            return (text.to_owned(), false);
+        }
+
+        let ellipsis = "...";
+        if !fits(ellipsis) {
+            return (String::new(), true);
+        }
+
+        let mut boundaries = text
+            .char_indices()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        boundaries.push(text.len());
+
+        let mut low = 0usize;
+        let mut high = boundaries.len().saturating_sub(1);
+        let mut best = 0usize;
+        while low <= high {
+            let mid = low + ((high - low) / 2);
+            let candidate = format!("{}{ellipsis}", &text[..boundaries[mid]]);
+            if fits(&candidate) {
+                best = mid;
+                low = mid.saturating_add(1);
+            } else if mid == 0 {
+                break;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        (format!("{}{ellipsis}", &text[..boundaries[best]]), true)
     }
 
     fn render_tab_button(

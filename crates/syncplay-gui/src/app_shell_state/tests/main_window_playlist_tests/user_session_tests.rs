@@ -58,7 +58,7 @@ fn gui_shell_app_state_announces_main_window_user_membership_events() {
 }
 
 #[test]
-fn gui_shell_app_state_commits_native_add_drafts_and_clears_them_after_success() {
+fn gui_shell_app_state_commits_native_add_drafts_and_playlist_appends_after_success() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
@@ -80,12 +80,11 @@ fn gui_shell_app_state_commits_native_add_drafts_and_clears_them_after_success()
         Some("alice")
     );
 
-    assert!(state.apply(GuiShellAction::UpdateNewPlaylistEntryDraft(
-        "Episode 1.mkv".to_owned(),
-    )));
-    assert_eq!(state.new_playlist_entry_draft, "Episode 1.mkv");
-    assert!(state.apply(GuiShellAction::CommitNewPlaylistEntry));
-    assert_eq!(state.new_playlist_entry_draft, "");
+    assert!(
+        state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
+            "Episode 1.mkv".to_owned(),
+        ]))
+    );
     assert_eq!(
         state
             .main_window

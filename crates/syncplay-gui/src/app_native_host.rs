@@ -346,9 +346,7 @@ impl eframe::App for GuiNativeApp {
         let mut main_window_user_ready_requests = Vec::new();
         let mut controller_auth_requests = Vec::new();
         let mut requested_local_ready = None;
-        let mut playlist_entry_draft = self.state.new_playlist_entry_draft.clone();
         let mut selected_playlist_index = self.state.selection.selected_main_window_playlist;
-        let mut playlist_entry_commits = Vec::new();
         let mut appended_playlist_entries = Vec::new();
         let mut playlist_activation_requests = Vec::new();
         let mut playlist_deletions = Vec::new();
@@ -400,14 +398,6 @@ impl eframe::App for GuiNativeApp {
                 }
                 GuiShellAction::AnnounceLocalUserReady => requested_local_ready = Some(true),
                 GuiShellAction::AnnounceLocalUserNotReady => requested_local_ready = Some(false),
-                GuiShellAction::UpdateNewPlaylistEntryDraft(buffer) => {
-                    playlist_entry_draft = buffer.clone();
-                }
-                GuiShellAction::CommitNewPlaylistEntry => {
-                    if let Some(entry) = normalized_editable_text(&playlist_entry_draft) {
-                        playlist_entry_commits.push(entry.to_owned());
-                    }
-                }
                 GuiShellAction::AppendSharedPlaylistEntries(entries) => {
                     appended_playlist_entries.push(entries.clone());
                 }
@@ -530,17 +520,6 @@ impl eframe::App for GuiNativeApp {
         let mut dispatched_playlist_entries = playlist_entries_before_actions
             .into_iter()
             .collect::<BTreeSet<_>>();
-        for entry in playlist_entry_commits {
-            if !dispatched_playlist_entries.insert(entry.clone()) {
-                continue;
-            }
-            for action in self
-                .runtime
-                .actions_for_playlist_entry_commit(&self.state, entry, false)
-            {
-                state_changed |= self.state.apply(action);
-            }
-        }
         for entries in appended_playlist_entries {
             for entry in entries {
                 if !dispatched_playlist_entries.insert(entry.clone()) {

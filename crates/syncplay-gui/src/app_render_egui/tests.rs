@@ -494,13 +494,12 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
 
     let shell_tree = state.shell_widget_tree();
+    let add_menu_button = shell_tree.find("main-window:playlist:add-menu").unwrap();
+    let more_menu_button = shell_tree.find("main-window:playlist:more-menu").unwrap();
     let add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
-    let open_url_button = shell_tree.find("main-window:playlist:open-url").unwrap();
+    let open_url_button = shell_tree.find("main-window:control:open-url").unwrap();
     let open_selected_button = shell_tree
         .find("main-window:playlist:open-selected")
-        .unwrap();
-    let open_selected_folder_button = shell_tree
-        .find("main-window:playlist:open-selected-folder")
         .unwrap();
     let trust_selected_button = shell_tree
         .find("main-window:playlist:trust-selected")
@@ -514,6 +513,9 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     let undo_button = shell_tree.find("main-window:playlist:undo").unwrap();
     let edit_button = shell_tree.find("main-window:playlist:edit").unwrap();
 
+    assert_eq!(add_menu_button.kind, GuiWidgetKind::Button);
+    assert_eq!(add_menu_button.children.len(), 2);
+    assert_eq!(more_menu_button.kind, GuiWidgetKind::Button);
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, add_url_button),
         vec![GuiShellAction::BeginSharedPlaylistUrlEdit]
@@ -528,11 +530,10 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
             "https://example.com/live".to_owned()
         )]
     );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, open_selected_folder_button),
-        vec![GuiShellAction::RequestMainWindowUserContainingFolderOpen(
-            "https://example.com/live".to_owned(),
-        )]
+    assert!(
+        shell_tree
+            .find("main-window:playlist:open-selected-folder")
+            .is_none()
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, trust_selected_button),
@@ -580,7 +581,7 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     let shell_tree = state.shell_widget_tree();
     let playlist_text_node = shell_tree.find("main-window:playlist-edit:text").unwrap();
     let playlist_text_commit = shell_tree.find("main-window:playlist-edit:commit").unwrap();
-    let playlist_text_cancel = shell_tree.find("main-window:playlist-edit:cancel").unwrap();
+    let playlist_text_cancel = shell_tree.find("main-window:playlist-edit:close").unwrap();
     let playlist_url_text_node = shell_tree
         .find("main-window:playlist-url-edit:text")
         .unwrap();
@@ -588,7 +589,7 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
         .find("main-window:playlist-url-edit:commit")
         .unwrap();
     let playlist_url_cancel = shell_tree
-        .find("main-window:playlist-url-edit:cancel")
+        .find("main-window:playlist-url-edit:close")
         .unwrap();
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_text_commit),
@@ -754,9 +755,10 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let undo_seek_button = shell_tree.find("main-window:control:undo-seek").unwrap();
     let set_offset_button = shell_tree.find("main-window:control:set-offset").unwrap();
     let local_ready_button = shell_tree.find("main-window:control:set-ready").unwrap();
-    let playlist_add_input = shell_tree.find("main-window:playlist:new").unwrap();
-    let playlist_add_button = shell_tree.find("main-window:playlist:add").unwrap();
+    let playlist_add_menu = shell_tree.find("main-window:playlist:add-menu").unwrap();
+    let playlist_more_menu = shell_tree.find("main-window:playlist:more-menu").unwrap();
     let playlist_remove_button = shell_tree.find("main-window:playlist:remove").unwrap();
+    let open_url_button = shell_tree.find("main-window:control:open-url").unwrap();
     let edit_button = shell_tree.find("public-servers:command:edit").unwrap();
     let directory_remove_button = shell_tree.find("media-search:directory:remove").unwrap();
 
@@ -865,10 +867,12 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         GuiWidgetEguiRenderer::actions_for_button_node(&state, local_ready_button),
         vec![GuiShellAction::AnnounceLocalUserReady]
     );
-    assert_eq!(playlist_add_input.kind, GuiWidgetKind::TextInput);
+    assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
+    assert_eq!(playlist_add_menu.children.len(), 2);
+    assert_eq!(playlist_more_menu.kind, GuiWidgetKind::Button);
     assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_add_button),
-        vec![GuiShellAction::CommitNewPlaylistEntry]
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, open_url_button),
+        vec![GuiShellAction::BeginMediaUrlEdit]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_remove_button),
@@ -1249,21 +1253,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     );
 
     assert!(room_tree.find("main-window:user:new").is_none());
-
-    let add_playlist_input = room_tree.find("main-window:playlist:new").unwrap();
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_text_input_node(
-            &room_state,
-            add_playlist_input,
-            "Episode 1.mkv",
-            true,
-            true,
-        ),
-        Some(vec![
-            GuiShellAction::UpdateNewPlaylistEntryDraft("Episode 1.mkv".to_owned()),
-            GuiShellAction::CommitNewPlaylistEntry,
-        ])
-    );
+    assert!(room_tree.find("main-window:playlist:new").is_none());
 
     let mut user_state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
