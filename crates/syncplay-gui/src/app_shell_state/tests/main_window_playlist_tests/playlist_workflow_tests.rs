@@ -143,9 +143,10 @@ fn gui_shell_app_state_announces_shared_playlist_events() {
             "Three".to_owned(),
         ))
     );
-    assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
     assert_eq!(state.main_window.playlist[2].label, "Three");
 
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistSelectionChanged(2)));
     assert!(state.apply(GuiShellAction::AnnounceSelectedSharedPlaylistEntryRemoved));
     assert_eq!(
         state
@@ -300,7 +301,7 @@ fn gui_shell_app_state_tracks_playlist_workflow_editors_undo_and_shuffle() {
             "https://example.com/finale".to_owned(),
         ]
     );
-    assert_eq!(state.selection.selected_main_window_playlist, Some(4));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
 
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
     let mut shuffled_remaining = false;

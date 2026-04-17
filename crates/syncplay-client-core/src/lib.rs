@@ -17722,6 +17722,75 @@ mod tests {
     }
 
     #[test]
+    fn client_runtime_queue_playlist_item_preserves_existing_selection_without_select_after_queue()
+    {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            runtime
+                .run_queue_playlist_item("episode3.mkv", false)
+                .expect("queue playlist item should not fail"),
+            "queueing a playlist item should emit protocol messages"
+        );
+
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("local queue should update the current room playlist immediately");
+        assert_eq!(
+            playlist.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+        assert_eq!(
+            playlist.index,
+            Some(0),
+            "plain queue should preserve the existing room playlist selection"
+        );
+
+        let (_, _, control) = runtime.into_parts();
+        assert_eq!(control.outbound_messages().len(), 2);
+        let ProtocolMessage::Set(playlist_change_message) = &control.outbound_messages()[0] else {
+            panic!("expected queued Set protocol message");
+        };
+        let playlist_change = playlist_change_message
+            .set
+            .playlist_change
+            .as_ref()
+            .expect("playlist change payload should be present");
+        assert_eq!(
+            playlist_change.files,
+            vec!["episode1.mkv", "episode2.mkv", "episode3.mkv"]
+        );
+
+        let ProtocolMessage::Set(playlist_index_message) = &control.outbound_messages()[1] else {
+            panic!("expected queued Set playlist index protocol message");
+        };
+        let playlist_index = playlist_index_message
+            .set
+            .playlist_index
+            .as_ref()
+            .expect("playlist index payload should be present");
+        assert_eq!(playlist_index.index, 0);
+        assert!(playlist_index.user.is_none());
+    }
+
+    #[test]
     fn client_runtime_set_playlist_index_is_omitted_before_server_hello() {
         let session = ClientSession::default();
         let player = RecordingPlayer::default();

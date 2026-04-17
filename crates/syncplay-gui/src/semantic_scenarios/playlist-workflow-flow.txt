@@ -14,7 +14,7 @@ assert-enabled	main-window:playlist-url-edit:text	true
 enter-text	main-window:playlist-url-edit:text	false	https://example.com/live
 activate	main-window:playlist-url-edit:commit
 assert-label	main-window:playlist:1	https://example.com/live
-assert-selected	main-window:playlist:1	true
+assert-selected	main-window:playlist:0	true
 activate	main-window:playlist:undo
 assert-label	main-window:playlist:0	episode3.mkv
 assert-selected	main-window:playlist:0	true

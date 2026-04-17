@@ -520,19 +520,17 @@ impl eframe::App for GuiNativeApp {
         for entry in playlist_entry_commits {
             for action in self
                 .runtime
-                .actions_for_playlist_entry_commit(&self.state, entry, true)
+                .actions_for_playlist_entry_commit(&self.state, entry, false)
             {
                 state_changed |= self.state.apply(action);
             }
         }
         for entries in appended_playlist_entries {
-            let last_index = entries.len().saturating_sub(1);
-            for (index, entry) in entries.into_iter().enumerate() {
-                for action in self.runtime.actions_for_playlist_entry_commit(
-                    &self.state,
-                    entry,
-                    index == last_index,
-                ) {
+            for entry in entries {
+                for action in
+                    self.runtime
+                        .actions_for_playlist_entry_commit(&self.state, entry, false)
+                {
                     state_changed |= self.state.apply(action);
                 }
             }

@@ -319,7 +319,7 @@ fn run_live_python_peer_connect_flow_with_harness(
         &handle,
         &mut state,
         LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
-        true,
+        false,
     )?;
     wait_for_projected_playlist(
         &mut owner,
@@ -339,19 +339,8 @@ fn run_live_python_peer_connect_flow_with_harness(
         &handle,
         &mut state,
         LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO,
-        true,
+        false,
     )?;
-    wait_for_projected_playlist(
-        &mut owner,
-        &handle,
-        &mut state,
-        &second_local_playlist,
-        Some(1),
-    )?;
-    wait_for_peer_observed_playlist(harness, &second_local_playlist, Duration::from_secs(3))?;
-    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
-
-    request_local_playlist_selection(&handle, &mut state, 0)?;
     wait_for_projected_playlist(
         &mut owner,
         &handle,
@@ -359,9 +348,20 @@ fn run_live_python_peer_connect_flow_with_harness(
         &second_local_playlist,
         Some(0),
     )?;
+    wait_for_peer_observed_playlist(harness, &second_local_playlist, Duration::from_secs(3))?;
     wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
 
-    let reduced_local_playlist = vec![LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned()];
+    request_local_playlist_selection(&handle, &mut state, 1)?;
+    wait_for_projected_playlist(
+        &mut owner,
+        &handle,
+        &mut state,
+        &second_local_playlist,
+        Some(1),
+    )?;
+    wait_for_peer_observed_playlist_index(harness, 1, Duration::from_secs(3))?;
+
+    let reduced_local_playlist = vec![LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned()];
     request_local_playlist_remove_selected(&handle, &mut state)?;
     wait_for_projected_playlist(
         &mut owner,

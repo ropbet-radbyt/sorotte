@@ -229,12 +229,21 @@ impl SyncplayGuiShellAppState {
         if entries.is_empty() {
             return self.record_action_error("Shared playlist entries must be non-empty.");
         }
-        let mut playlist_entries = self.current_shared_playlist_entries();
+        let current_entries = self.current_shared_playlist_entries();
+        let current_index = self.selection.selected_main_window_playlist;
+        let mut playlist_entries = current_entries.clone();
         self.remember_shared_playlist_undo_snapshot_if_changed(
             &[playlist_entries.clone(), entries.clone()].concat(),
         );
         playlist_entries.extend(entries.iter().cloned());
-        let selected_index = playlist_entries.len().checked_sub(1);
+        let selected_index = Some(
+            Self::shared_playlist_target_index_from_changed_entries(
+                &current_entries,
+                current_index,
+                &playlist_entries,
+            )
+            .min(playlist_entries.len().saturating_sub(1)),
+        );
         self.apply_shared_playlist_entries(playlist_entries, selected_index, true);
         let message = if entries.len() == 1 {
             format!("Shared playlist entry added: {}.", entries[0])
@@ -512,10 +521,19 @@ impl SyncplayGuiShellAppState {
         let Some(entry) = normalized_editable_text(&entry) else {
             return self.record_action_error("Shared playlist entries must be non-empty.");
         };
-        let mut playlist_entries = self.current_shared_playlist_entries();
+        let current_entries = self.current_shared_playlist_entries();
+        let current_index = self.selection.selected_main_window_playlist;
+        let mut playlist_entries = current_entries.clone();
         playlist_entries.push(entry.clone());
         self.remember_shared_playlist_undo_snapshot_if_changed(&playlist_entries);
-        let selected_index = playlist_entries.len().checked_sub(1);
+        let selected_index = Some(
+            Self::shared_playlist_target_index_from_changed_entries(
+                &current_entries,
+                current_index,
+                &playlist_entries,
+            )
+            .min(playlist_entries.len().saturating_sub(1)),
+        );
         self.apply_shared_playlist_entries(playlist_entries, selected_index, false);
         self.push_system_chat_message(format!("Shared playlist entry added: {entry}."));
         self.push_transient_notification(
