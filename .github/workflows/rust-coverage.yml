@@ -18,6 +18,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov

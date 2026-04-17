@@ -435,15 +435,8 @@ impl SyncplayGuiShellAppState {
             .selected_main_window_playlist
             .and_then(|index| self.main_window.playlist.get(index))
             .map(|row| row.label.clone());
-        let playlist_runtime_context_changed = self.main_window.room_name != room_name
-            || self.main_window.shared_playlist_enabled != snapshot.shared_playlist_enabled
-            || self.main_window.playlist.len() != normalized_playlist.len()
-            || self
-                .main_window
-                .playlist
-                .iter()
-                .zip(normalized_playlist.iter())
-                .any(|(current, projected)| current.label != projected.label);
+        let can_preserve_local_playlist_selection = self.main_window.room_name == room_name
+            && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
         let pending_local_ready_target = self.pending_local_ready_target.filter(|target| {
             snapshot.can_set_ready
                 && normalized_users
@@ -507,6 +500,16 @@ impl SyncplayGuiShellAppState {
                     .position(|user| user.username == username)
             })
             .or_else(|| (!self.main_window.users.is_empty()).then_some(0));
+        let preserve_local_playlist_selection = can_preserve_local_playlist_selection
+            && self.main_window_playlist_selection_is_local
+            && previously_selected_playlist
+                .as_deref()
+                .is_some_and(|label| {
+                    self.main_window
+                        .playlist
+                        .iter()
+                        .any(|row| row.label == label)
+                });
         self.set_main_window_playlist_selection(
             previously_selected_playlist
                 .as_deref()
@@ -517,11 +520,7 @@ impl SyncplayGuiShellAppState {
                         .position(|row| row.label == label)
                 })
                 .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
-            if playlist_runtime_context_changed {
-                false
-            } else {
-                self.main_window_playlist_selection_is_local
-            },
+            preserve_local_playlist_selection,
         );
         self.main_window_user_edit_session = previous_main_window_user_edit_session;
         self.normalize_main_window_user_edit_session();

@@ -877,6 +877,18 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         } else {
             selected_index
                 .filter(|index| *index < files.len())
+                .or_else(|| {
+                    self.projected_current_room_playlist().map(|playlist| {
+                        let current_index =
+                            playlist.index.and_then(|index| usize::try_from(index).ok());
+                        SyncplayGuiShellAppState::shared_playlist_target_index_from_changed_entries(
+                            &playlist.files,
+                            current_index,
+                            &files,
+                        )
+                        .min(files.len().saturating_sub(1))
+                    })
+                })
                 .and_then(|index| i64::try_from(index).ok())
                 .or(Some(0))
         };
@@ -1779,6 +1791,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
+        if !self
+            .runtime
+            .session()
+            .current_room_playstate_has_remote_authority()
+        {
+            return None;
+        }
         self.runtime
             .current_room_playstate_legacy_ping_compatible_now()
             .map(|playstate| GuiSessionRoomPlaystate {

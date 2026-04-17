@@ -89,6 +89,12 @@ impl GuiNativeApp {
         }
     }
 
+    fn preserve_active_playlist_request_index(state: &SyncplayGuiShellAppState) -> Option<usize> {
+        (!state.main_window_playlist_selection_is_local)
+            .then_some(state.selection.selected_main_window_playlist)
+            .flatten()
+    }
+
     pub(super) fn test_drop_request_from_lookup<F>(
         lookup: &F,
     ) -> Result<Option<GuiDroppedFilesRequest>, String>
@@ -562,7 +568,7 @@ impl eframe::App for GuiNativeApp {
             for action in self.runtime.actions_for_playlist_reorder(
                 &self.state,
                 playlist,
-                self.state.selection.selected_main_window_playlist,
+                Self::preserve_active_playlist_request_index(&self.state),
             ) {
                 state_changed |= self.state.apply(action);
             }
@@ -599,7 +605,7 @@ impl eframe::App for GuiNativeApp {
             for action in self.runtime.actions_for_playlist_reorder(
                 &self.state,
                 playlist,
-                self.state.selection.selected_main_window_playlist,
+                Self::preserve_active_playlist_request_index(&self.state),
             ) {
                 state_changed |= self.state.apply(action);
             }

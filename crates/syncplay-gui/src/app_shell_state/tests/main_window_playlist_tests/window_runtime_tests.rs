@@ -206,6 +206,52 @@ fn gui_shell_app_state_syncs_playback_menu_actions_from_main_window_runtime_snap
 }
 
 #[test]
+fn gui_shell_app_state_preserves_local_playlist_highlight_across_main_window_playlist_reorders() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        room: Some("RuntimeRoom".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        MainWindowRuntimeSnapshot {
+            room_name: "RuntimeRoom".to_owned(),
+            shared_playlist_enabled: true,
+            controlled_room_active: false,
+            users: Vec::new(),
+            playlist: vec!["One".to_owned(), "Two".to_owned(), "Three".to_owned()],
+            chat: Vec::new(),
+            can_manage_playlist: true,
+            rooms: Vec::new(),
+            ..Default::default()
+        },
+    )));
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistSelectionChanged(1)));
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
+    assert!(state.main_window_playlist_selection_is_local);
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        MainWindowRuntimeSnapshot {
+            room_name: "RuntimeRoom".to_owned(),
+            shared_playlist_enabled: true,
+            controlled_room_active: false,
+            users: Vec::new(),
+            playlist: vec!["Three".to_owned(), "One".to_owned(), "Two".to_owned()],
+            chat: Vec::new(),
+            can_manage_playlist: true,
+            rooms: Vec::new(),
+            ..Default::default()
+        },
+    )));
+
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+    assert!(
+        state.main_window_playlist_selection_is_local,
+        "runtime playlist reorders should preserve a valid local playlist highlight instead of snapping back to the active room entry"
+    );
+}
+
+#[test]
 fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

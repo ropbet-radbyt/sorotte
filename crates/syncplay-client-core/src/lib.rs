@@ -2402,10 +2402,8 @@ impl ClientSession {
             ClientRuntimeAction::SetPaused(paused) => {
                 self.local_paused = Some(*paused);
             }
-            ClientRuntimeAction::SetPosition(position_seconds) => {
-                if position_seconds.is_finite() {
-                    self.local_position = Some(*position_seconds);
-                }
+            ClientRuntimeAction::SetPosition(position_seconds) if position_seconds.is_finite() => {
+                self.local_position = Some(*position_seconds);
             }
             _ => {}
         }
@@ -2892,6 +2890,11 @@ impl ClientSession {
         Some(playstate)
     }
 
+    pub fn current_room_playstate_has_remote_authority(&self) -> bool {
+        self.current_room_playstate()
+            .is_some_and(|playstate| self.room_playstate_has_remote_authority(playstate))
+    }
+
     pub fn client_ignoring_on_the_fly(&self) -> u32 {
         self.client_ignoring_on_the_fly
     }
@@ -3254,10 +3257,8 @@ impl ClientSession {
         let uri = uri.trim();
         let authority_and_path = if let Some(value) = uri.strip_prefix("http://") {
             value
-        } else if let Some(value) = uri.strip_prefix("https://") {
-            value
         } else {
-            return None;
+            uri.strip_prefix("https://")?
         };
         if authority_and_path.is_empty() {
             return None;
@@ -5735,6 +5736,23 @@ impl ClientSession {
         let local_username = self.username.as_deref()?;
         let local_room = self.room.as_deref()?;
         Some((local_username, local_room))
+    }
+
+    fn current_room_has_other_users(&self) -> bool {
+        let Some((local_username, local_room)) = self.local_username_and_room() else {
+            return false;
+        };
+
+        self.user_views.iter().any(|(username, user_view)| {
+            username != local_username && user_view.room.as_deref() == Some(local_room)
+        })
+    }
+
+    fn room_playstate_has_remote_authority(&self, playstate: &RoomPlaystateView) -> bool {
+        match playstate.set_by.as_deref() {
+            Some(set_by) => self.username.as_deref() != Some(set_by),
+            None => self.current_room_has_other_users(),
+        }
     }
 
     fn should_track_playlist_index_transition_for_room(&self, room_name: Option<&str>) -> bool {
@@ -12494,6 +12512,57 @@ mod tests {
             runtime.session().local_paused,
             Some(true),
             "telemetry sync should still update local paused snapshot"
+        );
+    }
+
+    #[test]
+    fn client_session_current_room_playstate_remote_authority_requires_remote_user_or_set_by() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(r#"{"State":{"playstate":{"position":5.0,"paused":true}}}"#)
+            .expect("playstate without setBy should apply");
+
+        assert!(
+            !session.current_room_playstate_has_remote_authority(),
+            "room playstate without setBy should not be treated as authoritative when no remote users are known"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4","duration":95.5}}}}}"#,
+            )
+            .expect("remote user should apply");
+        assert!(
+            session.current_room_playstate_has_remote_authority(),
+            "known remote users should make an un-attributed room playstate authoritative"
+        );
+
+        session
+            .apply_message_json(r#"{"Set":{"user":{"bob":{"event":{"left":true}}}}}"#)
+            .expect("remote user leaving should apply");
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":6.0,"paused":true,"setBy":"alice"}}}"#,
+            )
+            .expect("self-origin playstate should apply");
+        assert!(
+            !session.current_room_playstate_has_remote_authority(),
+            "self-origin room playstate should not be treated as remotely authoritative"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":7.0,"paused":true,"setBy":"bob"}}}"#,
+            )
+            .expect("remote-origin playstate should apply");
+        assert!(
+            session.current_room_playstate_has_remote_authority(),
+            "remote-origin room playstate should remain authoritative even before a later user list refresh"
         );
     }
 

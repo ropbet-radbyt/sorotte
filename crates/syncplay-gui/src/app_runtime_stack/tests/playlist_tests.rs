@@ -205,6 +205,68 @@ fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explicit_index_preserves_active_target()
+ {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episodeA.mkv","episodeB.mkv","episodeC.mkv","episodeD.mkv"],"user":"alice"}}}"#,
+        )
+        .expect("initial playlist change should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
+        .expect("initial playlist index should apply");
+
+    GuiSessionRuntimeAdapter::replace_playlist(
+        &mut adapter,
+        vec![
+            "episodeD.mkv".to_owned(),
+            "episodeA.mkv".to_owned(),
+            "episodeB.mkv".to_owned(),
+            "episodeC.mkv".to_owned(),
+        ],
+        None,
+    )
+    .expect("playlist reorder should dispatch");
+
+    assert_eq!(
+        GuiSessionRuntimeAdapter::current_room_playlist_index(&adapter),
+        Some(2),
+        "optimistic playlist replacement should preserve the active room target when no explicit index is requested"
+    );
+
+    let replace_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("replace lines should encode");
+    assert!(
+        replace_lines.iter().any(|line| {
+            line.contains("\"playlistChange\"")
+                && line.contains("episodeD.mkv")
+                && line.contains("episodeB.mkv")
+        }),
+        "playlist replacement should emit the reordered playlist"
+    );
+    assert!(
+        replace_lines
+            .iter()
+            .any(|line| line.contains("\"playlistIndex\"") && line.contains("\"index\":2")),
+        "playlist replacement should preserve the active entry index when no explicit selection override is requested"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_server_feature_is_false()
  {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

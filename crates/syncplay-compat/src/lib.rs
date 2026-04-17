@@ -1091,15 +1091,11 @@ fn drain_legacy_client_lines(
     }
 
     let mut lines = Vec::new();
-    loop {
-        let Some(newline_index) = connection
-            .pending_bytes
-            .iter()
-            .position(|byte| *byte == b'\n')
-        else {
-            break;
-        };
-
+    while let Some(newline_index) = connection
+        .pending_bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+    {
         let mut raw_line: Vec<u8> = connection.pending_bytes.drain(..=newline_index).collect();
         if raw_line.last().is_some_and(|byte| *byte == b'\n') {
             raw_line.pop();
@@ -6549,7 +6545,7 @@ mod tests {
             let message = decode_message_line(&outbound.line)
                 .expect("step 6 output should decode as protocol message");
             match message {
-                ProtocolMessage::Set(payload) => {
+                ProtocolMessage::Set(payload)
                     if payload
                         .set
                         .user
@@ -6558,10 +6554,9 @@ mod tests {
                         .and_then(|user| user.event.as_ref())
                         .and_then(|event| event.get("left"))
                         .and_then(Value::as_bool)
-                        == Some(true)
-                    {
-                        saw_timeout_left_for_bob = true;
-                    }
+                        == Some(true) =>
+                {
+                    saw_timeout_left_for_bob = true;
                 }
                 ProtocolMessage::List(_) => {
                     if outbound.client_id == "client-1" {

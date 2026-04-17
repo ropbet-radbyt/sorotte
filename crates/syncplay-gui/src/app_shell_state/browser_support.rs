@@ -19,10 +19,8 @@ pub(in crate::app) fn browser_parse_trustable_web_uri_host_and_path(
     let value = value.trim();
     let authority_and_path = if let Some(rest) = value.strip_prefix("http://") {
         rest
-    } else if let Some(rest) = value.strip_prefix("https://") {
-        rest
     } else {
-        return None;
+        value.strip_prefix("https://")?
     };
     if authority_and_path.is_empty() {
         return None;

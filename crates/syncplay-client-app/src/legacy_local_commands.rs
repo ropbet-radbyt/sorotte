@@ -398,10 +398,8 @@ fn parse_offset_parameter_legacy_compatible(parameter: &str) -> Option<LocalOffs
 fn parse_offset_input_legacy_compatible(input: &str) -> Option<LocalInputCommand> {
     let remainder = if let Some(remainder) = input.strip_prefix("offset") {
         remainder
-    } else if let Some(remainder) = input.strip_prefix('o') {
-        remainder
     } else {
-        return None;
+        input.strip_prefix('o')?
     };
 
     let parameter = if let Some(parameter) = remainder.strip_prefix(' ') {

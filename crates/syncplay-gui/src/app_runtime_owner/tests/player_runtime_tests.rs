@@ -2395,6 +2395,100 @@ fn gui_persisted_config_runtime_owner_skips_self_origin_room_position_sync_for_a
         recorded.set_positions.is_empty(),
         "force-sync should not replay the local user's own room position back into the attached player"
     );
+    assert!(
+        recorded.set_paused_values.is_empty(),
+        "force-sync should not replay the local user's own room pause state back into the attached player"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_ignores_unattributed_room_playstate_when_no_remote_users_are_known()
+ {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        set_positions: Vec<f64>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_position(
+            &mut self,
+            position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_positions
+                .push(position_seconds);
+            Ok(())
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+    owner.player_position_seconds = Some(41.0);
+    owner.player_paused = Some(false);
+
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+        )
+        .expect("hello should apply");
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .apply_message_json(r#"{"State":{"playstate":{"position":0.0,"paused":true}}}"#)
+        .expect("unattributed room playstate should apply");
+
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+
+    let recorded = player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        recorded.set_positions.is_empty(),
+        "room playstate without remote authority should not rewind the attached player while alone"
+    );
+    assert!(
+        recorded.set_paused_values.is_empty(),
+        "room playstate without remote authority should not pause the attached player while alone"
+    );
 }
 
 #[test]

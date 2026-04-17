@@ -608,10 +608,7 @@ impl GuiTcpSessionTransportDriver {
 
         let mut read_buffer = [0_u8; 4096];
         let mut closed_by_server = false;
-        loop {
-            let Some(transport) = self.transport.as_mut() else {
-                break;
-            };
+        while let Some(transport) = self.transport.as_mut() {
             match transport.read(&mut read_buffer) {
                 Ok(0) => {
                     self.transport = None;

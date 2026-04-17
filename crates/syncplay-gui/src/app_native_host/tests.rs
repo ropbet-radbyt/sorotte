@@ -185,3 +185,32 @@ fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
     );
     assert_eq!(state.open_modal, None);
 }
+
+#[test]
+fn gui_native_app_preserves_active_playlist_index_for_replace_requests_when_selection_is_local() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "One".to_owned(),
+            "Two".to_owned(),
+            "Three".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::AnnounceSharedPlaylistSelectionChanged(1)));
+    assert_eq!(
+        GuiNativeApp::preserve_active_playlist_request_index(&state),
+        Some(1)
+    );
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
+    assert!(state.main_window_playlist_selection_is_local);
+    assert_eq!(
+        GuiNativeApp::preserve_active_playlist_request_index(&state),
+        None,
+        "playlist replace/reorder requests should preserve the synced room index when the UI row highlight is local-only"
+    );
+}
