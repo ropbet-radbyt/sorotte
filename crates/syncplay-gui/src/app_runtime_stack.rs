@@ -843,6 +843,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
+    fn projected_current_room_playlist_contains_entry(&self, entry: &str) -> bool {
+        self.projected_current_room_playlist()
+            .is_some_and(|playlist| playlist.files.iter().any(|file| file == entry))
+    }
+
     fn sync_optimistic_room_playlist(&mut self) {
         let current_room = self.current_room_name();
         let should_clear = match self.optimistic_room_playlist.as_ref() {
@@ -1469,12 +1474,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         entry: String,
         select_after_queue: bool,
     ) -> Result<(), String> {
+        if self.projected_current_room_playlist_contains_entry(&entry) {
+            return Ok(());
+        }
         match self
             .runtime
-            .run_queue_playlist_item(entry, select_after_queue)
+            .run_queue_playlist_item(entry.clone(), select_after_queue)
         {
             Ok(true) => Ok(()),
             Ok(false) => {
+                if self.projected_current_room_playlist_contains_entry(&entry) {
+                    return Ok(());
+                }
                 if !self.shared_playlist_control_available() {
                     Err(
                         "Client-core session runtime cannot change the shared playlist before room control becomes available."

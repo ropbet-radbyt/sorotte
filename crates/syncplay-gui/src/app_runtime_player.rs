@@ -204,8 +204,10 @@ impl GuiPersistedConfigRuntimeOwner {
         })
     }
 
-    fn shared_playlist_open_success_message(dispatch: &GuiSharedPlaylistOpenDispatch) -> String {
-        let entry_count = dispatch.playlist_entries.len();
+    fn shared_playlist_open_success_message(
+        dispatch: &GuiSharedPlaylistOpenDispatch,
+        entry_count: usize,
+    ) -> String {
         if dispatch.imported_from_file {
             if entry_count == 1 {
                 "Imported 1 entry into the shared playlist.".to_owned()
@@ -2099,14 +2101,25 @@ impl GuiPersistedConfigRuntimeOwner {
                     return;
                 }
             };
+        let current_playlist_entry_count = projected_state.main_window.playlist.len();
         let (playlist_entries, selected_playlist_index) = projected_state
             .shared_playlist_entries_after_media_open_from_state(
                 dispatch.playlist_entries.clone(),
                 playlist_insert_slot,
             );
+        let opened_entry_count = if playlist_insert_slot.is_some() {
+            playlist_entries
+                .len()
+                .saturating_sub(current_playlist_entry_count)
+        } else {
+            playlist_entries.len()
+        };
+        if playlist_insert_slot.is_some() && opened_entry_count == 0 {
+            return;
+        }
         let selected_opened_entry_offset = Self::selected_opened_entry_offset(
             selected_playlist_index,
-            dispatch.playlist_entries.len(),
+            opened_entry_count,
             playlist_insert_slot,
         );
 
@@ -2159,7 +2172,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 selection_handoff_ready,
             );
 
-            let success_message = Self::shared_playlist_open_success_message(&dispatch);
+            let success_message =
+                Self::shared_playlist_open_success_message(&dispatch, opened_entry_count);
             let warning = self.shared_playlist_session_unavailable_message_impl();
             handle.push_actions([
                 GuiShellAction::SwitchView(GuiShellView::MainWindow),
@@ -2244,7 +2258,7 @@ impl GuiPersistedConfigRuntimeOwner {
             actions.push(GuiShellAction::SwitchView(GuiShellView::MainWindow));
         }
         if session_success {
-            let message = Self::shared_playlist_open_success_message(&dispatch);
+            let message = Self::shared_playlist_open_success_message(&dispatch, opened_entry_count);
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: message.clone(),

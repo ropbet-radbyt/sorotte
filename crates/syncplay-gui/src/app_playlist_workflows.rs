@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use super::shell_state::{
@@ -51,15 +53,33 @@ impl SyncplayGuiShellAppState {
             .collect()
     }
 
+    pub(super) fn unique_shared_playlist_additions(
+        current_entries: &[String],
+        entries: Vec<String>,
+    ) -> Vec<String> {
+        let mut seen_entries = current_entries.iter().cloned().collect::<BTreeSet<_>>();
+        Self::normalize_shared_playlist_entries(entries)
+            .into_iter()
+            .filter(|entry| seen_entries.insert(entry.clone()))
+            .collect()
+    }
+
     pub(super) fn shared_playlist_entries_after_media_open(
         current_entries: &[String],
         current_index: Option<usize>,
         opened_entries: Vec<String>,
         insert_slot: Option<usize>,
     ) -> (Vec<String>, Option<usize>) {
-        let opened_entries = Self::normalize_shared_playlist_entries(opened_entries);
+        let opened_entries = if insert_slot.is_some() {
+            Self::unique_shared_playlist_additions(current_entries, opened_entries)
+        } else {
+            Self::normalize_shared_playlist_entries(opened_entries)
+        };
         if opened_entries.is_empty() {
-            return (current_entries.to_vec(), None);
+            return (
+                current_entries.to_vec(),
+                insert_slot.and(current_index.filter(|index| *index < current_entries.len())),
+            );
         }
         if let Some(insert_slot) = insert_slot {
             let mut playlist_entries = current_entries.to_vec();
@@ -237,11 +257,12 @@ impl SyncplayGuiShellAppState {
         if !self.ensure_shared_playlist_event_allowed() {
             return false;
         }
-        let entries = Self::normalize_shared_playlist_entries(entries);
-        if entries.is_empty() {
-            return self.record_action_error("Shared playlist entries must be non-empty.");
-        }
         let current_entries = self.current_shared_playlist_entries();
+        let entries = Self::unique_shared_playlist_additions(&current_entries, entries);
+        if entries.is_empty() {
+            self.clear_action_error_and_refresh();
+            return true;
+        }
         let current_index = self.selection.selected_main_window_playlist;
         let mut playlist_entries = current_entries.clone();
         self.remember_shared_playlist_undo_snapshot_if_changed(
@@ -534,6 +555,10 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("Shared playlist entries must be non-empty.");
         };
         let current_entries = self.current_shared_playlist_entries();
+        if current_entries.iter().any(|candidate| candidate == &entry) {
+            self.clear_action_error_and_refresh();
+            return true;
+        }
         let current_index = self.selection.selected_main_window_playlist;
         let mut playlist_entries = current_entries.clone();
         playlist_entries.push(entry.clone());

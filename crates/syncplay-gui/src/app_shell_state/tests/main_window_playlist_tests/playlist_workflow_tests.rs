@@ -149,6 +149,99 @@ fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another
 }
 
 #[test]
+fn gui_shell_app_state_ignores_duplicate_shared_playlist_additions() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "One".to_owned(),
+            "Two".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    let notification_count = state.notifications.len();
+    let chat_count = state.main_window.chat.len();
+
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistEntryAdded(
+            "Two".to_owned(),
+        ))
+    );
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec!["One".to_owned(), "Two".to_owned()]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(state.notifications.len(), notification_count);
+    assert_eq!(state.main_window.chat.len(), chat_count);
+
+    assert!(
+        state.apply(GuiShellAction::AppendSharedPlaylistEntries(vec![
+            "Two".to_owned(),
+            "Three".to_owned(),
+            "Three".to_owned(),
+        ]))
+    );
+    assert_eq!(
+        state.current_shared_playlist_entries(),
+        vec!["One".to_owned(), "Two".to_owned(), "Three".to_owned()]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(
+        state.notifications.last().map(|item| item.message.as_str()),
+        Some("Shared playlist entry added: Three.")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_filters_duplicate_playlist_insertions_from_media_open() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "Episode 1.mkv".to_owned(),
+            "Episode 2.mkv".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+    let (duplicate_entries, duplicate_selected_index) = state
+        .shared_playlist_entries_after_media_open_from_state(
+            vec!["Episode 2.mkv".to_owned()],
+            Some(2),
+        );
+    assert_eq!(
+        duplicate_entries,
+        vec!["Episode 1.mkv".to_owned(), "Episode 2.mkv".to_owned()]
+    );
+    assert_eq!(duplicate_selected_index, Some(1));
+
+    let (entries, selected_index) = state.shared_playlist_entries_after_media_open_from_state(
+        vec![
+            "Episode 2.mkv".to_owned(),
+            "Episode 3.mkv".to_owned(),
+            "Episode 3.mkv".to_owned(),
+        ],
+        Some(2),
+    );
+    assert_eq!(
+        entries,
+        vec![
+            "Episode 1.mkv".to_owned(),
+            "Episode 2.mkv".to_owned(),
+            "Episode 3.mkv".to_owned(),
+        ]
+    );
+    assert_eq!(selected_index, Some(1));
+}
+
+#[test]
 fn gui_shell_app_state_announces_shared_playlist_events() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         shared_playlist_enabled: Some(true),

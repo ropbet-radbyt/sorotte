@@ -4061,11 +4061,14 @@ impl ClientSession {
                 )
             })
             .unwrap_or_default();
-        let mut files = current_files.clone();
-        files.push(file_name);
-        if files == current_files {
+        if current_files
+            .iter()
+            .any(|current_file| current_file == &file_name)
+        {
             return Vec::new();
         }
+        let mut files = current_files.clone();
+        files.push(file_name);
         self.capture_playlist_undo_snapshot_legacy_compatible(&room_name, &current_files, &files);
 
         let target_index = if select_after_queue {
@@ -18705,6 +18708,41 @@ mod tests {
                 .expect("queue command should not fail"),
             "queue command should be suppressed before server hello"
         );
+        assert!(runtime.control().outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn client_runtime_queue_playlist_item_omits_duplicate_entries() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"alice"}}}"#,
+            )
+            .expect("playlist change should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
+            .expect("playlist index should apply");
+
+        let player = RecordingPlayer::default();
+        let control = QueuedRuntimeControl::default();
+        let mut runtime = ClientRuntime::new(session, player, control);
+        assert!(
+            !runtime
+                .run_queue_playlist_item("episode2.mkv", false)
+                .expect("duplicate queue command should not fail"),
+            "duplicate queue requests should be suppressed"
+        );
+        let playlist = runtime
+            .session()
+            .current_room_playlist()
+            .expect("duplicate queue should preserve the current room playlist");
+        assert_eq!(playlist.files, vec!["episode1.mkv", "episode2.mkv"]);
+        assert_eq!(playlist.index, Some(0));
         assert!(runtime.control().outbound_messages().is_empty());
     }
 

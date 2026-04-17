@@ -261,16 +261,29 @@ impl GuiPreviewRuntimeBridge {
         if load_into_shared_playlist {
             match GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(paths) {
                 Ok(dispatch) => {
-                    let playlist_entries = state
+                    let (playlist_entries, opened_entry_count) = state
                         .map(|state| {
-                            state
+                            let current_count = state.main_window.playlist.len();
+                            let (playlist_entries, _) = state
                                 .shared_playlist_entries_after_media_open_from_state(
                                     dispatch.playlist_entries.clone(),
                                     playlist_insert_slot,
-                                )
-                                .0
+                                );
+                            let opened_entry_count = if playlist_insert_slot.is_some() {
+                                playlist_entries.len().saturating_sub(current_count)
+                            } else {
+                                playlist_entries.len()
+                            };
+                            (playlist_entries, opened_entry_count)
                         })
-                        .unwrap_or(dispatch.playlist_entries);
+                        .unwrap_or_else(|| {
+                            let playlist_entries = dispatch.playlist_entries.clone();
+                            let opened_entry_count = playlist_entries.len();
+                            (playlist_entries, opened_entry_count)
+                        });
+                    if playlist_insert_slot.is_some() && opened_entry_count == 0 {
+                        return Vec::new();
+                    }
                     actions.push(GuiShellAction::AnnounceSharedPlaylistLoaded(
                         playlist_entries,
                     ));

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use eframe::egui;
 use syncplay_client_app::app_boundary::commands::{
@@ -336,6 +339,7 @@ impl eframe::App for GuiNativeApp {
         let dropped_files_request = renderer.take_dropped_files_request();
         let pending_completion_requested = renderer.take_pending_completion_requested();
         let pending_cancel_requested = renderer.take_pending_cancel_requested();
+        let playlist_entries_before_actions = self.state.current_shared_playlist_entries();
         let mut room_change_requests = Vec::new();
         let mut main_window_user_media_requests = Vec::new();
         let mut main_window_user_folder_requests = Vec::new();
@@ -523,7 +527,13 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
+        let mut dispatched_playlist_entries = playlist_entries_before_actions
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         for entry in playlist_entry_commits {
+            if !dispatched_playlist_entries.insert(entry.clone()) {
+                continue;
+            }
             for action in self
                 .runtime
                 .actions_for_playlist_entry_commit(&self.state, entry, false)
@@ -533,6 +543,9 @@ impl eframe::App for GuiNativeApp {
         }
         for entries in appended_playlist_entries {
             for entry in entries {
+                if !dispatched_playlist_entries.insert(entry.clone()) {
+                    continue;
+                }
                 for action in
                     self.runtime
                         .actions_for_playlist_entry_commit(&self.state, entry, false)
