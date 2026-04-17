@@ -1938,6 +1938,7 @@ pub struct ClientSession {
     room_playstates: BTreeMap<String, RoomPlaystateView>,
     room_playstate_updated_at_seconds: BTreeMap<String, f64>,
     pending_playlist: Option<RoomPlaylistView>,
+    playlist_active_targets_before_index_update: BTreeMap<String, String>,
     reconnect_ready_restore_snapshot: Option<bool>,
     reconnect_ready_restore_intent: Option<bool>,
     reconnect_file_restore_snapshot: Option<Value>,
@@ -2029,6 +2030,7 @@ impl Default for ClientSession {
             room_playstates: BTreeMap::new(),
             room_playstate_updated_at_seconds: BTreeMap::new(),
             pending_playlist: None,
+            playlist_active_targets_before_index_update: BTreeMap::new(),
             reconnect_ready_restore_snapshot: None,
             reconnect_ready_restore_intent: None,
             reconnect_file_restore_snapshot: None,
@@ -2118,6 +2120,7 @@ impl ClientSession {
         self.received_first_playlist_index = false;
         self.pending_playlist_index_reset_pause_before_sync = None;
         self.suppress_next_self_playlist_index_reset = false;
+        self.playlist_active_targets_before_index_update.clear();
     }
 
     fn note_recent_rewind(&mut self, now_seconds: f64) {
@@ -2804,6 +2807,14 @@ impl ClientSession {
         self.room
             .as_deref()
             .and_then(|room_name| self.room_playlists.get(room_name))
+    }
+
+    fn playlist_target_for_room_index(&self, room_name: &str, index: i64) -> Option<&str> {
+        let index = usize::try_from(index).ok()?;
+        self.room_playlists
+            .get(room_name)
+            .and_then(|playlist| playlist.files.get(index))
+            .map(String::as_str)
     }
 
     fn apply_local_playlist_runtime_actions_legacy_compatible(
@@ -5289,6 +5300,19 @@ impl ClientSession {
                 if let Some(room_name) =
                     self.resolve_room_for_playlist_update(playlist_change_user.as_deref())
                 {
+                    let previous_active_target = self
+                        .room_playlists
+                        .get(&room_name)
+                        .and_then(|playlist| playlist.index)
+                        .and_then(|index| self.playlist_target_for_room_index(&room_name, index))
+                        .map(str::to_owned);
+                    if let Some(previous_active_target) = previous_active_target {
+                        self.playlist_active_targets_before_index_update
+                            .insert(room_name.clone(), previous_active_target);
+                    } else {
+                        self.playlist_active_targets_before_index_update
+                            .remove(&room_name);
+                    }
                     let current_files = self
                         .room_playlists
                         .get(&room_name)
@@ -5318,6 +5342,11 @@ impl ClientSession {
             }
 
             let room_name = self.resolve_room_for_playlist_update(playlist_index.user.as_deref());
+            let preserved_active_target = room_name.as_deref().and_then(|room_name| {
+                self.playlist_active_targets_before_index_update
+                    .get(room_name)
+                    .cloned()
+            });
             let set_by_local = playlist_index
                 .user
                 .as_deref()
@@ -5326,6 +5355,14 @@ impl ClientSession {
             if set_by_local {
                 self.last_advanced_at_seconds = now_seconds;
             }
+            let preserves_active_target_after_playlist_change = room_name
+                .as_deref()
+                .and_then(|room_name| {
+                    self.playlist_target_for_room_index(room_name, playlist_index.index)
+                        .map(str::to_owned)
+                })
+                .zip(preserved_active_target.as_deref())
+                .is_some_and(|(next_target, previous_target)| next_target == previous_target);
 
             let should_queue_playlist_reset =
                 if !self.should_track_playlist_index_transition_for_room(room_name.as_deref()) {
@@ -5337,7 +5374,7 @@ impl ClientSession {
                     self.suppress_next_self_playlist_index_reset = false;
                     false
                 } else {
-                    true
+                    !preserves_active_target_after_playlist_change
                 };
             if should_queue_playlist_reset {
                 self.note_recent_rewind(
@@ -5346,8 +5383,8 @@ impl ClientSession {
                 self.queue_playlist_index_reset_intent(false);
             }
 
-            if let Some(room_name) = room_name {
-                let playlist = self.room_playlists.entry(room_name).or_default();
+            if let Some(room_name) = room_name.as_deref() {
+                let playlist = self.room_playlists.entry(room_name.to_owned()).or_default();
                 playlist.index = Some(playlist_index.index);
                 if playlist_index.user.is_some() {
                     playlist.set_by = playlist_index.user;
@@ -5358,6 +5395,10 @@ impl ClientSession {
                 if playlist_index.user.is_some() {
                     pending_playlist.set_by = playlist_index.user;
                 }
+            }
+            if let Some(room_name) = room_name.as_deref() {
+                self.playlist_active_targets_before_index_update
+                    .remove(room_name);
             }
         }
     }
@@ -17178,6 +17219,43 @@ mod tests {
             session.take_pending_playlist_index_reset_intent(),
             Some(false),
             "subsequent destination playlist indexes should restore normal reset behavior"
+        );
+    }
+
+    #[test]
+    fn playlist_reorder_index_echo_does_not_queue_reset_when_active_target_is_unchanged() {
+        let mut session = ClientSession::default();
+        session
+            .apply_hello_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+            )
+            .expect("hello should apply");
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episodeA.mkv","episodeB.mkv","episodeC.mkv","episodeD.mkv"],"user":"bob"}}}"#,
+            )
+            .expect("initial playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+            .expect("initial playlist index should apply");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            None,
+            "the first playlist index should not queue a reset"
+        );
+
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistChange":{"files":["episodeD.mkv","episodeA.mkv","episodeB.mkv","episodeC.mkv"],"user":"bob"}}}"#,
+            )
+            .expect("reordered playlist should apply");
+        session
+            .apply_message_json(r#"{"Set":{"playlistIndex":{"index":2,"user":"bob"}}}"#)
+            .expect("reordered playlist index should apply");
+        assert_eq!(
+            session.take_pending_playlist_index_reset_intent(),
+            None,
+            "playlist reorders that preserve the active target should not queue a rewind/reset intent"
         );
     }
 

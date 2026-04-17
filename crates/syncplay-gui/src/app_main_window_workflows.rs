@@ -28,16 +28,26 @@ impl SyncplayGuiShellAppState {
             return false;
         }
 
+        let current_entries = self.current_shared_playlist_entries();
+        let current_index = self.selection.selected_main_window_playlist;
         let next_entries = {
-            let mut entries = self.current_shared_playlist_entries();
+            let mut entries = current_entries.clone();
             let moved_entry = entries.remove(from_index);
             entries.insert(to_index, moved_entry);
             entries
         };
+        let next_selection = Some(
+            Self::shared_playlist_target_index_from_changed_entries(
+                &current_entries,
+                current_index,
+                &next_entries,
+            )
+            .min(next_entries.len().saturating_sub(1)),
+        );
         self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
         let moved_row = self.main_window.playlist.remove(from_index);
         self.main_window.playlist.insert(to_index, moved_row);
-        self.set_main_window_playlist_selection(Some(to_index), true);
+        self.set_main_window_playlist_selection(next_selection, true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
         true
@@ -59,14 +69,24 @@ impl SyncplayGuiShellAppState {
             return self.record_action_error("The selected playlist row cannot move further.");
         }
 
+        let current_entries = self.current_shared_playlist_entries();
+        let current_index = self.selection.selected_main_window_playlist;
         let next_entries = {
-            let mut entries = self.current_shared_playlist_entries();
+            let mut entries = current_entries.clone();
             entries.swap(index, target_index);
             entries
         };
+        let next_selection = Some(
+            Self::shared_playlist_target_index_from_changed_entries(
+                &current_entries,
+                current_index,
+                &next_entries,
+            )
+            .min(next_entries.len().saturating_sub(1)),
+        );
         self.remember_shared_playlist_undo_snapshot_if_changed(&next_entries);
         self.main_window.playlist.swap(index, target_index);
-        self.set_main_window_playlist_selection(Some(target_index), true);
+        self.set_main_window_playlist_selection(next_selection, true);
         self.apply_selection_to_surfaces();
         self.clear_action_error_and_refresh();
         true

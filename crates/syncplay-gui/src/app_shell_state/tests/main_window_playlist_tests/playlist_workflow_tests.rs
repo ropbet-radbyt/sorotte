@@ -83,7 +83,7 @@ fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
             .collect::<Vec<_>>(),
         vec!["Episode 3", "Episode 1", "Episode 2"]
     );
-    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
 
     assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
     assert_eq!(
@@ -95,7 +95,57 @@ fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
             .collect::<Vec<_>>(),
         vec!["Episode 1", "Episode 2", "Episode 3"]
     );
-    assert_eq!(state.selection.selected_main_window_playlist, Some(2));
+    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+}
+
+#[test]
+fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another_row() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "A".to_owned(),
+            "B".to_owned(),
+            "C".to_owned(),
+            "D".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+
+    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
+        from_index: 3,
+        to_index: 0,
+    }));
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["D", "A", "B", "C"]
+    );
+    assert_eq!(
+        state.selection.selected_main_window_playlist,
+        Some(2),
+        "reordering a different row should keep the originally selected entry active"
+    );
+
+    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["A", "B", "C", "D"]
+    );
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
 }
 
 #[test]
