@@ -213,6 +213,11 @@ impl GuiPersistedConfigRuntimeOwner {
             || state.stream_helper.integration_supported
                 != desired_stream_helper.integration_supported
             || state.stream_helper.retry_available != desired_stream_helper.retry_available
+            || state.stream_helper.install_location != desired_stream_helper.install_location
+            || state.stream_helper.downloader_status != desired_stream_helper.downloader_status
+            || state.stream_helper.js_runtime_status != desired_stream_helper.js_runtime_status
+            || state.stream_helper.open_install_location_available
+                != desired_stream_helper.open_install_location_available
         {
             handle.push_action(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
                 desired_stream_helper,

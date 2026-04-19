@@ -25,7 +25,7 @@ use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
     StreamHelperRemediationProgress, import_managed_stream_helper_downloader_with_progress,
     import_managed_stream_helper_js_runtime_with_progress,
-    install_or_update_managed_stream_helper_with_progress,
+    install_or_update_managed_stream_helper_with_progress, managed_stream_helper_bin_dir,
 };
 use super::super::support::normalized_editable_text;
 use super::{GuiPersistedConfigRuntimeOwner, GuiUserMediaTargetResolution};
@@ -233,6 +233,42 @@ impl GuiPersistedConfigRuntimeOwner {
                         Self::push_runtime_error_notification(handle, projected_state, error);
                     }
                 }
+            }
+            GuiRuntimeRequest::OpenStreamHelperInstallLocation => {
+                let install_location = projected_state
+                    .stream_helper
+                    .install_location
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        self.legacy_gui_qsettings_root()
+                            .map(|root| managed_stream_helper_bin_dir(&root))
+                    });
+                let Some(install_location) = install_location else {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        "Opening the managed stream-helper install location requires a writable GUI config root."
+                            .to_owned(),
+                    );
+                    return false;
+                };
+                if let Err(error) = std::fs::create_dir_all(&install_location) {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!(
+                            "Could not create the managed stream-helper install location '{}': {error}",
+                            install_location.display()
+                        ),
+                    );
+                    return false;
+                }
+                self.open_stream_helper_install_location_runtime(
+                    handle,
+                    projected_state,
+                    install_location,
+                );
             }
             GuiRuntimeRequest::IntegrateStreamHelperDownloader(source_path) => {
                 let Some(root) = self.legacy_gui_qsettings_root() else {

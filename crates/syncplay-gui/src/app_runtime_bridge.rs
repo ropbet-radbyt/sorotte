@@ -589,6 +589,7 @@ pub(super) enum GuiRuntimeRequest {
     InstallStreamHelper,
     IntegrateStreamHelperDownloader(String),
     IntegrateStreamHelperJsRuntime(String),
+    OpenStreamHelperInstallLocation,
     RecheckStreamHelper,
     RetryPendingStreamMediaOpen,
     SendChatMessage(String),
@@ -642,6 +643,13 @@ impl GuiRuntimeRequest {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
                     message: "Importing Deno into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::OpenStreamHelperInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Syncplay's managed stream-helper install location."
+                        .to_owned(),
                 }]
             }
             Self::RecheckStreamHelper => vec![GuiShellAction::PushTransientNotification {
@@ -729,6 +737,13 @@ impl GuiRuntimeRequest {
                 vec![GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Info,
                     message: "Importing Deno into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::OpenStreamHelperInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Syncplay's managed stream-helper install location."
+                        .to_owned(),
                 }]
             }
             Self::RecheckStreamHelper => vec![GuiShellAction::PushTransientNotification {

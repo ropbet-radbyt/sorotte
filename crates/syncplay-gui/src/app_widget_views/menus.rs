@@ -39,11 +39,8 @@ impl SyncplayGuiShellAppState {
                 "menus:dialog:stream-support",
                 "Stream Support",
                 GuiWidgetKind::Status,
-                Some(
-                    bool_label(self.stream_helper.health != GuiStreamHelperHealth::Healthy)
-                        .to_owned(),
-                ),
-                self.stream_helper.health != GuiStreamHelperHealth::Healthy,
+                Some(self.stream_helper.health.label().to_owned()),
+                self.stream_helper_status_available(),
                 self.open_modal == Some(GuiShellModal::StreamSupport),
             ),
         ];
@@ -201,7 +198,7 @@ impl SyncplayGuiShellAppState {
                     "shell:modal:stream-support:summary",
                     "Summary",
                     GuiWidgetKind::Status,
-                    self.stream_helper_issue_summary().map(str::to_owned),
+                    Some(self.stream_helper_status_summary()),
                     true,
                     false,
                 ));
@@ -213,6 +210,36 @@ impl SyncplayGuiShellAppState {
                     true,
                     false,
                 ));
+                if let Some(install_location) = self.stream_helper.install_location.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:stream-support:install-location",
+                        "Install Location",
+                        GuiWidgetKind::Status,
+                        Some(install_location.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if let Some(downloader_status) = self.stream_helper.downloader_status.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:stream-support:downloader-status",
+                        "yt-dlp",
+                        GuiWidgetKind::Status,
+                        Some(downloader_status.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if let Some(js_runtime_status) = self.stream_helper.js_runtime_status.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:stream-support:js-runtime-status",
+                        "Deno",
+                        GuiWidgetKind::Status,
+                        Some(js_runtime_status.clone()),
+                        true,
+                        false,
+                    ));
+                }
                 if let Some(target) = self.stream_helper.target.as_ref() {
                     children.push(GuiWidgetNode::leaf(
                         "shell:modal:stream-support:target",

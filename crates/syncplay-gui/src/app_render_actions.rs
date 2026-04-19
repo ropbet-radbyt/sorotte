@@ -9,9 +9,9 @@ use super::mpv_launch;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
     GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMainWindowTab,
-    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
-    browser_domain_from_url, load_playlist_entries_from_path, playlist_entries_from_multiline_text,
-    save_playlist_entries_to_path,
+    GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState, browser_domain_from_url, load_playlist_entries_from_path,
+    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 use super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::widget_tree::GuiWidgetNode;
@@ -205,7 +205,13 @@ impl GuiWidgetEguiRenderer {
             "config-stream-support:import-js-runtime" => {
                 Self::actions_for_stream_helper_import_js_runtime(state)
             }
+            "config-stream-support:manage" => {
+                vec![GuiShellAction::OpenModal(GuiShellModal::StreamSupport)]
+            }
             "config-stream-support:install" => vec![GuiShellAction::InstallStreamHelper],
+            "config-stream-support:open-location" => {
+                vec![GuiShellAction::OpenStreamHelperInstallLocation]
+            }
             "config-stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
             "config-stream-support:retry" => vec![GuiShellAction::RetryPendingStreamMediaOpen],
             "main-window:player-setup:open-settings" => vec![
@@ -438,6 +444,9 @@ impl GuiWidgetEguiRenderer {
             }
             "shell:modal:stream-support:import-js-runtime" => {
                 Self::actions_for_stream_helper_import_js_runtime(state)
+            }
+            "shell:modal:stream-support:open-location" => {
+                vec![GuiShellAction::OpenStreamHelperInstallLocation]
             }
             "shell:modal:stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
             "shell:modal:stream-support:retry" => {

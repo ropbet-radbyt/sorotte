@@ -2523,7 +2523,7 @@ impl GuiWidgetEguiRenderer {
             GuiShellModal::UpdateNotice => "Update Notice",
             GuiShellModal::About => "About Syncplay",
             GuiShellModal::PlayerSetup => "mpv Setup Required",
-            GuiShellModal::StreamSupport => "Stream Support Required",
+            GuiShellModal::StreamSupport => "Stream Support",
         }
     }
 
@@ -2564,17 +2564,18 @@ impl GuiWidgetEguiRenderer {
             }
             GuiShellModal::StreamSupport => {
                 let mut lines = vec![
-                    state
-                        .stream_helper_issue_title()
-                        .unwrap_or("stream support required")
-                        .to_owned(),
-                    state
-                        .stream_helper_issue_summary()
-                        .unwrap_or(
-                            "This media URL needs additional helper support before mpv can load it.",
-                        )
-                        .to_owned(),
+                    state.stream_helper_status_title().to_owned(),
+                    state.stream_helper_status_summary(),
                 ];
+                if let Some(install_location) = state.stream_helper.install_location.as_ref() {
+                    lines.push(format!("Install location: {install_location}"));
+                }
+                if let Some(downloader_status) = state.stream_helper.downloader_status.as_ref() {
+                    lines.push(format!("yt-dlp: {downloader_status}"));
+                }
+                if let Some(js_runtime_status) = state.stream_helper.js_runtime_status.as_ref() {
+                    lines.push(format!("Deno: {js_runtime_status}"));
+                }
                 if let Some(target) = state.stream_helper.target.as_ref() {
                     lines.push(format!("Target: {target}"));
                 }
@@ -2632,6 +2633,10 @@ impl GuiWidgetEguiRenderer {
                     "shell:modal:stream-support:import-js-runtime",
                     "Import Deno",
                 ),
+                (
+                    "shell:modal:stream-support:open-location",
+                    "Open Install Location",
+                ),
                 ("shell:modal:stream-support:recheck", "Recheck Support"),
                 ("shell:modal:stream-support:retry", "Retry URL"),
                 ("shell:modal:stream-support:open-settings", "Open Settings"),
@@ -2657,6 +2662,9 @@ impl GuiWidgetEguiRenderer {
                 state.pending_operation.is_none()
                     && !state.stream_helper_remediation.active
                     && state.stream_helper.integration_supported
+            }
+            "shell:modal:stream-support:open-location" => {
+                state.stream_helper.open_install_location_available
             }
             "shell:modal:stream-support:recheck" => {
                 state.pending_operation.is_none() && !state.stream_helper_remediation.active

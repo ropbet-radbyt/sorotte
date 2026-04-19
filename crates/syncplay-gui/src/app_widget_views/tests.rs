@@ -161,6 +161,14 @@ fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
                 install_supported: false,
                 integration_supported: true,
                 retry_available: true,
+                install_location: Some(
+                    "C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin".to_owned()
+                ),
+                downloader_status: Some(
+                    "Missing from Syncplay's managed install and PATH for yt-dlp.".to_owned()
+                ),
+                js_runtime_status: Some("PATH: 2.1.0 (C:/Tools/deno.exe)".to_owned()),
+                open_install_location_available: true,
             },
         ))
     );
@@ -169,33 +177,15 @@ fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
     assert!(configuration.find("config-stream-support").is_some());
     assert_eq!(
         configuration
-            .find("config-stream-support:health")
+            .find("config-stream-support:summary")
             .and_then(|node| node.value.as_deref()),
-        Some("missing-downloader")
-    );
-    assert!(
-        !configuration
-            .find("config-stream-support:install")
-            .expect("install button should exist")
-            .enabled
+        Some("Extractor-backed page URLs need yt-dlp before mpv can load them.")
     );
     assert!(
         configuration
-            .find("config-stream-support:import-downloader")
-            .expect("import downloader button should exist")
+            .find("config-stream-support:manage")
+            .expect("manage button should exist")
             .enabled
-    );
-    assert!(
-        configuration
-            .find("config-stream-support:import-js-runtime")
-            .expect("import js runtime button should exist")
-            .enabled
-    );
-    assert_eq!(
-        configuration
-            .find("config-stream-support:target")
-            .and_then(|node| node.value.as_deref()),
-        Some("https://www.youtube.com/watch?v=UyjIPZfygTk")
     );
 
     let shell = state.shell_widget_tree();
@@ -203,7 +193,33 @@ fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
         shell
             .find("menus:dialog:stream-support")
             .and_then(|node| node.value.as_deref()),
-        Some("yes")
+        Some("missing-downloader")
+    );
+    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::StreamSupport)));
+    let modal = state.shell_modal_widget_tree();
+    assert_eq!(
+        modal
+            .find("shell:modal:stream-support:install-location")
+            .and_then(|node| node.value.as_deref()),
+        Some("C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin")
+    );
+    assert_eq!(
+        modal
+            .find("shell:modal:stream-support:downloader-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("Missing from Syncplay's managed install and PATH for yt-dlp.")
+    );
+    assert_eq!(
+        modal
+            .find("shell:modal:stream-support:js-runtime-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("PATH: 2.1.0 (C:/Tools/deno.exe)")
+    );
+    assert_eq!(
+        modal
+            .find("shell:modal:stream-support:target")
+            .and_then(|node| node.value.as_deref()),
+        Some("https://www.youtube.com/watch?v=UyjIPZfygTk")
     );
 }
 
@@ -221,6 +237,10 @@ fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets(
                 install_supported: true,
                 integration_supported: true,
                 retry_available: true,
+                install_location: Some("C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin".to_owned()),
+                downloader_status: Some("Managed install: 2025.01.01 (C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin/yt-dlp.exe)".to_owned()),
+                js_runtime_status: Some("Missing from Syncplay's managed install and PATH for Deno.".to_owned()),
+                open_install_location_available: true,
             },
         ))
     );
@@ -249,9 +269,9 @@ fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets(
         Some("25%")
     );
     assert!(
-        !configuration
-            .find("config-stream-support:install")
-            .expect("install button should exist")
+        configuration
+            .find("config-stream-support:manage")
+            .expect("manage button should exist")
             .enabled
     );
 

@@ -248,7 +248,7 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_window_title(GuiShellModal::StreamSupport),
-        "Stream Support Required"
+        "Stream Support"
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::StreamSupport),
@@ -261,6 +261,10 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
             (
                 "shell:modal:stream-support:import-js-runtime",
                 "Import Deno"
+            ),
+            (
+                "shell:modal:stream-support:open-location",
+                "Open Install Location"
             ),
             ("shell:modal:stream-support:recheck", "Recheck Support"),
             ("shell:modal:stream-support:retry", "Retry URL"),
@@ -739,19 +743,36 @@ fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_acti
                 install_supported: true,
                 integration_supported: true,
                 retry_available: true,
+                install_location: Some("C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin".to_owned()),
+                downloader_status: Some("Managed install: 2025.01.01 (C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin/yt-dlp.exe)".to_owned()),
+                js_runtime_status: Some("Missing from Syncplay's managed install and PATH for Deno.".to_owned()),
+                open_install_location_available: true,
             },
         ))
     );
     let configuration_tree = state.configuration_widget_tree();
-    let install_button = configuration_tree
-        .find("config-stream-support:install")
-        .expect("stream-support install button should exist");
-    let recheck_button = configuration_tree
-        .find("config-stream-support:recheck")
-        .expect("stream-support recheck button should exist");
-    let retry_button = configuration_tree
-        .find("config-stream-support:retry")
-        .expect("stream-support retry button should exist");
+    let manage_button = configuration_tree
+        .find("config-stream-support:manage")
+        .expect("stream-support manage button should exist");
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, manage_button),
+        vec![GuiShellAction::OpenModal(GuiShellModal::StreamSupport)]
+    );
+    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::StreamSupport)));
+    let modal_tree = state.shell_modal_widget_tree();
+    let install_button = modal_tree
+        .find("shell:modal:stream-support:install")
+        .expect("stream-support modal install button should exist");
+    let recheck_button = modal_tree
+        .find("shell:modal:stream-support:recheck")
+        .expect("stream-support modal recheck button should exist");
+    let open_location_button = modal_tree
+        .find("shell:modal:stream-support:open-location")
+        .expect("stream-support modal open-location button should exist");
+    let retry_button = modal_tree
+        .find("shell:modal:stream-support:retry")
+        .expect("stream-support modal retry button should exist");
 
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, install_button),
@@ -760,6 +781,10 @@ fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_acti
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, recheck_button),
         vec![GuiShellAction::RecheckStreamHelper]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, open_location_button),
+        vec![GuiShellAction::OpenStreamHelperInstallLocation]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, retry_button),
@@ -781,6 +806,10 @@ fn gui_widget_egui_renderer_disables_stream_support_modal_actions_during_remedia
                 install_supported: true,
                 integration_supported: true,
                 retry_available: true,
+                install_location: Some("C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin".to_owned()),
+                downloader_status: Some("Managed install: 2025.01.01 (C:/Users/test/AppData/Roaming/Syncplay/tools/stream-helper/bin/yt-dlp.exe)".to_owned()),
+                js_runtime_status: Some("Missing from Syncplay's managed install and PATH for Deno.".to_owned()),
+                open_install_location_available: true,
             },
         ))
     );
@@ -802,6 +831,10 @@ fn gui_widget_egui_renderer_disables_stream_support_modal_actions_during_remedia
     assert!(!GuiWidgetEguiRenderer::modal_action_enabled(
         &state,
         "shell:modal:stream-support:retry"
+    ));
+    assert!(GuiWidgetEguiRenderer::modal_action_enabled(
+        &state,
+        "shell:modal:stream-support:open-location"
     ));
 }
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::runtime_owner::GuiPendingStreamLoadContext;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use crate::app::{GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot};
 use syncplay_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
 fn write_persisted_media_search_root_index(
@@ -661,6 +662,26 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 rooms: browser_runtime_rooms("(no room joined)", false, true),
                 ..Default::default()
             }),
+            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                GuiStreamHelperRuntimeSnapshot {
+                    health: GuiStreamHelperHealth::Healthy,
+                    message: None,
+                    target: None,
+                    install_supported: false,
+                    integration_supported: false,
+                    retry_available: false,
+                    install_location: None,
+                    downloader_status: Some(
+                        "Missing from Syncplay's managed install and PATH for yt-dlp."
+                            .to_owned(),
+                    ),
+                    js_runtime_status: Some(
+                        "Missing from Syncplay's managed install and PATH for Deno."
+                            .to_owned(),
+                    ),
+                    open_install_location_available: false,
+                },
+            ),
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
                 action_overrides: vec![
                     MenuActionRuntimeOverride {

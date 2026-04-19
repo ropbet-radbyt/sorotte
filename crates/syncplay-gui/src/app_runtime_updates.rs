@@ -226,6 +226,18 @@ impl SyncplayGuiShellAppState {
         &mut self,
         snapshot: GuiStreamHelperRuntimeSnapshot,
     ) -> bool {
+        let mut normalize_optional_value =
+            |value: Option<String>, error_message: &'static str| -> Result<Option<String>, bool> {
+                match value {
+                    Some(value) => {
+                        let Some(value) = normalized_editable_text(&value) else {
+                            return Err(self.record_action_error(error_message));
+                        };
+                        Ok(Some(value.to_owned()))
+                    }
+                    None => Ok(None),
+                }
+            };
         let message = match snapshot.message {
             Some(message) => {
                 let Some(message) = normalized_editable_text(&message) else {
@@ -242,6 +254,27 @@ impl SyncplayGuiShellAppState {
                 "GUI stream-helper runtime snapshots must include a non-empty message while unhealthy.",
             );
         }
+        let install_location = match normalize_optional_value(
+            snapshot.install_location,
+            "GUI stream-helper runtime snapshots cannot contain an empty install location.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let downloader_status = match normalize_optional_value(
+            snapshot.downloader_status,
+            "GUI stream-helper runtime snapshots cannot contain an empty yt-dlp status.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let js_runtime_status = match normalize_optional_value(
+            snapshot.js_runtime_status,
+            "GUI stream-helper runtime snapshots cannot contain an empty Deno status.",
+        ) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
 
         self.stream_helper.health = snapshot.health;
         self.stream_helper.message = message;
@@ -251,6 +284,11 @@ impl SyncplayGuiShellAppState {
         self.stream_helper.install_supported = snapshot.install_supported;
         self.stream_helper.integration_supported = snapshot.integration_supported;
         self.stream_helper.retry_available = snapshot.retry_available;
+        self.stream_helper.install_location = install_location;
+        self.stream_helper.downloader_status = downloader_status;
+        self.stream_helper.js_runtime_status = js_runtime_status;
+        self.stream_helper.open_install_location_available =
+            snapshot.open_install_location_available;
         if self.stream_helper.health == GuiStreamHelperHealth::Healthy
             && self.open_modal == Some(super::GuiShellModal::StreamSupport)
         {

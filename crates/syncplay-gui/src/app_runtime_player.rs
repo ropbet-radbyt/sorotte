@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeSet, VecDeque},
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -2260,6 +2261,35 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    fn open_system_folder(path: &Path, description: &str) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut command = Command::new("explorer");
+            command.arg(path);
+            command
+        };
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut command = Command::new("open");
+            command.arg(path);
+            command
+        };
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        let mut command = {
+            let mut command = Command::new("xdg-open");
+            command.arg(path);
+            command
+        };
+
+        command.spawn().map_err(|error| {
+            format!(
+                "Opening {description} at '{}' failed: {error}",
+                path.display(),
+            )
+        })?;
+        Ok(())
+    }
+
     fn open_system_file_browser_for_path(path: &Path) -> Result<(), String> {
         let Some(parent) = path.parent() else {
             return Err(format!(
@@ -2267,33 +2297,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 path.display()
             ));
         };
-
-        #[cfg(target_os = "windows")]
-        let mut command = {
-            let mut command = Command::new("explorer");
-            command.arg(parent);
-            command
-        };
-        #[cfg(target_os = "macos")]
-        let mut command = {
-            let mut command = Command::new("open");
-            command.arg(parent);
-            command
-        };
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-        let mut command = {
-            let mut command = Command::new("xdg-open");
-            command.arg(parent);
-            command
-        };
-
-        command.spawn().map_err(|error| {
-            format!(
-                "Opening the containing folder for '{}' failed: {error}",
-                path.display()
-            )
-        })?;
-        Ok(())
+        Self::open_system_folder(parent, "the containing folder")
     }
 
     pub(super) fn open_main_window_user_containing_folder_runtime_impl(
@@ -2658,6 +2662,31 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                     .collect(),
             );
+        }
+    }
+
+    pub(super) fn open_stream_helper_install_location_runtime_impl(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        install_location: PathBuf,
+    ) {
+        if let Err(error) = fs::create_dir_all(&install_location) {
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                format!(
+                    "Could not prepare the managed stream-helper install location '{}': {error}",
+                    install_location.display()
+                ),
+            );
+            return;
+        }
+        if let Err(error) = Self::open_system_folder(
+            &install_location,
+            "the managed stream-helper install location",
+        ) {
+            Self::push_runtime_error_notification(handle, projected_state, error);
         }
     }
 

@@ -798,6 +798,7 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::IntegrateStreamHelperDownloader(_)
             | GuiShellAction::IntegrateStreamHelperJsRuntime(_)
             | GuiShellAction::RecheckStreamHelper
+            | GuiShellAction::OpenStreamHelperInstallLocation
             | GuiShellAction::RetryPendingStreamMediaOpen => {
                 self.clear_action_error_and_refresh();
                 true

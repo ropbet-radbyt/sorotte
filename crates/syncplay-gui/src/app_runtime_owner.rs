@@ -266,6 +266,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut owner = Self::with_config_path(config_path);
         let startup_settings = owner.load_startup_player_settings_from_config_path();
         owner.configure_startup_player_from_lookup_and_settings(lookup, startup_settings.as_ref());
+        owner.refresh_stream_helper_runtime_snapshot_for_target(None);
         owner
     }
 
@@ -626,15 +627,11 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         target: Option<&str>,
     ) -> GuiStreamHelperRuntimeSnapshot {
-        let snapshot = target
-            .map(|target| {
-                probe_stream_helper_runtime_snapshot(
-                    self.legacy_gui_qsettings_root().as_deref(),
-                    self.player_stream_helper_attach_mode(),
-                    target,
-                )
-            })
-            .unwrap_or_default();
+        let snapshot = probe_stream_helper_runtime_snapshot(
+            self.legacy_gui_qsettings_root().as_deref(),
+            self.player_stream_helper_attach_mode(),
+            target,
+        );
         self.stream_helper_runtime_snapshot = snapshot.clone();
         snapshot
     }
@@ -1509,6 +1506,15 @@ impl GuiPersistedConfigRuntimeOwner {
         target: String,
     ) {
         self.open_main_window_user_containing_folder_runtime_impl(handle, projected_state, target)
+    }
+
+    fn open_stream_helper_install_location_runtime(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        path: PathBuf,
+    ) {
+        self.open_stream_helper_install_location_runtime_impl(handle, projected_state, path)
     }
 
     fn open_media_files_through_shared_playlist_runtime(

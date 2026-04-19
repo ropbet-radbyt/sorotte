@@ -241,6 +241,43 @@ impl SyncplayGuiShellAppState {
         }
     }
 
+    pub(super) fn stream_helper_status_title(&self) -> &'static str {
+        self.stream_helper_issue_title()
+            .unwrap_or("Stream helper status")
+    }
+
+    pub(super) fn stream_helper_status_summary(&self) -> String {
+        if let Some(summary) = self.stream_helper_issue_summary() {
+            return summary.to_owned();
+        }
+        let downloader_missing = self
+            .stream_helper
+            .downloader_status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Missing "));
+        let js_runtime_missing = self
+            .stream_helper
+            .js_runtime_status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Missing "));
+        match (downloader_missing, js_runtime_missing) {
+            (true, true) => "yt-dlp and Deno are not installed for Syncplay yet.".to_owned(),
+            (true, false) => "yt-dlp is not installed for Syncplay yet.".to_owned(),
+            (false, true) => "Deno is not installed for Syncplay yet.".to_owned(),
+            (false, false) => {
+                "yt-dlp and Deno are ready for extractor-backed page URLs.".to_owned()
+            }
+        }
+    }
+
+    pub(super) fn stream_helper_status_available(&self) -> bool {
+        self.stream_helper.health != super::GuiStreamHelperHealth::Healthy
+            || self.stream_helper.integration_supported
+            || self.stream_helper.install_location.is_some()
+            || self.stream_helper.downloader_status.is_some()
+            || self.stream_helper.js_runtime_status.is_some()
+    }
+
     pub(super) fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {
         persisted_ui_state.apply_to_shell_state(self);
         self.refresh_validation();

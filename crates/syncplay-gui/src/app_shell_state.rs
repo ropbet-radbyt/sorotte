@@ -206,6 +206,10 @@ pub(super) struct GuiStreamHelperState {
     pub(super) install_supported: bool,
     pub(super) integration_supported: bool,
     pub(super) retry_available: bool,
+    pub(super) install_location: Option<String>,
+    pub(super) downloader_status: Option<String>,
+    pub(super) js_runtime_status: Option<String>,
+    pub(super) open_install_location_available: bool,
 }
 
 impl Default for GuiStreamHelperState {
@@ -217,6 +221,10 @@ impl Default for GuiStreamHelperState {
             install_supported: false,
             integration_supported: false,
             retry_available: false,
+            install_location: None,
+            downloader_status: None,
+            js_runtime_status: None,
+            open_install_location_available: false,
         }
     }
 }
@@ -229,6 +237,10 @@ pub(super) struct GuiStreamHelperRuntimeSnapshot {
     pub(super) install_supported: bool,
     pub(super) integration_supported: bool,
     pub(super) retry_available: bool,
+    pub(super) install_location: Option<String>,
+    pub(super) downloader_status: Option<String>,
+    pub(super) js_runtime_status: Option<String>,
+    pub(super) open_install_location_available: bool,
 }
 
 impl Default for GuiStreamHelperRuntimeSnapshot {
@@ -240,6 +252,10 @@ impl Default for GuiStreamHelperRuntimeSnapshot {
             install_supported: false,
             integration_supported: false,
             retry_available: false,
+            install_location: None,
+            downloader_status: None,
+            js_runtime_status: None,
+            open_install_location_available: false,
         }
     }
 }
@@ -998,6 +1014,7 @@ pub(super) enum GuiShellAction {
     IntegrateStreamHelperJsRuntime(String),
     RecheckStreamHelper,
     RetryPendingStreamMediaOpen,
+    OpenStreamHelperInstallLocation,
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,
     ToggleMainWindowHideEmptyRooms,

@@ -54,6 +54,10 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RecheckStreamHelper);
                 }
+                GuiShellAction::OpenStreamHelperInstallLocation => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::OpenStreamHelperInstallLocation);
+                }
                 GuiShellAction::RetryPendingStreamMediaOpen => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPendingStreamMediaOpen);
