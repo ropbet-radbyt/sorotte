@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::GuiShellModal;
 
 #[test]
 fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client_core_session_and_player()
@@ -69,6 +70,65 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode1.mkv")
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_prioritizes_player_setup_before_stream_helper_modal_for_playlist_urls()
+ {
+    let root = test_temp_root("shared-playlist-youtube-no-player");
+    let config_path = root.join("syncplay.ini");
+    let helper_bin_dir = root.join("tools").join("stream-helper").join("bin");
+    std::fs::create_dir_all(&helper_bin_dir)
+        .expect("managed helper bin dir should be created for playlist-url regression");
+    std::fs::write(
+        helper_bin_dir.join(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        }),
+        b"not an executable",
+    )
+    .expect("invalid yt-dlp fixture should be written");
+    std::fs::write(
+        helper_bin_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
+        b"not an executable",
+    )
+    .expect("invalid deno fixture should be written");
+
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(Some(config_path));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["https://www.youtube.com/watch?v=qDVPFAuBSXw".to_owned()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: None,
+    });
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    assert!(
+        owner
+            .player_unavailability_reason
+            .as_deref()
+            .is_some_and(|message| message.contains("Set playerPath to mpv")),
+        "playlist URL opens without a player should keep the player setup blocker visible"
+    );
+    assert_eq!(
+        owner.stream_helper_runtime_snapshot.target, None,
+        "stream-helper preflight should not run before player attachment is available"
+    );
+    assert!(
+        !actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::OpenModal(GuiShellModal::StreamSupport)
+        )),
+        "playlist URL opens without a player should not open the stream-helper modal first"
     );
 }
 

@@ -65,6 +65,8 @@ mod startup;
 mod startup_support;
 #[path = "../app_state_integrity.rs"]
 mod state_integrity;
+#[path = "../app_stream_support.rs"]
+mod stream_support;
 #[path = "../app_support.rs"]
 mod support;
 #[cfg(test)]

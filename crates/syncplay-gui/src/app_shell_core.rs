@@ -60,6 +60,8 @@ impl SyncplayGuiShellAppState {
             playlist_shuffle_nonce: 0,
             media_index_status: Default::default(),
             player_setup_issue: None,
+            stream_helper: Default::default(),
+            stream_helper_remediation: Default::default(),
             saved_configuration: shell_settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
             main_window: MainWindowShellState::from_stored_settings(&shell_settings),
@@ -197,6 +199,46 @@ impl SyncplayGuiShellAppState {
             .as_ref()
             .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::NotConfigured)
             && self.pending_operation.is_none()
+    }
+
+    pub(super) fn stream_helper_issue_title(&self) -> Option<&'static str> {
+        match self.stream_helper.health {
+            super::GuiStreamHelperHealth::Healthy => None,
+            super::GuiStreamHelperHealth::MissingDownloader => Some("yt-dlp required"),
+            super::GuiStreamHelperHealth::MissingJsRuntime => Some("Deno runtime required"),
+            super::GuiStreamHelperHealth::Stale => Some("Stream helper update recommended"),
+            super::GuiStreamHelperHealth::Broken => Some("Stream helper is broken"),
+            super::GuiStreamHelperHealth::UnsupportedPlatform => {
+                Some("Manual stream helper setup required")
+            }
+            super::GuiStreamHelperHealth::ExternalPlayerUnmanaged => {
+                Some("External mpv cannot be repaired in place")
+            }
+        }
+    }
+
+    pub(super) fn stream_helper_issue_summary(&self) -> Option<&'static str> {
+        match self.stream_helper.health {
+            super::GuiStreamHelperHealth::Healthy => None,
+            super::GuiStreamHelperHealth::MissingDownloader => {
+                Some("Extractor-backed page URLs need yt-dlp before mpv can load them.")
+            }
+            super::GuiStreamHelperHealth::MissingJsRuntime => {
+                Some("Current yt-dlp YouTube extraction also needs a JavaScript runtime.")
+            }
+            super::GuiStreamHelperHealth::Stale => {
+                Some("The managed stream helper should be refreshed before retrying this URL.")
+            }
+            super::GuiStreamHelperHealth::Broken => {
+                Some("The stream helper exists but could not be used by Syncplay.")
+            }
+            super::GuiStreamHelperHealth::UnsupportedPlatform => Some(
+                "Automatic helper installation is not available on this platform yet, but existing helper binaries can still be imported.",
+            ),
+            super::GuiStreamHelperHealth::ExternalPlayerUnmanaged => Some(
+                "This mpv process was started outside Syncplay, so imported helper changes will not reach it until it is relaunched.",
+            ),
+        }
     }
 
     pub(super) fn apply_persisted_ui_state(&mut self, persisted_ui_state: &GuiPersistedUiState) {

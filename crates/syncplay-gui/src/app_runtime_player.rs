@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
+use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome};
 use syncplay_player_mpv::LegacySyncplayOsdKind;
 
 use super::super::media_search_cache::{
@@ -24,8 +24,10 @@ use super::super::runtime_stack::{
     GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer,
 };
 use super::super::shell_state::{
-    GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellView, GuiTransientNotificationLevel,
+    GuiMediaIndexRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState, browser_is_url,
+    browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::support::{
@@ -268,6 +270,248 @@ impl GuiPersistedConfigRuntimeOwner {
         ]);
     }
 
+    fn stream_helper_issue_notification_level(
+        health: GuiStreamHelperHealth,
+    ) -> GuiTransientNotificationLevel {
+        match health {
+            GuiStreamHelperHealth::Broken => GuiTransientNotificationLevel::Error,
+            GuiStreamHelperHealth::Healthy
+            | GuiStreamHelperHealth::MissingDownloader
+            | GuiStreamHelperHealth::MissingJsRuntime
+            | GuiStreamHelperHealth::Stale
+            | GuiStreamHelperHealth::UnsupportedPlatform
+            | GuiStreamHelperHealth::ExternalPlayerUnmanaged => {
+                GuiTransientNotificationLevel::Warning
+            }
+        }
+    }
+
+    fn room_stream_target_kind(
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> GuiStreamTargetKind {
+        let settings = state.configuration.to_stored_settings();
+        let trusted_domains = settings.trusted_domains.unwrap_or_default();
+        browser_stream_target_kind(
+            target,
+            Some((
+                settings.only_switch_to_trusted_domains.unwrap_or(true),
+                trusted_domains.as_slice(),
+            )),
+        )
+    }
+
+    fn queue_stream_support_feedback(
+        &mut self,
+        snapshot: super::super::shell_state::GuiStreamHelperRuntimeSnapshot,
+        user_initiated: bool,
+        message_override: Option<String>,
+    ) {
+        let Some(message) = message_override.or_else(|| snapshot.message.clone()) else {
+            return;
+        };
+        let mut actions = vec![GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+            snapshot.clone(),
+        )];
+        actions.push(GuiShellAction::PushTransientNotification {
+            level: if user_initiated {
+                Self::stream_helper_issue_notification_level(snapshot.health)
+            } else {
+                GuiTransientNotificationLevel::Warning
+            },
+            message: message.clone(),
+        });
+        actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
+        if user_initiated {
+            actions.push(GuiShellAction::OpenModal(GuiShellModal::StreamSupport));
+        }
+        self.queue_stream_feedback_actions(actions);
+    }
+
+    fn queue_stream_warning(&mut self, message: String) {
+        self.queue_stream_feedback_actions(vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Warning,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]);
+    }
+
+    fn queue_stream_error(&mut self, message: String) {
+        self.queue_stream_feedback_actions(vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]);
+    }
+
+    fn prepare_stream_load_tracking(&mut self, target: &str, user_initiated: bool) {
+        if browser_is_url(target) {
+            self.pending_stream_load_context = Some(super::GuiPendingStreamLoadContext {
+                requested_target: target.to_owned(),
+                user_initiated,
+            });
+            if user_initiated {
+                self.pending_stream_retry_target = Some(target.to_owned());
+            }
+        } else {
+            self.pending_stream_load_context = None;
+            if user_initiated {
+                self.pending_stream_retry_target = None;
+            }
+        }
+    }
+
+    fn clear_pending_stream_load_context_for_target(&mut self, target: &str) {
+        if self
+            .pending_stream_load_context
+            .as_ref()
+            .is_some_and(|context| context.requested_target == target)
+        {
+            self.pending_stream_load_context = None;
+        }
+    }
+
+    fn take_pending_stream_load_user_initiated_for_target(&mut self, target: &str) -> bool {
+        if self
+            .pending_stream_load_context
+            .as_ref()
+            .is_some_and(|context| context.requested_target == target)
+        {
+            return self
+                .pending_stream_load_context
+                .take()
+                .is_some_and(|context| context.user_initiated);
+        }
+        false
+    }
+
+    fn preflight_user_stream_target(&mut self, target: &str) -> bool {
+        if browser_stream_target_kind(target, None) != GuiStreamTargetKind::ExtractorPageUrl {
+            self.refresh_stream_helper_runtime_snapshot_for_target(None);
+            return true;
+        }
+        let snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(Some(target));
+        if snapshot.health == GuiStreamHelperHealth::Healthy {
+            if let Err(error) = self.refresh_managed_player_if_stream_helper_refresh_required() {
+                self.queue_stream_error(format!(
+                    "Refreshing Syncplay-managed mpv for stream support failed: {error}"
+                ));
+                return false;
+            }
+            return true;
+        }
+        self.pending_stream_retry_target = Some(target.to_owned());
+        self.queue_stream_support_feedback(snapshot, true, None);
+        false
+    }
+
+    fn preflight_room_stream_target(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+        target: &str,
+    ) -> bool {
+        match Self::room_stream_target_kind(state, target) {
+            GuiStreamTargetKind::UntrustedUrl => {
+                self.refresh_stream_helper_runtime_snapshot_for_target(None);
+                self.queue_stream_warning(format!(
+                    "Blocked automatic room URL open because the selected URL is not trusted locally: {target}."
+                ));
+                false
+            }
+            GuiStreamTargetKind::ExtractorPageUrl => {
+                let snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(Some(target));
+                if snapshot.health == GuiStreamHelperHealth::Healthy {
+                    if let Err(error) =
+                        self.refresh_managed_player_if_stream_helper_refresh_required()
+                    {
+                        self.queue_stream_warning(format!(
+                            "Automatic room URL open is unavailable locally: {error}"
+                        ));
+                        return false;
+                    }
+                    true
+                } else {
+                    let message = snapshot.message.as_ref().map(|message| {
+                        format!("Automatic room URL open is unavailable locally: {message}")
+                    });
+                    self.queue_stream_support_feedback(snapshot, false, message);
+                    false
+                }
+            }
+            GuiStreamTargetKind::LocalPath | GuiStreamTargetKind::DirectMediaUrl => {
+                self.refresh_stream_helper_runtime_snapshot_for_target(None);
+                true
+            }
+        }
+    }
+
+    fn handle_player_media_load_outcome(&mut self, outcome: PlayerMediaLoadOutcome) {
+        if outcome.succeeded() {
+            self.clear_pending_stream_load_context_for_target(&outcome.requested_target);
+            if self.pending_stream_retry_target.as_deref()
+                == Some(outcome.requested_target.as_str())
+            {
+                self.pending_stream_retry_target = None;
+            }
+            return;
+        }
+
+        self.player_local_file = None;
+        self.player_local_file_placeholder = false;
+        self.player_position_seconds = None;
+        self.last_published_local_file = None;
+        let user_initiated =
+            self.take_pending_stream_load_user_initiated_for_target(&outcome.requested_target);
+        let failure_message = outcome
+            .failure
+            .as_ref()
+            .map(|failure| failure.message.clone())
+            .unwrap_or_else(|| "The attached player reported a media load failure.".to_owned());
+
+        if browser_stream_target_kind(&outcome.requested_target, None)
+            == GuiStreamTargetKind::ExtractorPageUrl
+        {
+            let snapshot = self
+                .refresh_stream_helper_runtime_snapshot_for_target(Some(&outcome.requested_target));
+            if snapshot.health != GuiStreamHelperHealth::Healthy {
+                self.pending_stream_retry_target = Some(outcome.requested_target.clone());
+                let combined_message = snapshot.message.as_ref().map_or_else(
+                    || failure_message.clone(),
+                    |summary| {
+                        if failure_message == *summary {
+                            summary.clone()
+                        } else {
+                            format!("{summary} {failure_message}")
+                        }
+                    },
+                );
+                self.queue_stream_support_feedback(
+                    snapshot,
+                    user_initiated,
+                    Some(combined_message),
+                );
+                return;
+            }
+        } else {
+            self.refresh_stream_helper_runtime_snapshot_for_target(None);
+        }
+
+        let message = if browser_is_url(&outcome.requested_target) {
+            format!("Loading media URL through the attached player failed: {failure_message}")
+        } else {
+            format!("Loading media through the attached player failed: {failure_message}")
+        };
+        if user_initiated {
+            self.queue_stream_error(message);
+        } else {
+            self.queue_stream_warning(message);
+        }
+    }
+
     pub(super) fn open_media_files_through_attached_player_result_impl(
         &mut self,
         paths: &[String],
@@ -291,7 +535,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 if let Some(session) = self.session.as_mut() {
                     let _ = session.mark_local_media_opened_not_ready();
                 }
-                if paths.len() == 1 {
+                if browser_is_url(&selected_path) && paths.len() == 1 {
+                    Ok(format!(
+                        "Started loading media URL through the attached {player_name} player: {selected_path}."
+                    ))
+                } else if browser_is_url(&selected_path) {
+                    Ok(format!(
+                        "Started loading the first selected media URL through the attached {player_name} player: {selected_path}. Ignored {} additional selections.",
+                        paths.len() - 1
+                    ))
+                } else if paths.len() == 1 {
                     Ok(format!(
                         "Opened media file through the attached {player_name} player: {selected_path}."
                     ))
@@ -302,9 +555,12 @@ impl GuiPersistedConfigRuntimeOwner {
                     ))
                 }
             }
-            Err(error) => Err(format!(
-                "Opening media through the attached {player_name} player failed: {error}"
-            )),
+            Err(error) => {
+                self.clear_pending_stream_load_context_for_target(&selected_path);
+                Err(format!(
+                    "Opening media through the attached {player_name} player failed: {error}"
+                ))
+            }
         })
     }
 
@@ -332,7 +588,10 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(|target| normalized_editable_text(&target.label))
     }
 
-    fn current_shared_playlist_target(&self, state: &SyncplayGuiShellAppState) -> Option<String> {
+    pub(super) fn current_shared_playlist_target(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<String> {
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
@@ -1477,6 +1736,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> SelectedPlaylistMediaSyncOutcome {
         let Some(target) = self.current_shared_playlist_target(state) else {
+            self.refresh_stream_helper_runtime_snapshot_for_target(None);
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
@@ -1504,6 +1764,9 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         self.last_attached_media_resolution_trigger = Some(trigger);
+        if !self.preflight_room_stream_target(state, &target) {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
 
         let resolved_target = match self
             .resolve_main_window_user_media_target_for_automatic_sync(state, &target)
@@ -1526,10 +1789,13 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let player_paths = [resolved_target];
-        let opened = self
-            .open_media_files_through_attached_player_result_impl(&player_paths)
-            .is_some_and(|result| result.is_ok());
-        if opened {
+        self.prepare_stream_load_tracking(&player_paths[0], false);
+        let open_result = self.open_media_files_through_attached_player_result_impl(&player_paths);
+        if let Some(Err(message)) = open_result {
+            self.queue_stream_warning(message);
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        if open_result.is_some_and(|result| result.is_ok()) {
             self.unresolved_attached_media_target = None;
             if !self.attached_media_search_refresh_pending() {
                 self.attached_media_search_next_retry_at = None;
@@ -1546,9 +1812,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(selected_path) = player_paths.first() else {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
-
         self.ensure_configured_player_attached();
         if self.player.is_none() {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        if !self.preflight_user_stream_target(selected_path) {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
         if self.current_player_matches_media_target(selected_path) {
@@ -1559,10 +1827,13 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let player_paths = [selected_path.clone()];
-        let opened = self
-            .open_media_files_through_attached_player_result_impl(&player_paths)
-            .is_some_and(|result| result.is_ok());
-        if opened {
+        self.prepare_stream_load_tracking(&player_paths[0], true);
+        let open_result = self.open_media_files_through_attached_player_result_impl(&player_paths);
+        if let Some(Err(message)) = open_result {
+            self.queue_stream_error(message);
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
+        if open_result.is_some_and(|result| result.is_ok()) {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
             self.attached_media_search_next_retry_at = None;
@@ -1960,6 +2231,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
         self.ensure_configured_player_attached();
         if self.player.is_some() {
+            if !self.preflight_user_stream_target(&resolved_target) {
+                return;
+            }
+            self.prepare_stream_load_tracking(&resolved_target, true);
             self.open_media_files_through_attached_player_impl(handle, vec![resolved_target]);
         } else {
             Self::push_runtime_unavailable(
@@ -2391,7 +2666,19 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(player) = self.player.as_mut() else {
             return;
         };
+        let mut playback_updates = Vec::new();
+        let mut media_load_outcomes = Vec::new();
+        let mut local_file_updates = Vec::new();
         while let Some(update) = player.take_playback_telemetry_update() {
+            playback_updates.push(update);
+        }
+        while let Some(outcome) = player.take_media_load_outcome() {
+            media_load_outcomes.push(outcome);
+        }
+        while let Some(update) = player.take_local_file_update() {
+            local_file_updates.push(update);
+        }
+        for update in playback_updates {
             if let Some(paused) = update.paused {
                 self.player_paused = Some(paused);
             }
@@ -2399,7 +2686,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_position_seconds = Some(position_seconds - user_offset_seconds);
             }
         }
-        while let Some(update) = player.take_local_file_update() {
+        for outcome in media_load_outcomes {
+            self.handle_player_media_load_outcome(outcome);
+        }
+        for update in local_file_updates {
             let file_changed = Self::local_file_update_replaces_current_file(
                 self.player_local_file.as_ref(),
                 &update,

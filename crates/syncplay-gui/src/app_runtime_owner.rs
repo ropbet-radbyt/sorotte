@@ -12,7 +12,7 @@ mod projection;
 mod requests;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -46,13 +46,17 @@ use super::runtime_stack::{
     GuiTestPlayerAdapter,
 };
 use super::shell_state::{
-    GuiCommandAvailabilityState, GuiShellAction, GuiTransientNotificationLevel,
-    SyncplayGuiShellAppState,
+    GuiCommandAvailabilityState, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
 };
 use super::startup::{
     explicit_mpv_ipc_path_from_lookup, resolve_syncplay_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
+use super::stream_support::{
+    StreamHelperAttachMode, managed_stream_helper_downloader_path,
+    managed_stream_helper_path_prefixes, probe_stream_helper_runtime_snapshot,
+};
 use super::support::system_time_seconds;
 use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
 
@@ -95,6 +99,13 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) active_shared_playlist_index: Option<usize>,
     pub(super) playlist_auto_advance_eof_latched: bool,
     pub(super) user_offset_seconds: f64,
+    pub(super) stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot,
+    pub(super) stream_helper_remediation_runtime_snapshot:
+        GuiStreamHelperRemediationRuntimeSnapshot,
+    pub(super) pending_stream_retry_target: Option<String>,
+    pub(super) managed_stream_helper_refresh_required: bool,
+    pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
+    pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
 }
 
 pub(super) struct GuiAttachedMediaSearchIndex {
@@ -169,6 +180,12 @@ pub(super) struct GuiPendingAttachedMediaResolution {
     pub(super) result_rx: std::sync::mpsc::Receiver<GuiAttachedMediaSearchBuildStatus>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPendingStreamLoadContext {
+    pub(super) requested_target: String,
+    pub(super) user_initiated: bool,
+}
+
 impl Drop for GuiPendingAttachedMediaResolution {
     fn drop(&mut self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
@@ -225,6 +242,13 @@ impl GuiPersistedConfigRuntimeOwner {
             active_shared_playlist_index: None,
             playlist_auto_advance_eof_latched: false,
             user_offset_seconds: 0.0,
+            stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot::default(),
+            stream_helper_remediation_runtime_snapshot:
+                GuiStreamHelperRemediationRuntimeSnapshot::default(),
+            pending_stream_retry_target: None,
+            managed_stream_helper_refresh_required: false,
+            pending_stream_feedback: VecDeque::new(),
+            pending_stream_load_context: None,
         }
     }
 
@@ -318,6 +342,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.player_paused = None;
+        self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
+        self.pending_stream_retry_target = None;
+        self.pending_stream_feedback.clear();
+        self.pending_stream_load_context = None;
         if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
             pending_resolution
                 .cancel_flag
@@ -350,6 +378,9 @@ impl GuiPersistedConfigRuntimeOwner {
     fn attach_player_from_launch_state(&mut self, launch_state: GuiPlayerLaunchRuntimeState) {
         self.detach_player();
         self.player_launch_state = launch_state.clone();
+        if !matches!(launch_state, GuiPlayerLaunchRuntimeState::ManagedMpv(_)) {
+            self.managed_stream_helper_refresh_required = false;
+        }
         self.player_unavailability_reason = launch_state
             .default_unavailability_reason()
             .or_else(|| Self::no_player_configured_unavailability_reason(&launch_state));
@@ -358,6 +389,7 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {}
             GuiPlayerLaunchRuntimeState::TestPlayer => {
                 self.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+                self.managed_stream_helper_refresh_required = false;
                 self.player_unavailability_reason = None;
             }
             GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
@@ -370,6 +402,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 ) {
                     Ok(()) => {
                         self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                        self.managed_stream_helper_refresh_required = false;
                         self.player_unavailability_reason = None;
                     }
                     Err(error) => {
@@ -385,7 +418,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             },
             GuiPlayerLaunchRuntimeState::ManagedMpv(config) => {
-                match mpv_launch::spawn_managed_mpv_and_attach(&config) {
+                let helper_root = self.legacy_gui_qsettings_root();
+                let helper_path_prefixes =
+                    managed_stream_helper_path_prefixes(helper_root.as_deref());
+                let helper_downloader_path = helper_root
+                    .as_deref()
+                    .map(managed_stream_helper_downloader_path)
+                    .filter(|path| path.is_file());
+                match mpv_launch::spawn_managed_mpv_and_attach(
+                    &config,
+                    &helper_path_prefixes,
+                    helper_downloader_path.as_deref(),
+                ) {
                     Ok((mut adapter, guard)) => {
                         match apply_legacy_syncplay_ui_settings_to_mpv_adapter(
                             &mut adapter,
@@ -394,6 +438,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             Ok(()) => {
                                 self.managed_mpv_process = Some(guard);
                                 self.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
+                                self.managed_stream_helper_refresh_required = false;
                                 self.player_unavailability_reason = None;
                             }
                             Err(error) => {
@@ -561,6 +606,193 @@ impl GuiPersistedConfigRuntimeOwner {
         self.config_path
             .as_ref()
             .and_then(|path| path.parent().map(Path::to_path_buf))
+    }
+
+    pub(super) fn player_stream_helper_attach_mode(&self) -> StreamHelperAttachMode {
+        match self.player_launch_state {
+            GuiPlayerLaunchRuntimeState::ExplicitMpvIpc { .. } => {
+                StreamHelperAttachMode::ExternalPlayer
+            }
+            GuiPlayerLaunchRuntimeState::None
+            | GuiPlayerLaunchRuntimeState::TestPlayer
+            | GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+            | GuiPlayerLaunchRuntimeState::UnsupportedConfiguredPlayer { .. } => {
+                StreamHelperAttachMode::ManagedPlayer
+            }
+        }
+    }
+
+    pub(super) fn refresh_stream_helper_runtime_snapshot_for_target(
+        &mut self,
+        target: Option<&str>,
+    ) -> GuiStreamHelperRuntimeSnapshot {
+        let snapshot = target
+            .map(|target| {
+                probe_stream_helper_runtime_snapshot(
+                    self.legacy_gui_qsettings_root().as_deref(),
+                    self.player_stream_helper_attach_mode(),
+                    target,
+                )
+            })
+            .unwrap_or_default();
+        self.stream_helper_runtime_snapshot = snapshot.clone();
+        snapshot
+    }
+
+    pub(super) fn queue_stream_feedback_actions(&mut self, actions: Vec<GuiShellAction>) {
+        if actions.is_empty() {
+            return;
+        }
+        self.pending_stream_feedback.push_back(actions);
+    }
+
+    pub(super) fn flush_pending_stream_feedback(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        while let Some(actions) = self.pending_stream_feedback.pop_front() {
+            Self::push_actions_and_project(handle, projected_state, actions);
+        }
+    }
+
+    pub(super) fn stream_helper_target_candidate(
+        &self,
+        state: &SyncplayGuiShellAppState,
+    ) -> Option<String> {
+        self.pending_stream_retry_target
+            .clone()
+            .or_else(|| self.current_shared_playlist_target(state))
+            .or_else(|| {
+                self.player_local_file
+                    .as_ref()
+                    .and_then(|file| file.path.clone())
+                    .filter(|target| target.contains("://"))
+            })
+            .or_else(|| self.stream_helper_runtime_snapshot.target.clone())
+    }
+
+    pub(super) fn recheck_stream_helper_runtime_snapshot(
+        &mut self,
+        state: &SyncplayGuiShellAppState,
+    ) -> GuiStreamHelperRuntimeSnapshot {
+        let target = self.stream_helper_target_candidate(state);
+        self.refresh_stream_helper_runtime_snapshot_for_target(target.as_deref())
+    }
+
+    pub(super) fn update_stream_helper_remediation_runtime_snapshot(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        snapshot: GuiStreamHelperRemediationRuntimeSnapshot,
+    ) {
+        self.stream_helper_remediation_runtime_snapshot = snapshot.clone();
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(snapshot)],
+        );
+    }
+
+    pub(super) fn report_stream_helper_remediation_progress(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        label: impl Into<String>,
+        detail: Option<String>,
+        progress_fraction: f32,
+    ) {
+        self.update_stream_helper_remediation_runtime_snapshot(
+            handle,
+            projected_state,
+            GuiStreamHelperRemediationRuntimeSnapshot {
+                active: true,
+                label: Some(label.into()),
+                detail,
+                progress_fraction,
+            },
+        );
+    }
+
+    pub(super) fn clear_stream_helper_remediation_progress(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        self.update_stream_helper_remediation_runtime_snapshot(
+            handle,
+            projected_state,
+            GuiStreamHelperRemediationRuntimeSnapshot::default(),
+        );
+    }
+
+    pub(super) fn mark_managed_player_stream_helper_refresh_required(&mut self) {
+        if matches!(
+            self.player_launch_state,
+            GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+        ) && self.player.is_some()
+        {
+            self.managed_stream_helper_refresh_required = true;
+        }
+    }
+
+    pub(super) fn refresh_managed_player_if_stream_helper_refresh_required(
+        &mut self,
+    ) -> Result<bool, String> {
+        if !self.managed_stream_helper_refresh_required {
+            return Ok(false);
+        }
+        let GuiPlayerLaunchRuntimeState::ManagedMpv(_) = self.player_launch_state else {
+            self.managed_stream_helper_refresh_required = false;
+            return Ok(false);
+        };
+
+        let launch_state = self.player_launch_state.clone();
+        self.attach_player_from_launch_state(launch_state);
+        self.refresh_player_state();
+        if self.player.is_some() {
+            self.managed_stream_helper_refresh_required = false;
+            Ok(true)
+        } else {
+            Err(self
+                .player_unavailability_reason
+                .clone()
+                .unwrap_or_else(|| {
+                    "Retrying mpv with the updated stream helper did not attach a playback runtime."
+                        .to_owned()
+                }))
+        }
+    }
+
+    pub(super) fn relaunch_managed_player_for_stream_helper(
+        &mut self,
+        projected_state: &SyncplayGuiShellAppState,
+    ) -> Result<bool, String> {
+        let settings = projected_state.configuration.to_stored_settings();
+        let next_launch_state = Self::configured_player_launch_state_from_lookup_and_settings(
+            &env_trimmed,
+            Some(&settings),
+        )?;
+        if !matches!(
+            next_launch_state,
+            GuiPlayerLaunchRuntimeState::ManagedMpv(_)
+        ) {
+            return Ok(false);
+        }
+
+        self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+        self.refresh_player_state();
+        if self.player.is_some() {
+            Ok(true)
+        } else {
+            Err(self
+                .player_unavailability_reason
+                .clone()
+                .unwrap_or_else(|| {
+                    "Retrying mpv with the updated stream helper did not attach a playback runtime."
+                        .to_owned()
+                }))
+        }
     }
 
     fn clear_gui_data(&mut self) -> Result<(), String> {
@@ -1388,7 +1620,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.poll_managed_mpv_process();
         let mut projected_state = state.clone();
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
-        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+        self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
         self.drain_session_runtime_actions_and_finish_transport_disconnect(
@@ -1396,7 +1628,7 @@ impl GuiPersistedConfigRuntimeOwner {
             &mut projected_state,
         );
         self.drain_player_chat_input(handle, &mut projected_state);
-        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+        self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.flush_session_transport_outbound(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
         self.drain_session_transport_inbound(handle, &mut projected_state);
@@ -1405,7 +1637,7 @@ impl GuiPersistedConfigRuntimeOwner {
             &mut projected_state,
         );
         self.drain_player_chat_input(handle, &mut projected_state);
-        self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+        self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
             if projected_state.pending_operation.is_none()
@@ -1413,7 +1645,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 && projected_state.saved_session_connect_target().is_some()
             {
                 self.complete_saved_server_connect_runtime(handle, &mut projected_state, false);
-                self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+                self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
                 self.flush_session_transport_outbound(handle, &mut projected_state);
                 self.pump_session_transport_driver(handle, &mut projected_state);
                 self.drain_session_transport_inbound(handle, &mut projected_state);
@@ -1422,14 +1654,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     &mut projected_state,
                 );
                 self.drain_player_chat_input(handle, &mut projected_state);
-                self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+                self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             }
         }
         for request in handle.drain_requests() {
             if !self.handle_runtime_request(handle, &mut projected_state, request) {
                 continue;
             }
-            self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+            self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             self.flush_session_transport_outbound(handle, &mut projected_state);
             self.pump_session_transport_driver(handle, &mut projected_state);
             self.drain_session_transport_inbound(handle, &mut projected_state);
@@ -1438,7 +1670,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 &mut projected_state,
             );
             self.drain_player_chat_input(handle, &mut projected_state);
-            self.sync_detached_session_runtime_state_or_notify(handle, &projected_state);
+            self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         }
         self.ensure_configured_player_attached_for_active_session();
         self.sync_player_runtime_state(handle, &projected_state);
@@ -1447,10 +1679,12 @@ impl GuiPersistedConfigRuntimeOwner {
     fn sync_detached_session_runtime_state_or_notify(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        state: &SyncplayGuiShellAppState,
+        projected_state: &mut SyncplayGuiShellAppState,
     ) {
         self.refresh_player_state();
-        if let Err(error) = self.sync_detached_session_preferences_and_player_state(state) {
+        self.flush_pending_stream_feedback(handle, projected_state);
+        if let Err(error) = self.sync_detached_session_preferences_and_player_state(projected_state)
+        {
             Self::push_runtime_unavailable(handle, error);
         }
     }

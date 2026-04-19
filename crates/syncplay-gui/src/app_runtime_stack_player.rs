@@ -1,7 +1,9 @@
 use std::{collections::VecDeque, path::Path};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
-use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerPlaybackTelemetryUpdate};
+use syncplay_player_api::{
+    LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+};
 use syncplay_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
 pub(in super::super) struct GuiNoopClientRuntimePlayer;
@@ -31,6 +33,7 @@ impl PlayerAdapter for GuiNoopClientRuntimePlayer {
 pub(in super::super) struct GuiTestPlayerAdapter {
     local_file_updates: VecDeque<LocalFileUpdate>,
     playback_updates: VecDeque<PlayerPlaybackTelemetryUpdate>,
+    media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
 }
 
 impl GuiTestPlayerAdapter {
@@ -56,6 +59,8 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
     fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
         self.local_file_updates
             .push_back(Self::local_file_update_for_path(path));
+        self.media_load_outcomes
+            .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
         self.playback_updates.push_back(
             PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(false)
@@ -86,6 +91,10 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         self.playback_updates.pop_front()
+    }
+
+    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        self.media_load_outcomes.pop_front()
     }
 }
 
@@ -185,6 +194,14 @@ impl PlayerAdapter for GuiOwnedPlayer {
             Self::Test(player) => player.take_playback_telemetry_update(),
             Self::Mpv(player) => player.take_playback_telemetry_update(),
             Self::Custom(player) => player.take_playback_telemetry_update(),
+        }
+    }
+
+    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        match self {
+            Self::Test(player) => player.take_media_load_outcome(),
+            Self::Mpv(player) => player.take_media_load_outcome(),
+            Self::Custom(player) => player.take_media_load_outcome(),
         }
     }
 

@@ -243,6 +243,51 @@ impl SyncplayGuiShellAppState {
                     true,
                     false,
                 ),
+                GuiWidgetNode::leaf(
+                    "shell:stream-helper-remediation-active",
+                    "Stream Helper Remediation Active",
+                    GuiWidgetKind::Status,
+                    Some(bool_label(self.stream_helper_remediation.active).to_owned()),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:stream-helper-remediation-label",
+                    "Stream Helper Remediation",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.stream_helper_remediation
+                            .label
+                            .clone()
+                            .unwrap_or_else(|| "(idle)".to_owned()),
+                    ),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:stream-helper-remediation-detail",
+                    "Stream Helper Remediation Detail",
+                    GuiWidgetKind::Status,
+                    Some(
+                        self.stream_helper_remediation
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| "(idle)".to_owned()),
+                    ),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:stream-helper-remediation-progress",
+                    "Stream Helper Remediation Progress",
+                    GuiWidgetKind::Status,
+                    Some(format!(
+                        "{:.3}",
+                        self.stream_helper_remediation.progress_fraction
+                    )),
+                    true,
+                    false,
+                ),
                 self.shell_modal_widget_tree(),
                 self.quick_actions_widget_tree(),
                 self.command_status_widget_tree(),

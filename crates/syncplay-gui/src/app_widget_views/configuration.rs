@@ -149,6 +149,162 @@ impl SyncplayGuiShellAppState {
             )
         });
 
+        let stream_support_panel = (self.stream_helper.health != GuiStreamHelperHealth::Healthy)
+            .then(|| {
+                let mut content = vec![
+                    GuiWidgetNode::leaf(
+                        "config-stream-support:title",
+                        "Title",
+                        GuiWidgetKind::Status,
+                        self.stream_helper_issue_title().map(str::to_owned),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-stream-support:summary",
+                        "Summary",
+                        GuiWidgetKind::Status,
+                        self.stream_helper_issue_summary().map(str::to_owned),
+                        true,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-stream-support:health",
+                        "Health",
+                        GuiWidgetKind::Status,
+                        Some(self.stream_helper.health.label().to_owned()),
+                        true,
+                        false,
+                    ),
+                ];
+                if let Some(target) = self.stream_helper.target.as_ref() {
+                    content.push(GuiWidgetNode::leaf(
+                        "config-stream-support:target",
+                        "Target",
+                        GuiWidgetKind::Status,
+                        Some(target.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if let Some(message) = self.stream_helper.message.as_ref() {
+                    content.push(GuiWidgetNode::leaf(
+                        "config-stream-support:detail",
+                        "Detail",
+                        GuiWidgetKind::Status,
+                        Some(message.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if self.stream_helper_remediation.active {
+                    content.push(GuiWidgetNode::leaf(
+                        "config-stream-support:remediation",
+                        "Remediation",
+                        GuiWidgetKind::Status,
+                        self.stream_helper_remediation.label.clone(),
+                        true,
+                        false,
+                    ));
+                    content.push(GuiWidgetNode::leaf(
+                        "config-stream-support:remediation-progress",
+                        "Progress",
+                        GuiWidgetKind::Status,
+                        Some(format!(
+                            "{:.0}%",
+                            self.stream_helper_remediation.progress_fraction * 100.0
+                        )),
+                        true,
+                        false,
+                    ));
+                    if let Some(detail) = self.stream_helper_remediation.detail.as_ref() {
+                        content.push(GuiWidgetNode::leaf(
+                            "config-stream-support:remediation-detail",
+                            "Remediation Detail",
+                            GuiWidgetKind::Status,
+                            Some(detail.clone()),
+                            true,
+                            false,
+                        ));
+                    }
+                }
+                content.push(GuiWidgetNode::leaf(
+                    "config-stream-support:integration",
+                    "Integration",
+                    GuiWidgetKind::Status,
+                    Some(
+                        "Import yt-dlp or Deno to copy existing helper binaries into Syncplay's managed stream-helper directory."
+                            .to_owned(),
+                    ),
+                    true,
+                    false,
+                ));
+                content.push(GuiWidgetNode::layout(
+                    "config-stream-support:actions",
+                    "Stream Support Actions",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "config-stream-support:install",
+                            "Install Helper",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none()
+                                && !self.stream_helper_remediation.active
+                                && self.stream_helper.install_supported,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-stream-support:import-downloader",
+                            "Import yt-dlp",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none()
+                                && !self.stream_helper_remediation.active
+                                && self.stream_helper.integration_supported,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-stream-support:import-js-runtime",
+                            "Import Deno",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none()
+                                && !self.stream_helper_remediation.active
+                                && self.stream_helper.integration_supported,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-stream-support:recheck",
+                            "Recheck Support",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none()
+                                && !self.stream_helper_remediation.active,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-stream-support:retry",
+                            "Retry URL",
+                            GuiWidgetKind::Button,
+                            None,
+                            self.pending_operation.is_none()
+                                && !self.stream_helper_remediation.active
+                                && self.stream_helper.retry_available,
+                            false,
+                        ),
+                    ],
+                ));
+                GuiWidgetNode::branch(
+                    "config-stream-support",
+                    "Stream Support",
+                    GuiWidgetKind::Panel,
+                    content,
+                )
+            });
+
         let commands_panel = GuiWidgetNode::branch(
             "config-commands",
             "Commands",
@@ -352,6 +508,7 @@ impl SyncplayGuiShellAppState {
             GuiLayoutMode::Stack,
             player_setup_panel
                 .into_iter()
+                .chain(stream_support_panel)
                 .chain([
                     commands_panel,
                     GuiWidgetNode::layout(

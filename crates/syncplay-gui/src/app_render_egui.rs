@@ -221,6 +221,24 @@ impl GuiWidgetEguiRenderer {
             .find("shell:media-index-status")
             .and_then(|node| node.value.as_deref())
             .unwrap_or("(idle)");
+        let stream_helper_remediation_active = root
+            .find("shell:stream-helper-remediation-active")
+            .and_then(|node| node.value.as_deref())
+            .is_some_and(|value| matches!(value, "yes" | "true"));
+        let stream_helper_remediation_label = root
+            .find("shell:stream-helper-remediation-label")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(idle)");
+        let stream_helper_remediation_detail = root
+            .find("shell:stream-helper-remediation-detail")
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or("(idle)");
+        let stream_helper_remediation_progress = root
+            .find("shell:stream-helper-remediation-progress")
+            .and_then(|node| node.value.as_deref())
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
         egui::TopBottomPanel::bottom("syncplay-native-status-bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Syncplay GUI");
@@ -234,6 +252,18 @@ impl GuiWidgetEguiRenderer {
                     ui.separator();
                     ui.add(egui::Spinner::new());
                     ui.label(media_index_status);
+                }
+                if stream_helper_remediation_active {
+                    ui.separator();
+                    ui.label(stream_helper_remediation_label);
+                    ui.add(
+                        egui::ProgressBar::new(stream_helper_remediation_progress)
+                            .desired_width(160.0)
+                            .show_percentage(),
+                    );
+                    if stream_helper_remediation_detail != "(idle)" {
+                        ui.label(stream_helper_remediation_detail);
+                    }
                 }
                 if Self::should_show_manual_pending_controls(
                     pending_operation,
@@ -2493,6 +2523,7 @@ impl GuiWidgetEguiRenderer {
             GuiShellModal::UpdateNotice => "Update Notice",
             GuiShellModal::About => "About Syncplay",
             GuiShellModal::PlayerSetup => "mpv Setup Required",
+            GuiShellModal::StreamSupport => "Stream Support Required",
         }
     }
 
@@ -2531,6 +2562,41 @@ impl GuiWidgetEguiRenderer {
                 }
                 lines
             }
+            GuiShellModal::StreamSupport => {
+                let mut lines = vec![
+                    state
+                        .stream_helper_issue_title()
+                        .unwrap_or("stream support required")
+                        .to_owned(),
+                    state
+                        .stream_helper_issue_summary()
+                        .unwrap_or(
+                            "This media URL needs additional helper support before mpv can load it.",
+                        )
+                        .to_owned(),
+                ];
+                if let Some(target) = state.stream_helper.target.as_ref() {
+                    lines.push(format!("Target: {target}"));
+                }
+                if let Some(message) = state.stream_helper.message.as_ref() {
+                    lines.push(message.clone());
+                }
+                if state.stream_helper_remediation.active {
+                    if let Some(label) = state.stream_helper_remediation.label.as_ref() {
+                        lines.push(format!("Progress: {label}"));
+                    }
+                    if let Some(detail) = state.stream_helper_remediation.detail.as_ref() {
+                        lines.push(detail.clone());
+                    }
+                }
+                if state.stream_helper.integration_supported {
+                    lines.push(
+                        "Import yt-dlp or Deno to copy existing helper binaries into Syncplay's managed stream-helper directory."
+                            .to_owned(),
+                    );
+                }
+                lines
+            }
         }
     }
 
@@ -2556,6 +2622,20 @@ impl GuiWidgetEguiRenderer {
                 ("shell:modal:player-setup:retry", "Retry mpv"),
                 ("shell:modal:player-setup:open-settings", "Open Settings"),
             ],
+            GuiShellModal::StreamSupport => vec![
+                ("shell:modal:stream-support:install", "Install Helper"),
+                (
+                    "shell:modal:stream-support:import-downloader",
+                    "Import yt-dlp",
+                ),
+                (
+                    "shell:modal:stream-support:import-js-runtime",
+                    "Import Deno",
+                ),
+                ("shell:modal:stream-support:recheck", "Recheck Support"),
+                ("shell:modal:stream-support:retry", "Retry URL"),
+                ("shell:modal:stream-support:open-settings", "Open Settings"),
+            ],
         }
     }
 
@@ -2567,6 +2647,28 @@ impl GuiWidgetEguiRenderer {
             "shell:modal:player-setup:retry" => {
                 state.pending_operation.is_none() && state.player_setup_retry_available()
             }
+            "shell:modal:stream-support:install" => {
+                state.pending_operation.is_none()
+                    && !state.stream_helper_remediation.active
+                    && state.stream_helper.install_supported
+            }
+            "shell:modal:stream-support:import-downloader"
+            | "shell:modal:stream-support:import-js-runtime" => {
+                state.pending_operation.is_none()
+                    && !state.stream_helper_remediation.active
+                    && state.stream_helper.integration_supported
+            }
+            "shell:modal:stream-support:recheck" => {
+                state.pending_operation.is_none() && !state.stream_helper_remediation.active
+            }
+            "shell:modal:stream-support:retry" => {
+                state.pending_operation.is_none()
+                    && !state.stream_helper_remediation.active
+                    && state.stream_helper.retry_available
+            }
+            "shell:modal:stream-support:open-settings" => {
+                state.pending_operation.is_none() && !state.stream_helper_remediation.active
+            }
             _ => true,
         }
     }
@@ -2575,7 +2677,13 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         modal: GuiShellModal,
     ) -> bool {
-        modal != GuiShellModal::PlayerSetup || !state.connect_blocked_by_player_setup_issue()
+        match modal {
+            GuiShellModal::PlayerSetup => !state.connect_blocked_by_player_setup_issue(),
+            GuiShellModal::TlsCertificatePrompt
+            | GuiShellModal::UpdateNotice
+            | GuiShellModal::About
+            | GuiShellModal::StreamSupport => true,
+        }
     }
 
     fn modal_button_actions(

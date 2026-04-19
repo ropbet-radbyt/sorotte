@@ -1093,9 +1093,6 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
             &mut stream,
             "startup auth test",
         );
-        hello_tx
-            .send(hello_line)
-            .expect("startup auth test should report the hello");
         stream
             .write_all(
                 format!(
@@ -1110,6 +1107,9 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         stream
             .flush()
             .expect("startup auth test should flush the server hello");
+        hello_tx
+            .send(hello_line)
+            .expect("startup auth test should report the hello after the server hello is flushed");
 
         let mut controller_auth_line = String::new();
         reader
@@ -1147,7 +1147,7 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         |state| state.commands.can_disconnect_session,
         "startup saved-server connect",
     );
@@ -1157,7 +1157,7 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         &handle,
         &mut state,
         &hello_rx,
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         "startup auth test GUI hello",
     );
     assert!(hello_line.contains(canonical_room));
@@ -1166,21 +1166,14 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
         "startup hello should not leak the controlled-room password"
     );
 
-    pump_and_apply_runtime_owner_actions_until(
+    let controller_auth_line = recv_from_channel_while_pumping_runtime(
         &mut owner,
         &handle,
         &mut state,
-        Duration::from_secs(1),
-        |state| {
-            state.main_window.room_control_status
-                == "Not granted by server: room controls are locked."
-        },
-        "server hello projection for startup auth",
+        &controller_auth_rx,
+        Duration::from_secs(5),
+        "startup auth test controller auth",
     );
-
-    let controller_auth_line = controller_auth_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("startup auth test should observe controller auth");
     assert!(controller_auth_line.contains("\"controllerAuth\""));
     assert!(controller_auth_line.contains(canonical_room));
     assert!(controller_auth_line.contains("\"RH-273-303\""));

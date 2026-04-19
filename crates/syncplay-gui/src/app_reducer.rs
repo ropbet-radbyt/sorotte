@@ -73,6 +73,12 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(snapshot) => {
                 self.apply_gui_player_setup_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(snapshot) => {
+                self.apply_gui_stream_helper_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(snapshot) => {
+                self.apply_gui_stream_helper_remediation_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => {
                 self.apply_gui_interaction_runtime_snapshot(snapshot)
             }
@@ -785,6 +791,14 @@ impl SyncplayGuiShellAppState {
                 self.complete_missing_media_search(found_path)
             }
             GuiShellAction::RetryPlayerLaunch => {
+                self.clear_action_error_and_refresh();
+                true
+            }
+            GuiShellAction::InstallStreamHelper
+            | GuiShellAction::IntegrateStreamHelperDownloader(_)
+            | GuiShellAction::IntegrateStreamHelperJsRuntime(_)
+            | GuiShellAction::RecheckStreamHelper
+            | GuiShellAction::RetryPendingStreamMediaOpen => {
                 self.clear_action_error_and_refresh();
                 true
             }

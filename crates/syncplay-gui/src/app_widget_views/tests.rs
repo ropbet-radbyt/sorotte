@@ -4,7 +4,8 @@ use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
     GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiPlayerSetupIssue,
     GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction, GuiShellModal,
-    GuiShellView, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
+    GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 
@@ -140,6 +141,138 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
             .find("shell:modal:close")
             .expect("first-run player setup modal close button should exist")
             .enabled
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+            GuiStreamHelperRuntimeSnapshot {
+                health: GuiStreamHelperHealth::MissingDownloader,
+                message: Some(
+                    "Extractor-backed page URLs need yt-dlp before mpv can load them.".to_owned(),
+                ),
+                target: Some("https://www.youtube.com/watch?v=UyjIPZfygTk".to_owned()),
+                install_supported: false,
+                integration_supported: true,
+                retry_available: true,
+            },
+        ))
+    );
+
+    let configuration = state.configuration_widget_tree();
+    assert!(configuration.find("config-stream-support").is_some());
+    assert_eq!(
+        configuration
+            .find("config-stream-support:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("missing-downloader")
+    );
+    assert!(
+        !configuration
+            .find("config-stream-support:install")
+            .expect("install button should exist")
+            .enabled
+    );
+    assert!(
+        configuration
+            .find("config-stream-support:import-downloader")
+            .expect("import downloader button should exist")
+            .enabled
+    );
+    assert!(
+        configuration
+            .find("config-stream-support:import-js-runtime")
+            .expect("import js runtime button should exist")
+            .enabled
+    );
+    assert_eq!(
+        configuration
+            .find("config-stream-support:target")
+            .and_then(|node| node.value.as_deref()),
+        Some("https://www.youtube.com/watch?v=UyjIPZfygTk")
+    );
+
+    let shell = state.shell_widget_tree();
+    assert_eq!(
+        shell
+            .find("menus:dialog:stream-support")
+            .and_then(|node| node.value.as_deref()),
+        Some("yes")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+            GuiStreamHelperRuntimeSnapshot {
+                health: GuiStreamHelperHealth::MissingJsRuntime,
+                message: Some("Import Deno or install the managed runtime.".to_owned()),
+                target: Some("https://www.youtube.com/watch?v=UyjIPZfygTk".to_owned()),
+                install_supported: true,
+                integration_supported: true,
+                retry_available: true,
+            },
+        ))
+    );
+    assert!(state.apply(
+        GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(
+            GuiStreamHelperRemediationRuntimeSnapshot {
+                active: true,
+                label: Some("Downloading yt-dlp".to_owned()),
+                detail: Some("Saving yt-dlp into Syncplay's helper directory.".to_owned()),
+                progress_fraction: 0.25,
+            },
+        )
+    ));
+
+    let configuration = state.configuration_widget_tree();
+    assert_eq!(
+        configuration
+            .find("config-stream-support:remediation")
+            .and_then(|node| node.value.as_deref()),
+        Some("Downloading yt-dlp")
+    );
+    assert_eq!(
+        configuration
+            .find("config-stream-support:remediation-progress")
+            .and_then(|node| node.value.as_deref()),
+        Some("25%")
+    );
+    assert!(
+        !configuration
+            .find("config-stream-support:install")
+            .expect("install button should exist")
+            .enabled
+    );
+
+    let shell = state.shell_widget_tree();
+    assert_eq!(
+        shell
+            .find("shell:stream-helper-remediation-active")
+            .and_then(|node| node.value.as_deref()),
+        Some("yes")
+    );
+    assert_eq!(
+        shell
+            .find("shell:stream-helper-remediation-label")
+            .and_then(|node| node.value.as_deref()),
+        Some("Downloading yt-dlp")
+    );
+    assert_eq!(
+        shell
+            .find("shell:stream-helper-remediation-progress")
+            .and_then(|node| node.value.as_deref()),
+        Some("0.250")
     );
 }
 

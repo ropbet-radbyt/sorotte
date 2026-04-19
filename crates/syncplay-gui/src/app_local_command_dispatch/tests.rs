@@ -182,3 +182,24 @@ fn gui_shell_dispatch_plan_emits_playlist_index_errors_locally() {
             if message.contains("Invalid playlist index")
     )));
 }
+
+#[test]
+fn gui_shell_dispatch_plan_routes_stream_helper_import_actions_to_runtime_requests() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::IntegrateStreamHelperDownloader("C:/Tools/yt-dlp.exe".to_owned()),
+            GuiShellAction::IntegrateStreamHelperJsRuntime("C:/Tools/deno.exe".to_owned()),
+        ],
+    );
+
+    assert_eq!(
+        plan.runtime_requests,
+        vec![
+            GuiRuntimeRequest::IntegrateStreamHelperDownloader("C:/Tools/yt-dlp.exe".to_owned()),
+            GuiRuntimeRequest::IntegrateStreamHelperJsRuntime("C:/Tools/deno.exe".to_owned()),
+        ]
+    );
+    assert!(plan.shell_actions.is_empty());
+}

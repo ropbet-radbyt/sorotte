@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use super::super::support::normalized_editable_text;
+use super::GuiStreamTargetKind;
 
 pub(in crate::app) fn browser_is_url(value: &str) -> bool {
     value.contains("://")
@@ -116,6 +117,61 @@ pub(in crate::app) fn browser_uri_is_trusted(
         }
         path.starts_with(&format!("/{required_path_prefix}"))
     })
+}
+
+fn browser_media_url_path_looks_direct(path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    [
+        ".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".mp3", ".aac", ".ogg", ".flac", ".wav",
+        ".m3u8", ".mpd", ".ts",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix))
+}
+
+pub(in crate::app) fn browser_stream_target_kind(
+    value: &str,
+    trust_policy: Option<(bool, &[String])>,
+) -> GuiStreamTargetKind {
+    if !browser_is_url(value) {
+        return GuiStreamTargetKind::LocalPath;
+    }
+
+    if let Some((only_switch_to_trusted_domains, trusted_domains)) = trust_policy
+        && !browser_uri_is_trusted(value, only_switch_to_trusted_domains, trusted_domains)
+    {
+        return GuiStreamTargetKind::UntrustedUrl;
+    }
+
+    let Ok(parsed) = reqwest::Url::parse(value) else {
+        return GuiStreamTargetKind::DirectMediaUrl;
+    };
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return GuiStreamTargetKind::DirectMediaUrl;
+    }
+
+    let host = parsed
+        .host_str()
+        .map(|item| {
+            item.strip_prefix("www.")
+                .unwrap_or(item)
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    let path = parsed.path().to_ascii_lowercase();
+    if (host == "youtube.com"
+        && (matches!(path.as_str(), "/watch" | "/shorts" | "/live")
+            || path.starts_with("/watch/")
+            || path.starts_with("/shorts/")))
+        || host == "youtu.be"
+    {
+        return GuiStreamTargetKind::ExtractorPageUrl;
+    }
+    if browser_media_url_path_looks_direct(&path) {
+        return GuiStreamTargetKind::DirectMediaUrl;
+    }
+    GuiStreamTargetKind::DirectMediaUrl
 }
 
 pub(in crate::app) fn playlist_entries_from_multiline_text(value: &str) -> Vec<String> {

@@ -107,6 +107,12 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
     player
         .set_option_string("drag-and-drop", "no")
         .map_err(|error| format!("failed to disable mpv drag-and-drop handling: {error}"))?;
+    if let Err(error) = player.set_option_string("ytdl", "yes") {
+        eprintln!(
+            "warning: failed to enable mpv yt-dlp hook via GUI JSON IPC: {}",
+            error
+        );
+    }
 
     if (ui_settings.chat_output_enabled || ui_settings.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path()
@@ -124,6 +130,8 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
 
 pub(crate) fn spawn_managed_mpv_and_attach(
     config: &ManagedMpvLaunchConfig,
+    path_prefixes: &[PathBuf],
+    downloader_path: Option<&Path>,
 ) -> Result<(MpvAdapter, ManagedMpvProcessGuard), String> {
     if managed_mpv_launch_program_requires_existing_file_legacy_compatible(&config.program)
         && !config.program.is_file()
@@ -142,7 +150,20 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     if let Some(parent) = config.program.parent() {
         command.current_dir(parent);
     }
-    command.args(managed_mpv_launch_args(&ipc_path, &config.extra_args));
+    if !path_prefixes.is_empty() {
+        let mut joined_paths = path_prefixes.to_vec();
+        if let Some(existing_path) = env::var_os("PATH") {
+            joined_paths.extend(env::split_paths(&existing_path));
+        }
+        let joined = env::join_paths(joined_paths)
+            .map_err(|error| format!("failed to construct PATH for managed mpv: {error}"))?;
+        command.env("PATH", joined);
+    }
+    command.args(managed_mpv_launch_args(
+        &ipc_path,
+        &config.extra_args,
+        downloader_path,
+    ));
 
     let child = command
         .stdout(Stdio::null())
@@ -169,7 +190,11 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     Ok((adapter, guard))
 }
 
-fn managed_mpv_launch_args(ipc_path: &str, extra_args: &[String]) -> Vec<String> {
+fn managed_mpv_launch_args(
+    ipc_path: &str,
+    extra_args: &[String],
+    downloader_path: Option<&Path>,
+) -> Vec<String> {
     let mut args = vec![
         "--pause".to_owned(),
         "--force-window=yes".to_owned(),
@@ -177,8 +202,15 @@ fn managed_mpv_launch_args(ipc_path: &str, extra_args: &[String]) -> Vec<String>
         "--keep-open=always".to_owned(),
         "--keep-open-pause=yes".to_owned(),
         "--drag-and-drop=no".to_owned(),
-        format!("--input-ipc-server={ipc_path}"),
+        "--ytdl=yes".to_owned(),
     ];
+    if let Some(path) = downloader_path {
+        args.push(format!(
+            "--script-opts-append=ytdl_hook-ytdl_path={}",
+            path.display()
+        ));
+    }
+    args.push(format!("--input-ipc-server={ipc_path}"));
     args.extend(extra_args.iter().cloned());
     args
 }
@@ -647,6 +679,7 @@ mod tests {
         let args = managed_mpv_launch_args(
             r"\\.\pipe\syncplay-rust-gui-mpv-test",
             &["--profile=syncplay".to_owned()],
+            None,
         );
 
         assert_eq!(
@@ -658,6 +691,32 @@ mod tests {
                 "--keep-open=always".to_owned(),
                 "--keep-open-pause=yes".to_owned(),
                 "--drag-and-drop=no".to_owned(),
+                "--ytdl=yes".to_owned(),
+                r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
+                "--profile=syncplay".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_mpv_launch_args_include_explicit_ytdl_path_before_extra_args() {
+        let args = managed_mpv_launch_args(
+            r"\\.\pipe\syncplay-rust-gui-mpv-test",
+            &["--profile=syncplay".to_owned()],
+            Some(std::path::Path::new("C:/Tools/yt-dlp.exe")),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--pause".to_owned(),
+                "--force-window=yes".to_owned(),
+                "--idle=yes".to_owned(),
+                "--keep-open=always".to_owned(),
+                "--keep-open-pause=yes".to_owned(),
+                "--drag-and-drop=no".to_owned(),
+                "--ytdl=yes".to_owned(),
+                "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
                 r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]

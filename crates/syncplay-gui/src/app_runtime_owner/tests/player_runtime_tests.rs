@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::GuiPendingStreamLoadContext;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
 use syncplay_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 
@@ -107,6 +108,12 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         active_shared_playlist_index: None,
         playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
+        stream_helper_runtime_snapshot: Default::default(),
+        stream_helper_remediation_runtime_snapshot: Default::default(),
+        pending_stream_retry_target: None,
+        managed_stream_helper_refresh_required: false,
+        pending_stream_feedback: std::collections::VecDeque::new(),
+        pending_stream_load_context: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state =
@@ -319,6 +326,68 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failure() {
+    #[derive(Default)]
+    struct FailingLoadPlayerAdapter {
+        outcomes: Vec<syncplay_player_api::PlayerMediaLoadOutcome>,
+    }
+
+    impl PlayerAdapter for FailingLoadPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "failing-load"
+        }
+
+        fn take_media_load_outcome(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerMediaLoadOutcome> {
+            self.outcomes.pop()
+        }
+    }
+
+    let requested_target = "https://cdn.example.com/broken.m3u8".to_owned();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(FailingLoadPlayerAdapter {
+        outcomes: vec![syncplay_player_api::PlayerMediaLoadOutcome::failure(
+            requested_target.clone(),
+            None,
+            syncplay_player_api::PlayerMediaLoadFailureKind::Unknown,
+            "network timeout",
+        )],
+    })));
+    owner.player_local_file =
+        Some(GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path(&requested_target));
+    owner.player_local_file_placeholder = true;
+    owner.pending_stream_retry_target = Some(requested_target.clone());
+    owner.pending_stream_load_context = Some(GuiPendingStreamLoadContext {
+        requested_target: requested_target.clone(),
+        user_initiated: true,
+    });
+
+    owner.refresh_player_state_impl();
+
+    assert_eq!(owner.player_local_file, None);
+    assert!(!owner.player_local_file_placeholder);
+    assert_eq!(owner.player_position_seconds, None);
+    assert_eq!(
+        owner.pending_stream_retry_target.as_deref(),
+        Some(requested_target.as_str())
+    );
+    assert_eq!(owner.pending_stream_load_context, None);
+    assert_eq!(owner.pending_stream_feedback.len(), 1);
+    let actions = owner
+        .pending_stream_feedback
+        .front()
+        .expect("media-load failure should queue GUI feedback");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message.contains("network timeout")
+    )));
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_reports_a_new_file() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
@@ -495,6 +564,12 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         active_shared_playlist_index: None,
         playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
+        stream_helper_runtime_snapshot: Default::default(),
+        stream_helper_remediation_runtime_snapshot: Default::default(),
+        pending_stream_retry_target: None,
+        managed_stream_helper_refresh_required: false,
+        pending_stream_feedback: std::collections::VecDeque::new(),
+        pending_stream_load_context: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -939,6 +1014,12 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         active_shared_playlist_index: None,
         playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,
+        stream_helper_runtime_snapshot: Default::default(),
+        stream_helper_remediation_runtime_snapshot: Default::default(),
+        pending_stream_retry_target: None,
+        managed_stream_helper_refresh_required: false,
+        pending_stream_feedback: std::collections::VecDeque::new(),
+        pending_stream_load_context: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

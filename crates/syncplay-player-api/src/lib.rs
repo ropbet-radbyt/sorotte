@@ -64,6 +64,59 @@ impl PlayerPlaybackTelemetryUpdate {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerMediaLoadFailureKind {
+    LoadAborted,
+    FormatUnsupported,
+    Network,
+    HelperMissing,
+    HelperBroken,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerMediaLoadFailure {
+    pub kind: PlayerMediaLoadFailureKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerMediaLoadOutcome {
+    pub requested_target: String,
+    pub loaded_target: Option<String>,
+    pub failure: Option<PlayerMediaLoadFailure>,
+}
+
+impl PlayerMediaLoadOutcome {
+    pub fn success(requested_target: impl Into<String>, loaded_target: Option<String>) -> Self {
+        Self {
+            requested_target: requested_target.into(),
+            loaded_target,
+            failure: None,
+        }
+    }
+
+    pub fn failure(
+        requested_target: impl Into<String>,
+        loaded_target: Option<String>,
+        kind: PlayerMediaLoadFailureKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            requested_target: requested_target.into(),
+            loaded_target,
+            failure: Some(PlayerMediaLoadFailure {
+                kind,
+                message: message.into(),
+            }),
+        }
+    }
+
+    pub fn succeeded(&self) -> bool {
+        self.failure.is_none()
+    }
+}
+
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
     fn open_file(&mut self, _path: &str) -> Result<(), PlayerError> {
@@ -144,6 +197,9 @@ pub trait PlayerAdapter: Send + Sync {
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
         None
     }
+    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        None
+    }
     fn take_pending_chat_request(&mut self) -> Option<String> {
         None
     }
@@ -151,7 +207,10 @@ pub trait PlayerAdapter: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
+    use super::{
+        LocalFileUpdate, PlayerAdapter, PlayerError, PlayerMediaLoadFailureKind,
+        PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
+    };
 
     struct DummyPlayer;
 
@@ -259,6 +318,7 @@ mod tests {
         assert_eq!(player.name(), "dummy");
         assert_eq!(player.take_local_file_update(), None);
         assert_eq!(player.take_playback_telemetry_update(), None);
+        assert_eq!(player.take_media_load_outcome(), None);
         assert_eq!(player.take_pending_chat_request(), None);
     }
 
@@ -285,5 +345,29 @@ mod tests {
         assert_eq!(update.paused, Some(true));
         assert_eq!(update.position_seconds, Some(12.5));
         assert_eq!(update.playback_rate, Some(0.95));
+    }
+
+    #[test]
+    fn media_load_outcome_builders_capture_success_and_failure() {
+        let success =
+            PlayerMediaLoadOutcome::success("requested.mp4", Some("loaded.mp4".to_owned()));
+        assert!(success.succeeded());
+        assert_eq!(success.loaded_target.as_deref(), Some("loaded.mp4"));
+
+        let failure = PlayerMediaLoadOutcome::failure(
+            "requested.mp4",
+            None,
+            PlayerMediaLoadFailureKind::HelperMissing,
+            "yt-dlp was not found",
+        );
+        assert!(!failure.succeeded());
+        assert_eq!(
+            failure.failure.as_ref().map(|item| item.kind),
+            Some(PlayerMediaLoadFailureKind::HelperMissing)
+        );
+        assert_eq!(
+            failure.failure.as_ref().map(|item| item.message.as_str()),
+            Some("yt-dlp was not found")
+        );
     }
 }

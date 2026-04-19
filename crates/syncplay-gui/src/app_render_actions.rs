@@ -199,6 +199,15 @@ impl GuiWidgetEguiRenderer {
             "config-player-setup:retry" | "main-window:player-setup:retry" => {
                 vec![GuiShellAction::RetryPlayerLaunch]
             }
+            "config-stream-support:import-downloader" => {
+                Self::actions_for_stream_helper_import_downloader(state)
+            }
+            "config-stream-support:import-js-runtime" => {
+                Self::actions_for_stream_helper_import_js_runtime(state)
+            }
+            "config-stream-support:install" => vec![GuiShellAction::InstallStreamHelper],
+            "config-stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
+            "config-stream-support:retry" => vec![GuiShellAction::RetryPendingStreamMediaOpen],
             "main-window:player-setup:open-settings" => vec![
                 GuiShellAction::SwitchView(GuiShellView::Configuration),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
@@ -423,6 +432,22 @@ impl GuiWidgetEguiRenderer {
                 GuiShellAction::SwitchView(GuiShellView::Configuration),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
             ],
+            "shell:modal:stream-support:install" => vec![GuiShellAction::InstallStreamHelper],
+            "shell:modal:stream-support:import-downloader" => {
+                Self::actions_for_stream_helper_import_downloader(state)
+            }
+            "shell:modal:stream-support:import-js-runtime" => {
+                Self::actions_for_stream_helper_import_js_runtime(state)
+            }
+            "shell:modal:stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
+            "shell:modal:stream-support:retry" => {
+                vec![GuiShellAction::RetryPendingStreamMediaOpen]
+            }
+            "shell:modal:stream-support:open-settings" => vec![
+                GuiShellAction::CloseModal,
+                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+            ],
             "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
             "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],
             "shell:modal:tls:help" => vec![GuiShellAction::AnnounceHelpRequested],
@@ -517,6 +542,24 @@ impl GuiWidgetEguiRenderer {
             GuiShellAction::AnnounceSystemChatEvent(message),
             GuiShellAction::RetryPlayerLaunch,
         ]
+    }
+
+    fn actions_for_stream_helper_import_downloader(
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_stream_helper_downloader_executable(state) else {
+            return Vec::new();
+        };
+        vec![GuiShellAction::IntegrateStreamHelperDownloader(path)]
+    }
+
+    fn actions_for_stream_helper_import_js_runtime(
+        state: &SyncplayGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_stream_helper_js_runtime_executable(state) else {
+            return Vec::new();
+        };
+        vec![GuiShellAction::IntegrateStreamHelperJsRuntime(path)]
     }
 
     pub(super) fn is_open_media_file_menu_action(

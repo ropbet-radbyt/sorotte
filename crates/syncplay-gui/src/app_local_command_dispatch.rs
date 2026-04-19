@@ -38,6 +38,26 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);
                 }
+                GuiShellAction::InstallStreamHelper => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::InstallStreamHelper);
+                }
+                GuiShellAction::IntegrateStreamHelperDownloader(path) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::IntegrateStreamHelperDownloader(path));
+                }
+                GuiShellAction::IntegrateStreamHelperJsRuntime(path) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::IntegrateStreamHelperJsRuntime(path));
+                }
+                GuiShellAction::RecheckStreamHelper => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RecheckStreamHelper);
+                }
+                GuiShellAction::RetryPendingStreamMediaOpen => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RetryPendingStreamMediaOpen);
+                }
                 other => plan.shell_actions.push(other),
             }
         }

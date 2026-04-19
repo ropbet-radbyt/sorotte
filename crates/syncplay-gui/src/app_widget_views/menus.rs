@@ -35,6 +35,17 @@ impl SyncplayGuiShellAppState {
                 self.player_setup_issue.is_some(),
                 self.open_modal == Some(GuiShellModal::PlayerSetup),
             ),
+            GuiWidgetNode::leaf(
+                "menus:dialog:stream-support",
+                "Stream Support",
+                GuiWidgetKind::Status,
+                Some(
+                    bool_label(self.stream_helper.health != GuiStreamHelperHealth::Healthy)
+                        .to_owned(),
+                ),
+                self.stream_helper.health != GuiStreamHelperHealth::Healthy,
+                self.open_modal == Some(GuiShellModal::StreamSupport),
+            ),
         ];
         if let Some(message) = self.update_check.message.as_ref() {
             dialog_children.push(GuiWidgetNode::leaf(
@@ -180,6 +191,44 @@ impl SyncplayGuiShellAppState {
                         "Connect Status",
                         GuiWidgetKind::Status,
                         self.player_setup_connect_block_message(),
+                        true,
+                        false,
+                    ));
+                }
+            }
+            GuiShellModal::StreamSupport => {
+                children.push(GuiWidgetNode::leaf(
+                    "shell:modal:stream-support:summary",
+                    "Summary",
+                    GuiWidgetKind::Status,
+                    self.stream_helper_issue_summary().map(str::to_owned),
+                    true,
+                    false,
+                ));
+                children.push(GuiWidgetNode::leaf(
+                    "shell:modal:stream-support:health",
+                    "Health",
+                    GuiWidgetKind::Status,
+                    Some(self.stream_helper.health.label().to_owned()),
+                    true,
+                    false,
+                ));
+                if let Some(target) = self.stream_helper.target.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:stream-support:target",
+                        "Target",
+                        GuiWidgetKind::Status,
+                        Some(target.clone()),
+                        true,
+                        false,
+                    ));
+                }
+                if let Some(message) = self.stream_helper.message.as_ref() {
+                    children.push(GuiWidgetNode::leaf(
+                        "shell:modal:stream-support:detail",
+                        "Detail",
+                        GuiWidgetKind::Status,
+                        Some(message.clone()),
                         true,
                         false,
                     ));

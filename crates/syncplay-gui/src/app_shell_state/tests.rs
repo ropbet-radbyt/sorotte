@@ -8,13 +8,13 @@ use super::{
     GuiInteractionRuntimeSnapshot, GuiMainWindowTab, GuiMainWindowUserEditSessionRuntimeSnapshot,
     GuiPendingOperationKind, GuiPublicServerEditSessionRuntimeSnapshot,
     GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
-    GuiShellView, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
+    GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
     GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,
     MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
     MainWindowShellState, MediaSearchDirectoryRow, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuDialogShellState,
     PublicServerBrowserRow, PublicServerBrowserShellState, SyncplayGuiRuntimeSnapshot,
-    SyncplayGuiShellAppState, load_playlist_entries_from_path,
+    SyncplayGuiShellAppState, browser_stream_target_kind, load_playlist_entries_from_path,
     playlist_entries_from_multiline_text, save_playlist_entries_to_path,
 };
 
@@ -49,6 +49,43 @@ fn configuration_surface_defaults_to_first_run_mode() {
     assert_eq!(state.chat.chat_input_position_label, "Top");
     assert_eq!(state.chat.chat_output_mode_label, "Chatroom");
     assert_eq!(state.connection.public_server_count, 0);
+}
+
+#[test]
+fn browser_stream_target_kind_classifies_direct_and_extractor_urls() {
+    assert_eq!(
+        browser_stream_target_kind("C:/Media/movie.mkv", None),
+        GuiStreamTargetKind::LocalPath
+    );
+    assert_eq!(
+        browser_stream_target_kind("https://cdn.example.com/live/stream.m3u8", None),
+        GuiStreamTargetKind::DirectMediaUrl
+    );
+    assert_eq!(
+        browser_stream_target_kind("https://www.youtube.com/watch?v=UyjIPZfygTk", None),
+        GuiStreamTargetKind::ExtractorPageUrl
+    );
+    assert_eq!(
+        browser_stream_target_kind("https://youtu.be/UyjIPZfygTk", None),
+        GuiStreamTargetKind::ExtractorPageUrl
+    );
+    assert_eq!(
+        browser_stream_target_kind("https://cdn.example.com/watch/trailer.m3u8", None),
+        GuiStreamTargetKind::DirectMediaUrl
+    );
+    assert_eq!(
+        browser_stream_target_kind("https://cdn.example.com/shorts/trailer.mp4", None),
+        GuiStreamTargetKind::DirectMediaUrl
+    );
+
+    let trusted_domains = vec!["example.org".to_owned()];
+    assert_eq!(
+        browser_stream_target_kind(
+            "https://www.youtube.com/watch?v=UyjIPZfygTk",
+            Some((true, trusted_domains.as_slice())),
+        ),
+        GuiStreamTargetKind::UntrustedUrl
+    );
 }
 
 #[test]

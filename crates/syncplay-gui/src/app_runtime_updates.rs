@@ -9,9 +9,10 @@ use super::shell_state::{
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
     GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
     GuiRoomHistoryEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiShellView,
-    GuiTextEditSessionState, GuiTransientNotification, GuiTransientNotificationLevel,
-    GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
-    SyncplayGuiShellAppState,
+    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTextEditSessionState, GuiTransientNotification,
+    GuiTransientNotificationLevel, GuiUrlEditSessionState, GuiValidationIssue,
+    MenuDialogRuntimeSnapshot, MenuDialogShellState, SyncplayGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 
@@ -217,6 +218,95 @@ impl SyncplayGuiShellAppState {
         {
             self.open_modal = Some(super::GuiShellModal::PlayerSetup);
         }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_gui_stream_helper_runtime_snapshot(
+        &mut self,
+        snapshot: GuiStreamHelperRuntimeSnapshot,
+    ) -> bool {
+        let message = match snapshot.message {
+            Some(message) => {
+                let Some(message) = normalized_editable_text(&message) else {
+                    return self.record_action_error(
+                        "GUI stream-helper runtime snapshots cannot contain an empty issue message.",
+                    );
+                };
+                Some(message)
+            }
+            None => None,
+        };
+        if snapshot.health != GuiStreamHelperHealth::Healthy && message.is_none() {
+            return self.record_action_error(
+                "GUI stream-helper runtime snapshots must include a non-empty message while unhealthy.",
+            );
+        }
+
+        self.stream_helper.health = snapshot.health;
+        self.stream_helper.message = message;
+        self.stream_helper.target = snapshot
+            .target
+            .and_then(|target| normalized_editable_text(&target));
+        self.stream_helper.install_supported = snapshot.install_supported;
+        self.stream_helper.integration_supported = snapshot.integration_supported;
+        self.stream_helper.retry_available = snapshot.retry_available;
+        if self.stream_helper.health == GuiStreamHelperHealth::Healthy
+            && self.open_modal == Some(super::GuiShellModal::StreamSupport)
+        {
+            self.open_modal = None;
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_gui_stream_helper_remediation_runtime_snapshot(
+        &mut self,
+        snapshot: GuiStreamHelperRemediationRuntimeSnapshot,
+    ) -> bool {
+        let label = match snapshot.label {
+            Some(label) => {
+                let Some(label) = normalized_editable_text(&label) else {
+                    return self.record_action_error(
+                        "GUI stream-helper remediation snapshots cannot contain an empty label.",
+                    );
+                };
+                Some(label)
+            }
+            None => None,
+        };
+        let detail = match snapshot.detail {
+            Some(detail) => {
+                let Some(detail) = normalized_editable_text(&detail) else {
+                    return self.record_action_error(
+                        "GUI stream-helper remediation snapshots cannot contain an empty detail.",
+                    );
+                };
+                Some(detail)
+            }
+            None => None,
+        };
+        if snapshot.active && label.is_none() {
+            return self.record_action_error(
+                "GUI stream-helper remediation snapshots must include a non-empty label while active.",
+            );
+        }
+        if !snapshot.progress_fraction.is_finite()
+            || !(0.0..=1.0).contains(&snapshot.progress_fraction)
+        {
+            return self.record_action_error(
+                "GUI stream-helper remediation snapshots must use a progress value between 0.0 and 1.0.",
+            );
+        }
+
+        self.stream_helper_remediation.active = snapshot.active;
+        self.stream_helper_remediation.label = label.filter(|_| snapshot.active);
+        self.stream_helper_remediation.detail = detail.filter(|_| snapshot.active);
+        self.stream_helper_remediation.progress_fraction = if snapshot.active {
+            snapshot.progress_fraction
+        } else {
+            0.0
+        };
         self.clear_action_error_and_refresh();
         true
     }

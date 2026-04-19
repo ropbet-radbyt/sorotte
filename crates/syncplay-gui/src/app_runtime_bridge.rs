@@ -586,6 +586,11 @@ pub(super) enum GuiRuntimeRequest {
         selected_index: Option<usize>,
     },
     RetryPlayerLaunch,
+    InstallStreamHelper,
+    IntegrateStreamHelperDownloader(String),
+    IntegrateStreamHelperJsRuntime(String),
+    RecheckStreamHelper,
+    RetryPendingStreamMediaOpen,
     SendChatMessage(String),
     SeekOffset(f64),
     SeekToPosition(f64),
@@ -622,6 +627,30 @@ impl GuiRuntimeRequest {
             Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
+            Self::InstallStreamHelper => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing stream helper support for extractor-backed URLs.".to_owned(),
+            }],
+            Self::IntegrateStreamHelperDownloader(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing yt-dlp into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::IntegrateStreamHelperJsRuntime(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing Deno into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::RecheckStreamHelper => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking stream helper support for the current URL.".to_owned(),
+            }],
+            Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying the pending media URL open request.".to_owned(),
             }],
             Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
@@ -685,6 +714,30 @@ impl GuiRuntimeRequest {
             Self::RetryPlayerLaunch => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying mpv launch with the current player settings.".to_owned(),
+            }],
+            Self::InstallStreamHelper => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing stream helper support for extractor-backed URLs.".to_owned(),
+            }],
+            Self::IntegrateStreamHelperDownloader(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing yt-dlp into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::IntegrateStreamHelperJsRuntime(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing Deno into Syncplay's managed stream helper.".to_owned(),
+                }]
+            }
+            Self::RecheckStreamHelper => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking stream helper support for the current URL.".to_owned(),
+            }],
+            Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Retrying the pending media URL open request.".to_owned(),
             }],
             Self::UndoSeek => vec![
                 GuiShellAction::PushTransientNotification {

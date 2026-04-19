@@ -7,7 +7,8 @@ use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
     GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiMainWindowTab, GuiShellAction, GuiShellModal,
-    GuiShellView, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
+    GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, SyncplayGuiShellAppState,
 };
 use crate::app::testing::support::{TEST_USERNAME, browser_runtime_user};
@@ -245,6 +246,27 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
             ("shell:modal:player-setup:open-settings", "Open Settings"),
         ]
     );
+    assert_eq!(
+        GuiWidgetEguiRenderer::modal_window_title(GuiShellModal::StreamSupport),
+        "Stream Support Required"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::modal_actions(GuiShellModal::StreamSupport),
+        vec![
+            ("shell:modal:stream-support:install", "Install Helper"),
+            (
+                "shell:modal:stream-support:import-downloader",
+                "Import yt-dlp"
+            ),
+            (
+                "shell:modal:stream-support:import-js-runtime",
+                "Import Deno"
+            ),
+            ("shell:modal:stream-support:recheck", "Recheck Support"),
+            ("shell:modal:stream-support:retry", "Retry URL"),
+            ("shell:modal:stream-support:open-settings", "Open Settings"),
+        ]
+    );
 }
 
 #[test]
@@ -319,6 +341,45 @@ fn gui_widget_egui_renderer_reads_media_file_pick_override_paths_from_lookup() {
             "SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS" => Some("   |  ".to_owned()),
             _ => None,
         }),
+        None
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_reads_stream_helper_override_paths_from_lookup() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::stream_helper_downloader_override_path_from_lookup(
+            &|name| match name {
+                "SYNCPLAY_GUI_TEST_STREAM_HELPER_DOWNLOADER_PATH" => {
+                    Some("  C:/Tools/yt-dlp.exe  ".to_owned())
+                }
+                _ => None,
+            }
+        ),
+        Some("C:/Tools/yt-dlp.exe".to_owned())
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::stream_helper_js_runtime_override_path_from_lookup(
+            &|name| match name {
+                "SYNCPLAY_GUI_TEST_STREAM_HELPER_JS_RUNTIME_PATH" => {
+                    Some("  C:/Tools/deno.exe  ".to_owned())
+                }
+                _ => None,
+            }
+        ),
+        Some("C:/Tools/deno.exe".to_owned())
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::stream_helper_downloader_override_path_from_lookup(&|_name| None),
+        None
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::stream_helper_js_runtime_override_path_from_lookup(
+            &|name| match name {
+                "SYNCPLAY_GUI_TEST_STREAM_HELPER_JS_RUNTIME_PATH" => Some("   ".to_owned()),
+                _ => None,
+            }
+        ),
         None
     );
 }
@@ -662,6 +723,86 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
             GuiShellAction::CancelMediaUrlEdit,
         ])
     );
+}
+
+#[test]
+fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_actions() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+            GuiStreamHelperRuntimeSnapshot {
+                health: GuiStreamHelperHealth::MissingJsRuntime,
+                message: Some("Import Deno or install the managed runtime.".to_owned()),
+                target: Some("https://www.youtube.com/watch?v=UyjIPZfygTk".to_owned()),
+                install_supported: true,
+                integration_supported: true,
+                retry_available: true,
+            },
+        ))
+    );
+    let configuration_tree = state.configuration_widget_tree();
+    let install_button = configuration_tree
+        .find("config-stream-support:install")
+        .expect("stream-support install button should exist");
+    let recheck_button = configuration_tree
+        .find("config-stream-support:recheck")
+        .expect("stream-support recheck button should exist");
+    let retry_button = configuration_tree
+        .find("config-stream-support:retry")
+        .expect("stream-support retry button should exist");
+
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, install_button),
+        vec![GuiShellAction::InstallStreamHelper]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, recheck_button),
+        vec![GuiShellAction::RecheckStreamHelper]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, retry_button),
+        vec![GuiShellAction::RetryPendingStreamMediaOpen]
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_disables_stream_support_modal_actions_during_remediation() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+            GuiStreamHelperRuntimeSnapshot {
+                health: GuiStreamHelperHealth::MissingJsRuntime,
+                message: Some("Import Deno or install the managed runtime.".to_owned()),
+                target: Some("https://www.youtube.com/watch?v=UyjIPZfygTk".to_owned()),
+                install_supported: true,
+                integration_supported: true,
+                retry_available: true,
+            },
+        ))
+    );
+    assert!(state.apply(
+        GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(
+            GuiStreamHelperRemediationRuntimeSnapshot {
+                active: true,
+                label: Some("Downloading yt-dlp".to_owned()),
+                detail: Some("Saving yt-dlp into Syncplay's helper directory.".to_owned()),
+                progress_fraction: 0.25,
+            },
+        )
+    ));
+
+    assert!(!GuiWidgetEguiRenderer::modal_action_enabled(
+        &state,
+        "shell:modal:stream-support:install"
+    ));
+    assert!(!GuiWidgetEguiRenderer::modal_action_enabled(
+        &state,
+        "shell:modal:stream-support:retry"
+    ));
 }
 
 #[test]

@@ -7,7 +7,8 @@ use std::{
 
 use serde_json::{Value, json};
 use syncplay_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerError, PlayerMediaLoadFailureKind,
+    PlayerMediaLoadOutcome, PlayerPlaybackTelemetryUpdate,
 };
 
 const MPV_COMMAND_SET_PROPERTY: &str = "set_property";
@@ -48,6 +49,9 @@ const MPV_PROPERTY_FILE_SIZE: &str = "file-size";
 const MPV_RESPONSE_SUCCESS: &str = "success";
 const MPV_EVENT_PROPERTY_CHANGE: &str = "property-change";
 const MPV_EVENT_CLIENT_MESSAGE: &str = "client-message";
+const MPV_EVENT_FILE_LOADED: &str = "file-loaded";
+const MPV_EVENT_END_FILE: &str = "end-file";
+const MPV_END_FILE_REASON_ERROR: &str = "error";
 const MPV_OBS_PATH_ID: u64 = 1;
 const MPV_OBS_DURATION_ID: u64 = 2;
 const MPV_OBS_FILE_SIZE_ID: u64 = 3;
@@ -282,7 +286,9 @@ pub struct MpvAdapter {
     current_path: Option<String>,
     pending_local_file_update: Option<LocalFileUpdate>,
     pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
+    pending_media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
     pending_chat_requests: VecDeque<String>,
+    pending_load_request: Option<String>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     observed_state: MpvObservedState,
     observers_registered: bool,
@@ -322,7 +328,12 @@ impl fmt::Debug for MpvAdapter {
                 "pending_playback_telemetry_update",
                 &self.pending_playback_telemetry_update,
             )
+            .field(
+                "pending_media_load_outcomes",
+                &self.pending_media_load_outcomes,
+            )
             .field("pending_chat_requests", &self.pending_chat_requests)
+            .field("pending_load_request", &self.pending_load_request)
             .field(
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
@@ -376,7 +387,9 @@ impl Default for MpvAdapter {
             current_path: None,
             pending_local_file_update: None,
             pending_playback_telemetry_update: None,
+            pending_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
+            pending_load_request: None,
             last_polled_local_file_update: None,
             observed_state: MpvObservedState::default(),
             observers_registered: false,
@@ -699,7 +712,7 @@ impl MpvAdapter {
     fn poll_ipc_local_file_update_if_attached(&mut self) {
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
-        if self.pending_local_file_update.is_some() {
+        if self.pending_local_file_update.is_some() || self.pending_load_request.is_some() {
             return;
         }
 
@@ -812,6 +825,14 @@ impl MpvAdapter {
         };
 
         match event_name {
+            MPV_EVENT_FILE_LOADED => {
+                self.handle_file_loaded_event();
+                return;
+            }
+            MPV_EVENT_END_FILE => {
+                self.handle_end_file_event(event);
+                return;
+            }
             MPV_EVENT_PROPERTY_CHANGE => {}
             MPV_EVENT_CLIENT_MESSAGE => {
                 self.handle_client_message_event(event);
@@ -886,6 +907,75 @@ impl MpvAdapter {
         }
     }
 
+    fn handle_file_loaded_event(&mut self) {
+        let requested_target = self
+            .pending_load_request
+            .take()
+            .or_else(|| self.current_path.clone());
+        let Some(requested_target) = requested_target else {
+            return;
+        };
+
+        let loaded_update = self
+            .ipc_client
+            .as_mut()
+            .and_then(|ipc_client| Self::poll_local_file_update_from_mpv(ipc_client).ok())
+            .flatten()
+            .unwrap_or_else(|| Self::local_file_update_for_path(&requested_target));
+        self.current_path = loaded_update.path.clone();
+        self.observed_state.path = loaded_update.path.clone();
+        self.observed_state.duration_seconds = loaded_update.duration_seconds;
+        self.observed_state.size_bytes = loaded_update.size_bytes;
+        self.record_local_file_update_if_changed(loaded_update.clone());
+        self.pending_media_load_outcomes
+            .push_back(PlayerMediaLoadOutcome::success(
+                requested_target,
+                loaded_update.path.clone(),
+            ));
+    }
+
+    fn handle_end_file_event(&mut self, event: &Value) {
+        let reason = event
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if reason != MPV_END_FILE_REASON_ERROR {
+            return;
+        }
+
+        let Some(requested_target) = self.pending_load_request.take() else {
+            return;
+        };
+        let message = event
+            .get("file_error")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                event.get("error").and_then(|value| match value {
+                    Value::String(message) => Some(message.trim().to_owned()),
+                    Value::Number(number) => Some(format!("mpv error code {number}")),
+                    _ => None,
+                })
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "mpv failed to load the requested media.".to_owned());
+        self.current_path = None;
+        self.pending_local_file_update = None;
+        self.last_polled_local_file_update = None;
+        self.observed_state.path = None;
+        self.observed_state.duration_seconds = None;
+        self.observed_state.size_bytes = None;
+        self.pending_media_load_outcomes
+            .push_back(PlayerMediaLoadOutcome::failure(
+                requested_target,
+                None,
+                Self::media_load_failure_kind_from_message(&message),
+                message,
+            ));
+    }
+
     fn handle_client_message_event(&mut self, event: &Value) {
         let Some(args) = event.get("args").and_then(Value::as_array) else {
             return;
@@ -903,6 +993,9 @@ impl MpvAdapter {
     }
 
     fn maybe_emit_local_file_update_from_observed_state(&mut self) {
+        if self.pending_load_request.is_some() {
+            return;
+        }
         let Some(path) = self.observed_state.path.as_deref() else {
             return;
         };
@@ -948,6 +1041,41 @@ impl MpvAdapter {
             .with_path(path.to_owned())
     }
 
+    fn media_load_failure_kind_from_message(message: &str) -> PlayerMediaLoadFailureKind {
+        let normalized = message.to_ascii_lowercase();
+        if normalized.contains("failed to recognize file format")
+            || normalized.contains("unsupported")
+        {
+            return PlayerMediaLoadFailureKind::FormatUnsupported;
+        }
+        if (normalized.contains("yt-dlp")
+            || normalized.contains("youtube-dl")
+            || normalized.contains("deno"))
+            && (normalized.contains("not found")
+                || normalized.contains("not enough permissions")
+                || normalized.contains("no such file"))
+        {
+            return PlayerMediaLoadFailureKind::HelperMissing;
+        }
+        if normalized.contains("yt-dlp")
+            || normalized.contains("youtube-dl")
+            || normalized.contains("deno")
+        {
+            return PlayerMediaLoadFailureKind::HelperBroken;
+        }
+        if normalized.contains("connection")
+            || normalized.contains("network")
+            || normalized.contains("http")
+            || normalized.contains("timed out")
+        {
+            return PlayerMediaLoadFailureKind::Network;
+        }
+        if normalized.contains("aborted") || normalized.contains("interrupt") {
+            return PlayerMediaLoadFailureKind::LoadAborted;
+        }
+        PlayerMediaLoadFailureKind::Unknown
+    }
+
     #[cfg(test)]
     fn with_test_transport(transport: impl MpvJsonIpcTransport + 'static) -> Self {
         Self {
@@ -978,8 +1106,19 @@ impl PlayerAdapter for MpvAdapter {
             path,
             MPV_LOADFILE_REPLACE
         ]))?;
-        self.current_path = Some(path.to_owned());
-        self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
+        if self.ipc_client.is_some() {
+            self.current_path = Some(path.to_owned());
+            self.pending_load_request = Some(path.to_owned());
+            self.pending_local_file_update = None;
+            self.observed_state.path = None;
+            self.observed_state.duration_seconds = None;
+            self.observed_state.size_bytes = None;
+        } else {
+            self.current_path = Some(path.to_owned());
+            self.pending_local_file_update = Some(Self::local_file_update_for_path(path));
+            self.pending_media_load_outcomes
+                .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
+        }
         Ok(())
     }
 
@@ -1205,6 +1344,12 @@ impl PlayerAdapter for MpvAdapter {
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
         self.pending_playback_telemetry_update.take()
+    }
+
+    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
+        self.ensure_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.pending_media_load_outcomes.pop_front()
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
@@ -1479,7 +1624,10 @@ mod tests {
         io::Write,
         sync::{Arc, Mutex},
     };
-    use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerPlaybackTelemetryUpdate};
+    use syncplay_player_api::{
+        LocalFileUpdate, PlayerAdapter, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+        PlayerPlaybackTelemetryUpdate,
+    };
 
     #[test]
     fn stores_opened_file_path() {
@@ -2150,6 +2298,63 @@ mod tests {
                 "request_id": 1
             })
         );
+    }
+
+    #[test]
+    fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() {
+        let (transport, _state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"event":"property-change","name":"path","data":"movie.mkv"}"#,
+            r#"{"event":"property-change","name":"duration","data":24.5}"#,
+            r#"{"event":"file-loaded"}"#,
+            r#"{"request_id":2,"error":"success","data":"movie.mkv"}"#,
+            r#"{"request_id":3,"error":"success","data":24.5}"#,
+            r#"{"request_id":4,"error":"success","data":1000}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .open_file("movie.mkv")
+            .expect("attached mpv transport should accept loadfile");
+
+        let outcome = adapter
+            .take_media_load_outcome()
+            .expect("file-loaded should emit a success outcome");
+        assert_eq!(
+            outcome,
+            PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
+        );
+        let update = adapter
+            .take_local_file_update()
+            .expect("file-loaded should emit a local file update");
+        assert_eq!(update.path.as_deref(), Some("movie.mkv"));
+    }
+
+    #[test]
+    fn attached_open_file_emits_failure_outcome_when_end_file_reports_error() {
+        let (transport, _state) = fake_transport_with_reads(&[
+            r#"{"request_id":1,"error":"success"}"#,
+            r#"{"event":"end-file","reason":"error","file_error":"Failed to recognize file format."}"#,
+        ]);
+        let mut adapter = MpvAdapter::with_test_transport(transport);
+
+        adapter
+            .open_file("https://www.youtube.com/watch?v=test")
+            .expect("attached mpv transport should accept loadfile");
+
+        let outcome = adapter
+            .take_media_load_outcome()
+            .expect("end-file error should emit a failure outcome");
+        assert_eq!(
+            outcome.requested_target,
+            "https://www.youtube.com/watch?v=test"
+        );
+        assert_eq!(outcome.loaded_target, None);
+        assert_eq!(
+            outcome.failure.as_ref().map(|failure| failure.kind),
+            Some(PlayerMediaLoadFailureKind::FormatUnsupported)
+        );
+        assert_eq!(adapter.take_local_file_update(), None);
     }
 
     #[test]

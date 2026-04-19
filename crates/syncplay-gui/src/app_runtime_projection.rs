@@ -205,6 +205,37 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
+        let desired_stream_helper = self.stream_helper_runtime_snapshot.clone();
+        if state.stream_helper.health != desired_stream_helper.health
+            || state.stream_helper.message != desired_stream_helper.message
+            || state.stream_helper.target != desired_stream_helper.target
+            || state.stream_helper.install_supported != desired_stream_helper.install_supported
+            || state.stream_helper.integration_supported
+                != desired_stream_helper.integration_supported
+            || state.stream_helper.retry_available != desired_stream_helper.retry_available
+        {
+            handle.push_action(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                desired_stream_helper,
+            ));
+        }
+
+        let desired_stream_helper_remediation =
+            self.stream_helper_remediation_runtime_snapshot.clone();
+        if state.stream_helper_remediation.active != desired_stream_helper_remediation.active
+            || state.stream_helper_remediation.label != desired_stream_helper_remediation.label
+            || state.stream_helper_remediation.detail != desired_stream_helper_remediation.detail
+            || (state.stream_helper_remediation.progress_fraction
+                - desired_stream_helper_remediation.progress_fraction)
+                .abs()
+                > f32::EPSILON
+        {
+            handle.push_action(
+                GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(
+                    desired_stream_helper_remediation,
+                ),
+            );
+        }
+
         let playback_section = state
             .menus
             .sections

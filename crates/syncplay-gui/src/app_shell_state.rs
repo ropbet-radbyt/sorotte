@@ -35,9 +35,10 @@ mod main_window;
 
 pub(super) use self::browser_support::{
     browser_domain_from_url, browser_format_duration_label, browser_format_size_label,
-    browser_is_url, browser_uri_is_trusted, load_playlist_entries_from_path,
-    playlist_entries_from_multiline_text, playlist_entries_multiline_text,
-    save_playlist_entries_to_path, shuffle_playlist_entries_in_place,
+    browser_is_url, browser_stream_target_kind, browser_uri_is_trusted,
+    load_playlist_entries_from_path, playlist_entries_from_multiline_text,
+    playlist_entries_multiline_text, save_playlist_entries_to_path,
+    shuffle_playlist_entries_in_place,
 };
 pub(super) use self::configuration_dialog::{
     FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
@@ -114,6 +115,22 @@ pub(super) struct GuiMediaIndexRuntimeSnapshot {
     pub(super) message: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiStreamHelperRemediationState {
+    pub(super) active: bool,
+    pub(super) label: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) progress_fraction: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiStreamHelperRemediationRuntimeSnapshot {
+    pub(super) active: bool,
+    pub(super) label: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) progress_fraction: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiPlayerSetupIssueKind {
     NotConfigured,
@@ -146,6 +163,85 @@ pub(super) struct GuiPlayerSetupIssue {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct GuiPlayerSetupRuntimeSnapshot {
     pub(super) issue: Option<GuiPlayerSetupIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiStreamTargetKind {
+    LocalPath,
+    DirectMediaUrl,
+    ExtractorPageUrl,
+    UntrustedUrl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiStreamHelperHealth {
+    Healthy,
+    MissingDownloader,
+    MissingJsRuntime,
+    Stale,
+    Broken,
+    UnsupportedPlatform,
+    ExternalPlayerUnmanaged,
+}
+
+impl GuiStreamHelperHealth {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::MissingDownloader => "missing-downloader",
+            Self::MissingJsRuntime => "missing-js-runtime",
+            Self::Stale => "stale",
+            Self::Broken => "broken",
+            Self::UnsupportedPlatform => "unsupported-platform",
+            Self::ExternalPlayerUnmanaged => "external-player-unmanaged",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiStreamHelperState {
+    pub(super) health: GuiStreamHelperHealth,
+    pub(super) message: Option<String>,
+    pub(super) target: Option<String>,
+    pub(super) install_supported: bool,
+    pub(super) integration_supported: bool,
+    pub(super) retry_available: bool,
+}
+
+impl Default for GuiStreamHelperState {
+    fn default() -> Self {
+        Self {
+            health: GuiStreamHelperHealth::Healthy,
+            message: None,
+            target: None,
+            install_supported: false,
+            integration_supported: false,
+            retry_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiStreamHelperRuntimeSnapshot {
+    pub(super) health: GuiStreamHelperHealth,
+    pub(super) message: Option<String>,
+    pub(super) target: Option<String>,
+    pub(super) install_supported: bool,
+    pub(super) integration_supported: bool,
+    pub(super) retry_available: bool,
+}
+
+impl Default for GuiStreamHelperRuntimeSnapshot {
+    fn default() -> Self {
+        Self {
+            health: GuiStreamHelperHealth::Healthy,
+            message: None,
+            target: None,
+            install_supported: false,
+            integration_supported: false,
+            retry_available: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +332,8 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) playlist_shuffle_nonce: u64,
     pub(super) media_index_status: GuiMediaIndexStatusState,
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,
+    pub(super) stream_helper: GuiStreamHelperState,
+    pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
     pub(super) saved_configuration: StoredClientSettingsMvp,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
     pub(super) main_window: MainWindowShellState,
@@ -686,6 +784,7 @@ pub(super) enum GuiShellModal {
     UpdateNotice,
     TlsCertificatePrompt,
     PlayerSetup,
+    StreamSupport,
 }
 
 impl GuiShellModal {
@@ -695,6 +794,7 @@ impl GuiShellModal {
             Self::UpdateNotice => "update-notice",
             Self::TlsCertificatePrompt => "tls-certificate-prompt",
             Self::PlayerSetup => "player-setup",
+            Self::StreamSupport => "stream-support",
         }
     }
 }
@@ -726,6 +826,8 @@ pub(super) enum GuiShellAction {
     ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot),
     ApplyGuiMediaIndexRuntimeSnapshot(GuiMediaIndexRuntimeSnapshot),
     ApplyGuiPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
+    ApplyGuiStreamHelperRuntimeSnapshot(GuiStreamHelperRuntimeSnapshot),
+    ApplyGuiStreamHelperRemediationRuntimeSnapshot(GuiStreamHelperRemediationRuntimeSnapshot),
     ApplyGuiInteractionRuntimeSnapshot(GuiInteractionRuntimeSnapshot),
     ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot),
     ApplyGuiConfigurationDraftRuntimeSnapshot(GuiConfigurationDraftRuntimeSnapshot),
@@ -891,6 +993,11 @@ pub(super) enum GuiShellAction {
     BeginMissingMediaSearch,
     CompleteMissingMediaSearch(Option<String>),
     RetryPlayerLaunch,
+    InstallStreamHelper,
+    IntegrateStreamHelperDownloader(String),
+    IntegrateStreamHelperJsRuntime(String),
+    RecheckStreamHelper,
+    RetryPendingStreamMediaOpen,
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,
     ToggleMainWindowHideEmptyRooms,
