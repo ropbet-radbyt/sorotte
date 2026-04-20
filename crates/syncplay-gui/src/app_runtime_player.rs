@@ -1244,7 +1244,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .unwrap_or_else(|| path.display().to_string())
     }
 
-    fn media_index_progress_message(progress: &GuiAttachedMediaSearchBuildProgress) -> String {
+    pub(super) fn media_index_progress_message(
+        progress: &GuiAttachedMediaSearchBuildProgress,
+    ) -> String {
         let root_label = Self::media_index_progress_root_label(&progress.current_root_path);
         let current_root = progress
             .completed_roots

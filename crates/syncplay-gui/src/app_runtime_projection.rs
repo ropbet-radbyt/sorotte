@@ -5,14 +5,41 @@ use syncplay_player_api::LocalFileUpdate;
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::GuiPlayerLaunchRuntimeState;
 use super::super::shell_state::{
-    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiPlayerSetupIssue,
-    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction,
-    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    MenuSectionShellState, SyncplayGuiShellAppState,
+    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
+    GuiPendingOperationKind, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
+    GuiPlayerSetupRuntimeSnapshot, GuiShellAction, MainWindowRuntimeSnapshot,
+    MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, MenuSectionShellState,
+    SyncplayGuiShellAppState,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn projected_media_index_runtime_snapshot(&self) -> GuiMediaIndexRuntimeSnapshot {
+        if let Some(progress) = self.attached_media_search_progress.as_ref() {
+            return GuiMediaIndexRuntimeSnapshot {
+                active: true,
+                message: Some(Self::media_index_progress_message(progress)),
+            };
+        }
+        if let Some(progress) =
+            self.pending_attached_media_resolution
+                .as_ref()
+                .and_then(|pending| {
+                    pending
+                        .latest_progress
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone()
+                })
+        {
+            return GuiMediaIndexRuntimeSnapshot {
+                active: true,
+                message: Some(Self::media_index_progress_message(&progress)),
+            };
+        }
+        self.media_index_runtime_snapshot_impl()
+    }
+
     fn menu_action_enabled(
         section: Option<&MenuSectionShellState>,
         action_label: &str,
@@ -134,6 +161,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         state: &SyncplayGuiShellAppState,
     ) {
+        let pre_poll_media_index_status = self.projected_media_index_runtime_snapshot();
         let _ = self.poll_attached_media_search_index_build(
             Self::automatic_media_search_retry_interval(state),
         );
@@ -189,7 +217,16 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
-        let desired_media_index_status = self.media_index_runtime_snapshot_impl();
+        let mut desired_media_index_status = self.projected_media_index_runtime_snapshot();
+        if !desired_media_index_status.active
+            && pre_poll_media_index_status.active
+            && state
+                .pending_operation
+                .as_ref()
+                .is_some_and(|pending| pending.kind == GuiPendingOperationKind::SearchMissingMedia)
+        {
+            desired_media_index_status = pre_poll_media_index_status;
+        }
         if state.media_index_status.active != desired_media_index_status.active
             || state.media_index_status.message != desired_media_index_status.message
         {

@@ -3954,8 +3954,11 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
 fn gui_persisted_config_runtime_owner_projects_media_index_progress_into_shell_state() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.main_window.shared_playlist_enabled = true;
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(None));
     owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
@@ -4077,6 +4080,53 @@ fn gui_persisted_config_runtime_owner_coalesces_latest_media_index_progress_per_
 
     assert!(!state.media_index_status.active);
     assert_eq!(state.media_index_status.message, None);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_media_index_status_when_pending_search_build_completes_before_projection()
+ {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        GuiAttachedMediaSearchBuildProgress {
+            total_roots: 1,
+            completed_roots: 0,
+            current_root_key: "c:/media".to_owned(),
+            current_root_path: PathBuf::from("C:/Media"),
+            scanned_directories: 4,
+            indexed_files: 32,
+        },
+    )));
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        job_id: GuiMediaIndexJobId(4),
+        roots: vec!["c:/media".to_owned()],
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        latest_progress,
+        result_rx,
+    });
+    state.pending_operation = Some(crate::app::GuiPendingOperationState {
+        kind: GuiPendingOperationKind::SearchMissingMedia,
+    });
+    result_tx
+        .send(GuiAttachedMediaSearchBuildStatus::Completed(Vec::new()))
+        .expect("media-index completion fixture should be queued");
+
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let actions = handle.drain_actions();
+
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(snapshot)
+                if snapshot.active
+                    && snapshot.message.as_deref()
+                        == Some("Indexing media 1/1: 4 folders, 32 files (Media)")
+        )),
+        "pending missing-media searches should still surface the last background index status even when the build completes before projection"
+    );
 }
 
 #[test]
