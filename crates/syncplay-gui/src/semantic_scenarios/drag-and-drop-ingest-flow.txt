@@ -1,10 +1,10 @@
 # Desktop drag-and-drop ingest routing
 setting	shared-playlist-enabled	true
 setting	player-path	C:/Windows/System32/notepad.exe
-assert-value	shell:active-view	configuration
+assert-value	shell:active-view	setup
 drop-media-files	window	C:/Drops/window-open.mkv
 assert-selected	main-window-root	true
-assert-value	shell:active-view	main-window
+assert-value	shell:active-view	room
 assert-value	shell:notification:0	Shared playlist loaded: 1 entries.
 assert-label	main-window:playlist:0	window-open.mkv
 clear-notifications

@@ -161,6 +161,10 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
         ..StoredClientSettingsMvp::default()
     });
     state.main_window.playback.can_toggle_pause = true;
+    state.main_window.playlist = vec![MainWindowPlaylistRow {
+        label: "episode1.mkv".to_owned(),
+        is_selected: false,
+    }];
     state.refresh_validation();
 
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
@@ -233,6 +237,10 @@ fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions(
 
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    state.main_window.playlist = vec![MainWindowPlaylistRow {
+        label: "episode1.mkv".to_owned(),
+        is_selected: false,
+    }];
 
     assert!(!state.apply(GuiShellAction::CompleteConfigurationSave(
         StoredClientSettingsMvp::default(),
@@ -404,7 +412,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert_eq!(state.saved_configuration, replacement);
     assert!(!state.commands.can_reset_configuration);
     assert!(state.main_window.chat.is_empty());
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert!(state.menus.tls_prompt_expected);
     assert!(state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
@@ -457,7 +465,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         ..StoredClientSettingsMvp::default()
     });
-    state.active_view = GuiShellView::PublicServers;
+    state.active_view = GuiShellView::Setup;
     state.last_media_dialog_directory = Some("D:/Dialogs".to_owned());
 
     assert!(state.apply(GuiShellAction::BeginClearGuiData));
@@ -469,7 +477,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
 
     assert!(state.apply(GuiShellAction::CancelClearGuiData));
     assert_eq!(state.pending_operation, None);
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.notifications.last().map(|item| item.message.as_str()),
         Some("Clear GUI data canceled.")
@@ -479,7 +487,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
     assert!(state.apply(GuiShellAction::CompleteClearGuiData));
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.saved_configuration,
         StoredClientSettingsMvp::default()

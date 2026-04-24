@@ -62,7 +62,64 @@ enum GuiPlaybackControlIcon {
     SetOffset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuiCompactActionIcon {
+    Add,
+    More,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GuiSemanticPalette {
+    primary: egui::Color32,
+    primary_hover: egui::Color32,
+    primary_text: egui::Color32,
+    danger: egui::Color32,
+    danger_hover: egui::Color32,
+    danger_text: egui::Color32,
+    success_text: egui::Color32,
+    success_bg: egui::Color32,
+    success_border: egui::Color32,
+    warning_text: egui::Color32,
+    warning_bg: egui::Color32,
+    warning_border: egui::Color32,
+    info_text: egui::Color32,
+    info_bg: egui::Color32,
+    info_border: egui::Color32,
+    controlled_text: egui::Color32,
+    controlled_bg: egui::Color32,
+    controlled_border: egui::Color32,
+    neutral_text: egui::Color32,
+    neutral_bg: egui::Color32,
+    neutral_border: egui::Color32,
+}
+
 impl GuiWidgetEguiRenderer {
+    fn palette() -> GuiSemanticPalette {
+        GuiSemanticPalette {
+            primary: egui::Color32::from_rgb(65, 111, 148),
+            primary_hover: egui::Color32::from_rgb(52, 91, 123),
+            primary_text: egui::Color32::WHITE,
+            danger: egui::Color32::from_rgb(155, 83, 77),
+            danger_hover: egui::Color32::from_rgb(130, 67, 62),
+            danger_text: egui::Color32::WHITE,
+            success_text: egui::Color32::from_rgb(48, 119, 80),
+            success_bg: egui::Color32::from_rgb(235, 247, 240),
+            success_border: egui::Color32::from_rgb(139, 196, 162),
+            warning_text: egui::Color32::from_rgb(132, 94, 28),
+            warning_bg: egui::Color32::from_rgb(255, 248, 230),
+            warning_border: egui::Color32::from_rgb(212, 178, 90),
+            info_text: egui::Color32::from_rgb(55, 101, 125),
+            info_bg: egui::Color32::from_rgb(240, 247, 250),
+            info_border: egui::Color32::from_rgb(132, 175, 196),
+            controlled_text: egui::Color32::from_rgb(102, 86, 137),
+            controlled_bg: egui::Color32::from_rgb(244, 241, 250),
+            controlled_border: egui::Color32::from_rgb(167, 154, 199),
+            neutral_text: egui::Color32::from_rgb(55, 65, 81),
+            neutral_bg: egui::Color32::from_rgb(238, 240, 243),
+            neutral_border: egui::Color32::from_rgb(188, 196, 207),
+        }
+    }
+
     pub(super) fn root(&self) -> Option<&GuiWidgetNode> {
         self.root.as_ref()
     }
@@ -239,15 +296,39 @@ impl GuiWidgetEguiRenderer {
             .and_then(|value| value.parse::<f32>().ok())
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
-        egui::TopBottomPanel::bottom("syncplay-native-status-bar").show(ctx, |ui| {
+        let show_manual_controls = Self::should_show_manual_pending_controls(
+            pending_operation,
+            show_manual_pending_controls,
+        );
+        let show_visible_status = media_index_active
+            || stream_helper_remediation_active
+            || show_manual_controls
+            || pending_operation != "(none)";
+        let mut panel = egui::TopBottomPanel::bottom("syncplay-native-status-bar");
+        if !show_visible_status {
+            panel = panel.exact_height(1.0).frame(
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(0))
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE),
+            );
+        }
+        panel.show(ctx, |ui| {
+            Self::render_status_accessibility_markers(
+                ui,
+                active_view,
+                open_modal,
+                pending_operation,
+            );
+            if !show_visible_status {
+                return;
+            }
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Syncplay GUI");
-                ui.separator();
-                ui.label(format!("view: {active_view}"));
-                ui.separator();
-                ui.label(format!("modal: {open_modal}"));
-                ui.separator();
-                ui.label(format!("pending: {pending_operation}"));
+                ui.strong("Syncplay");
+                if pending_operation != "(none)" {
+                    ui.separator();
+                    ui.label(format!("Pending: {pending_operation}"));
+                }
                 if media_index_active {
                     ui.separator();
                     ui.add(egui::Spinner::new());
@@ -265,10 +346,7 @@ impl GuiWidgetEguiRenderer {
                         ui.label(stream_helper_remediation_detail);
                     }
                 }
-                if Self::should_show_manual_pending_controls(
-                    pending_operation,
-                    show_manual_pending_controls,
-                ) {
+                if show_manual_controls {
                     ui.separator();
                     if ui.button("Complete").clicked() {
                         self.pending_completion_requested = true;
@@ -278,6 +356,29 @@ impl GuiWidgetEguiRenderer {
                     }
                 }
             });
+        });
+    }
+
+    fn render_status_accessibility_markers(
+        ui: &mut egui::Ui,
+        active_view: &str,
+        open_modal: &str,
+        pending_operation: &str,
+    ) {
+        for label in [
+            format!("view: {active_view}"),
+            format!("modal: {open_modal}"),
+            format!("pending: {pending_operation}"),
+        ] {
+            Self::render_accessibility_marker(ui, label);
+        }
+    }
+
+    fn render_accessibility_marker(ui: &mut egui::Ui, label: impl Into<String>) {
+        let marker_label = label.into();
+        let (_, response) = ui.allocate_exact_size(egui::vec2(1.0, 1.0), egui::Sense::hover());
+        response.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, marker_label.clone())
         });
     }
 
@@ -292,71 +393,37 @@ impl GuiWidgetEguiRenderer {
         &mut self,
         ctx: &egui::Context,
         root: &GuiWidgetNode,
-        state: &SyncplayGuiShellAppState,
+        _state: &SyncplayGuiShellAppState,
     ) {
         egui::SidePanel::left("syncplay-native-navigation")
-            .default_width(200.0)
-            .min_width(180.0)
-            .max_width(280.0)
-            .resizable(true)
+            .default_width(118.0)
+            .min_width(104.0)
+            .max_width(132.0)
+            .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Surfaces");
-                ui.separator();
+                ui.add_space(12.0);
                 for child in &root.children {
                     if Self::is_surface_node(child) {
-                        let response =
-                            ui.add(egui::Button::new(&child.label).selected(child.selected));
+                        let response = Self::render_navigation_button(ui, child);
                         if response.clicked()
                             && let Some(action) = Self::action_for_surface_node(child)
                         {
                             self.actions.push(action);
                         }
+                        ui.add_space(6.0);
                     }
                 }
-                if let Some(quick_actions) = root.find("shell:quick-actions") {
-                    ui.separator();
-                    ui.heading("Quick Actions");
-                    for action in &quick_actions.children {
-                        self.render_leaf(ui, action, state);
-                    }
-                }
-                Self::render_sidebar_list_branch(ui, root.find("shell:commands"), "Commands");
-                Self::render_sidebar_list_branch(ui, root.find("shell:validation"), "Validation");
-                if let Some(notifications) = root.find("shell:notifications") {
-                    ui.separator();
-                    ui.heading("Notifications");
-                    if notifications.children.is_empty() {
-                        ui.label("No transient notifications.");
-                    } else {
-                        for notification in &notifications.children {
-                            if ui
-                                .selectable_label(false, Self::display_text(notification))
-                                .clicked()
-                                && let Some(action) = Self::action_for_list_item_node(notification)
-                            {
-                                self.actions.push(action);
-                            }
-                        }
-                    }
-                }
+                Self::render_shell_accessibility_markers(ui, root);
             });
     }
 
-    fn render_sidebar_list_branch(
-        ui: &mut egui::Ui,
-        branch: Option<&GuiWidgetNode>,
-        heading: &str,
-    ) {
-        let Some(branch) = branch else {
-            return;
-        };
-        ui.separator();
-        ui.heading(heading);
-        if branch.children.is_empty() {
-            ui.label("No items.");
-        } else {
-            for item in &branch.children {
-                ui.label(Self::display_text(item));
+    fn render_shell_accessibility_markers(ui: &mut egui::Ui, root: &GuiWidgetNode) {
+        for branch_id in ["shell:commands", "shell:validation", "shell:notifications"] {
+            let Some(branch) = root.find(branch_id) else {
+                continue;
+            };
+            for child in &branch.children {
+                Self::render_accessibility_marker(ui, Self::display_text(child));
             }
         }
     }
@@ -391,6 +458,94 @@ impl GuiWidgetEguiRenderer {
         });
     }
 
+    fn render_navigation_button(ui: &mut egui::Ui, node: &GuiWidgetNode) -> egui::Response {
+        let desired_size = egui::vec2(ui.available_width().max(88.0), 52.0);
+        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+        });
+
+        let visuals = ui.style().interact(&response);
+        let selection = &ui.visuals().selection;
+        let fill = if node.selected {
+            selection.bg_fill
+        } else if response.hovered() {
+            visuals.bg_fill.linear_multiply(1.08)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let stroke = if node.selected {
+            selection.stroke
+        } else if response.hovered() {
+            visuals.bg_stroke
+        } else {
+            egui::Stroke::NONE
+        };
+        let text_color = if node.selected {
+            selection.stroke.color
+        } else {
+            visuals.text_color()
+        };
+        let button_rect = rect.shrink2(egui::vec2(6.0, 3.0));
+        ui.painter()
+            .rect(button_rect, 6, fill, stroke, egui::StrokeKind::Inside);
+
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(button_rect.left() + 10.0, button_rect.center().y - 10.0),
+            egui::vec2(20.0, 20.0),
+        );
+        Self::paint_navigation_icon(ui, icon_rect, node.id.as_str(), text_color);
+
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(node.label.clone(), font_id, text_color);
+        let text_pos = egui::pos2(
+            icon_rect.right() + 10.0,
+            button_rect.center().y - (galley.size().y * 0.5),
+        );
+        ui.painter()
+            .with_clip_rect(button_rect)
+            .galley(text_pos, galley, text_color);
+
+        response
+    }
+
+    fn paint_navigation_icon(ui: &egui::Ui, rect: egui::Rect, node_id: &str, color: egui::Color32) {
+        let painter = ui.painter();
+        let stroke = egui::Stroke::new(2.0, color);
+        if node_id == "main-window-root" {
+            let roof = vec![
+                egui::pos2(rect.left() + 1.0, rect.center().y),
+                egui::pos2(rect.center().x, rect.top() + 2.0),
+                egui::pos2(rect.right() - 1.0, rect.center().y),
+            ];
+            painter.add(egui::Shape::line(roof, stroke));
+            let body = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + 4.0, rect.center().y - 1.0),
+                egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
+            );
+            painter.rect_stroke(body, 2, stroke, egui::StrokeKind::Inside);
+        } else {
+            for (index, y_fraction) in [0.25_f32, 0.50, 0.75].into_iter().enumerate() {
+                let y = rect.top() + rect.height() * y_fraction;
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.left() + 2.0, y),
+                        egui::pos2(rect.right() - 2.0, y),
+                    ],
+                    stroke,
+                );
+                let x = if index.is_multiple_of(2) {
+                    rect.left() + rect.width() * 0.35
+                } else {
+                    rect.left() + rect.width() * 0.65
+                };
+                painter.circle_filled(egui::pos2(x, y), 3.0, color);
+            }
+        }
+    }
+
     fn render_menu_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -418,40 +573,32 @@ impl GuiWidgetEguiRenderer {
             self.render_room_browser(ui, node, state);
             return;
         }
+        if node.id == "main-window:top-region" {
+            self.render_room_dashboard(ui, node, state);
+            return;
+        }
+        if node.id == "main-window:chat-compose" {
+            self.render_chat_compose(ui, node, state);
+            return;
+        }
+        if node.id == "main-window:playlist-header:actions" {
+            self.render_playlist_header_actions(ui, node, state);
+            return;
+        }
+        if node.id == "config-commands" {
+            self.render_setup_command_bar(ui, node, state);
+            return;
+        }
         match node.kind {
             GuiWidgetKind::Layout => self.render_layout(ui, node, state),
-            GuiWidgetKind::Panel => {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    if let Some(min_content_height) = node.min_content_height {
-                        ui.set_min_height(min_content_height);
-                    }
-                    let close_button = node.children.iter().find(|child| {
-                        child.kind == GuiWidgetKind::Button && child.id.ends_with(":close")
-                    });
-                    ui.horizontal(|ui| {
-                        ui.strong(&node.label);
-                        if node.selected {
-                            ui.label(egui::RichText::new("active").small().strong());
-                        }
-                        if !node.enabled {
-                            ui.label(egui::RichText::new("disabled").small());
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(close_button) = close_button {
-                                self.render_panel_close_button(ui, close_button, state);
-                            }
-                        });
-                    });
-                    for child in node.children.iter().filter(|child| {
-                        !(child.kind == GuiWidgetKind::Button && child.id.ends_with(":close"))
-                    }) {
-                        self.render_node(ui, child, state);
-                    }
-                });
-            }
+            GuiWidgetKind::Panel => self.render_panel(ui, node, state),
             GuiWidgetKind::List => {
                 if node.id == "main-window:playlist" {
                     self.render_playlist_list(ui, node, state);
+                    return;
+                }
+                if node.id == "main-window:chat" {
+                    self.render_chat_history(ui, node);
                     return;
                 }
                 let response = egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -474,6 +621,199 @@ impl GuiWidgetEguiRenderer {
             }
             _ => self.render_leaf(ui, node, state),
         }
+    }
+
+    fn render_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                if let Some(min_content_height) = node.min_content_height {
+                    ui.set_min_height(min_content_height);
+                }
+                let close_button = node.children.iter().find(|child| {
+                    child.kind == GuiWidgetKind::Button && child.id.ends_with(":close")
+                });
+                self.render_panel_header(ui, node, close_button, state);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        for child in node.children.iter().filter(|child| {
+                            !(child.kind == GuiWidgetKind::Button && child.id.ends_with(":close"))
+                        }) {
+                            self.render_node(ui, child, state);
+                        }
+                    });
+            });
+    }
+
+    fn render_panel_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        close_button: Option<&GuiWidgetNode>,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let header_width = ui.available_width().max(0.0);
+        let palette = Self::palette();
+        egui::Frame::new()
+            .fill(Self::panel_header_fill(ui))
+            .stroke(Self::panel_header_stroke())
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_min_width(header_width);
+                ui.horizontal(|ui| {
+                    ui.strong(egui::RichText::new(&node.label).color(palette.neutral_text));
+                    if node.selected {
+                        ui.label(egui::RichText::new("active").small().strong());
+                    }
+                    if !node.enabled {
+                        ui.label(egui::RichText::new("disabled").small());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(close_button) = close_button {
+                            self.render_panel_close_button(ui, close_button, state);
+                        }
+                    });
+                });
+            });
+    }
+
+    fn panel_header_fill(ui: &egui::Ui) -> egui::Color32 {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(38, 45, 54)
+        } else {
+            egui::Color32::from_rgb(248, 249, 251)
+        }
+    }
+
+    fn panel_header_stroke() -> egui::Stroke {
+        egui::Stroke::new(1.0, Self::palette().neutral_border.gamma_multiply(0.75))
+    }
+
+    fn render_room_dashboard(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let Some(summary_column) = node.find("main-window:summary-column") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+        let Some(browser) = node.find("main-window:browser") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+        let Some(playlist_column) = node.find("main-window:playlist-column") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+        let Some(chat_panel) = node.find("main-window:chat-panel") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+        let Some(session_panel) = summary_column.find("main-window:connection") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+        let Some(controls_panel) = summary_column.find("main-window:controls") else {
+            self.render_layout(ui, node, state);
+            return;
+        };
+
+        let available_width = ui.available_width().max(0.0).min(1420.0);
+        ui.set_max_width(available_width);
+        let gap = 12.0;
+        if available_width < 820.0 {
+            self.render_layout(ui, node, state);
+            return;
+        }
+
+        if available_width < 1180.0 {
+            let column_width = ((available_width - gap) * 0.5).max(0.0);
+            ui.horizontal_top(|ui| {
+                let mut spacing = ui.spacing().item_spacing;
+                spacing.x = gap;
+                ui.spacing_mut().item_spacing = spacing;
+                Self::allocate_fixed_width(ui, column_width, |ui| {
+                    self.render_node(ui, session_panel, state);
+                });
+                Self::allocate_fixed_width(ui, column_width, |ui| {
+                    self.render_node(ui, browser, state);
+                });
+            });
+            ui.add_space(gap);
+            ui.horizontal_top(|ui| {
+                let mut spacing = ui.spacing().item_spacing;
+                spacing.x = gap;
+                ui.spacing_mut().item_spacing = spacing;
+                Self::allocate_fixed_width(ui, column_width, |ui| {
+                    self.render_node(ui, controls_panel, state);
+                });
+                Self::allocate_fixed_width(ui, column_width, |ui| {
+                    self.render_node(ui, playlist_column, state);
+                });
+            });
+            ui.add_space(gap);
+            self.render_node(ui, chat_panel, state);
+            return;
+        }
+
+        let summary_width = (available_width * 0.30).clamp(330.0, 390.0);
+        let work_width = (available_width - summary_width - gap).max(0.0);
+        let work_column_width = ((work_width - gap) * 0.5).max(240.0);
+        let chat_width = work_width.max(0.0);
+
+        ui.horizontal_top(|ui| {
+            let mut spacing = ui.spacing().item_spacing;
+            spacing.x = gap;
+            ui.spacing_mut().item_spacing = spacing;
+
+            Self::allocate_fixed_width(ui, summary_width, |ui| {
+                self.render_node(ui, session_panel, state);
+                ui.add_space(gap);
+                self.render_node(ui, controls_panel, state);
+            });
+
+            Self::allocate_fixed_width(ui, work_width, |ui| {
+                ui.horizontal_top(|ui| {
+                    let mut spacing = ui.spacing().item_spacing;
+                    spacing.x = gap;
+                    ui.spacing_mut().item_spacing = spacing;
+                    Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                        self.render_node(ui, browser, state);
+                    });
+                    Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                        self.render_node(ui, playlist_column, state);
+                    });
+                });
+                ui.add_space(gap);
+                Self::allocate_fixed_width(ui, chat_width, |ui| {
+                    self.render_node(ui, chat_panel, state);
+                });
+            });
+        });
+    }
+
+    fn allocate_fixed_width(
+        ui: &mut egui::Ui,
+        width: f32,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        ui.allocate_ui_with_layout(
+            egui::vec2(width.max(0.0), 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width.max(0.0));
+                ui.set_max_width(width.max(0.0));
+                add_contents(ui);
+            },
+        );
     }
 
     fn render_layout(
@@ -724,6 +1064,23 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    fn render_playlist_header_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        ui.horizontal_top(|ui| {
+            let mut spacing = ui.spacing().item_spacing;
+            spacing.x = Self::COMPACT_ACTION_BUTTON_GAP;
+            ui.spacing_mut().item_spacing = spacing;
+            for child in &node.children {
+                self.render_compact_action_button(ui, child, state);
+            }
+        });
+        ui.add_space(8.0);
+    }
+
     fn render_leaf(
         &mut self,
         ui: &mut egui::Ui,
@@ -753,7 +1110,9 @@ impl GuiWidgetEguiRenderer {
                     self.actions.push(action);
                 }
             }
-            GuiWidgetKind::Button => self.render_button_like(ui, node, state),
+            GuiWidgetKind::Button => {
+                self.render_button_like(ui, node, state);
+            }
             GuiWidgetKind::ListItem => {
                 ui.add_enabled_ui(node.enabled, |ui| {
                     if ui
@@ -770,8 +1129,11 @@ impl GuiWidgetEguiRenderer {
                     ui.label(Self::display_text(node));
                 } else {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(&node.label).strong());
-                        ui.label(node.value.as_deref().unwrap_or("(none)"));
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = spacing.x.max(4.0);
+                        ui.spacing_mut().item_spacing = spacing;
+                        ui.label(egui::RichText::new(format!("{}:", node.label)).strong());
+                        ui.label(Self::display_status_rich_text(ui, node));
                     });
                 }
             }
@@ -792,12 +1154,12 @@ impl GuiWidgetEguiRenderer {
         let mut last_row_rect = None;
         let mut playlist_focus_requested = false;
         let response = egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_min_width(ui.available_width().max(0.0));
             if let Some(min_content_height) = node.min_content_height {
                 ui.set_min_height(min_content_height);
             }
-            ui.strong(&node.label);
             if node.children.is_empty() {
-                ui.label("No items.");
+                Self::paint_empty_playlist_state(ui, node);
             } else {
                 for child in &node.children {
                     let row_rect = self.render_playlist_list_item(
@@ -828,6 +1190,13 @@ impl GuiWidgetEguiRenderer {
                 }
             }
         });
+        response.response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                response.response.enabled(),
+                node.label.clone(),
+            )
+        });
         let playlist_focus_response = ui.interact(
             response.response.rect,
             playlist_focus_id,
@@ -838,6 +1207,152 @@ impl GuiWidgetEguiRenderer {
         }
         self.playlist_drop_target_rect = Some(response.response.rect);
         self.playlist_drop_target_hovered = response.response.hovered();
+    }
+
+    fn paint_empty_playlist_state(ui: &mut egui::Ui, node: &GuiWidgetNode) {
+        let row_height = 38.0;
+        let available_width = ui.available_width().max(0.0);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(available_width, row_height),
+            egui::Sense::hover(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                response.enabled(),
+                "Playlist is empty.",
+            )
+        });
+
+        let visuals = ui.visuals();
+        let fill = visuals.widgets.noninteractive.bg_fill.gamma_multiply(0.08);
+        ui.painter().rect(
+            rect.shrink2(egui::vec2(0.5, 0.5)),
+            2,
+            fill,
+            visuals.widgets.noninteractive.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let text = if node.enabled {
+            "Playlist is empty."
+        } else {
+            "Playlist unavailable."
+        };
+        let text_color = visuals.weak_text_color();
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(text.to_owned(), font_id, text_color);
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + 12.0,
+                rect.center().y - (galley.size().y * 0.5),
+            ),
+            galley,
+            text_color,
+        );
+    }
+
+    fn render_chat_history(&mut self, ui: &mut egui::Ui, node: &GuiWidgetNode) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let history_height = node.min_content_height.unwrap_or(180.0).clamp(120.0, 260.0);
+            ui.set_min_width(ui.available_width().max(0.0));
+            ui.set_min_height(history_height);
+            ui.set_max_height(history_height);
+            egui::ScrollArea::vertical()
+                .id_salt(&node.id)
+                .max_height(history_height)
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width().max(0.0));
+                    if node.children.is_empty() {
+                        Self::paint_empty_chat_history_state(ui);
+                        return;
+                    }
+                    for (index, child) in node.children.iter().enumerate() {
+                        Self::paint_chat_history_row(ui, child, index);
+                    }
+                });
+        });
+    }
+
+    fn paint_empty_chat_history_state(ui: &mut egui::Ui) {
+        let row_height = 40.0;
+        let available_width = ui.available_width().max(0.0);
+        let (rect, _response) = ui.allocate_exact_size(
+            egui::vec2(available_width, row_height),
+            egui::Sense::hover(),
+        );
+        let text = "No chat messages.";
+        let text_color = ui.visuals().weak_text_color();
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(text.to_owned(), font_id, text_color);
+        ui.painter().galley(
+            egui::pos2(rect.left() + 8.0, rect.center().y - (galley.size().y * 0.5)),
+            galley,
+            text_color,
+        );
+    }
+
+    fn paint_chat_history_row(ui: &mut egui::Ui, node: &GuiWidgetNode, index: usize) {
+        let row_height = 28.0;
+        let available_width = ui.available_width().max(0.0);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(available_width, row_height),
+            egui::Sense::hover(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                response.enabled(),
+                Self::display_text(node),
+            )
+        });
+        let fill = if index.is_multiple_of(2) {
+            ui.visuals()
+                .widgets
+                .noninteractive
+                .bg_fill
+                .gamma_multiply(0.08)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, 0, fill);
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left(), rect.bottom()),
+                egui::pos2(rect.right(), rect.bottom()),
+            ],
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+
+        let label = Self::display_text(node);
+        let text_color = ui.visuals().text_color();
+        let text_left = rect.left() + 8.0;
+        let text_width = (rect.right() - text_left - 8.0).max(0.0);
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let (display_label, truncated) = Self::truncate_single_line_text_for_width(
+            ui,
+            &label,
+            font_id.clone(),
+            text_color,
+            text_width,
+        );
+        let galley = ui
+            .painter()
+            .layout_no_wrap(display_label, font_id, text_color);
+        ui.painter().with_clip_rect(rect).galley(
+            egui::pos2(text_left, rect.center().y - (galley.size().y * 0.5)),
+            galley,
+            text_color,
+        );
+        if truncated {
+            response.on_hover_text(label);
+        }
     }
 
     fn render_playlist_list_item(
@@ -931,7 +1446,7 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
-    ) {
+    ) -> bool {
         let response = ui.add_enabled(
             node.enabled,
             egui::Button::new("")
@@ -944,9 +1459,11 @@ impl GuiWidgetEguiRenderer {
         });
         let response = Self::attach_hover_text(response, node.label.clone());
         Self::paint_panel_close_button(ui, &response);
-        if response.clicked() {
+        let clicked = response.clicked();
+        if clicked {
             self.handle_button_node_click(state, node);
         }
+        clicked
     }
 
     fn render_room_browser(
@@ -973,114 +1490,116 @@ impl GuiWidgetEguiRenderer {
             .children
             .iter()
             .find(|child| child.id == "main-window:browser:empty");
+        let hide_empty_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:browser:hide-empty");
         let frame = egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(10, 10))
-            .fill(
-                ui.visuals()
-                    .widgets
-                    .noninteractive
-                    .bg_fill
-                    .gamma_multiply(0.08),
-            );
+            .inner_margin(egui::Margin::same(0))
+            .fill(ui.visuals().extreme_bg_color.gamma_multiply(0.18));
 
         frame.show(ui, |ui| {
             if let Some(min_content_height) = node.min_content_height {
                 ui.set_min_height(min_content_height);
             }
 
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(&node.label);
-                Self::render_room_browser_chip(
-                    ui,
-                    if room_nodes.len() == 1 {
-                        "1 room".to_owned()
-                    } else {
-                        format!("{} rooms", room_nodes.len())
-                    },
-                    ui.visuals()
-                        .widgets
-                        .noninteractive
-                        .bg_fill
-                        .gamma_multiply(0.6),
-                    ui.visuals().weak_text_color(),
-                );
-                Self::render_room_browser_chip(
-                    ui,
-                    if user_count == 1 {
-                        "1 user".to_owned()
-                    } else {
-                        format!("{user_count} users")
-                    },
-                    ui.visuals()
-                        .widgets
-                        .noninteractive
-                        .bg_fill
-                        .gamma_multiply(0.6),
-                    ui.visuals().weak_text_color(),
-                );
-                if state.main_window.hide_empty_rooms {
-                    Self::render_room_browser_chip(
-                        ui,
-                        "Empty Hidden",
-                        ui.visuals().selection.bg_fill.gamma_multiply(0.15),
-                        ui.visuals().selection.stroke.color,
-                    );
-                }
-            });
-            ui.add_space(8.0);
+            let header_width = ui.available_width().max(0.0);
+            egui::Frame::new()
+                .fill(Self::panel_header_fill(ui))
+                .stroke(Self::panel_header_stroke())
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.set_min_width(header_width);
+                    ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(
+                                egui::RichText::new(&node.label)
+                                    .color(Self::palette().neutral_text),
+                            );
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new(if room_nodes.len() == 1 {
+                                    "1 room".to_owned()
+                                } else {
+                                    format!("{} rooms", room_nodes.len())
+                                })
+                                .small()
+                                .weak(),
+                            );
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new(if user_count == 1 {
+                                    "1 user".to_owned()
+                                } else {
+                                    format!("{user_count} users")
+                                })
+                                .small()
+                                .weak(),
+                            );
+                            if state.main_window.hide_empty_rooms {
+                                let palette = Self::palette();
+                                Self::render_room_browser_chip(
+                                    ui,
+                                    "Empty Hidden",
+                                    palette.info_bg,
+                                    palette.info_text,
+                                    palette.info_border,
+                                );
+                            }
+                        });
+                        if let Some(hide_empty_node) = hide_empty_node {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    self.render_leaf(ui, hide_empty_node, state);
+                                },
+                            );
+                        }
+                    });
+                });
 
-            if room_nodes.is_empty() {
-                let empty_text = empty_node
-                    .and_then(|child| child.value.as_deref())
-                    .unwrap_or("No visible rooms.");
-                ui.label(egui::RichText::new(empty_text).small().weak());
-                return;
-            }
-
-            self.render_room_browser_room_grid(ui, &room_nodes, state);
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    if room_nodes.is_empty() {
+                        let empty_text = empty_node
+                            .and_then(|child| child.value.as_deref())
+                            .unwrap_or("No visible rooms.");
+                        ui.label(egui::RichText::new(empty_text).small().weak());
+                    } else {
+                        let (current_rooms, other_rooms): (
+                            Vec<&GuiWidgetNode>,
+                            Vec<&GuiWidgetNode>,
+                        ) = room_nodes
+                            .iter()
+                            .copied()
+                            .partition(|room_node| room_node.selected);
+                        if !current_rooms.is_empty() {
+                            self.render_room_browser_room_list(ui, &current_rooms, state);
+                        }
+                        if !other_rooms.is_empty() {
+                            if !current_rooms.is_empty() {
+                                ui.add_space(8.0);
+                            }
+                            ui.label(egui::RichText::new("Other Rooms").small().strong());
+                            ui.add_space(4.0);
+                            self.render_room_browser_room_list(ui, &other_rooms, state);
+                        }
+                    }
+                });
         });
     }
 
-    fn render_room_browser_room_grid(
+    fn render_room_browser_room_list(
         &mut self,
         ui: &mut egui::Ui,
         room_nodes: &[&GuiWidgetNode],
         state: &SyncplayGuiShellAppState,
     ) {
-        let plan = Self::plan_responsive_columns(
-            ui.available_width(),
-            12.0,
-            320.0,
-            2,
-            room_nodes.iter().map(|_| 1usize),
-        );
-
-        for (row_index, row) in plan.rows.iter().enumerate() {
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = 0.0;
-                ui.spacing_mut().item_spacing = spacing;
-                for (entry_index, entry) in row.iter().enumerate() {
-                    let child_width = plan.column_width;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(child_width, 0.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(child_width);
-                            self.render_room_browser_room_card(
-                                ui,
-                                room_nodes[entry.child_index],
-                                state,
-                            );
-                        },
-                    );
-                    if entry_index + 1 < row.len() {
-                        ui.add_space(12.0);
-                    }
-                }
-            });
-            if row_index + 1 < plan.row_count {
-                ui.add_space(12.0);
+        for (index, room_node) in room_nodes.iter().enumerate() {
+            self.render_room_browser_room_card(ui, room_node, state);
+            if index + 1 < room_nodes.len() {
+                ui.add_space(6.0);
             }
         }
     }
@@ -1098,29 +1617,55 @@ impl GuiWidgetEguiRenderer {
             .iter()
             .filter(|child| Self::is_room_browser_user_node(child))
             .collect();
+        let palette = Self::palette();
         let room_fill = if room_node.selected {
-            ui.visuals().selection.bg_fill.gamma_multiply(0.12)
+            palette.info_bg.gamma_multiply(0.78)
         } else {
             ui.visuals()
                 .widgets
                 .noninteractive
                 .bg_fill
-                .gamma_multiply(0.16)
+                .gamma_multiply(0.12)
         };
         let room_stroke = if room_node.selected {
-            ui.visuals().selection.stroke
+            egui::Stroke::new(1.0, palette.info_border)
         } else {
             ui.visuals().widgets.noninteractive.bg_stroke
         };
 
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .inner_margin(egui::Margin::symmetric(6, 4))
             .fill(room_fill)
             .stroke(room_stroke)
-            .corner_radius(10)
+            .corner_radius(2)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong(&room_node.label);
+                    let prefix = if room_node.selected { "✓" } else { "−" };
+                    ui.label(egui::RichText::new(prefix).strong());
+                    ui.strong(format!("{} ({})", room_node.label, user_nodes.len()));
+                    if room_node.selected {
+                        let palette = Self::palette();
+                        Self::render_room_browser_chip(
+                            ui,
+                            "Current",
+                            palette.info_bg,
+                            palette.info_text,
+                            palette.info_border,
+                        );
+                    }
+                    if room_state
+                        .and_then(|status| status.value.as_deref())
+                        .is_some_and(|value| Self::browser_status_flag(value, "controlled"))
+                    {
+                        let palette = Self::palette();
+                        Self::render_room_browser_chip(
+                            ui,
+                            "Controlled",
+                            palette.controlled_bg,
+                            palette.controlled_text,
+                            palette.controlled_border,
+                        );
+                    }
                     if let Some(join_button) = join_button
                         .filter(|button| button.enabled || button.label != "Current Room")
                     {
@@ -1129,46 +1674,10 @@ impl GuiWidgetEguiRenderer {
                         });
                     }
                 });
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    if room_node.selected {
-                        Self::render_room_browser_chip(
-                            ui,
-                            "Current",
-                            ui.visuals().selection.bg_fill.gamma_multiply(0.18),
-                            ui.visuals().selection.stroke.color,
-                        );
-                    }
-                    if room_state
-                        .and_then(|status| status.value.as_deref())
-                        .is_some_and(|value| Self::browser_status_flag(value, "controlled"))
-                    {
-                        Self::render_room_browser_chip(
-                            ui,
-                            "Controlled",
-                            ui.visuals().widgets.active.bg_fill.gamma_multiply(0.18),
-                            ui.visuals().widgets.active.fg_stroke.color,
-                        );
-                    }
-                    Self::render_room_browser_chip(
-                        ui,
-                        if user_nodes.len() == 1 {
-                            "1 user".to_owned()
-                        } else {
-                            format!("{} users", user_nodes.len())
-                        },
-                        ui.visuals()
-                            .widgets
-                            .noninteractive
-                            .bg_fill
-                            .gamma_multiply(0.6),
-                        ui.visuals().weak_text_color(),
-                    );
-                });
 
                 if !user_nodes.is_empty() {
-                    ui.add_space(8.0);
-                    self.render_room_browser_user_grid(ui, &user_nodes, state);
+                    ui.add_space(4.0);
+                    self.render_room_browser_user_list(ui, &user_nodes, state);
                 } else if let Some(empty_node) = room_node
                     .children
                     .iter()
@@ -1184,46 +1693,16 @@ impl GuiWidgetEguiRenderer {
             });
     }
 
-    fn render_room_browser_user_grid(
+    fn render_room_browser_user_list(
         &mut self,
         ui: &mut egui::Ui,
         user_nodes: &[&GuiWidgetNode],
         state: &SyncplayGuiShellAppState,
     ) {
-        let plan = Self::plan_responsive_columns(
-            ui.available_width(),
-            10.0,
-            250.0,
-            2,
-            user_nodes.iter().map(|_| 1usize),
-        );
-
-        for (row_index, row) in plan.rows.iter().enumerate() {
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = 0.0;
-                ui.spacing_mut().item_spacing = spacing;
-                for (entry_index, entry) in row.iter().enumerate() {
-                    let child_width = plan.column_width;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(child_width, 0.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(child_width);
-                            self.render_room_browser_user_card(
-                                ui,
-                                user_nodes[entry.child_index],
-                                state,
-                            );
-                        },
-                    );
-                    if entry_index + 1 < row.len() {
-                        ui.add_space(10.0);
-                    }
-                }
-            });
-            if row_index + 1 < plan.row_count {
-                ui.add_space(10.0);
+        for (index, user_node) in user_nodes.iter().enumerate() {
+            self.render_room_browser_user_card(ui, user_node, state);
+            if index + 1 < user_nodes.len() {
+                ui.add_space(1.0);
             }
         }
     }
@@ -1252,83 +1731,25 @@ impl GuiWidgetEguiRenderer {
             size_node.and_then(|node| node.value.as_deref()),
             duration_node.and_then(|node| node.value.as_deref()),
         );
+        let state_value = user_state.and_then(|status| status.value.as_deref());
+        let is_self = state_value.is_some_and(|value| Self::browser_status_flag(value, "self"));
+        let is_ready = state_value.is_some_and(|value| Self::browser_status_flag(value, "ready"));
+        let is_controller =
+            state_value.is_some_and(|value| Self::browser_status_flag(value, "controller"));
+        let palette = Self::palette();
         let card_fill = if user_node.selected {
-            ui.visuals().selection.bg_fill.gamma_multiply(0.10)
+            palette.info_bg.gamma_multiply(0.62)
         } else {
-            ui.visuals()
-                .widgets
-                .noninteractive
-                .bg_fill
-                .gamma_multiply(0.10)
+            egui::Color32::TRANSPARENT
         };
-        let card_stroke = if user_node.selected {
-            ui.visuals().selection.stroke
-        } else {
-            ui.visuals().widgets.noninteractive.bg_stroke
-        };
+        let card_stroke = egui::Stroke::NONE;
 
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(8, 7))
+            .inner_margin(egui::Margin::symmetric(8, 3))
             .fill(card_fill)
             .stroke(card_stroke)
-            .corner_radius(8)
+            .corner_radius(0)
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(&user_node.label).strong());
-                    if user_state
-                        .and_then(|status| status.value.as_deref())
-                        .is_some_and(|value| Self::browser_status_flag(value, "self"))
-                    {
-                        Self::render_room_browser_chip(
-                            ui,
-                            "You",
-                            ui.visuals().selection.bg_fill.gamma_multiply(0.18),
-                            ui.visuals().selection.stroke.color,
-                        );
-                    }
-                    if user_state
-                        .and_then(|status| status.value.as_deref())
-                        .is_some_and(|value| Self::browser_status_flag(value, "ready"))
-                    {
-                        Self::render_room_browser_chip(
-                            ui,
-                            "Ready",
-                            ui.visuals().widgets.active.bg_fill.gamma_multiply(0.18),
-                            ui.visuals().widgets.active.fg_stroke.color,
-                        );
-                    }
-                    if user_state
-                        .and_then(|status| status.value.as_deref())
-                        .is_some_and(|value| Self::browser_status_flag(value, "controller"))
-                    {
-                        Self::render_room_browser_chip(
-                            ui,
-                            "Controller",
-                            ui.visuals().widgets.active.bg_fill.gamma_multiply(0.18),
-                            ui.visuals().widgets.active.fg_stroke.color,
-                        );
-                    }
-                    for cue in cues {
-                        Self::render_room_browser_chip(
-                            ui,
-                            cue,
-                            ui.visuals().warn_fg_color.gamma_multiply(0.14),
-                            ui.visuals().warn_fg_color,
-                        );
-                    }
-                });
-
-                let file_response = ui.add(
-                    egui::Label::new(egui::RichText::new(&file_text).small().strong()).truncate(),
-                );
-                if !file_text.is_empty() && file_text != "(none)" {
-                    file_response.on_hover_text(file_text.clone());
-                }
-
-                if !metadata.is_empty() {
-                    ui.label(egui::RichText::new(metadata).small().weak());
-                }
-
                 let visible_actions: Vec<&GuiWidgetNode> = action_nodes
                     .into_iter()
                     .flatten()
@@ -1337,19 +1758,100 @@ impl GuiWidgetEguiRenderer {
                             || matches!(node.id.as_str(), id if id.ends_with(":ready") || id.ends_with(":open"))
                     })
                     .collect();
-                if !visible_actions.is_empty() {
-                    ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        let mut spacing = ui.spacing().item_spacing;
-                        spacing.x = 6.0;
-                        spacing.y = 6.0;
-                        ui.spacing_mut().item_spacing = spacing;
-                        for action in visible_actions {
-                            self.render_room_browser_button(ui, action, state);
+
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    Self::render_room_browser_ready_icon(ui, is_ready);
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(&user_node.label).strong());
+                            if is_self {
+                                let palette = Self::palette();
+                                Self::render_room_browser_chip(
+                                    ui,
+                                    "You",
+                                    palette.info_bg,
+                                    palette.info_text,
+                                    palette.info_border,
+                                );
+                            }
+                            if is_controller {
+                                let palette = Self::palette();
+                                Self::render_room_browser_chip(
+                                    ui,
+                                    "Controller",
+                                    palette.controlled_bg,
+                                    palette.controlled_text,
+                                    palette.controlled_border,
+                                );
+                            }
+                            for cue in &cues {
+                                let palette = Self::palette();
+                                Self::render_room_browser_chip(
+                                    ui,
+                                    cue,
+                                    palette.warning_bg,
+                                    palette.warning_text,
+                                    palette.warning_border,
+                                );
+                            }
+                        });
+
+                        let file_response = ui.add(
+                            egui::Label::new(egui::RichText::new(&file_text).small()).truncate(),
+                        );
+                        if !file_text.is_empty() && file_text != "(none)" {
+                            file_response.on_hover_text(file_text.clone());
+                        }
+                        if !metadata.is_empty() {
+                            ui.label(egui::RichText::new(metadata).small().weak());
                         }
                     });
-                }
+                    if !visible_actions.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut spacing = ui.spacing().item_spacing;
+                            spacing.x = 6.0;
+                            ui.spacing_mut().item_spacing = spacing;
+                            for action in visible_actions.into_iter().rev() {
+                                self.render_room_browser_button(ui, action, state);
+                            }
+                        });
+                    }
+                });
             });
+    }
+
+    fn render_room_browser_ready_icon(ui: &mut egui::Ui, is_ready: bool) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        let palette = Self::palette();
+        let color = if is_ready {
+            palette.success_text
+        } else {
+            palette.warning_text
+        };
+        let stroke = egui::Stroke::new(2.1, color);
+        if is_ready {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rect.left() + 3.0, rect.center().y),
+                    egui::pos2(rect.left() + 7.0, rect.bottom() - 4.0),
+                ],
+                stroke,
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rect.left() + 7.0, rect.bottom() - 4.0),
+                    egui::pos2(rect.right() - 3.0, rect.top() + 4.0),
+                ],
+                stroke,
+            );
+        } else {
+            let icon_rect = rect.shrink2(egui::vec2(4.0, 4.0));
+            ui.painter()
+                .line_segment([icon_rect.left_top(), icon_rect.right_bottom()], stroke);
+            ui.painter()
+                .line_segment([icon_rect.right_top(), icon_rect.left_bottom()], stroke);
+        }
     }
 
     fn render_room_browser_button(
@@ -1381,10 +1883,12 @@ impl GuiWidgetEguiRenderer {
         label: impl Into<String>,
         fill: egui::Color32,
         text_color: egui::Color32,
+        stroke_color: egui::Color32,
     ) {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(6, 2))
             .fill(fill)
+            .stroke(egui::Stroke::new(1.0, stroke_color.gamma_multiply(0.55)))
             .corner_radius(6)
             .show(ui, |ui| {
                 ui.label(egui::RichText::new(label.into()).small().color(text_color));
@@ -1462,7 +1966,7 @@ impl GuiWidgetEguiRenderer {
             .filter(|value| !value.is_empty() && *value != "(none)")
             .map(str::to_owned)
             .collect::<Vec<_>>()
-            .join("  •  ")
+            .join(" - ")
     }
 
     fn room_browser_button_label(node: &GuiWidgetNode) -> String {
@@ -1657,6 +2161,89 @@ impl GuiWidgetEguiRenderer {
         Vec::new()
     }
 
+    fn render_chat_compose(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let input_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:chat-input");
+        let send_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:chat:send");
+        let Some(input_node) = input_node else {
+            return;
+        };
+
+        ui.horizontal(|ui| {
+            let mut value = Self::editable_text_value(input_node);
+            let send_width = 84.0;
+            let input_width = (ui.available_width() - send_width - 8.0).max(160.0);
+            let response = ui.add_enabled(
+                input_node.enabled,
+                egui::TextEdit::singleline(&mut value)
+                    .id_salt(&input_node.id)
+                    .return_key(None)
+                    .desired_width(input_width)
+                    .hint_text("Type a message..."),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    response.enabled(),
+                    input_node.label.clone(),
+                )
+            });
+            let submitted =
+                response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if let Some(actions) = Self::actions_for_text_input_node(
+                state,
+                input_node,
+                &value,
+                response.changed(),
+                submitted,
+            ) {
+                self.actions.extend(actions);
+            }
+            if submitted {
+                response.request_focus();
+            }
+
+            if let Some(send_node) = send_node {
+                let mut send_clicked = false;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(send_width, ui.spacing().interact_size.y),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(send_width);
+                        send_clicked = self.render_button_like(ui, send_node, state);
+                    },
+                );
+                if send_clicked {
+                    response.request_focus();
+                }
+            }
+        });
+    }
+
+    fn render_setup_command_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        for child in &node.children {
+            self.render_node(ui, child, state);
+        }
+    }
+
     fn render_text_input(
         &mut self,
         ui: &mut egui::Ui,
@@ -1672,6 +2259,13 @@ impl GuiWidgetEguiRenderer {
                     .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
                     .desired_width(ui.available_width().max(120.0)),
             );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    response.enabled(),
+                    node.label.clone(),
+                )
+            });
             let submitted =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             if let Some(actions) = Self::actions_for_text_input_node(
@@ -1701,6 +2295,13 @@ impl GuiWidgetEguiRenderer {
                     .desired_width(ui.available_width().max(160.0))
                     .desired_rows(6),
             );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::TextEdit,
+                    response.enabled(),
+                    node.label.clone(),
+                )
+            });
             if let Some(actions) =
                 Self::actions_for_text_input_node(state, node, &value, response.changed(), false)
             {
@@ -1805,9 +2406,12 @@ impl GuiWidgetEguiRenderer {
                 if Self::should_render_combined_status_label(node) {
                     ui.label(Self::display_text(node));
                 } else {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(&node.label).strong());
-                        ui.label(node.value.as_deref().unwrap_or("(none)"));
+                    ui.horizontal_wrapped(|ui| {
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = spacing.x.max(4.0);
+                        ui.spacing_mut().item_spacing = spacing;
+                        ui.label(egui::RichText::new(format!("{}:", node.label)).strong());
+                        ui.label(Self::display_status_rich_text(ui, node));
                     });
                 }
             }
@@ -1907,10 +2511,12 @@ impl GuiWidgetEguiRenderer {
                     self.actions.push(action);
                 }
             }
-            GuiWidgetKind::Button => self.render_button_like(ui, node, state),
+            GuiWidgetKind::Button => {
+                self.render_button_like(ui, node, state);
+            }
             GuiWidgetKind::ReadOnly | GuiWidgetKind::Status => {
                 if omit_label {
-                    ui.label(node.value.as_deref().unwrap_or("(none)"));
+                    ui.label(Self::display_status_rich_text(ui, node));
                 } else {
                     self.render_leaf(ui, node, state);
                 }
@@ -1929,38 +2535,290 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
-    ) {
+    ) -> bool {
         if !node.children.is_empty() {
             ui.add_enabled_ui(node.enabled, |ui| {
                 ui.menu_button(Self::display_text(node), |ui| {
                     self.render_menu_section(ui, node, state);
                 });
             });
-            return;
+            return false;
         }
         if Self::playback_control_icon(node).is_some() {
-            self.render_playback_icon_button(ui, node, state);
-            return;
+            return self.render_playback_icon_button(ui, node, state);
         }
         if node.id == "main-window:control:set-ready" {
-            self.render_playback_ready_button(ui, node, state);
-            return;
+            return self.render_playback_ready_button(ui, node, state);
         }
         if node.id.ends_with(":close") {
-            self.render_panel_close_button(ui, node, state);
-            return;
+            return self.render_panel_close_button(ui, node, state);
         }
         let mut clicked = false;
         ui.add_enabled_ui(node.enabled, |ui| {
+            let mut label = egui::RichText::new(Self::display_text(node));
+            if node.enabled
+                && let Some((_, _, text_color)) = Self::button_colors_for_node(node)
+            {
+                label = label.color(text_color).strong();
+            }
+            let mut button = egui::Button::new(label);
+            if node.enabled
+                && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(node)
+            {
+                button = button.fill(
+                    if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+                        hover_fill
+                    } else {
+                        fill
+                    },
+                );
+            }
             clicked = ui
-                .add_sized(
-                    [ui.available_width().max(0.0), 0.0],
-                    egui::Button::new(Self::display_text(node)),
-                )
+                .add_sized([ui.available_width().max(0.0), 0.0], button)
                 .clicked();
         });
         if clicked {
             self.handle_button_node_click(state, node);
+        }
+        clicked
+    }
+
+    const COMPACT_ACTION_BUTTON_HEIGHT: f32 = 32.0;
+    const COMPACT_ACTION_BUTTON_MIN_WIDTH: f32 = 86.0;
+    const COMPACT_ACTION_BUTTON_MAX_WIDTH: f32 = 136.0;
+    const COMPACT_ACTION_BUTTON_GAP: f32 = 8.0;
+
+    pub(super) fn compact_action_button_size(node: &GuiWidgetNode) -> egui::Vec2 {
+        let text_width = Self::display_text(node).chars().count() as f32 * 7.5;
+        let icon_width = if Self::compact_action_icon(node).is_some() {
+            24.0
+        } else {
+            0.0
+        };
+        let menu_indicator_width = if node.children.is_empty() { 0.0 } else { 14.0 };
+        let horizontal_padding = 28.0;
+        egui::vec2(
+            (text_width + icon_width + menu_indicator_width + horizontal_padding).clamp(
+                Self::COMPACT_ACTION_BUTTON_MIN_WIDTH,
+                Self::COMPACT_ACTION_BUTTON_MAX_WIDTH,
+            ),
+            Self::COMPACT_ACTION_BUTTON_HEIGHT,
+        )
+    }
+
+    fn render_compact_action_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let desired_size = Self::compact_action_button_size(node);
+        let response = ui
+            .push_id(&node.id, |ui| {
+                if node.children.is_empty() {
+                    ui.add_enabled(
+                        node.enabled,
+                        egui::Button::new("")
+                            .frame(false)
+                            .min_size(desired_size)
+                            .sense(egui::Sense::click()),
+                    )
+                } else {
+                    ui.add_enabled_ui(node.enabled, |ui| {
+                        let menu_button = egui::Button::new("")
+                            .frame(false)
+                            .min_size(desired_size)
+                            .sense(egui::Sense::click());
+                        let (response, _) = egui::containers::menu::MenuButton::from_button(
+                            menu_button,
+                        )
+                        .ui(ui, |ui| {
+                            self.render_menu_section(ui, node, state);
+                        });
+                        response
+                    })
+                    .inner
+                }
+            })
+            .inner;
+
+        let label = Self::display_text(node).to_owned();
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label.clone())
+        });
+        let response = Self::attach_hover_text(response, label.clone());
+        Self::paint_compact_action_button(ui, &response, node, &label);
+        if node.children.is_empty() && response.clicked() {
+            self.handle_button_node_click(state, node);
+        }
+    }
+
+    fn compact_action_icon(node: &GuiWidgetNode) -> Option<GuiCompactActionIcon> {
+        match node.id.as_str() {
+            "main-window:playlist:add-menu" => Some(GuiCompactActionIcon::Add),
+            "main-window:playlist:more-menu" => Some(GuiCompactActionIcon::More),
+            _ => None,
+        }
+    }
+
+    fn paint_compact_action_button(
+        ui: &egui::Ui,
+        response: &egui::Response,
+        node: &GuiWidgetNode,
+        label: &str,
+    ) {
+        let palette = Self::palette();
+        let visuals = ui.visuals();
+        let enabled = response.enabled() && node.enabled;
+        let pressed = response.is_pointer_button_down_on();
+        let hovered = response.hovered();
+        let fill = if !enabled {
+            visuals.widgets.inactive.bg_fill.gamma_multiply(0.55)
+        } else if pressed {
+            palette.info_bg.gamma_multiply(0.92)
+        } else if hovered {
+            palette.info_bg.gamma_multiply(0.78)
+        } else {
+            egui::Color32::from_rgb(248, 250, 252)
+        };
+        let stroke_color = if !enabled {
+            visuals
+                .widgets
+                .inactive
+                .bg_stroke
+                .color
+                .gamma_multiply(0.65)
+        } else if hovered || pressed {
+            palette.info_border
+        } else {
+            palette.neutral_border
+        };
+        let text_color = if !enabled {
+            visuals.weak_text_color()
+        } else if hovered || pressed {
+            palette.info_text
+        } else {
+            palette.neutral_text
+        };
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter().rect(
+            rect,
+            5,
+            fill,
+            egui::Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Inside,
+        );
+
+        let mut text_left = rect.left() + 12.0;
+        if let Some(icon) = Self::compact_action_icon(node) {
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                egui::vec2(14.0, 14.0),
+            );
+            Self::paint_compact_action_icon(ui, icon_rect, icon, text_color);
+            text_left = icon_rect.right() + 8.0;
+        }
+
+        let indicator_width = if node.children.is_empty() { 0.0 } else { 14.0 };
+        let text_right = (rect.right() - 10.0 - indicator_width).max(text_left);
+        let text_width = (text_right - text_left).max(0.0);
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let (display_label, _truncated) = Self::truncate_single_line_text_for_width(
+            ui,
+            label,
+            font_id.clone(),
+            text_color,
+            text_width,
+        );
+        let galley = ui
+            .painter()
+            .layout_no_wrap(display_label, font_id, text_color);
+        ui.painter().with_clip_rect(rect).galley(
+            egui::pos2(text_left, rect.center().y - (galley.size().y * 0.5)),
+            galley,
+            text_color,
+        );
+
+        if !node.children.is_empty() {
+            Self::paint_compact_menu_indicator(ui, rect, text_color);
+        }
+    }
+
+    fn paint_compact_action_icon(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        icon: GuiCompactActionIcon,
+        color: egui::Color32,
+    ) {
+        match icon {
+            GuiCompactActionIcon::Add => {
+                let stroke = egui::Stroke::new(1.8, color);
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left(), rect.center().y),
+                        egui::pos2(rect.right(), rect.center().y),
+                    ],
+                    stroke,
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.center().x, rect.top()),
+                        egui::pos2(rect.center().x, rect.bottom()),
+                    ],
+                    stroke,
+                );
+            }
+            GuiCompactActionIcon::More => {
+                for x_offset in [-4.5_f32, 0.0, 4.5] {
+                    ui.painter().circle_filled(
+                        egui::pos2(rect.center().x + x_offset, rect.center().y),
+                        1.8,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+
+    fn paint_compact_menu_indicator(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {
+        let center = egui::pos2(rect.right() - 12.0, rect.center().y + 1.0);
+        let stroke = egui::Stroke::new(1.4, color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 4.0, center.y - 2.0),
+                egui::pos2(center.x, center.y + 2.0),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x, center.y + 2.0),
+                egui::pos2(center.x + 4.0, center.y - 2.0),
+            ],
+            stroke,
+        );
+    }
+
+    fn button_colors_for_node(
+        node: &GuiWidgetNode,
+    ) -> Option<(egui::Color32, egui::Color32, egui::Color32)> {
+        let palette = Self::palette();
+        match node.id.as_str() {
+            "main-window:connection:connect"
+            | "main-window:room:join"
+            | "main-window:room:set"
+            | "main-window:room-actions:create-controlled-room"
+            | "main-window:room-actions:identify-controller"
+            | "main-window:media-url-edit:commit"
+            | "main-window:chat:send" => {
+                Some((palette.primary, palette.primary_hover, palette.primary_text))
+            }
+            "main-window:connection:disconnect"
+            | "main-window:room:leave"
+            | "main-window:media-url-edit:cancel" => {
+                Some((palette.danger, palette.danger_hover, palette.danger_text))
+            }
+            _ => None,
         }
     }
 
@@ -1969,9 +2827,9 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
-    ) {
+    ) -> bool {
         let Some(icon) = Self::playback_control_icon(node) else {
-            return;
+            return false;
         };
         let clicked = ui
             .push_id(&node.id, |ui| {
@@ -1996,6 +2854,7 @@ impl GuiWidgetEguiRenderer {
         if clicked {
             self.handle_button_node_click(state, node);
         }
+        clicked
     }
 
     fn render_playback_ready_button(
@@ -2003,7 +2862,7 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
-    ) {
+    ) -> bool {
         let is_ready = Self::main_window_display_ready(state);
         let pending = state.local_ready_transition_pending();
         let label = if is_ready { "Ready" } else { "Not Ready" };
@@ -2047,6 +2906,7 @@ impl GuiWidgetEguiRenderer {
         if clicked {
             self.handle_button_node_click(state, node);
         }
+        clicked
     }
 
     fn handle_button_node_click(&mut self, state: &SyncplayGuiShellAppState, node: &GuiWidgetNode) {
@@ -2239,31 +3099,32 @@ impl GuiWidgetEguiRenderer {
         } else {
             &widget_visuals.noninteractive
         };
-        let accent_fill = ui.visuals().selection.bg_fill;
-        let accent_color = ui.visuals().selection.stroke.color;
-        let fill = if is_ready {
-            if response.enabled() {
-                if response.hovered() {
-                    accent_fill.linear_multiply(0.95)
-                } else {
-                    accent_fill.linear_multiply(0.80)
-                }
-            } else {
-                accent_fill.linear_multiply(0.35)
-            }
-        } else if response.enabled() && response.hovered() {
-            visuals.bg_fill.linear_multiply(1.05)
+        let palette = Self::palette();
+        let fill = if pending {
+            palette.info_bg
+        } else if is_ready {
+            palette.success_bg
+        } else if response.enabled() {
+            palette.warning_bg
         } else {
             visuals.bg_fill
         };
-        let stroke_color = if is_ready {
-            accent_color
+        let stroke_color = if pending {
+            palette.info_border
+        } else if is_ready {
+            palette.success_border
+        } else if response.enabled() {
+            palette.warning_border
         } else {
             visuals.bg_stroke.color
         };
         let stroke = egui::Stroke::new(visuals.bg_stroke.width.max(1.0), stroke_color);
-        let text_color = if is_ready {
-            accent_color
+        let text_color = if pending {
+            palette.info_text
+        } else if is_ready {
+            palette.success_text
+        } else if response.enabled() {
+            palette.warning_text
         } else {
             visuals.fg_stroke.color
         };
@@ -2329,14 +3190,16 @@ impl GuiWidgetEguiRenderer {
         is_room_active: bool,
     ) -> bool {
         let visuals = ui.style().interact(response);
-        let selection_visuals = &ui.visuals().selection;
-        let active_color = egui::Color32::from_rgb(65, 145, 92);
+        let palette = Self::palette();
+        let active_color = palette.success_text;
         let fill = if is_selected {
-            selection_visuals
-                .bg_fill
-                .gamma_multiply(if is_room_active { 0.32 } else { 0.22 })
+            if is_room_active {
+                palette.success_bg
+            } else {
+                palette.info_bg
+            }
         } else if is_room_active {
-            active_color.gamma_multiply(0.10)
+            palette.success_bg.gamma_multiply(0.70)
         } else if response.enabled() && response.hovered() {
             visuals.bg_fill.linear_multiply(1.05)
         } else {
@@ -2345,14 +3208,14 @@ impl GuiWidgetEguiRenderer {
         let stroke_color = if is_room_active {
             active_color
         } else if is_selected {
-            selection_visuals.stroke.color
+            palette.info_border
         } else {
             visuals.bg_stroke.color
         };
         let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
         ui.painter().rect(
             rect,
-            8,
+            2,
             fill,
             egui::Stroke::new(
                 if is_room_active {
@@ -2366,7 +3229,30 @@ impl GuiWidgetEguiRenderer {
         );
 
         if is_room_active {
-            let icon_center = egui::pos2(rect.left() + 14.0, rect.center().y);
+            let strip_rect = egui::Rect::from_min_max(
+                rect.left_top(),
+                egui::pos2(rect.left() + 3.0, rect.bottom()),
+            );
+            ui.painter().rect_filled(strip_rect, 1, active_color);
+        }
+
+        let text_color = if is_selected || is_room_active {
+            if is_room_active {
+                palette.success_text
+            } else {
+                palette.info_text
+            }
+        } else {
+            visuals.text_color()
+        };
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 12.0, rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
+        );
+        Self::paint_playlist_file_icon(ui, icon_rect, text_color.gamma_multiply(0.74));
+
+        if is_room_active {
+            let icon_center = egui::pos2(icon_rect.right() + 9.0, rect.center().y);
             ui.painter().add(egui::Shape::convex_polygon(
                 vec![
                     egui::pos2(icon_center.x - 3.0, icon_center.y - 5.0),
@@ -2378,12 +3264,7 @@ impl GuiWidgetEguiRenderer {
             ));
         }
 
-        let text_color = if is_selected || is_room_active {
-            stroke_color
-        } else {
-            visuals.text_color()
-        };
-        let text_left = rect.left() + if is_room_active { 28.0 } else { 12.0 };
+        let text_left = rect.left() + if is_room_active { 50.0 } else { 36.0 };
         let text_right = (rect.right() - 12.0).max(text_left);
         let text_width = (text_right - text_left).max(0.0);
         let (display_label, truncated) = Self::truncate_single_line_text_for_width(
@@ -2403,6 +3284,28 @@ impl GuiWidgetEguiRenderer {
             .with_clip_rect(rect.shrink2(egui::vec2(8.0, 4.0)))
             .galley(text_pos, galley, text_color);
         truncated
+    }
+
+    fn paint_playlist_file_icon(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {
+        let stroke = egui::Stroke::new(1.6, color);
+        let body = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 1.0, rect.top() + 2.0),
+            egui::pos2(rect.right() - 1.0, rect.bottom() - 1.0),
+        );
+        ui.painter()
+            .rect_stroke(body, 1, stroke, egui::StrokeKind::Inside);
+        ui.painter().line_segment(
+            [
+                egui::pos2(body.left() + 3.0, body.center().y),
+                egui::pos2(body.right() - 3.0, body.center().y),
+            ],
+            stroke,
+        );
+        let tab = egui::Rect::from_min_max(
+            egui::pos2(body.left() + 2.0, rect.top() + 1.0),
+            egui::pos2(body.left() + 8.0, body.top() + 4.0),
+        );
+        ui.painter().rect_filled(tab, 1, color.gamma_multiply(0.45));
     }
 
     fn paint_panel_close_button(ui: &egui::Ui, response: &egui::Response) {
@@ -2710,6 +3613,74 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    fn display_status_value(node: &GuiWidgetNode) -> String {
+        let value = node.value.as_deref().unwrap_or("(none)");
+        match (node.id.as_str(), value) {
+            ("main-window:connection-status", "connected") => "Connected".to_owned(),
+            ("main-window:connection-status", "connecting") => "Connecting".to_owned(),
+            ("main-window:connection-status", "disconnecting") => "Disconnecting".to_owned(),
+            ("main-window:connection-status", "disconnected") => "Disconnected".to_owned(),
+            ("main-window:connection-status", "not-configured") => "Not configured".to_owned(),
+            ("main-window:playback-paused", "yes" | "true") => "Paused".to_owned(),
+            ("main-window:playback-paused", "no" | "false") => "Playing".to_owned(),
+            ("main-window:autoplay", "yes" | "true") => "On".to_owned(),
+            ("main-window:autoplay", "no" | "false") => "Off".to_owned(),
+            ("main-window:user-offset", value) => {
+                Self::format_offset_seconds(value).unwrap_or_else(|| value.to_owned())
+            }
+            _ => value.to_owned(),
+        }
+    }
+
+    fn display_status_rich_text(_ui: &egui::Ui, node: &GuiWidgetNode) -> egui::RichText {
+        let text = Self::display_status_value(node);
+        let palette = Self::palette();
+        let color = match (node.id.as_str(), node.value.as_deref().unwrap_or("(none)")) {
+            ("main-window:connection-status", "connected") => Some(palette.success_text),
+            ("main-window:connection-status", "connecting" | "disconnecting") => {
+                Some(palette.warning_text)
+            }
+            ("main-window:connection-status", "disconnected" | "not-configured") => {
+                Some(palette.neutral_text)
+            }
+            ("main-window:playback-paused", "yes" | "true") => Some(palette.danger),
+            ("main-window:playback-paused", "no" | "false") => Some(palette.success_text),
+            ("main-window:autoplay", "yes" | "true") => Some(palette.success_text),
+            ("main-window:autoplay", "no" | "false") => Some(palette.neutral_text),
+            _ => None,
+        };
+        let rich_text = egui::RichText::new(text);
+        if let Some(color) = color {
+            rich_text.color(color).strong()
+        } else {
+            rich_text
+        }
+    }
+
+    fn format_offset_seconds(value: &str) -> Option<String> {
+        let seconds = value.parse::<f64>().ok()?;
+        let sign = if seconds.is_sign_negative() { "-" } else { "" };
+        let total_millis = (seconds.abs() * 1000.0).round() as u64;
+        let total_seconds = total_millis / 1000;
+        let millis = total_millis % 1000;
+        let hours = total_seconds / 3600;
+        let minutes = (total_seconds % 3600) / 60;
+        let seconds = total_seconds % 60;
+        if millis > 0 {
+            if hours > 0 {
+                Some(format!(
+                    "{sign}{hours:02}:{minutes:02}:{seconds:02}.{millis:03}"
+                ))
+            } else {
+                Some(format!("{sign}{minutes:02}:{seconds:02}.{millis:03}"))
+            }
+        } else if hours > 0 {
+            Some(format!("{sign}{hours:02}:{minutes:02}:{seconds:02}"))
+        } else {
+            Some(format!("{sign}{minutes:02}:{seconds:02}"))
+        }
+    }
+
     fn should_render_combined_status_label(node: &GuiWidgetNode) -> bool {
         node.id.starts_with("media-search:timing:")
             || node.id.starts_with("shell:command:")
@@ -2717,14 +3688,7 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn is_surface_node(node: &GuiWidgetNode) -> bool {
-        matches!(
-            node.id.as_str(),
-            "configuration-root"
-                | "main-window-root"
-                | "public-servers-root"
-                | "media-search-root"
-                | "menus-root"
-        )
+        matches!(node.id.as_str(), "configuration-root" | "main-window-root")
     }
 }
 

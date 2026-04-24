@@ -78,7 +78,7 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         )?;
 
         let persisted_ui_state = GuiPersistedUiState {
-            active_view: Some(GuiShellView::PublicServers),
+            active_view: Some(GuiShellView::Setup),
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: Some("C:/Media".to_owned()),
             hide_empty_rooms: false,
@@ -103,9 +103,9 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
             Vec::new(),
             &mut host,
         );
-        if restored_state.active_view != GuiShellView::PublicServers {
+        if restored_state.active_view != GuiShellView::Setup {
             return Err(format!(
-                "expected persisted semantic startup view public-servers, got {}",
+                "expected persisted semantic startup view setup, got {}",
                 restored_state.active_view.label()
             ));
         }
@@ -200,10 +200,8 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
                 "semantic clear-GUI-data flow did not restore first-run launch mode".to_owned(),
             );
         }
-        if clear_state.active_view != GuiShellView::Configuration {
-            return Err(
-                "semantic clear-GUI-data flow did not restore the configuration view".to_owned(),
-            );
+        if clear_state.active_view != GuiShellView::Setup {
+            return Err("semantic clear-GUI-data flow did not restore the setup view".to_owned());
         }
         if clear_state.saved_configuration != StoredClientSettingsMvp::default() {
             return Err(
@@ -476,7 +474,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
                 shared_playlist_enabled: Some(true),
                 ..StoredClientSettingsMvp::default()
             });
-        if !search_state.apply(GuiShellAction::SwitchView(GuiShellView::MediaSearch))
+        if !search_state.apply(GuiShellAction::SwitchView(GuiShellView::Setup))
             || !search_state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
                 "missing-target.mkv".to_owned(),
             ]))
@@ -555,7 +553,7 @@ pub(super) fn run_gui_semantic_live_python_peer_connect_flow()
         .map_err(|error| error.to_string())?;
     Ok(GuiSemanticScenarioReport {
         scenario: "live-python-peer-connect-flow".to_owned(),
-        view: "main-window".to_owned(),
+        view: "room".to_owned(),
         modal: "none".to_owned(),
         pending: "none".to_owned(),
         widgets: result.widget_count,
@@ -568,7 +566,7 @@ pub(super) fn run_gui_semantic_live_python_peer_controlled_room_flow()
         .map_err(|error| error.to_string())?;
     Ok(GuiSemanticScenarioReport {
         scenario: "live-python-peer-controlled-room-flow".to_owned(),
-        view: "main-window".to_owned(),
+        view: "room".to_owned(),
         modal: "none".to_owned(),
         pending: "none".to_owned(),
         widgets: result.widget_count,

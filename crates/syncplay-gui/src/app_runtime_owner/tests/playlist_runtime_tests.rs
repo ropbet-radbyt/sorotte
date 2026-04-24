@@ -46,7 +46,7 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
         )),
         "shared-playlist open should report playlist-backed success"
     );
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(
         state
             .main_window
@@ -618,7 +618,7 @@ fn gui_persisted_config_runtime_owner_imports_playlist_files_through_client_core
         )),
         "shared-playlist imports should report a runtime-backed success"
     );
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(
         state
             .main_window
@@ -678,7 +678,7 @@ fn gui_persisted_config_runtime_owner_imports_playlist_files_queued_before_start
         )),
         "startup-queued shared-playlist imports should still report a runtime-backed success"
     );
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(
         state
             .main_window

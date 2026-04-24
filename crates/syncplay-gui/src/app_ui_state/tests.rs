@@ -4,14 +4,13 @@ use super::{
 };
 
 use crate::app::testing::support::test_temp_root;
-use crate::app::{GuiConfigurationTab, GuiMainWindowTab, GuiShellView};
+use crate::app::{GuiConfigurationTab, GuiShellView};
 
 #[test]
 fn gui_persisted_ui_state_roundtrips_at_root() {
     let root = test_temp_root("persisted-ui-roundtrip");
     let expected = GuiPersistedUiState {
-        active_view: Some(GuiShellView::PublicServers),
-        main_window_tab: Some(GuiMainWindowTab::Playlist),
+        active_view: Some(GuiShellView::Room),
         configuration_tab: Some(GuiConfigurationTab::PrivacyChat),
         selected_public_server_address: Some("custom.example:9001".to_owned()),
         selected_media_search_directory: Some("D:/Media".to_owned()),
@@ -36,12 +35,12 @@ fn gui_persisted_ui_state_roundtrips_at_root() {
 }
 
 #[test]
-fn gui_persisted_ui_state_ignores_invalid_tab_labels_at_root() {
+fn gui_persisted_ui_state_ignores_legacy_main_window_tab_at_root() {
     let root = test_temp_root("persisted-ui-invalid-tabs");
     std::fs::create_dir_all(root.join("Syncplay")).expect("test root should be writable");
     std::fs::write(
         legacy_gui_qsettings_store_path(&root, "MainWindow"),
-        "[MainWindow]\nmainWindowTab = nope\nconfigurationTab = also-nope\n",
+        "[MainWindow]\nmainWindowTab = playlist\nconfigurationTab = also-nope\n",
     )
     .expect("legacy main-window store should be writable");
 
@@ -50,4 +49,31 @@ fn gui_persisted_ui_state_ignores_invalid_tab_labels_at_root() {
     assert_eq!(loaded, None);
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_ui_state_maps_legacy_active_views_to_room_and_setup() {
+    for (legacy_view, expected_view) in [
+        ("main-window", GuiShellView::Room),
+        ("configuration", GuiShellView::Setup),
+        ("public-servers", GuiShellView::Setup),
+        ("media-search", GuiShellView::Setup),
+        ("menus-and-dialogs", GuiShellView::Setup),
+    ] {
+        let root = test_temp_root(&format!("persisted-ui-active-view-{legacy_view}"));
+        std::fs::create_dir_all(root.join("Syncplay")).expect("test root should be writable");
+        std::fs::write(
+            legacy_gui_qsettings_store_path(&root, "MainWindow"),
+            format!("[MainWindow]\nactiveView = {legacy_view}\nmainWindowTab = chat\n"),
+        )
+        .expect("legacy main-window store should be writable");
+
+        let loaded = load_gui_ui_state_from_root(&root)
+            .expect("persisted GUI state should be readable")
+            .expect("legacy active view should migrate into persisted UI state");
+        assert_eq!(loaded.active_view, Some(expected_view));
+        assert_eq!(loaded.configuration_tab, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -126,7 +126,6 @@ const CONFIG_ROOM_VALUE: &str = "smoke-room";
 const CONFIG_ROOM_EDIT_INDEX: usize = 3;
 const CONFIG_PLAYER_PATH_VALUE: &str = "C:\\Windows\\System32\\notepad.exe";
 const CONFIG_PLAYER_PATH_EDIT_INDEX: usize = 5;
-const TRUSTED_DOMAINS_VALUE: &str = "youtube.com\n*.example.com/videos";
 const CONFIG_REWIND_THRESHOLD_VALUE: &str = "1.25";
 const CONFIG_FASTFORWARD_THRESHOLD_VALUE: &str = "3.5";
 const CONFIG_SLOWDOWN_THRESHOLD_VALUE: &str = "2.25";
@@ -838,10 +837,10 @@ fn verify_accessibility_contract(accessible_names: &[String]) -> Result<(), Stri
 
     if !accessible_names
         .iter()
-        .any(|name| name == "view: configuration" || name == "view: main-window")
+        .any(|name| name == "view: setup" || name == "view: room")
     {
         return Err(
-            "accessibility tree is missing a known view indicator (expected 'view: configuration' or 'view: main-window')"
+            "accessibility tree is missing a known view indicator (expected 'view: setup' or 'view: room')"
                 .to_owned(),
         );
     }
@@ -906,7 +905,7 @@ fn wait_for_accessible_name<D: NativeGuiDriver>(
                         "Warning",
                         "Interval",
                         "Media Search",
-                        "view: media-search",
+                        "view: setup",
                     ],
                 ));
             }

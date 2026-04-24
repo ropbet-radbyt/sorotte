@@ -2,9 +2,9 @@ use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
-    GuiConfigurationTab, GuiMainWindowTab, GuiMediaIndexRuntimeSnapshot, GuiPlayerSetupIssue,
-    GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction, GuiShellModal,
-    GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
+    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
@@ -301,6 +301,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(true),
+        username: Some("Alice".to_owned()),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
         ..StoredClientSettingsMvp::default()
@@ -315,25 +316,16 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     );
     assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
-    assert!(state.apply(GuiShellAction::BeginLocalChatSend(
-        "hello widget".to_owned(),
+    assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+        GuiDraftRuntimeSnapshot {
+            outgoing_chat_message: Some("hello widget".to_owned()),
+        },
     )));
 
     let tree = state.main_window_widget_tree();
-    let tabs = tree
-        .find("main-window:tabs")
-        .expect("main-window tabs should exist in widget tree");
-    assert_eq!(
-        tabs.layout_mode,
-        Some(GuiLayoutMode::TabStrip {
-            min_tab_width: 132.0,
-        })
-    );
-    assert!(
-        tree.find("main-window:tab:overview")
-            .expect("overview tab should exist")
-            .selected
-    );
+    assert_eq!(tree.label, "Room");
+    assert!(tree.find("main-window:tabs").is_none());
+    assert!(tree.find("main-window:tab:overview").is_none());
     let browser = tree
         .find("main-window:browser")
         .expect("room browser should exist in widget tree");
@@ -352,12 +344,36 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(user_state.kind, GuiWidgetKind::Status);
     assert!(user_state.selected);
     assert!(tree.find("main-window:user:new").is_none());
+    let room_toggle = tree
+        .find("main-window:room-actions:toggle")
+        .expect("room-change toggle should exist in widget tree");
+    assert_eq!(room_toggle.kind, GuiWidgetKind::Button);
+    assert_eq!(room_toggle.label, "Change Room");
+    assert!(!room_toggle.selected);
+    assert!(
+        tree.find("main-window:room-input").is_none(),
+        "room-change form should be collapsed by default"
+    );
+
+    assert!(state.apply(GuiShellAction::ToggleMainWindowRoomChange));
+    let tree = state.main_window_widget_tree();
+    let room_toggle = tree
+        .find("main-window:room-actions:toggle")
+        .expect("room-change toggle should still exist in widget tree");
+    assert_eq!(room_toggle.label, "Hide Room Change");
+    assert!(room_toggle.selected);
     let room_input = tree
         .find("main-window:room-input")
-        .expect("room input should exist in widget tree");
+        .expect("room input should exist once room change is expanded");
     assert_eq!(room_input.kind, GuiWidgetKind::TextInput);
+    assert_eq!(room_input.label, "Room");
     assert_eq!(room_input.value.as_deref(), Some("Lounge"));
-    assert!(!room_input.enabled);
+    assert!(room_input.enabled);
+    let username = tree
+        .find("main-window:username")
+        .expect("session username should exist in the room summary");
+    assert_eq!(username.kind, GuiWidgetKind::Status);
+    assert_eq!(username.value.as_deref(), Some("Alice"));
     let room_control = tree
         .find("main-window:room-control")
         .expect("room-control status should exist in widget tree");
@@ -377,6 +393,39 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .expect("playlist add menu should exist in widget tree");
     assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
     assert_eq!(playlist_add_menu.children.len(), 2);
+    let playlist_header = tree
+        .find("main-window:playlist-header:actions")
+        .expect("playlist header actions should exist in widget tree");
+    assert_eq!(
+        playlist_header
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "main-window:playlist:add-menu",
+            "main-window:playlist:more-menu",
+        ]
+    );
+    let playlist_more_menu = tree
+        .find("main-window:playlist:more-menu")
+        .expect("playlist more menu should exist in widget tree");
+    assert!(
+        playlist_more_menu.enabled,
+        "playlist More menu should remain expandable even when some nested actions are disabled"
+    );
+    assert!(
+        playlist_more_menu
+            .children
+            .iter()
+            .any(|child| child.id == "main-window:playlist:load")
+    );
+    assert!(
+        playlist_more_menu
+            .children
+            .iter()
+            .any(|child| child.id == "main-window:playlist:save")
+    );
     let playlist_selection_bar = tree
         .find("main-window:playlist-selection:actions")
         .expect("playlist selection actions should exist when an entry is selected");
@@ -458,6 +507,71 @@ fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text(
         .expect("ready button should exist while readiness is pending");
     assert_eq!(ready_button.label, "Ready");
     assert!(!ready_button.enabled);
+}
+
+#[test]
+fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.commands.can_toggle_pause = true;
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.can_toggle_pause = true;
+    snapshot.can_seek = true;
+    snapshot.can_undo_seek = true;
+    snapshot.can_set_offset = true;
+    snapshot.can_toggle_autoplay = true;
+    snapshot.can_adjust_autoplay_threshold = true;
+    snapshot.can_set_ready = true;
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+    snapshot.playlist = Vec::new();
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    for id in [
+        "main-window:control:play",
+        "main-window:control:pause",
+        "main-window:control:toggle-pause",
+        "main-window:control:seek",
+        "main-window:control:undo-seek",
+        "main-window:control:set-offset",
+        "main-window:control:set-ready",
+        "main-window:control:autoplay-toggle",
+        "main-window:control:autoplay-threshold-up",
+    ] {
+        assert!(
+            !tree
+                .find(id)
+                .unwrap_or_else(|| panic!("{id} should exist"))
+                .enabled,
+            "{id} should be disabled while the shared playlist is empty"
+        );
+    }
+
+    snapshot.playlist = vec!["episode1.mkv".to_owned()];
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+    state.commands.can_toggle_pause = true;
+
+    let tree = state.main_window_widget_tree();
+    assert!(tree.find("main-window:control:play").unwrap().enabled);
+    assert!(
+        tree.find("main-window:control:toggle-pause")
+            .unwrap()
+            .enabled
+    );
+    assert!(tree.find("main-window:control:set-ready").unwrap().enabled);
+    assert!(
+        tree.find("main-window:control:autoplay-toggle")
+            .unwrap()
+            .enabled
+    );
 }
 
 #[test]
@@ -668,6 +782,27 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
         ]))
     );
 
+    let connection_configuration = state.configuration_widget_tree();
+    assert!(
+        connection_configuration
+            .find("configuration:connection-tools")
+            .is_some()
+    );
+    assert!(
+        connection_configuration
+            .find("config-section:Connection")
+            .is_some()
+    );
+    assert!(
+        connection_configuration
+            .find("config-section:Desync")
+            .is_some(),
+        "connection setup should keep playback/search tuning reachable"
+    );
+
+    assert!(state.apply(GuiShellAction::SelectConfigurationTab(
+        GuiConfigurationTab::Overview,
+    )));
     let configuration = state.configuration_widget_tree();
     assert_eq!(configuration.kind, GuiWidgetKind::Layout);
     assert_eq!(configuration.layout_mode, Some(GuiLayoutMode::Stack));
@@ -689,29 +824,31 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     );
     let connection_section = configuration.find("config-section:Connection").unwrap();
     assert_eq!(connection_section.column_span, 2);
+    assert!(
+        configuration.find("public-servers-root").is_some(),
+        "public server management should be embedded in setup"
+    );
+    assert!(
+        configuration.find("media-search-root").is_some(),
+        "media search management should be embedded in setup"
+    );
 
     let main_window = state.main_window_widget_tree();
     assert_eq!(main_window.kind, GuiWidgetKind::Layout);
     assert_eq!(main_window.layout_mode, Some(GuiLayoutMode::Stack));
-    let main_window_tabs = main_window.find("main-window:tabs").unwrap();
-    assert_eq!(
-        main_window_tabs.layout_mode,
-        Some(GuiLayoutMode::TabStrip {
-            min_tab_width: 132.0,
-        })
-    );
+    assert!(main_window.find("main-window:tabs").is_none());
     let top_region = main_window.find("main-window:top-region").unwrap();
     assert_eq!(
         top_region.layout_mode,
         Some(GuiLayoutMode::ResponsiveColumns {
-            min_column_width: 360.0,
+            min_column_width: 240.0,
             max_columns: 3,
         })
     );
     let summary_column = main_window.find("main-window:summary-column").unwrap();
     assert_eq!(summary_column.kind, GuiWidgetKind::Layout);
     let browser = main_window.find("main-window:browser").unwrap();
-    assert_eq!(browser.min_content_height, Some(300.0));
+    assert_eq!(browser.min_content_height, Some(260.0));
     let playlist = main_window.find("main-window:playlist").unwrap();
     assert_eq!(playlist.min_content_height, Some(220.0));
     let chat = main_window.find("main-window:chat").unwrap();
@@ -726,38 +863,42 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
         .collect();
     assert_eq!(
         top_region_children,
-        vec![
-            "main-window:summary-column",
-            "main-window:browser",
-            "main-window:playlist-column",
-        ]
+        vec!["main-window:summary-column", "main-window:work-area"]
+    );
+    let work_area = top_region.find("main-window:work-area").unwrap();
+    assert_eq!(work_area.column_span, 2);
+    let work_top_region = top_region.find("main-window:work-top-region").unwrap();
+    assert_eq!(
+        work_top_region.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 240.0,
+            max_columns: 2,
+        })
+    );
+    let work_top_children: Vec<_> = work_top_region
+        .children
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    assert_eq!(
+        work_top_children,
+        vec!["main-window:browser", "main-window:playlist-column"]
     );
 
     let public_servers = state.public_server_widget_tree();
-    assert_eq!(public_servers.kind, GuiWidgetKind::Layout);
-    let public_content = public_servers.find("public-servers:content").unwrap();
-    assert_eq!(
-        public_content.layout_mode,
-        Some(GuiLayoutMode::ResponsiveColumns {
-            min_column_width: 360.0,
-            max_columns: 2,
-        })
-    );
+    assert_eq!(public_servers.kind, GuiWidgetKind::Panel);
+    assert_eq!(public_servers.label, "Saved / Public Servers");
+    assert!(public_servers.find("public-servers:list").is_some());
+    assert!(public_servers.find("public-servers:commands").is_some());
 
     let media_search = state.media_search_widget_tree();
-    assert_eq!(media_search.kind, GuiWidgetKind::Layout);
-    let media_content = media_search.find("media-search:content").unwrap();
-    assert_eq!(
-        media_content.layout_mode,
-        Some(GuiLayoutMode::ResponsiveColumns {
-            min_column_width: 360.0,
-            max_columns: 2,
-        })
-    );
+    assert_eq!(media_search.kind, GuiWidgetKind::Panel);
+    assert!(media_search.find("media-search:directories").is_some());
+    assert!(media_search.find("media-search:utility").is_some());
 }
 
 #[test]
-fn gui_shell_app_state_projects_main_window_tab_owned_editor_content() {
+fn gui_shell_app_state_projects_main_window_room_owned_editor_content() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("Lounge".to_owned()),
         ..StoredClientSettingsMvp::default()
@@ -766,23 +907,61 @@ fn gui_shell_app_state_projects_main_window_tab_owned_editor_content() {
     assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
 
     let tree = state.main_window_widget_tree();
-    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playback);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert!(
-        tree.find("main-window:editors").is_none(),
-        "overview editor row should not be mounted while a focused playback tab is selected"
+        tree.find("main-window:editors").is_some(),
+        "room editor row should be mounted in the unified room dashboard"
     );
+    assert_eq!(
+        tree.find("main-window:editors")
+            .expect("room editor row should exist")
+            .label,
+        "Room Editors"
+    );
+    assert!(
+        tree.find("main-window:content").is_some(),
+        "room content should not keep the removed overview tab naming"
+    );
+    assert!(tree.find("main-window:content:overview").is_none());
     let media_url_edit = tree
         .find("main-window:media-url-edit")
-        .expect("media-url editor should exist on the playback tab");
+        .expect("media-url editor should exist in the room dashboard");
     assert_eq!(media_url_edit.kind, GuiWidgetKind::Panel);
+}
+
+#[test]
+fn gui_shell_app_state_projects_playlist_editors_inside_playlist_column() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
+    assert!(state.apply(GuiShellAction::BeginSharedPlaylistUrlEdit));
+
+    let tree = state.main_window_widget_tree();
+    let playlist_column = tree
+        .find("main-window:playlist-column")
+        .expect("playlist column should exist in the room dashboard");
     assert!(
-        tree.find("main-window:playlist-edit").is_none(),
-        "unrelated editors should remain hidden until their owning tab is selected"
+        playlist_column.find("main-window:playlist-edit").is_some(),
+        "playlist text editor should be mounted with the playlist controls"
+    );
+    assert!(
+        playlist_column
+            .find("main-window:playlist-url-edit")
+            .is_some(),
+        "playlist URL editor should be mounted with the playlist controls"
+    );
+    assert!(
+        tree.find("main-window:editors").is_none(),
+        "playlist-owned editors should not be appended as a separate bottom-of-screen editor row"
     );
 }
 
 #[test]
-fn gui_shell_app_state_projects_only_selected_tab_content_for_main_window_and_configuration() {
+fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_tab_content() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(true),
@@ -790,11 +969,10 @@ fn gui_shell_app_state_projects_only_selected_tab_content_for_main_window_and_co
         ..StoredClientSettingsMvp::default()
     });
 
-    assert!(state.apply(GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat,)));
     let main_window = state.main_window_widget_tree();
     assert!(main_window.find("main-window:chat-input").is_some());
-    assert!(main_window.find("main-window:playlist-actions").is_none());
-    assert!(main_window.find("main-window:browser").is_none());
+    assert!(main_window.find("main-window:playlist").is_some());
+    assert!(main_window.find("main-window:browser").is_some());
 
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::InterfaceSystem,
@@ -817,7 +995,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         ..StoredClientSettingsMvp::default()
     });
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::UpdateNotice)));
     assert!(state.apply(GuiShellAction::PushTransientNotification {
         level: GuiTransientNotificationLevel::Info,
@@ -830,7 +1008,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
     let active_view = tree
         .find("shell:active-view")
         .expect("active view status should exist");
-    assert_eq!(active_view.value.as_deref(), Some("public-servers"));
+    assert_eq!(active_view.value.as_deref(), Some("setup"));
 
     let open_modal = tree
         .find("shell:open-modal")
@@ -880,7 +1058,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
     let public_servers = tree
         .find("public-servers-root")
         .expect("public server subtree should exist");
-    assert!(public_servers.selected);
+    assert!(!public_servers.selected);
 }
 
 #[test]
@@ -998,7 +1176,7 @@ fn gui_shell_app_state_renders_shell_widget_trees_through_renderer() {
         ..StoredClientSettingsMvp::default()
     });
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.apply(GuiShellAction::PushTransientNotification {
         level: GuiTransientNotificationLevel::Info,
         message: "Renderer adapter ready".to_owned(),
@@ -1055,12 +1233,12 @@ fn gui_shell_app_state_renders_shell_widget_trees_through_renderer() {
         renderer
             .events
             .iter()
-            .any(|event| event == "begin:1:public-servers-root")
+            .any(|event| event.ends_with(":public-servers-root"))
     );
     assert!(
         renderer
             .events
             .iter()
-            .any(|event| event == "end:1:public-servers-root")
+            .any(|event| event.ends_with(":public-servers-root"))
     );
 }

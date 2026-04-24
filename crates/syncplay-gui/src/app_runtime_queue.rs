@@ -223,6 +223,10 @@ impl GuiQueuedRuntimeBridge {
                 | GuiShellAction::CompleteLocalChatSend
         )
     }
+
+    fn runtime_action_refreshes_pending_completion(action: &GuiShellAction) -> bool {
+        matches!(action, GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(_))
+    }
 }
 
 impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
@@ -232,9 +236,15 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
 
     fn drain_runtime_actions(&mut self) -> Vec<GuiShellAction> {
         let actions = self.handle.drain_actions();
+        let search_pending_should_retry = self.queued_pending_completion
+            == Some(GuiPendingOperationKind::SearchMissingMedia)
+            && actions
+                .iter()
+                .any(Self::runtime_action_refreshes_pending_completion);
         if actions
             .iter()
             .any(Self::runtime_action_clears_pending_operation)
+            || search_pending_should_retry
         {
             self.queued_pending_completion = None;
         }

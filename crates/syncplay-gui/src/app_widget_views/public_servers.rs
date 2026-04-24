@@ -26,10 +26,10 @@ impl SyncplayGuiShellAppState {
                 .collect(),
         );
 
-        let mut detail_children = vec![GuiWidgetNode::branch(
+        let commands = GuiWidgetNode::layout(
             "public-servers:commands",
             "Commands",
-            GuiWidgetKind::Panel,
+            GuiLayoutMode::Stack,
             vec![GuiWidgetNode::layout(
                 "public-servers:commands:buttons",
                 "Server Commands",
@@ -79,10 +79,11 @@ impl SyncplayGuiShellAppState {
                     ),
                 ],
             )],
-        )];
+        );
 
+        let mut children = vec![server_list.with_min_content_height(150.0), commands];
         if let Some(session) = &self.public_server_edit_session {
-            detail_children.push(GuiWidgetNode::branch(
+            children.push(GuiWidgetNode::branch(
                 "public-servers:edit-session",
                 "Edit Session",
                 GuiWidgetKind::Panel,
@@ -142,27 +143,11 @@ impl SyncplayGuiShellAppState {
             ));
         }
 
-        GuiWidgetNode::layout(
+        GuiWidgetNode::branch(
             "public-servers-root",
-            "Public Servers",
-            GuiLayoutMode::Stack,
-            vec![GuiWidgetNode::layout(
-                "public-servers:content",
-                "Public Servers Content",
-                GuiLayoutMode::ResponsiveColumns {
-                    min_column_width: 360.0,
-                    max_columns: 2,
-                },
-                vec![
-                    server_list,
-                    GuiWidgetNode::layout(
-                        "public-servers:detail",
-                        "Public Server Detail",
-                        GuiLayoutMode::Stack,
-                        detail_children,
-                    ),
-                ],
-            )],
+            "Saved / Public Servers",
+            GuiWidgetKind::Panel,
+            children,
         )
     }
 }

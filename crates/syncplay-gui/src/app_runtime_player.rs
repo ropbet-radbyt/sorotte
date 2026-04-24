@@ -252,7 +252,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn push_player_success_impl(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
         handle.push_actions([
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: message.clone(),
@@ -2458,7 +2458,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 Self::shared_playlist_open_success_message(&dispatch, opened_entry_count);
             let warning = self.shared_playlist_session_unavailable_message_impl();
             handle.push_actions([
-                GuiShellAction::SwitchView(GuiShellView::MainWindow),
+                GuiShellAction::SwitchView(GuiShellView::Room),
                 GuiShellAction::PushTransientNotification {
                     level: GuiTransientNotificationLevel::Success,
                     message: success_message.clone(),
@@ -2537,7 +2537,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let mut actions = Vec::new();
         if session_success {
-            actions.push(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+            actions.push(GuiShellAction::SwitchView(GuiShellView::Room));
         }
         if session_success {
             let message = Self::shared_playlist_open_success_message(&dispatch, opened_entry_count);

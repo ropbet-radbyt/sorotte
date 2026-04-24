@@ -155,7 +155,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             message: "Welcome.".to_owned(),
         },
         GuiShellAction::ApplyGuiRuntimeSnapshot(SyncplayGuiRuntimeSnapshot {
-            active_view: GuiShellView::PublicServers,
+            active_view: GuiShellView::Setup,
             open_modal: None,
             main_window: inbound_snapshot,
             public_servers: state.public_servers.clone(),
@@ -175,7 +175,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     assert!(matches!(
         inbound_actions.get(1),
         Some(GuiShellAction::ApplyGuiRuntimeSnapshot(snapshot))
-            if snapshot.active_view == GuiShellView::PublicServers
+            if snapshot.active_view == GuiShellView::Setup
     ));
     assert!(
         inbound_actions.iter().any(|action| matches!(
@@ -201,7 +201,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     for action in inbound_actions {
         assert!(state.apply(action));
     }
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state
             .main_window

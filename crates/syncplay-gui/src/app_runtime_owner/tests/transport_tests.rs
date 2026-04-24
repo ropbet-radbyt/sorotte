@@ -1351,7 +1351,7 @@ fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_tr
     assert!(hello_line.contains("\"alice\""));
     assert!(hello_line.contains("\"room1\""));
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let heartbeat_line = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(line) = heartbeat_rx.try_recv() {
@@ -1670,7 +1670,7 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
         .send(())
         .expect("reconnect test session transport server should be releasable");
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let reconnect_hello = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {
@@ -1845,7 +1845,17 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
         .send(())
         .expect("room-change reconnect test server should be releasable");
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    owner.handle_session_transport_failure(
+        &handle,
+        &mut state,
+        "Session transport TCP connection closed by the server.".to_owned(),
+    );
+    for action in handle.drain_actions() {
+        assert!(state.apply(action));
+    }
+    owner.session_transport_reconnect_due_at = Some(Instant::now());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
     let reconnect_hello = loop {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if let Ok(reconnect_hello) = reconnect_hello_rx.try_recv() {

@@ -932,14 +932,22 @@ impl GuiPersistedConfigRuntimeOwner {
                     .selected_public_server_index()
                     .and_then(|index| projected_state.public_servers.servers.get(index))
                     .map(|row| (row.label.clone(), row.address.clone()));
-                let replacement_transport_driver = selected_server
-                    .as_ref()
-                    .map(|(_label, address)| {
-                        GuiTcpSessionTransportDriver::connect_from_host_arg(address).map(|driver| {
-                            Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>
+                let replace_owned_transport =
+                    self.session.is_none() || self.session_transport.is_some();
+                let replacement_transport_driver = if replace_owned_transport {
+                    selected_server
+                        .as_ref()
+                        .map(|(_label, address)| {
+                            GuiTcpSessionTransportDriver::connect_from_host_arg(address).map(
+                                |driver| {
+                                    Box::new(driver) as Box<dyn GuiSessionTransportDriver + Send>
+                                },
+                            )
                         })
-                    })
-                    .transpose();
+                        .transpose()
+                } else {
+                    Ok(None)
+                };
                 let replacement_transport_driver = match replacement_transport_driver {
                     Ok(driver) => driver,
                     Err(error) => {

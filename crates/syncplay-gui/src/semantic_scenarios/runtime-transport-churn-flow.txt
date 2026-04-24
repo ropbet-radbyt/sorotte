@@ -14,8 +14,6 @@ assert-label	main-window:playlist:1	episode2.mkv
 assert-label	main-window:user:1	bob
 assert-value	main-window:user:1:state	self=no, ready=yes, controller=yes
 enter-text	main-window:chat-input	true	hellotcp
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	false	false	true	true	true	true	smoke-user,true,false,false|bob,false,false,false	postchat1.mkv|postchat2.mkv	system>connected|smoke-user>hellotcp|bob>state updated
@@ -25,8 +23,6 @@ assert-label	main-window:playlist:1	postchat2.mkv
 assert-label	main-window:user:1	bob
 assert-value	main-window:user:1:state	self=no, ready=no, controller=no
 enter-text	main-window:chat-input	true	goodbyeprimary
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	false	false	true	true	true	true	smoke-user,true,false,false	postchat1.mkv|postchat2.mkv	system>connected|smoke-user>goodbyeprimary|system>bob left
@@ -38,8 +34,6 @@ assert-label	main-window:playlist:1	reconnect2.mkv
 assert-label	main-window:user:1	carol
 assert-value	main-window:user:1:state	self=no, ready=no, controller=no
 enter-text	main-window:chat-input	true	helloreconnect
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	true	false	true	true	true	true	smoke-user,true,true,false|carol,false,true,true	reconnect-post1.mkv|reconnect-post2.mkv	system>reconnected|smoke-user>helloreconnect|carol>ready
@@ -49,8 +43,6 @@ assert-label	main-window:playlist:1	reconnect-post2.mkv
 assert-label	main-window:user:1	carol
 assert-value	main-window:user:1:state	self=no, ready=yes, controller=yes
 enter-text	main-window:chat-input	true	goodbyereconnect
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 apply-main-window-runtime	smoke-room	true	true	false	true	true	true	true	smoke-user,true,true,false	reconnect-post1.mkv|reconnect-post2.mkv	system>reconnected|smoke-user>goodbyereconnect|system>carol left

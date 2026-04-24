@@ -234,14 +234,6 @@ impl SyncplayGuiShellAppState {
                 },
                 vec![
                     GuiWidgetNode::leaf(
-                        "config-command:edit-room-history",
-                        "Edit Room History",
-                        GuiWidgetKind::Button,
-                        None,
-                        self.pending_operation.is_none(),
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
                         "config-command:connect",
                         self.saved_session_connect_button_label(),
                         GuiWidgetKind::Button,
@@ -279,6 +271,14 @@ impl SyncplayGuiShellAppState {
                         GuiWidgetKind::Button,
                         None,
                         self.commands.can_reload_configuration,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "config-command:edit-room-history",
+                        "Edit Room History",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.pending_operation.is_none(),
                         false,
                     ),
                     GuiWidgetNode::leaf(
@@ -342,6 +342,8 @@ impl SyncplayGuiShellAppState {
                 .find(|card| card.label == title)
                 .cloned()
         };
+        let public_servers_panel = self.public_server_widget_tree();
+        let media_search_panel = self.media_search_widget_tree();
 
         let mut overview_children = vec![GuiWidgetNode::layout(
             "configuration:sections",
@@ -352,6 +354,15 @@ impl SyncplayGuiShellAppState {
             },
             section_cards.clone(),
         )];
+        overview_children.push(GuiWidgetNode::layout(
+            "configuration:setup-workflows",
+            "Setup Workflows",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 360.0,
+                max_columns: 2,
+            },
+            vec![public_servers_panel.clone(), media_search_panel.clone()],
+        ));
         if let Some(panel) = room_history_panel.clone() {
             overview_children.push(panel);
         }
@@ -362,14 +373,32 @@ impl SyncplayGuiShellAppState {
             overview_children,
         );
 
-        let connection_content = GuiWidgetNode::layout(
-            "configuration:content:connection",
-            "Connection Content",
+        let connection_card = section_card("Connection").map(|panel| panel.with_span(1));
+        let connection_tools = GuiWidgetNode::layout(
+            "configuration:connection-tools",
+            "Connection Tools",
             GuiLayoutMode::Stack,
-            [section_card("Connection"), room_history_panel.clone()]
+            [Some(media_search_panel.clone()), section_card("Desync")]
                 .into_iter()
                 .flatten()
                 .collect(),
+        );
+        let connection_content = GuiWidgetNode::layout(
+            "configuration:content:connection",
+            "Connection Content",
+            GuiLayoutMode::ResponsiveColumns {
+                min_column_width: 320.0,
+                max_columns: 3,
+            },
+            [
+                Some(public_servers_panel.clone()),
+                connection_card,
+                Some(connection_tools),
+                room_history_panel.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         );
 
         let playback_search_content = GuiWidgetNode::layout(
@@ -382,6 +411,7 @@ impl SyncplayGuiShellAppState {
             ["Readiness", "Desync", "Media Search"]
                 .into_iter()
                 .filter_map(section_card)
+                .chain([media_search_panel.clone()])
                 .collect(),
         );
 
@@ -421,13 +451,12 @@ impl SyncplayGuiShellAppState {
 
         GuiWidgetNode::layout(
             "configuration-root",
-            "Configuration",
+            "Setup",
             GuiLayoutMode::Stack,
             player_setup_panel
                 .into_iter()
                 .chain(stream_support_panel)
                 .chain([
-                    commands_panel,
                     GuiWidgetNode::layout(
                         "configuration:tabs",
                         "Configuration Tabs",
@@ -480,6 +509,7 @@ impl SyncplayGuiShellAppState {
                         ],
                     ),
                     selected_content,
+                    commands_panel,
                 ])
                 .collect(),
         )

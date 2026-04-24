@@ -36,13 +36,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let _initial_state = wait_for_any_accessible_name(
             driver,
             window,
-            &[
-                "modal: tls-certificate-prompt",
-                "view: menus-and-dialogs",
-                "view: media-search",
-                "view: configuration",
-                "view: main-window",
-            ],
+            &["modal: tls-certificate-prompt", "view: setup", "view: room"],
             step_timeout,
         )?;
         if wait_for_accessible_name(
@@ -66,17 +60,12 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let initial_view = wait_for_any_accessible_name(
             driver,
             window,
-            &[
-                "view: menus-and-dialogs",
-                "view: media-search",
-                "view: configuration",
-                "view: main-window",
-            ],
+            &["view: setup", "view: room"],
             step_timeout,
         )?;
-        if initial_view != "view: menus-and-dialogs" {
+        if initial_view != "view: setup" {
             return Err(format!(
-                "expected relaunch to restore the menus-and-dialogs view, got {initial_view:?}"
+                "expected relaunch to restore the setup view, got {initial_view:?}"
             ));
         }
         if wait_for_accessible_name(
@@ -104,25 +93,17 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 NativeControlKind::Button,
                 step_timeout,
             )?;
-            wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+            wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
             wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                "Menus & Dialogs",
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
             steps.push("gui-state-player-setup-modal".to_owned());
         }
-        wait_for_accessible_name(driver, window, "About Syncplay", step_timeout)?;
+        wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
         wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         navigate_to_view_with_fallback(
             driver,
             window,
             "Media Search",
-            "view: media-search",
+            "view: setup",
             "File",
             "Open Media Search",
             step_timeout,
@@ -135,7 +116,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Configuration",
-            "view: configuration",
+            "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
@@ -159,7 +140,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Privacy & Chat",
-            "Trusted Domains",
+            "Trusted Domains Only",
             step_timeout,
         )?;
         wait_for_accessible_name(driver, window, "Chat Input", step_timeout)?;
@@ -185,7 +166,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Configuration",
-            "view: configuration",
+            "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
@@ -261,12 +242,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             let _initial_state = wait_for_any_accessible_name(
                 driver,
                 first_run_window,
-                &[
-                    "modal: tls-certificate-prompt",
-                    "view: configuration",
-                    "view: public-servers",
-                    "view: main-window",
-                ],
+                &["modal: tls-certificate-prompt", "view: setup", "view: room"],
                 step_timeout,
             )?;
             if wait_for_accessible_name(
@@ -295,16 +271,12 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             let first_run_view = wait_for_any_accessible_name(
                 driver,
                 first_run_window,
-                &[
-                    "view: configuration",
-                    "view: public-servers",
-                    "view: main-window",
-                ],
+                &["view: setup", "view: room"],
                 step_timeout,
             )?;
-            if first_run_view != "view: configuration" {
+            if first_run_view != "view: setup" {
                 return Err(format!(
-                    "expected first launch after clear-GUI-data to return to configuration, got {first_run_view:?}"
+                    "expected first launch after clear-GUI-data to return to setup, got {first_run_view:?}"
                 ));
             }
             wait_for_accessible_name(
@@ -391,12 +363,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             let _migration_initial_state = wait_for_any_accessible_name(
                 driver,
                 migration_window,
-                &[
-                    "modal: tls-certificate-prompt",
-                    "view: public-servers",
-                    "view: configuration",
-                    "view: main-window",
-                ],
+                &["modal: tls-certificate-prompt", "view: setup", "view: room"],
                 step_timeout,
             )?;
             if wait_for_accessible_name(
@@ -420,16 +387,12 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             let migration_view = wait_for_any_accessible_name(
                 driver,
                 migration_window,
-                &[
-                    "view: public-servers",
-                    "view: configuration",
-                    "view: main-window",
-                ],
+                &["view: setup", "view: room"],
                 step_timeout,
             )?;
-            if migration_view != "view: public-servers" {
+            if migration_view != "view: setup" {
                 return Err(format!(
-                    "expected config-migration launch to restore the public-server browser view, got {migration_view:?}"
+                    "expected config-migration launch to restore setup, got {migration_view:?}"
                 ));
             }
             wait_for_named_control_count(
@@ -452,7 +415,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 driver,
                 migration_window,
                 "Configuration",
-                "view: configuration",
+                "view: setup",
                 "Advanced",
                 "Trusted Domains",
                 step_timeout,

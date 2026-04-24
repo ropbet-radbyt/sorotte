@@ -284,7 +284,7 @@ fn gui_semantic_scenario_runner_reports_named_results_from_lookup() {
     .expect("named semantic scenario should run")
     .expect("lookup should produce a report");
     assert_eq!(report.scenario, "configuration-surface-flow");
-    assert_eq!(report.view, "media-search");
+    assert_eq!(report.view, "setup");
     assert_eq!(report.modal, "none");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);
@@ -324,7 +324,7 @@ fn gui_semantic_scenario_runner_reports_named_results_from_lookup() {
         &script_path,
         "\
 meta\tname\tfile-seeded-flow\n\
-meta\texpect-view\tpublic-servers\n\
+meta\texpect-view\tsetup\n\
 meta\texpect-modal\tnone\n\
 meta\texpect-pending\tnone\n\
 setting\thost\tfile-script.example\n\
@@ -333,8 +333,6 @@ setting\tpublic-server\tMirror\tmirror.example:8999\n\
 assert-selected\tconfiguration-root\ttrue\n\
 assert-value\tconfig:Connection:Host\tfile-script.example\n\
 assert-value\tconfig:Connection:Port\t8999\n\
-activate\tpublic-servers-root\n\
-assert-selected\tpublic-servers-root\ttrue\n\
 assert-label\tpublic-servers:row:0\tMirror\n",
     )
     .expect("semantic script file should be created");
@@ -347,12 +345,12 @@ assert-label\tpublic-servers:row:0\tMirror\n",
     .expect("script semantic scenario should run")
     .expect("lookup should produce a script report");
     assert_eq!(script_report.scenario, "file-seeded-flow");
-    assert_eq!(script_report.view, "public-servers");
+    assert_eq!(script_report.view, "setup");
 
     std::fs::write(
         &script_path,
         "\
-meta\texpect-view\tmain-window\n\
+meta\texpect-view\troom\n\
 assert-selected\tconfiguration-root\ttrue\n",
     )
     .expect("mismatch semantic script file should be updated");
@@ -386,7 +384,7 @@ fn syncplay_gui_semantic_cli_wrapper_renders_lookup_output() {
     .expect("semantic cli wrapper should run")
     .expect("semantic cli wrapper should produce output");
     assert!(output.starts_with("{\"result\":\"ok\","));
-    assert!(output.contains("\"view\":\"media-search\""));
+    assert!(output.contains("\"view\":\"setup\""));
 }
 
 #[test]
@@ -435,6 +433,7 @@ fn syncplay_gui_semantic_cli_wrapper_runs_explicit_args() {
         &append_script_path,
         "\
 # delta script\n\
+activate\tconfiguration:tab:connection\n\
 enter-text\tconfig:Connection:Host\tfalse\toverride.example\n\
 assert-value\tconfig:Connection:Host\toverride.example\n",
     )
@@ -452,7 +451,7 @@ assert-value\tconfig:Connection:Host\toverride.example\n",
     .expect("semantic cli append-script should produce output");
     assert!(appended.starts_with("{\"result\":\"ok\","));
     assert!(appended.contains("\"scenario\":\"configuration-surface-flow\""));
-    assert!(appended.contains("\"view\":\"media-search\""));
+    assert!(appended.contains("\"view\":\"setup\""));
     std::fs::remove_file(&append_script_path)
         .expect("semantic append script file should be removed");
 
@@ -493,7 +492,7 @@ fn syncplay_gui_semantic_report_wrapper_returns_structured_lookup_output() {
     .expect("semantic report wrapper should run")
     .expect("semantic report wrapper should return a report");
     assert_eq!(report.scenario, "configuration-surface-flow");
-    assert_eq!(report.view, "media-search");
+    assert_eq!(report.view, "setup");
     assert_eq!(report.modal, "none");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);
@@ -504,7 +503,7 @@ fn syncplay_gui_semantic_report_wrapper_runs_persistence_reset_flow() {
     let report = run_gui_semantic_scenario_named("persistence-reset-flow")
         .expect("persistence/reset semantic scenario should run");
     assert_eq!(report.scenario, "persistence-reset-flow");
-    assert_eq!(report.view, "configuration");
+    assert_eq!(report.view, "setup");
     assert_eq!(report.modal, "player-setup");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);
@@ -515,7 +514,7 @@ fn syncplay_gui_semantic_report_wrapper_runs_player_setup_flow() {
     let report = run_gui_semantic_scenario_named("player-setup-flow")
         .expect("player setup semantic scenario should run");
     assert_eq!(report.scenario, "player-setup-flow");
-    assert_eq!(report.view, "configuration");
+    assert_eq!(report.view, "setup");
     assert_eq!(report.modal, "player-setup");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);
@@ -526,14 +525,14 @@ fn syncplay_gui_semantic_report_wrapper_runs_inline_script() {
     let report = run_syncplay_gui_semantic_report(GuiSemanticScenarioSource::InlineScript(
         "\
 meta\tname\tinline-check\n\
-meta\texpect-view\tconfiguration\n\
+meta\texpect-view\tsetup\n\
 assert-selected\tconfiguration-root\ttrue\n\
 assert-pending\tnone\n"
             .to_owned(),
     ))
     .expect("inline semantic script should run");
     assert_eq!(report.scenario, "inline-check");
-    assert_eq!(report.view, "configuration");
+    assert_eq!(report.view, "setup");
     assert_eq!(report.modal, "none");
     assert_eq!(report.pending, "none");
     assert!(report.widgets > 0);

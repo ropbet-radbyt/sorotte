@@ -326,14 +326,14 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     assert_eq!(
         preview_open_actions,
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec!["open-target.mkv".to_owned()]),
         ],
     );
     for action in preview_open_actions {
         assert!(no_runtime_state.apply(action));
     }
-    assert_eq!(no_runtime_state.active_view, GuiShellView::MainWindow);
+    assert_eq!(no_runtime_state.active_view, GuiShellView::Room);
     assert_eq!(
         no_runtime_state
             .main_window

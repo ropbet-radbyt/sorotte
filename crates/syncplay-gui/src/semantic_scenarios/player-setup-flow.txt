@@ -7,7 +7,7 @@ assert-enabled	config-command:connect	false
 assert-enabled	config-player-setup:retry	false
 assert-value	shell:modal:player-setup:blocking	Set up mpv before connecting. Use Auto-detect, Choose mpv.exe, or Retry mpv after updating Player Path.
 activate	shell:modal:player-setup:open-settings
-assert-value	shell:active-view	configuration
+assert-value	shell:active-view	setup
 assert-value	shell:open-modal	(none)
 assert-selected	configuration:tab:connection	true
 apply-player-setup-runtime	missing-binary	Configured player path C:/missing/mpv.exe was not found.

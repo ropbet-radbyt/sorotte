@@ -4,15 +4,13 @@ setting	public-server	Beta	beta.example:9000
 assert-selected	configuration-root	true
 enter-text	config:System:Language	false	fr
 clear-notifications
-activate	public-servers-root
-assert-selected	public-servers-root	true
+activate	configuration:tab:connection
+assert-selected	configuration-root	true
 activate	public-servers:command:refresh
 assert-pending	refresh-public-servers
 complete-pending-runtime
 assert-pending	none
 clear-notifications
-activate	menus-root
-assert-selected	menus-root	true
 activate	menus:action:4:2
 assert-value	shell:open-modal	(none)
 assert-value	menus:dialog:update	yes

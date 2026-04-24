@@ -104,6 +104,136 @@ fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     .map(|_| ())
 }
 
+fn navigate_to_room_surface<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<(), String> {
+    navigate_to_view_with_fallback(
+        driver,
+        window,
+        "Room",
+        "view: room",
+        "Window",
+        "Show Users",
+        timeout,
+    )
+}
+
+fn wait_for_room_browser_visible<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<(), String> {
+    navigate_to_room_surface(driver, window, timeout)?;
+    wait_for_accessible_name(driver, window, MAIN_WINDOW_ROOM_BROWSER_NAME, timeout).map(|_| ())
+}
+
+fn wait_for_shared_playlist_visible<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<(), String> {
+    navigate_to_room_surface(driver, window, timeout)?;
+    wait_for_accessible_name(driver, window, "Shared Playlist", timeout).map(|_| ())
+}
+
+fn wait_for_shared_playlist_controls_enabled<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    timeout: Duration,
+) -> Result<(), String> {
+    wait_for_shared_playlist_visible(driver, window, timeout)?;
+    wait_for_named_control_enabled_state(
+        driver,
+        window,
+        "Add",
+        NativeControlKind::Button,
+        true,
+        timeout,
+    )
+}
+
+fn wait_for_shared_playlist_entry<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    entry: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    wait_for_shared_playlist_visible(driver, window, timeout)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let accessible_names = driver.accessible_names(window).unwrap_or_default();
+        if accessible_names.iter().any(|name| name == entry) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let mut media_names = accessible_names
+                .into_iter()
+                .filter(|name| {
+                    name.contains(".mkv")
+                        || name.contains("Playlist")
+                        || name.contains("Inbound")
+                        || name.contains("failed")
+                        || name.contains("unsupported")
+                        || name.contains("bob")
+                        || name.contains("smoke-user")
+                        || name.contains("Ready")
+                        || name.contains("pending")
+                })
+                .collect::<Vec<_>>();
+            media_names.sort();
+            media_names.dedup();
+            return Err(format!(
+                "timed out waiting for shared playlist entry {entry:?}; playlist-related accessible names: {}",
+                media_names.join(", ")
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn invoke_button_or_any_named_control<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    invoke_named_control_with_wait(driver, window, name, NativeControlKind::Button, timeout)
+        .or_else(|button_error| {
+            invoke_named_control_with_wait(driver, window, name, NativeControlKind::Any, timeout)
+                .map_err(|any_error| {
+                    format!(
+                        "failed to invoke {name:?}; button failure: {button_error}; any-control failure: {any_error}"
+                    )
+                })
+        })
+}
+
+fn add_shared_playlist_url_entry<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    entry: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    wait_for_shared_playlist_controls_enabled(driver, window, timeout)?;
+    invoke_button_or_any_named_control(driver, window, "Add", timeout)?;
+    invoke_button_or_any_named_control(driver, window, "Paste URLs...", timeout)?;
+    wait_for_accessible_name(driver, window, "Playlist URLs", timeout)?;
+    driver.set_named_edit_value(window, "URLs", entry, false)?;
+    wait_for_named_edit_value(driver, window, "URLs", entry, timeout)?;
+    invoke_button_or_any_named_control(driver, window, "Add URLs To Playlist", timeout)?;
+    wait_for_named_control_count(
+        driver,
+        window,
+        "Playlist URLs",
+        NativeControlKind::Any,
+        0,
+        timeout,
+    )?;
+    wait_for_accessible_name_fragment(driver, window, entry, timeout).map(|_| ())
+}
+
 fn assert_chat_input_cleared<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -131,13 +261,7 @@ fn wait_for_visible_chat_message<D: NativeGuiDriver>(
         return Ok(());
     }
 
-    let _ = select_top_tab_with_wait(
-        driver,
-        window,
-        "Chat",
-        "Chat Input",
-        Duration::from_millis(800),
-    );
+    let _ = navigate_to_room_surface(driver, window, Duration::from_millis(800));
 
     let _ = invoke_menu_command_with_fallback(
         driver,
@@ -190,9 +314,9 @@ fn send_chat_message_and_complete<D: NativeGuiDriver>(
     message: &str,
     timeout: Duration,
 ) -> Result<(), String> {
-    let _ = select_top_tab_with_wait(driver, window, "Chat", "Chat Input", timeout);
+    navigate_to_room_surface(driver, window, timeout)?;
+    wait_for_accessible_name(driver, window, "Chat Input", timeout)?;
     driver.set_named_edit_value(window, "Chat Input", message, true)?;
-    wait_for_pending_operation_to_finish(driver, window, "pending: send-chat-message", timeout)?;
     assert_chat_input_cleared(driver, window, timeout)?;
     Ok(())
 }
@@ -738,12 +862,8 @@ fn start_mock_session_server(
     })
 }
 
-fn start_timed_mock_session_server(
+fn start_phased_mock_session_server(
     initial_lines: &'static [&'static str],
-    first_followup_delay: Duration,
-    first_followup_lines: &'static [&'static str],
-    second_followup_delay: Duration,
-    second_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
@@ -811,17 +931,6 @@ fn start_timed_mock_session_server(
 
         write_lines("initial", initial_lines)?;
 
-        if !first_followup_lines.is_empty()
-            && release_rx.recv_timeout(first_followup_delay).is_err()
-        {
-            write_lines("first follow-up", first_followup_lines)?;
-        }
-        if !second_followup_lines.is_empty()
-            && release_rx.recv_timeout(second_followup_delay).is_err()
-        {
-            write_lines("second follow-up", second_followup_lines)?;
-        }
-
         let _ = release_rx.recv_timeout(Duration::from_secs(10));
         Ok(())
     });
@@ -870,10 +979,6 @@ fn wait_for_named_edit_value<D: NativeGuiDriver>(
         }
         thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn trusted_domains_edit_index(player_arguments_enabled: bool) -> usize {
-    if player_arguments_enabled { 8 } else { 7 }
 }
 
 fn wait_for_edit_value_by_index<D: NativeGuiDriver>(

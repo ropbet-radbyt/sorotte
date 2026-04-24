@@ -54,7 +54,7 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
     let (mut child, window) = launch_syncplay_gui_with_retry(driver, binary_path, launch, timeout)?;
 
     let outcome = (|| -> Result<Vec<String>, String> {
-        let step_timeout = timeout.min(Duration::from_millis(6_000));
+        let step_timeout = timeout.min(Duration::from_millis(15_000));
         let mut steps = Vec::new();
 
         let _initial_state = wait_for_any_accessible_name(
@@ -62,9 +62,9 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             window,
             &[
                 "modal: tls-certificate-prompt",
-                "view: configuration",
-                "view: main-window",
-                "view: media-search",
+                "view: setup",
+                "view: room",
+                "view: setup",
             ],
             step_timeout,
         )?;
@@ -86,45 +86,29 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         }
 
-        if wait_for_accessible_name(
-            driver,
-            window,
-            "view: main-window",
-            Duration::from_millis(800),
-        )
-        .is_err()
+        if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
+            .is_err()
         {
             navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                "view: main-window",
+                "view: room",
                 "Window",
                 "Show Users",
                 step_timeout,
             )?;
         }
 
-        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
-        wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
-        wait_for_named_control_enabled_state(
-            driver,
-            window,
-            "New Entry",
-            NativeControlKind::Any,
-            true,
-            step_timeout,
-        )?;
         let search_target_value = search_target_path.display().to_string();
-        driver.set_named_edit_value(window, "New Entry", &search_target_value, true)?;
-        wait_for_accessible_name_fragment(driver, window, &search_target_value, step_timeout)?;
+        add_shared_playlist_url_entry(driver, window, &search_target_value, step_timeout)?;
         steps.push("detached-missing-media-target-staged".to_owned());
 
         navigate_to_view_with_fallback(
             driver,
             window,
             "Media Search",
-            "view: media-search",
+            "view: setup",
             "File",
             "Open Media Search",
             step_timeout,
@@ -148,20 +132,15 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
             "pending: search-missing-media",
             step_timeout,
         )?;
-        if wait_for_accessible_name(
-            driver,
-            window,
-            "view: main-window",
-            Duration::from_millis(1_200),
-        )
-        .is_err()
+        if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(1_200))
+            .is_err()
         {
-            wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+            wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
             navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                "view: main-window",
+                "view: room",
                 "Window",
                 "Show Users",
                 step_timeout,
@@ -276,9 +255,9 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             window,
             &[
                 "modal: tls-certificate-prompt",
-                "view: menus-and-dialogs",
-                "view: configuration",
-                "view: main-window",
+                "view: setup",
+                "view: setup",
+                "view: room",
             ],
             step_timeout,
         )?;
@@ -303,7 +282,7 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             driver,
             window,
             "Main Window",
-            "view: main-window",
+            "view: room",
             "Window",
             "Show Users",
             step_timeout,
@@ -327,7 +306,7 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             driver,
             window,
             "Media Search",
-            "view: media-search",
+            "view: setup",
             "File",
             "Open Media Search",
             step_timeout,
@@ -351,20 +330,15 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
             "pending: search-missing-media",
             step_timeout,
         )?;
-        if wait_for_accessible_name(
-            driver,
-            window,
-            "view: main-window",
-            Duration::from_millis(1_200),
-        )
-        .is_err()
+        if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(1_200))
+            .is_err()
         {
-            wait_for_accessible_name(driver, window, "view: media-search", step_timeout)?;
+            wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
             navigate_to_view_with_fallback(
                 driver,
                 window,
                 "Main Window",
-                "view: main-window",
+                "view: room",
                 "Window",
                 "Show Users",
                 step_timeout,

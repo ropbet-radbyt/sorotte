@@ -148,19 +148,12 @@ impl SyncplayGuiShellAppState {
 
     pub(crate) fn shell_widget_tree(&self) -> GuiWidgetNode {
         let mut configuration = self.configuration_widget_tree();
-        configuration.selected = self.active_view == GuiShellView::Configuration;
+        configuration.selected = self.active_view == GuiShellView::Setup;
 
         let mut main_window = self.main_window_widget_tree();
-        main_window.selected = self.active_view == GuiShellView::MainWindow;
+        main_window.selected = self.active_view == GuiShellView::Room;
 
-        let mut menus = self.menu_dialog_widget_tree();
-        menus.selected = self.active_view == GuiShellView::MenusAndDialogs;
-
-        let mut public_servers = self.public_server_widget_tree();
-        public_servers.selected = self.active_view == GuiShellView::PublicServers;
-
-        let mut media_search = self.media_search_widget_tree();
-        media_search.selected = self.active_view == GuiShellView::MediaSearch;
+        let menus = self.menu_dialog_widget_tree();
 
         let notifications = GuiWidgetNode::branch(
             "shell:notifications",
@@ -293,11 +286,9 @@ impl SyncplayGuiShellAppState {
                 self.command_status_widget_tree(),
                 self.validation_widget_tree(),
                 notifications,
-                configuration,
                 main_window,
+                configuration,
                 menus,
-                public_servers,
-                media_search,
             ],
         )
     }

@@ -10,8 +10,9 @@ use std::{
 use super::{GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiQueuedRuntimeBridge};
 
 use crate::app::{
-    GuiPendingCompletionRequest, GuiPendingOperationKind, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
-    GuiShellAction, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    GuiMediaIndexRuntimeSnapshot, GuiPendingCompletionRequest, GuiPendingOperationKind,
+    GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiShellAction, GuiShellView,
+    GuiTransientNotificationLevel, SyncplayGuiShellAppState,
     native_host::GuiEframeNativeHost,
     runtime_bridge::GuiPreviewRuntimeOwner,
     runtime_queue::{
@@ -217,7 +218,7 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
     assert_eq!(
         handle.drain_preview_response_actions(),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
                 "episode1.mkv".to_owned(),
                 "episode2.mkv".to_owned(),
@@ -225,7 +226,10 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         ]
     );
 
-    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    state.outgoing_chat_message = Some("hello".to_owned());
+    assert!(state.apply(GuiShellAction::BeginPendingOperation(
+        GuiPendingOperationKind::SendChatMessage
+    )));
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(runtime.actions_for_pending_cancel(&state).is_empty());
     assert_eq!(
@@ -254,13 +258,67 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(handle.drain_requests().is_empty());
+    handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+        GuiMediaIndexRuntimeSnapshot {
+            active: true,
+            message: Some("Indexing media 1/1: missing-target.mkv".to_owned()),
+        },
+    ));
+    assert_eq!(
+        runtime.drain_runtime_actions(),
+        vec![GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+            GuiMediaIndexRuntimeSnapshot {
+                active: true,
+                message: Some("Indexing media 1/1: missing-target.mkv".to_owned()),
+            },
+        )]
+    );
+    assert!(runtime.actions_for_pending_completion(&state).is_empty());
+    assert!(handle.drain_requests().is_empty());
     handle.push_action(GuiShellAction::CompleteLocalChatSend);
     assert_eq!(
         runtime.drain_runtime_actions(),
         vec![GuiShellAction::CompleteLocalChatSend]
     );
+    assert!(state.apply(GuiShellAction::CompleteLocalChatSend));
+    state.commands.can_search_missing_media = true;
+    assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+    assert!(runtime.actions_for_pending_completion(&state).is_empty());
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia
+        )]
+    );
+    assert!(runtime.actions_for_pending_completion(&state).is_empty());
+    assert!(handle.drain_requests().is_empty());
+    handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+        GuiMediaIndexRuntimeSnapshot {
+            active: false,
+            message: None,
+        },
+    ));
+    assert_eq!(
+        runtime.drain_runtime_actions(),
+        vec![GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
+            GuiMediaIndexRuntimeSnapshot {
+                active: false,
+                message: None,
+            },
+        )]
+    );
+    assert!(runtime.actions_for_pending_completion(&state).is_empty());
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia
+        )]
+    );
     assert!(state.apply(GuiShellAction::CancelPendingOperation));
-    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    state.outgoing_chat_message = Some("hello".to_owned());
+    assert!(state.apply(GuiShellAction::BeginPendingOperation(
+        GuiPendingOperationKind::SendChatMessage
+    )));
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert_eq!(
         handle.drain_requests(),

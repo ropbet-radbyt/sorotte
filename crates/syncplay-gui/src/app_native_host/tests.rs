@@ -152,7 +152,7 @@ fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
         player_path: Some("C:/totally-missing/mpv.exe".to_owned()),
         ..StoredClientSettingsMvp::default()
     });
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::PrivacyChat,
     )));
@@ -178,7 +178,7 @@ fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
         assert!(state.apply(action));
     }
 
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.selected_configuration_tab,
         GuiConfigurationTab::Connection

@@ -104,12 +104,7 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.force_gui_prompt, Some(true));
     assert!(driver.state().menus.tls_prompt_expected);
     assert!(!driver.state().menus.update_notice_expected);
-    assert!(
-        driver
-            .widget("public-servers:row:0")
-            .expect("public-server row should exist")
-            .selected
-    );
+    assert_eq!(driver.state().selected_public_server_index(), Some(0));
     assert_eq!(
         driver.state().selection.selected_media_search_directory,
         Some(0)
@@ -155,7 +150,7 @@ fn gui_semantic_driver_runs_core_shell_smoke_scenario_without_platform_ui() {
     assert_eq!(stored.host.as_deref(), Some("custom.example"));
     assert_eq!(stored.port, Some(9001));
     assert_eq!(stored.public_servers.as_ref().map(Vec::len), Some(3));
-    assert_eq!(driver.active_view_label(), "main-window");
+    assert_eq!(driver.active_view_label(), "room");
     assert_eq!(driver.active_modal_label(), "none");
     assert_eq!(driver.pending_operation_label(), "none");
 }
@@ -196,7 +191,7 @@ fn gui_semantic_driver_runs_player_setup_scenario_without_platform_ui() {
         .run()
         .unwrap_or_else(|error| panic!("{} should execute successfully: {error}", scenario.name()));
 
-    assert_eq!(driver.active_view_label(), "configuration");
+    assert_eq!(driver.active_view_label(), "setup");
     assert_eq!(driver.active_modal_label(), "player-setup");
     assert_eq!(
         driver

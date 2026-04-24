@@ -9,6 +9,7 @@ enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
 assert-enabled	config:Connection:Player Arguments	true
 enter-text	config:Connection:Player Arguments	false	--profile=fast --no-border
 enter-text	config:Connection:Room History	false	smoke-backup\nsmoke-room
+activate	configuration:tab:overview
 activate	config:Readiness:Ready At Start
 activate	config:Readiness:Autoplay
 activate	config:Readiness:Require Same Filenames
@@ -141,8 +142,9 @@ assert-value	main-window:connection-status	disconnected
 assert-value	main-window:connection-target	syncplay.example:8999
 assert-enabled	main-window:connection:connect	true
 assert-enabled	main-window:connection:disconnect	false
-activate	public-servers-root
-assert-selected	public-servers-root	true
+activate	configuration-root
+assert-selected	configuration-root	true
+activate	configuration:tab:connection
 activate	public-servers:row:0
 assert-enabled	public-servers:command:connect	true
 assert-value	config:Connection:Host	syncplay.pl
@@ -151,8 +153,8 @@ activate	public-servers:command:connect
 assert-pending	connect-public-server
 cancel-pending
 assert-pending	none
-activate	media-search-root
-assert-selected	media-search-root	true
+activate	configuration:tab:playback-search
+assert-selected	configuration-root	true
 assert-value	media-search:timing:first-file	3.00s
 assert-value	media-search:timing:search	30.00s
 assert-value	media-search:timing:double-check	2.50s

@@ -2,8 +2,8 @@ use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
 
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
-    GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
-    SyncplayGuiShellAppState,
+    GuiPendingOperationKind, GuiRuntimeRequest, GuiSavedConfigurationRuntimeSnapshot,
+    GuiShellAction, GuiShellView, MainWindowPlaylistRow, SyncplayGuiShellAppState,
 };
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 
@@ -27,7 +27,7 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
             ],
         ),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
                 "Episode 1.mkv".to_owned(),
                 "Episode 2.mkv".to_owned(),
@@ -40,7 +40,7 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
             vec!["C:/Media/movie.mkv".to_owned()],
         ),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec!["movie.mkv".to_owned()]),
         ]
     );
@@ -68,7 +68,7 @@ fn gui_preview_runtime_bridge_imports_playlist_files_for_shared_playlist_ingest(
             None,
         ),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
                 "episode1.mkv".to_owned(),
                 "https://example.com/live".to_owned(),
@@ -100,7 +100,7 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
             Some(1),
         ),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
                 "episode1.mkv".to_owned(),
                 "episode2.mkv".to_owned(),
@@ -139,6 +139,10 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
     assert!(state.pending_operation.is_none());
 
     state.main_window.playback.can_toggle_pause = true;
+    state.main_window.playlist = vec![MainWindowPlaylistRow {
+        label: "episode1.mkv".to_owned(),
+        is_selected: false,
+    }];
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert_eq!(
         runtime.actions_for_pending_completion(&state),
@@ -159,7 +163,10 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
     }
     assert!(state.pending_operation.is_none());
 
-    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    state.outgoing_chat_message = Some("hello".to_owned());
+    assert!(state.apply(GuiShellAction::BeginPendingOperation(
+        GuiPendingOperationKind::SendChatMessage
+    )));
     assert_eq!(
         runtime.actions_for_pending_completion(&state),
         vec![GuiShellAction::CompleteLocalChatSend]
@@ -190,7 +197,7 @@ fn gui_preview_runtime_bridge_saves_configuration_before_config_view_connect_com
         label: "Room",
         value: "room2".to_owned(),
     }));
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
     assert!(state.pending_saved_server_connect_saves_configuration);
     assert_eq!(
@@ -217,7 +224,7 @@ fn gui_preview_runtime_bridge_keeps_main_window_connect_as_plain_connect_complet
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(state.apply(GuiShellAction::BeginSavedServerConnect));
     assert!(!state.pending_saved_server_connect_saves_configuration);
     assert_eq!(

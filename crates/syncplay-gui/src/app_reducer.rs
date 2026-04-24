@@ -16,11 +16,6 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            GuiShellAction::SelectMainWindowTab(tab) => {
-                self.select_main_window_tab(tab);
-                self.clear_action_error_and_refresh();
-                true
-            }
             GuiShellAction::SelectConfigurationTab(tab) => {
                 self.select_configuration_tab(tab);
                 self.clear_action_error_and_refresh();
@@ -606,8 +601,7 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::RequestSeekPrompt
             | GuiShellAction::RequestOffsetPrompt
             | GuiShellAction::RequestPlaybackUndoSeek => {
-                self.clear_action_error_and_refresh();
-                true
+                self.request_main_window_playback_control()
             }
             GuiShellAction::AnnounceLocalUserReady => self.announce_local_user_ready_state(true),
             GuiShellAction::AnnounceLocalUserNotReady => {
@@ -811,6 +805,11 @@ impl SyncplayGuiShellAppState {
             }
             GuiShellAction::ToggleMainWindowHideEmptyRooms => {
                 self.toggle_main_window_hide_empty_rooms()
+            }
+            GuiShellAction::ToggleMainWindowRoomChange => {
+                self.main_window_room_change_expanded = !self.main_window_room_change_expanded;
+                self.clear_action_error_and_refresh();
+                true
             }
             GuiShellAction::RequestMainWindowUserMediaOpen(_) => {
                 self.clear_action_error_and_refresh();

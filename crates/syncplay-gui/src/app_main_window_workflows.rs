@@ -1,13 +1,26 @@
 use syncplay_client_app::app_boundary::commands::controlled_room_base_name_legacy_compatible;
 
 use super::shell_state::{
-    GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState, GuiMainWindowTab,
+    GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState,
     GuiPendingOperationKind, GuiPendingOperationState, GuiShellView, GuiTransientNotificationLevel,
     MainWindowRoomRow, MainWindowUserRow, SyncplayGuiShellAppState,
 };
 use super::support::{joined_room_name_text, nonempty_room_name_text, normalized_editable_text};
 
 impl SyncplayGuiShellAppState {
+    pub(super) fn main_window_playlist_has_entries(&self) -> bool {
+        !self.main_window.playlist.is_empty()
+    }
+
+    pub(super) fn require_main_window_playlist_entry_for_controls(&mut self) -> bool {
+        if self.main_window_playlist_has_entries() {
+            return true;
+        }
+        self.record_action_error(
+            "Playback controls are unavailable until the shared playlist has an entry.",
+        )
+    }
+
     pub(super) fn move_main_window_playlist_row(
         &mut self,
         from_index: usize,
@@ -333,6 +346,7 @@ impl SyncplayGuiShellAppState {
     ) -> bool {
         self.pending_operation.is_none()
             && self.commands.can_disconnect_session
+            && self.main_window_playlist_has_entries()
             && self.main_window.playback.can_set_ready
             && self.main_window.playback.can_set_others_ready
             && !user.is_self
@@ -354,8 +368,7 @@ impl SyncplayGuiShellAppState {
                 "A joined room is required before creating a controlled room.",
             );
         };
-        self.active_view = GuiShellView::MainWindow;
-        self.select_main_window_tab(GuiMainWindowTab::Session);
+        self.active_view = GuiShellView::Room;
         self.controlled_room_create_session = Some(GuiControlledRoomCreateSessionState {
             room_buffer: room_name,
             is_dirty: false,
@@ -398,8 +411,7 @@ impl SyncplayGuiShellAppState {
                 "Controller access can only be requested while a controlled room is active.",
             );
         }
-        self.active_view = GuiShellView::MainWindow;
-        self.select_main_window_tab(GuiMainWindowTab::Session);
+        self.active_view = GuiShellView::Room;
         self.controller_auth_edit_session = Some(GuiControllerAuthEditSessionState {
             room_name,
             password_buffer: String::new(),
@@ -428,6 +440,9 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn begin_playback_pause_state(&mut self, paused: bool) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
         if self.main_window.playback_paused == paused {
             return self.record_action_error(if paused {
                 "Playback is already paused."
@@ -439,6 +454,9 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn begin_playback_pause_toggle(&mut self) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
         if self.pending_operation.is_some() {
             return self.record_action_error("Another GUI operation is already in progress.");
         }
@@ -522,7 +540,18 @@ impl SyncplayGuiShellAppState {
         self.set_playback_pause_state(paused, true)
     }
 
+    pub(super) fn request_main_window_playback_control(&mut self) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     pub(super) fn announce_local_user_ready_state(&mut self, ready: bool) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
         if !self.main_window.playback.can_set_ready {
             return self.record_action_error(
                 "Local readiness cannot change when ready controls are unavailable.",
@@ -564,6 +593,9 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn announce_autoplay_state(&mut self, active: bool) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
         if self.main_window.autoplay_active == active {
             return self.record_action_error(if active {
                 "Autoplay is already active."
@@ -591,6 +623,9 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn announce_autoplay_threshold(&mut self, threshold: usize) -> bool {
+        if !self.require_main_window_playlist_entry_for_controls() {
+            return false;
+        }
         if !(2..=99).contains(&threshold) {
             return self.record_action_error(
                 "Autoplay minimum users must stay within the supported 2-99 range.",

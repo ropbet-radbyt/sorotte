@@ -617,7 +617,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 rooms: browser_runtime_rooms("(no room joined)", false, true),
                 ..Default::default()
             }),
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: "Loaded 2 selected media entries into the shared playlist."
@@ -795,7 +795,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     assert_eq!(
         handle.drain_actions(),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: "Applied a 12.5 second seek via the attached recording player (target 12.500 seconds)."
@@ -813,7 +813,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     assert_eq!(
         handle.drain_actions(),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: "Applied a -2.5 second seek via the attached recording player (target 10.000 seconds)."
@@ -831,7 +831,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     assert_eq!(
         handle.drain_actions(),
         vec![
-            GuiShellAction::SwitchView(GuiShellView::MainWindow),
+            GuiShellAction::SwitchView(GuiShellView::Room),
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
                 message: "Applied an absolute seek via the attached recording player (target 42.000 seconds)."

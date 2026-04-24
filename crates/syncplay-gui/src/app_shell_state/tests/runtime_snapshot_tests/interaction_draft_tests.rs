@@ -5,7 +5,7 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
@@ -18,7 +18,7 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
         value: "zz".to_owned(),
     }));
 
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(state.open_modal, Some(GuiShellModal::About));
     assert_eq!(state.validation.issues.len(), 2);
     assert!(
@@ -42,7 +42,7 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
     assert!(
         rendered.contains("System / Language: must be one of the supported legacy language tags.")
     );
-    assert!(rendered.contains("active_view=public-servers"));
+    assert!(rendered.contains("active_view=setup"));
     assert!(rendered.contains("open_modal=about"));
 }
 
@@ -264,7 +264,7 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
         Some("runtime.example")
     );
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert_eq!(state.selection.selected_main_window_user, Some(1));
     assert!(state.main_window.users[1].is_selected);
 }
@@ -470,7 +470,7 @@ fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
     };
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&saved);
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
 
     let replacement = StoredClientSettingsMvp {
         host: Some("draft.example".to_owned()),
@@ -492,7 +492,7 @@ fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
 
     assert_eq!(state.configuration.to_stored_settings(), replacement);
     assert_eq!(state.saved_configuration, saved);
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(state.main_window.room_name, "DraftRoom");
     assert_eq!(
         state

@@ -89,15 +89,56 @@ fn gui_shell_dispatch_plan_preserves_literal_double_slash_chat() {
         ],
     );
 
-    assert!(plan.runtime_requests.is_empty());
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::SendChatMessage("/literal".to_owned())]
+    );
     assert_eq!(
         plan.shell_actions,
         vec![
             GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
                 outgoing_chat_message: Some("//literal".to_owned()),
             }),
-            GuiShellAction::BeginLocalChatSend("/literal".to_owned()),
+            GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: None,
+            }),
         ]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_plain_chat_to_nonblocking_runtime_send() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: Some("hello room".to_owned()),
+            }),
+            GuiShellAction::BeginLocalChatSend("hello room".to_owned()),
+        ],
+    );
+
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::SendChatMessage("hello room".to_owned())]
+    );
+    assert_eq!(
+        plan.shell_actions,
+        vec![
+            GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: Some("hello room".to_owned()),
+            }),
+            GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
+                outgoing_chat_message: None,
+            }),
+        ]
+    );
+    assert!(
+        !plan
+            .shell_actions
+            .iter()
+            .any(|action| matches!(action, GuiShellAction::BeginLocalChatSend(_)))
     );
 }
 

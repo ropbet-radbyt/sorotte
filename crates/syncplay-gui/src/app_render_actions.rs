@@ -8,10 +8,10 @@ use syncplay_client_app::app_boundary::{
 use super::mpv_launch;
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
-    GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiMainWindowTab,
-    GuiShellAction, GuiShellModal, GuiShellView, GuiTransientNotificationLevel,
-    SyncplayGuiShellAppState, browser_domain_from_url, load_playlist_entries_from_path,
-    playlist_entries_from_multiline_text, save_playlist_entries_to_path,
+    GuiConfigurationTab, GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiShellAction,
+    GuiShellModal, GuiShellView, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    browser_domain_from_url, load_playlist_entries_from_path, playlist_entries_from_multiline_text,
+    save_playlist_entries_to_path,
 };
 use super::support::{nonempty_room_name_text, normalized_editable_text};
 use super::widget_tree::GuiWidgetNode;
@@ -19,11 +19,8 @@ use super::widget_tree::GuiWidgetNode;
 impl GuiWidgetEguiRenderer {
     pub(super) fn action_for_surface_node(node: &GuiWidgetNode) -> Option<GuiShellAction> {
         let view = match node.id.as_str() {
-            "configuration-root" => GuiShellView::Configuration,
-            "main-window-root" => GuiShellView::MainWindow,
-            "menus-root" => GuiShellView::MenusAndDialogs,
-            "public-servers-root" => GuiShellView::PublicServers,
-            "media-search-root" => GuiShellView::MediaSearch,
+            "configuration-root" => GuiShellView::Setup,
+            "main-window-root" => GuiShellView::Room,
             _ => return None,
         };
         Some(GuiShellAction::SwitchView(view))
@@ -139,29 +136,6 @@ impl GuiWidgetEguiRenderer {
         }
 
         match node.id.as_str() {
-            "main-window:tab:overview" => {
-                vec![GuiShellAction::SelectMainWindowTab(
-                    GuiMainWindowTab::Overview,
-                )]
-            }
-            "main-window:tab:session" => {
-                vec![GuiShellAction::SelectMainWindowTab(
-                    GuiMainWindowTab::Session,
-                )]
-            }
-            "main-window:tab:playback" => {
-                vec![GuiShellAction::SelectMainWindowTab(
-                    GuiMainWindowTab::Playback,
-                )]
-            }
-            "main-window:tab:playlist" => {
-                vec![GuiShellAction::SelectMainWindowTab(
-                    GuiMainWindowTab::Playlist,
-                )]
-            }
-            "main-window:tab:chat" => {
-                vec![GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat)]
-            }
             "configuration:tab:overview" => {
                 vec![GuiShellAction::SelectConfigurationTab(
                     GuiConfigurationTab::Overview,
@@ -215,12 +189,15 @@ impl GuiWidgetEguiRenderer {
             "config-stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
             "config-stream-support:retry" => vec![GuiShellAction::RetryPendingStreamMediaOpen],
             "main-window:player-setup:open-settings" => vec![
-                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
             ],
             "main-window:connection:connect" => vec![GuiShellAction::BeginSavedServerConnect],
             "main-window:connection:disconnect" => {
                 vec![GuiShellAction::BeginSessionDisconnect]
+            }
+            "main-window:room-actions:toggle" => {
+                vec![GuiShellAction::ToggleMainWindowRoomChange]
             }
             "main-window:control:open-url" => vec![GuiShellAction::BeginMediaUrlEdit],
             "main-window:control:play" => vec![GuiShellAction::BeginPlaybackResume],
@@ -257,6 +234,18 @@ impl GuiWidgetEguiRenderer {
                 )]
             }
             "main-window:room:leave" => vec![GuiShellAction::LeaveMainWindowRoom],
+            "main-window:room-actions:create-controlled-room" => {
+                vec![GuiShellAction::BeginCreateControlledRoomEdit]
+            }
+            "main-window:room-actions:identify-controller" => {
+                vec![GuiShellAction::BeginControllerAuthEdit]
+            }
+            "main-window:chat:send" => state
+                .outgoing_chat_message
+                .as_deref()
+                .and_then(normalized_editable_text)
+                .map(|message| vec![GuiShellAction::BeginLocalChatSend(message)])
+                .unwrap_or_default(),
             "main-window:user:add" => vec![GuiShellAction::CommitNewMainWindowUser],
             "main-window:user:toggle-ready" => {
                 vec![GuiShellAction::ToggleSelectedMainWindowUserReady]
@@ -435,7 +424,7 @@ impl GuiWidgetEguiRenderer {
             "shell:modal:player-setup:retry" => vec![GuiShellAction::RetryPlayerLaunch],
             "shell:modal:player-setup:open-settings" => vec![
                 GuiShellAction::CloseModal,
-                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
             ],
             "shell:modal:stream-support:install" => vec![GuiShellAction::InstallStreamHelper],
@@ -454,7 +443,7 @@ impl GuiWidgetEguiRenderer {
             }
             "shell:modal:stream-support:open-settings" => vec![
                 GuiShellAction::CloseModal,
-                GuiShellAction::SwitchView(GuiShellView::Configuration),
+                GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
             ],
             "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
@@ -654,6 +643,9 @@ impl GuiWidgetEguiRenderer {
     ) -> Option<GuiShellAction> {
         if node.id == "main-window:control:autoplay-toggle" {
             return Some(GuiShellAction::AnnounceAutoplayState(value));
+        }
+        if node.id == "main-window:browser:hide-empty" {
+            return Some(GuiShellAction::ToggleMainWindowHideEmptyRooms);
         }
         let (section, label, kind) = Self::configuration_control_identity(state, node)?;
         if kind != GuiDialogControlKind::Checkbox {

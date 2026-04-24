@@ -5,14 +5,14 @@ fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MenusAndDialogs)));
-    assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::PublicServers)));
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MediaSearch)));
-    assert_eq!(state.active_view, GuiShellView::MediaSearch);
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
+    assert_eq!(state.active_view, GuiShellView::Room);
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
+    assert_eq!(state.active_view, GuiShellView::Setup);
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
+    assert_eq!(state.active_view, GuiShellView::Setup);
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
+    assert_eq!(state.active_view, GuiShellView::Setup);
 
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
     assert_eq!(state.open_modal, Some(GuiShellModal::About));
@@ -43,11 +43,11 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
     assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
-    assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceHelpRequested));
-    assert_eq!(state.active_view, GuiShellView::MenusAndDialogs);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert!(state.notifications.is_empty());
 }
 
@@ -334,7 +334,7 @@ fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
         "Server status feed refreshed."
     );
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(
         state
             .validation
@@ -465,7 +465,7 @@ fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
         }
     );
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert_eq!(
         state.pending_operation.as_ref().map(|item| item.kind),
         Some(GuiPendingOperationKind::RefreshPublicServers)

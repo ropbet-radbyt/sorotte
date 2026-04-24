@@ -4,7 +4,7 @@ use syncplay_client_app::app_boundary::commands::controlled_room_base_name_legac
 
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
-    GuiConfigurationTab, GuiMainWindowTab, GuiPendingOperationKind, GuiShellModal, GuiShellView,
+    GuiConfigurationTab, GuiPendingOperationKind, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, SyncplayGuiShellAppState, browser_domain_from_url, browser_is_url,
     browser_uri_is_trusted,
 };

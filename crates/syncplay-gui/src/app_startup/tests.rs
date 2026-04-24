@@ -14,7 +14,7 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     let notice = startup_notice(&StoredClientSettingsMvp::default());
 
     assert!(notice.contains("[Shell App State]"));
-    assert!(notice.contains("active_view=configuration"));
+    assert!(notice.contains("active_view=setup"));
     assert!(notice.contains("open_modal=(none)"));
     assert!(
         notice.contains("[Selection] user=0, playlist=(none), menu=0:0, media_directory=(none)")
@@ -28,13 +28,13 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     assert!(notice.contains("[Text Edit] editing=(none)"));
     assert!(notice.contains("[Notifications] count=0"));
     assert!(notice.contains("[Validation] status=clean, last_action_error=(none)"));
-    assert!(notice.contains("configuration surface initialized"));
+    assert!(notice.contains("setup surface initialized"));
     assert!(notice.contains("[Connection]"));
     assert!(notice.contains("[Readiness]"));
     assert!(notice.contains("[Privacy]"));
     assert!(notice.contains("[Media Search]"));
     assert!(notice.contains("[System]"));
-    assert!(notice.contains("[Main Window]"));
+    assert!(notice.contains("[Room]"));
     assert!(notice.contains("[Menus & Dialogs]"));
     assert!(notice.contains("[Public Server Browser]"));
     assert!(notice.contains("[Media Search Workflow]"));
@@ -46,7 +46,7 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     assert!(notice.contains("Users (1):"));
     assert!(notice.contains("- Host [text]:"));
     assert!(notice.contains("- Server Password [password]:"));
-    assert!(notice.contains("Native window widgets are still pending"));
+    assert!(notice.contains("room-first shell"));
     assert!(!notice.contains("bootstrap placeholder"));
     assert!(notice.contains("de/en/es"));
 }
@@ -58,14 +58,16 @@ fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
     assert!(!preview.contains("[Widget Tree]"));
     assert!(preview.contains("- Syncplay GUI [panel] id=shell-root"));
     assert!(preview.contains(
-        "  - Configuration [layout] id=configuration-root, enabled=yes, selected=yes, value=(none)"
+        "  - Setup [layout] id=configuration-root, enabled=yes, selected=yes, value=(none)"
     ));
     assert!(preview.contains(
         "    - Host [text-input] id=config:Connection:Host, enabled=yes, selected=no, value=(unset)"
     ));
-    assert!(preview.contains(
-        "  - Main Window [layout] id=main-window-root, enabled=yes, selected=no, value=(none)"
-    ));
+    assert!(
+        preview.contains(
+            "  - Room [layout] id=main-window-root, enabled=yes, selected=no, value=(none)"
+        )
+    );
 }
 
 #[test]
@@ -447,7 +449,7 @@ fn run_gui_host_passes_shell_state_through_host_boundary() {
         type Output = String;
 
         fn render(&mut self, state: SyncplayGuiShellAppState) -> Self::Output {
-            self.saw_configuration_view = state.active_view == GuiShellView::Configuration;
+            self.saw_configuration_view = state.active_view == GuiShellView::Setup;
             format!("host:{}", state.active_view.label())
         }
     }
@@ -455,7 +457,7 @@ fn run_gui_host_passes_shell_state_through_host_boundary() {
     let mut host = RecordingHost::default();
     let rendered = run_gui_host(&StoredClientSettingsMvp::default(), &mut host);
 
-    assert_eq!(rendered, "host:configuration");
+    assert_eq!(rendered, "host:setup");
     assert!(host.saw_configuration_view);
 }
 
@@ -477,7 +479,7 @@ fn run_gui_host_with_startup_actions_and_gui_state_restores_non_ini_state() {
         ..StoredClientSettingsMvp::default()
     };
     let persisted_ui_state = GuiPersistedUiState {
-        active_view: Some(GuiShellView::PublicServers),
+        active_view: Some(GuiShellView::Setup),
         selected_public_server_address: Some("custom.example:9001".to_owned()),
         selected_media_search_directory: Some("C:/Media".to_owned()),
         last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
@@ -495,7 +497,7 @@ fn run_gui_host_with_startup_actions_and_gui_state_restores_non_ini_state() {
         &mut host,
     );
 
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.last_media_dialog_directory.as_deref(),
         Some("D:/Dialogs")
@@ -545,7 +547,7 @@ fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_ov
         ..StoredClientSettingsMvp::default()
     };
     let persisted_ui_state = GuiPersistedUiState {
-        active_view: Some(GuiShellView::PublicServers),
+        active_view: Some(GuiShellView::Setup),
         selected_public_server_address: Some("custom.example:9001".to_owned()),
         selected_media_search_directory: None,
         last_media_dialog_directory: None,
@@ -563,7 +565,7 @@ fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_ov
         &mut host,
     );
 
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state
             .public_servers

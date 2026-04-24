@@ -19,7 +19,7 @@ use crate::app::{
     GuiPendingCompletionRequest, GuiPendingOperationKind, GuiPendingRoomChangeRequest,
     GuiPersistedUiState, GuiPlayerLaunchRuntimeState, GuiQueuedRuntimeBridgeHandle,
     GuiQueuedRuntimeOwner, GuiRuntimeRequest, GuiSessionRuntimeAdapter, GuiShellAction,
-    GuiShellView, GuiTestPlayerAdapter, GuiTransientNotificationLevel,
+    GuiShellView, GuiTestPlayerAdapter, GuiTransientNotificationLevel, MainWindowPlaylistRow,
     MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionRuntimeOverride,
     MenuDialogRuntimeSnapshot, SyncplayGuiRuntimeSnapshot, SyncplayGuiShellAppState,
     legacy_gui_qsettings_store_path, persist_gui_ui_state_at_root,

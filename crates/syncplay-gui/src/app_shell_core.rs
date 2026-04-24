@@ -7,7 +7,7 @@ use syncplay_client_app::app_boundary::state::{
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigurationTab, GuiMainWindowTab, GuiPlayerSetupIssueKind,
+    GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind,
     GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal, GuiShellView,
     GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
@@ -27,9 +27,8 @@ impl SyncplayGuiShellAppState {
                 .map_or(room.clone(), |password| format!("{room}:{password}"))
         });
         let mut state = Self {
-            active_view: GuiShellView::Configuration,
-            selected_main_window_tab: GuiMainWindowTab::Overview,
-            selected_configuration_tab: GuiConfigurationTab::Overview,
+            active_view: GuiShellView::Setup,
+            selected_configuration_tab: GuiConfigurationTab::Connection,
             open_modal: None,
             selection: GuiSelectionState::default(),
             main_window_playlist_selection_is_local: false,
@@ -40,6 +39,7 @@ impl SyncplayGuiShellAppState {
             pending_local_ready_target: None,
             pending_saved_server_connect_saves_configuration: false,
             outgoing_chat_message: None,
+            main_window_room_change_expanded: false,
             new_main_window_user_draft: String::new(),
             focused_configuration_control: None,
             public_server_edit_session: None,
@@ -318,10 +318,6 @@ impl SyncplayGuiShellAppState {
                 });
         self.selection.selected_media_search_directory =
             (!self.media_search.directories.is_empty()).then_some(0);
-    }
-
-    pub(super) fn select_main_window_tab(&mut self, tab: GuiMainWindowTab) {
-        self.selected_main_window_tab = tab;
     }
 
     pub(super) fn select_configuration_tab(&mut self, tab: GuiConfigurationTab) {

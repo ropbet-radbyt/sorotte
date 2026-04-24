@@ -5,7 +5,7 @@ use super::{
     GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
-    GuiInteractionRuntimeSnapshot, GuiMainWindowTab, GuiMainWindowUserEditSessionRuntimeSnapshot,
+    GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
     GuiPendingOperationKind, GuiPublicServerEditSessionRuntimeSnapshot,
     GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
     GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
@@ -89,18 +89,18 @@ fn browser_stream_target_kind_classifies_direct_and_extractor_urls() {
 }
 
 #[test]
-fn gui_shell_app_state_defaults_tabs_to_overview() {
+fn gui_shell_app_state_defaults_to_setup_connection() {
     let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Overview);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.selected_configuration_tab,
-        GuiConfigurationTab::Overview
+        GuiConfigurationTab::Connection
     );
 }
 
 #[test]
-fn gui_shell_app_state_auto_switches_tabs_for_owned_workflows_and_preserves_hidden_sessions() {
+fn gui_shell_app_state_opens_room_for_room_workflows_and_preserves_hidden_sessions() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         room: Some("+room:ABCDEF123456".to_owned()),
         shared_playlist_enabled: Some(true),
@@ -108,14 +108,14 @@ fn gui_shell_app_state_auto_switches_tabs_for_owned_workflows_and_preserves_hidd
     });
 
     assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
-    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playlist);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert!(state.playlist_text_edit_session.is_some());
 
-    assert!(state.apply(GuiShellAction::SelectMainWindowTab(GuiMainWindowTab::Chat,)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.playlist_text_edit_session.is_some());
 
     assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
-    assert_eq!(state.selected_main_window_tab, GuiMainWindowTab::Playback);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert!(state.media_url_edit_session.is_some());
 
     assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));

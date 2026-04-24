@@ -413,7 +413,7 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
 
     assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
         SyncplayGuiRuntimeSnapshot {
-            active_view: GuiShellView::PublicServers,
+            active_view: GuiShellView::Setup,
             open_modal: Some(GuiShellModal::UpdateNotice),
             main_window: MainWindowRuntimeSnapshot {
                 room_name: "+LiveRoom".to_owned(),
@@ -491,7 +491,7 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
         },
     )));
 
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
     assert_eq!(state.main_window.room_name, "+LiveRoom");
     assert!(state.main_window.playback_paused);
@@ -569,7 +569,7 @@ fn gui_shell_app_state_rejects_invalid_full_gui_runtime_snapshots() {
 
     assert!(!state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
         SyncplayGuiRuntimeSnapshot {
-            active_view: GuiShellView::MainWindow,
+            active_view: GuiShellView::Room,
             open_modal: None,
             main_window: MainWindowRuntimeSnapshot {
                 room_name: String::new(),

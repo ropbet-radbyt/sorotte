@@ -5,7 +5,7 @@ fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
-    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow)));
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {
             command_availability: GuiCommandAvailabilityState {
@@ -47,7 +47,7 @@ fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
 
     assert_eq!(state.configuration.to_stored_settings(), draft);
     assert_eq!(state.saved_configuration, saved);
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(state.main_window.room_name, "DraftRoom");
     assert!(state.commands.can_reset_configuration);
     assert!(!state.commands.can_toggle_pause);

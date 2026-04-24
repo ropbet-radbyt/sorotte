@@ -16,7 +16,7 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
         action_index: 2,
     }));
     assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
-    assert_eq!(state.active_view, GuiShellView::PublicServers);
+    assert_eq!(state.active_view, GuiShellView::Setup);
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
         section_index: 2,
@@ -93,7 +93,7 @@ fn gui_shell_app_state_handles_public_server_browser_event_actions() {
     );
     assert!(state.apply(GuiShellAction::CompleteSelectedPublicServerConnect));
     assert_eq!(state.pending_operation, None);
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
     assert_eq!(

@@ -1,8 +1,8 @@
 use super::remote_services;
 use super::runtime_localization::localized_update_notice_available_message_legacy_compatible;
 use super::shell_state::{
-    GuiPendingOperationKind, GuiPendingOperationState, GuiShellModal,
-    GuiTransientNotificationLevel, MainWindowChatRow, SyncplayGuiShellAppState,
+    GuiPendingOperationKind, GuiShellModal, GuiTransientNotificationLevel, MainWindowChatRow,
+    SyncplayGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 use super::ui_state::GuiUpdateCheckState;
@@ -15,37 +15,29 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn begin_local_chat_send(&mut self, message: String) -> bool {
-        if self.pending_operation.is_some() {
-            return self.record_action_error("Another GUI operation is already in progress.");
-        }
         if !self.commands.can_send_chat_message {
             return self.record_action_error(
                 "Local chat sending is unavailable when chat input is disabled.",
             );
         }
-        let Some(message) = normalized_editable_text(&message) else {
+        if normalized_editable_text(&message).is_none() {
             return self.record_action_error("Local chat messages must be non-empty.");
-        };
+        }
 
-        self.pending_operation = Some(GuiPendingOperationState {
-            kind: GuiPendingOperationKind::SendChatMessage,
-        });
-        self.outgoing_chat_message = Some(message);
+        self.outgoing_chat_message = None;
         self.clear_action_error_and_refresh();
         true
     }
 
     pub(super) fn complete_local_chat_send(&mut self) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
-            return self.record_action_error("No local chat send is currently in progress.");
+            self.clear_action_error_and_refresh();
+            return true;
         };
         if pending.kind != GuiPendingOperationKind::SendChatMessage {
             return self.record_action_error("No local chat send is currently in progress.");
         }
-        if self.outgoing_chat_message.take().is_none() {
-            self.pending_operation = None;
-            return self.record_action_error("No local chat send is currently in progress.");
-        }
+        self.outgoing_chat_message = None;
         self.pending_operation = None;
         self.clear_action_error_and_refresh();
         true

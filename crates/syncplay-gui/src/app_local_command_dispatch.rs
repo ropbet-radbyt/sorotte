@@ -76,26 +76,15 @@ impl GuiShellDispatchPlan {
 
 fn plan_chat_submit(state: &SyncplayGuiShellAppState, message: String) -> GuiShellDispatchPlan {
     if message == "/" {
-        return GuiShellDispatchPlan {
-            shell_actions: vec![GuiShellAction::BeginLocalChatSend(message)],
-            runtime_requests: Vec::new(),
-        };
+        return plan_direct_chat_send(message);
     }
 
     if let Some(literal_chat) = message.strip_prefix("//") {
-        return GuiShellDispatchPlan {
-            shell_actions: vec![GuiShellAction::BeginLocalChatSend(format!(
-                "/{literal_chat}"
-            ))],
-            runtime_requests: Vec::new(),
-        };
+        return plan_direct_chat_send(format!("/{literal_chat}"));
     }
 
     let Some(command_text) = message.strip_prefix('/') else {
-        return GuiShellDispatchPlan {
-            shell_actions: vec![GuiShellAction::BeginLocalChatSend(message)],
-            runtime_requests: Vec::new(),
-        };
+        return plan_direct_chat_send(message);
     };
     let command_text = command_text.to_owned();
 
@@ -124,6 +113,20 @@ fn plan_chat_submit(state: &SyncplayGuiShellAppState, message: String) -> GuiShe
     );
     extend_plan_for_dispatch(&mut plan, state, dispatch);
     plan
+}
+
+fn plan_direct_chat_send(message: String) -> GuiShellDispatchPlan {
+    let Some(message) = normalized_editable_text(&message) else {
+        return GuiShellDispatchPlan {
+            shell_actions: vec![GuiShellAction::BeginLocalChatSend(message)],
+            runtime_requests: Vec::new(),
+        };
+    };
+
+    GuiShellDispatchPlan {
+        shell_actions: vec![clear_chat_draft_action()],
+        runtime_requests: vec![GuiRuntimeRequest::SendChatMessage(message)],
+    }
 }
 
 fn extend_plan_for_dispatch(

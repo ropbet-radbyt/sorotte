@@ -35,19 +35,15 @@ fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
     });
 
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello world".to_owned(),)));
-    assert_eq!(
-        state.pending_operation.as_ref().map(|pending| pending.kind),
-        Some(GuiPendingOperationKind::SendChatMessage)
-    );
-    assert_eq!(state.outgoing_chat_message.as_deref(), Some("hello world"));
+    assert_eq!(state.pending_operation, None);
+    assert_eq!(state.outgoing_chat_message, None);
     assert!(
         state
             .render_lines()
             .join("\n")
-            .contains("[Chat Send] pending_message=hello world")
+            .contains("[Chat Send] pending_message=(none)")
     );
-
-    assert!(state.apply(GuiShellAction::CompleteLocalChatSend));
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned(),)));
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.outgoing_chat_message, None);
     assert!(state.main_window.chat.is_empty());
@@ -109,25 +105,21 @@ fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
         Some("Local chat messages must be non-empty.")
     );
 
-    assert!(!state.apply(GuiShellAction::CompleteLocalChatSend));
+    assert!(state.apply(GuiShellAction::CompleteLocalChatSend));
+    assert_eq!(state.validation.last_action_error, None);
+
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
+    assert!(state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned())));
+    assert_eq!(state.pending_operation, None);
+    assert_eq!(state.outgoing_chat_message, None);
+    assert!(!state.apply(GuiShellAction::CancelLocalChatSend));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
         Some("No local chat send is currently in progress.")
     );
-
-    assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
-    assert!(!state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned())));
-    assert_eq!(
-        state.validation.last_action_error.as_deref(),
-        Some("Another GUI operation is already in progress.")
-    );
-    assert!(state.apply(GuiShellAction::CancelLocalChatSend));
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.outgoing_chat_message, None);
-    assert_eq!(
-        state.notifications.last().map(|item| item.message.as_str()),
-        Some("Chat send canceled.")
-    );
+    assert!(state.notifications.is_empty());
 
     assert!(!state.apply(GuiShellAction::AnnounceRemoteChatMessage {
         sender: " ".to_owned(),

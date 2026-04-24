@@ -256,32 +256,6 @@ fn run_live_python_peer_connect_flow_with_harness(
     )?;
     let room_rejoin_observed = true;
 
-    request_local_ready(&handle, &mut state, true)?;
-    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
-    wait_for_peer_observed_user_ready(
-        harness,
-        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-        true,
-        Duration::from_secs(3),
-    )?;
-
-    request_local_ready(&handle, &mut state, false)?;
-    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
-    wait_for_peer_observed_user_ready(
-        harness,
-        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-        false,
-        Duration::from_secs(3),
-    )?;
-
-    harness.set_peer_ready(true)?;
-    let _ = harness.wait_for_peer_local_ready(true, Duration::from_secs(3))?;
-    wait_for_projection(&mut owner, &handle, &mut state, false, true)?;
-
-    harness.set_peer_ready(false)?;
-    let _ = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
-    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
-
     request_local_chat_send(&handle, &mut state, LIVE_PYTHON_INTEROP_LOCAL_CHAT_MESSAGE)?;
     wait_for_projected_chat_message(
         &mut owner,
@@ -330,6 +304,32 @@ fn run_live_python_peer_connect_flow_with_harness(
     )?;
     wait_for_peer_observed_playlist(harness, &first_local_playlist, Duration::from_secs(3))?;
     wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+
+    request_local_ready(&handle, &mut state, true)?;
+    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        true,
+        Duration::from_secs(3),
+    )?;
+
+    request_local_ready(&handle, &mut state, false)?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
+    wait_for_peer_observed_user_ready(
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        false,
+        Duration::from_secs(3),
+    )?;
+
+    harness.set_peer_ready(true)?;
+    let _ = harness.wait_for_peer_local_ready(true, Duration::from_secs(3))?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, true)?;
+
+    harness.set_peer_ready(false)?;
+    let _ = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
+    wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
 
     let second_local_playlist = vec![
         LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned(),
@@ -440,7 +440,7 @@ fn run_live_python_peer_connect_flow_with_harness(
 
     let peer_snapshot = harness.peer_snapshot()?;
     merge_peer_chat_messages(&mut peer_chat_messages, peer_snapshot.chat_messages.clone());
-    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    state.apply(GuiShellAction::SwitchView(GuiShellView::Room));
     Ok(LivePythonPeerInteropResult {
         room_name: state.main_window.room_name.clone(),
         local_user_present: local_user_ready(&state).is_some(),
@@ -519,7 +519,7 @@ fn run_live_python_peer_controlled_room_flow_with_harness(
     let peer_snapshot = harness.wait_for_peer_local_ready(false, Duration::from_secs(3))?;
     wait_for_controlled_room_peer_ready_projection(&mut owner, &handle, &mut state, false)?;
 
-    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    state.apply(GuiShellAction::SwitchView(GuiShellView::Room));
     Ok(LivePythonPeerControlledRoomInteropResult {
         room_name: state.main_window.room_name.clone(),
         local_user_present: local_user_ready(&state).is_some(),
@@ -582,7 +582,7 @@ fn run_live_python_peer_detached_public_server_connect_flow_with_harness(
         LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION,
     )?;
 
-    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    state.apply(GuiShellAction::SwitchView(GuiShellView::Room));
     Ok(LivePythonPeerDetachedConnectInteropResult {
         room_name: state.main_window.room_name.clone(),
         local_user_present: local_user_ready(&state).is_some(),
@@ -632,7 +632,7 @@ fn run_live_python_peer_startup_saved_connect_flow_with_harness(
         LIVE_PYTHON_INTEROP_KEEPALIVE_OBSERVATION,
     )?;
 
-    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    state.apply(GuiShellAction::SwitchView(GuiShellView::Room));
     Ok(LivePythonPeerDetachedConnectInteropResult {
         room_name: state.main_window.room_name.clone(),
         local_user_present: local_user_ready(&state).is_some(),
@@ -678,14 +678,6 @@ fn run_live_python_peer_shared_playlist_open_flow_with_harness(
         Duration::from_secs(3),
     )?;
     wait_for_playlist_controls(&mut owner, &handle, &mut state)?;
-    request_local_ready(&handle, &mut state, true)?;
-    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
-    wait_for_peer_observed_user_ready(
-        harness,
-        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-        true,
-        Duration::from_secs(3),
-    )?;
 
     let expected_playlist = vec![
         LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE.to_owned(),
@@ -702,10 +694,13 @@ fn run_live_python_peer_shared_playlist_open_flow_with_harness(
     wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
     wait_for_peer_observed_playlist(harness, &expected_playlist, Duration::from_secs(3))?;
     wait_for_peer_observed_playlist_index(harness, 0, Duration::from_secs(3))?;
+
+    request_local_ready(&handle, &mut state, true)?;
+    wait_for_projection(&mut owner, &handle, &mut state, true, false)?;
     wait_for_peer_observed_user_ready(
         harness,
         LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
-        false,
+        true,
         Duration::from_secs(3),
     )?;
     let peer_snapshot = wait_for_peer_observed_user_file_name(
@@ -715,7 +710,7 @@ fn run_live_python_peer_shared_playlist_open_flow_with_harness(
         Duration::from_secs(3),
     )?;
 
-    state.apply(GuiShellAction::SwitchView(GuiShellView::MainWindow));
+    state.apply(GuiShellAction::SwitchView(GuiShellView::Room));
     Ok(LivePythonPeerSharedPlaylistOpenInteropResult {
         room_name: state.main_window.room_name.clone(),
         gui_playlist: gui_playlist(&state),

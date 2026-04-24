@@ -316,7 +316,6 @@ pub(super) struct GuiErrorRuntimeSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SyncplayGuiShellAppState {
     pub(super) active_view: GuiShellView,
-    pub(super) selected_main_window_tab: GuiMainWindowTab,
     pub(super) selected_configuration_tab: GuiConfigurationTab,
     pub(super) open_modal: Option<GuiShellModal>,
     pub(super) selection: GuiSelectionState,
@@ -328,6 +327,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) pending_local_ready_target: Option<bool>,
     pub(super) pending_saved_server_connect_saves_configuration: bool,
     pub(super) outgoing_chat_message: Option<String>,
+    pub(super) main_window_room_change_expanded: bool,
     pub(super) new_main_window_user_draft: String,
     pub(super) focused_configuration_control: Option<GuiFocusedConfigurationControlState>,
     pub(super) public_server_edit_session: Option<GuiPublicServerEditSessionState>,
@@ -697,39 +697,6 @@ pub(super) struct GuiValidationState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum GuiMainWindowTab {
-    #[default]
-    Overview,
-    Session,
-    Playback,
-    Playlist,
-    Chat,
-}
-
-impl GuiMainWindowTab {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Overview => "overview",
-            Self::Session => "session",
-            Self::Playback => "playback",
-            Self::Playlist => "playlist",
-            Self::Chat => "chat",
-        }
-    }
-
-    pub(super) fn from_label(label: &str) -> Option<Self> {
-        match label {
-            "overview" => Some(Self::Overview),
-            "session" => Some(Self::Session),
-            "playback" => Some(Self::Playback),
-            "playlist" => Some(Self::Playlist),
-            "chat" => Some(Self::Chat),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum GuiConfigurationTab {
     #[default]
     Overview,
@@ -762,33 +729,27 @@ impl GuiConfigurationTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum GuiShellView {
-    Configuration,
-    MainWindow,
-    MenusAndDialogs,
-    PublicServers,
-    MediaSearch,
+    #[default]
+    Setup,
+    Room,
 }
 
 impl GuiShellView {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Configuration => "configuration",
-            Self::MainWindow => "main-window",
-            Self::MenusAndDialogs => "menus-and-dialogs",
-            Self::PublicServers => "public-servers",
-            Self::MediaSearch => "media-search",
+            Self::Setup => "setup",
+            Self::Room => "room",
         }
     }
 
     pub(super) fn from_label(label: &str) -> Option<Self> {
         match label {
-            "configuration" => Some(Self::Configuration),
-            "main-window" => Some(Self::MainWindow),
-            "menus-and-dialogs" => Some(Self::MenusAndDialogs),
-            "public-servers" => Some(Self::PublicServers),
-            "media-search" => Some(Self::MediaSearch),
+            "setup" | "configuration" | "menus-and-dialogs" | "public-servers" | "media-search" => {
+                Some(Self::Setup)
+            }
+            "room" | "main-window" => Some(Self::Room),
             _ => None,
         }
     }
@@ -819,7 +780,6 @@ impl GuiShellModal {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiShellAction {
     SwitchView(GuiShellView),
-    SelectMainWindowTab(GuiMainWindowTab),
     SelectConfigurationTab(GuiConfigurationTab),
     OpenModal(GuiShellModal),
     CloseModal,
@@ -1018,6 +978,7 @@ pub(super) enum GuiShellAction {
     ToggleMainWindowPlaybackButtons,
     ToggleMainWindowAutoplayControls,
     ToggleMainWindowHideEmptyRooms,
+    ToggleMainWindowRoomChange,
     RequestMainWindowUserMediaOpen(String),
     RequestMainWindowUserContainingFolderOpen(String),
     RequestMainWindowUserReady {

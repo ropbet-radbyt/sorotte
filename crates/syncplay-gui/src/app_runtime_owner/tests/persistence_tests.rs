@@ -87,7 +87,7 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     persist_gui_ui_state_at_root(
         &root,
         &GuiPersistedUiState {
-            active_view: Some(GuiShellView::PublicServers),
+            active_view: Some(GuiShellView::Setup),
             selected_public_server_address: Some("custom.example:9001".to_owned()),
             selected_media_search_directory: None,
             last_media_dialog_directory: Some("D:/Dialogs".to_owned()),
@@ -143,7 +143,7 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
         "clear-GUI-data should remove the persisted media-search cache"
     );
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
-    assert_eq!(state.active_view, GuiShellView::Configuration);
+    assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
         state.saved_configuration,
         StoredClientSettingsMvp::default()

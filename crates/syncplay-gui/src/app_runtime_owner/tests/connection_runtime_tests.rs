@@ -67,7 +67,12 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
             chat_input_enabled: Some(true),
             ..StoredClientSettingsMvp::default()
         });
-    assert!(cancel_chat_state.apply(GuiShellAction::BeginLocalChatSend("cancel me".to_owned(),)));
+    cancel_chat_state.outgoing_chat_message = Some("cancel me".to_owned());
+    assert!(
+        cancel_chat_state.apply(GuiShellAction::BeginPendingOperation(
+            GuiPendingOperationKind::SendChatMessage
+        ))
+    );
     handle.push_request(GuiRuntimeRequest::CancelPendingOperation(
         GuiPendingOperationKind::SendChatMessage,
     ));
@@ -83,6 +88,10 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     let mut toggle_state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     toggle_state.main_window.playback.can_toggle_pause = true;
+    toggle_state.main_window.playlist = vec![MainWindowPlaylistRow {
+        label: "episode1.mkv".to_owned(),
+        is_selected: false,
+    }];
     toggle_state.commands.can_toggle_pause = true;
     assert!(toggle_state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
@@ -190,7 +199,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     for action in chat_actions {
         assert!(chat_state.apply(action));
     }
-    assert_eq!(chat_state.outgoing_chat_message.as_deref(), Some("hello"));
+    assert_eq!(chat_state.outgoing_chat_message, None);
     assert!(chat_state.pending_operation.is_none());
 }
 
@@ -267,7 +276,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
         port: Some(connect_port),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        player_path: Some("C:/Program Files/VideoLAN/VLC/vlc.exe".to_owned()),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -305,7 +314,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_before_config_connect(
     for action in &connect_actions {
         assert!(state.apply(action.clone()));
     }
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert!(state.pending_operation.is_none());
     assert!(!state.pending_saved_server_connect_saves_configuration);
     assert_eq!(state.saved_configuration.room.as_deref(), Some("room2"));
@@ -996,7 +1005,7 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
         state.notifications.last().map(|item| item.message.as_str()),
         Some(expected_message.as_str())
     );
-    assert_eq!(state.active_view, GuiShellView::MainWindow);
+    assert_eq!(state.active_view, GuiShellView::Room);
     assert_eq!(
         player_state
             .lock()

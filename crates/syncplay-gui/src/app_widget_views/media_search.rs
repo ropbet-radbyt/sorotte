@@ -162,19 +162,11 @@ impl SyncplayGuiShellAppState {
             ],
         );
 
-        GuiWidgetNode::layout(
+        GuiWidgetNode::branch(
             "media-search-root",
             "Media Search",
-            GuiLayoutMode::Stack,
-            vec![GuiWidgetNode::layout(
-                "media-search:content",
-                "Media Search Content",
-                GuiLayoutMode::ResponsiveColumns {
-                    min_column_width: 360.0,
-                    max_columns: 2,
-                },
-                vec![directories, utility_rail],
-            )],
+            GuiWidgetKind::Panel,
+            vec![directories.with_min_content_height(150.0), utility_rail],
         )
     }
 }

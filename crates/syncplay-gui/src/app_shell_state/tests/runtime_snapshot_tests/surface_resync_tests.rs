@@ -181,7 +181,7 @@ fn gui_shell_app_state_keeps_local_ready_transition_pending_until_runtime_matche
             is_controller: false,
             ..Default::default()
         }],
-        playlist: Vec::new(),
+        playlist: vec!["episode1.mkv".to_owned()],
         chat: Vec::new(),
         can_toggle_pause: false,
         can_seek: false,

@@ -42,10 +42,10 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         wait_for_any_accessible_name(
             driver,
             window_handle,
-            &["view: configuration", "view: main-window"],
+            &["view: setup", "view: room"],
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window_handle, "view: main-window", step_timeout)?;
+        wait_for_accessible_name(driver, window_handle, "view: room", step_timeout)?;
         wait_for_accessible_name_with_page_down(
             driver,
             window_handle,
@@ -104,10 +104,10 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
         wait_for_any_accessible_name(
             driver,
             playlist_handle,
-            &["view: configuration", "view: main-window"],
+            &["view: setup", "view: room"],
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, playlist_handle, "view: main-window", step_timeout)?;
+        wait_for_accessible_name(driver, playlist_handle, "view: room", step_timeout)?;
         wait_for_accessible_name(driver, playlist_handle, "drag-episode-1.mkv", step_timeout)?;
         wait_for_accessible_name(driver, playlist_handle, "drag-episode-2.mkv", step_timeout)?;
         wait_for_accessible_name_fragment(

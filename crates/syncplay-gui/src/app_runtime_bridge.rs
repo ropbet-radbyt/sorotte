@@ -257,7 +257,7 @@ impl GuiPreviewRuntimeBridge {
             return Vec::new();
         }
 
-        let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::MainWindow)];
+        let mut actions = vec![GuiShellAction::SwitchView(GuiShellView::Room)];
         if load_into_shared_playlist {
             match GuiPersistedConfigRuntimeOwner::shared_playlist_open_dispatch_for_paths(paths) {
                 Ok(dispatch) => {

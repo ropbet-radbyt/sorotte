@@ -32,7 +32,7 @@ fn dismiss_existing_config_player_setup_modal<D: NativeGuiDriver>(
         NativeControlKind::Button,
         timeout,
     )?;
-    wait_for_accessible_name(driver, window, "view: configuration", timeout)?;
+    wait_for_accessible_name(driver, window, "view: setup", timeout)?;
     wait_for_accessible_name(driver, window, "modal: (none)", timeout)?;
     Ok(true)
 }
@@ -102,12 +102,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         let step_timeout = timeout.min(Duration::from_millis(8_000));
         let mut steps = Vec::new();
 
-        wait_for_any_accessible_name(
-            driver,
-            window,
-            &["view: configuration", "view: main-window"],
-            step_timeout,
-        )?;
+        wait_for_any_accessible_name(driver, window, &["view: setup", "view: room"], step_timeout)?;
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-python-peer-player-setup-modal".to_owned());
         }
@@ -115,17 +110,17 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Main Window",
-            "view: main-window",
+            "view: room",
             "Window",
             "Show Users",
             step_timeout,
         )?;
-        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_room_browser_visible(driver, window, step_timeout)?;
         navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            "view: configuration",
+            "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
@@ -134,12 +129,12 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Main Window",
-            "view: main-window",
+            "view: room",
             "Window",
             "Show Users",
             step_timeout,
         )?;
-        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_room_browser_visible(driver, window, step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -154,7 +149,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Configuration",
-            "view: configuration",
+            "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
@@ -163,12 +158,12 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             driver,
             window,
             "Main Window",
-            "view: main-window",
+            "view: room",
             "Window",
             "Show Users",
             step_timeout,
         )?;
-        select_top_tab_with_wait(driver, window, "Session", "Room Browser", step_timeout)?;
+        wait_for_room_browser_visible(driver, window, step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -259,12 +254,12 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         )?;
         steps.push("transport-python-peer-chat-peer-to-local".to_owned());
 
-        if wait_for_named_control_count(
+        if wait_for_named_control_enabled_state(
             driver,
             window,
-            "New Entry",
-            NativeControlKind::Any,
-            1,
+            "Add",
+            NativeControlKind::Button,
+            true,
             Duration::from_millis(500),
         )
         .is_err()
@@ -273,7 +268,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
                 driver,
                 window,
                 "Configuration",
-                "view: configuration",
+                "view: setup",
                 "Advanced",
                 "Trusted Domains",
                 step_timeout,
@@ -295,21 +290,13 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             navigate_to_view_with_fallback(
                 driver,
                 window,
-                "Main Window",
-                "view: main-window",
+                "Room",
+                "view: room",
                 "Window",
                 "Show Users",
                 step_timeout,
             )?;
-            select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
-            wait_for_named_control_count(
-                driver,
-                window,
-                "New Entry",
-                NativeControlKind::Any,
-                1,
-                step_timeout,
-            )?;
+            wait_for_shared_playlist_controls_enabled(driver, window, step_timeout)?;
             steps.push("transport-python-peer-playlist-enable-setting".to_owned());
         }
 
@@ -317,7 +304,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE.to_owned(),
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO.to_owned(),
         ];
-        select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
+        wait_for_shared_playlist_visible(driver, window, step_timeout)?;
         python_harness
             .set_peer_playlist(&initial_playlist)
             .map_err(|error| format!("failed to seed Python reference peer playlist: {error}"))?;
@@ -326,7 +313,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm the seeded playlist: {error}")
             })?;
-        wait_for_accessible_name(
+        wait_for_shared_playlist_entry(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_ONE,
@@ -340,7 +327,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm the seeded playlist index: {error}")
             })?;
-        wait_for_accessible_name(
+        wait_for_shared_playlist_entry(
             driver,
             window,
             LIVE_PYTHON_INTEROP_LOCAL_PLAYLIST_ENTRY_TWO,
@@ -359,13 +346,13 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
             .map_err(|error| {
                 format!("python reference peer did not confirm its playlist update: {error}")
             })?;
-        wait_for_accessible_name(
+        wait_for_shared_playlist_entry(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_ONE,
             step_timeout,
         )?;
-        wait_for_accessible_name(
+        wait_for_shared_playlist_entry(
             driver,
             window,
             LIVE_PYTHON_INTEROP_PEER_PLAYLIST_ENTRY_TWO,
@@ -521,12 +508,7 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
         let step_timeout = timeout.min(Duration::from_millis(8_000));
         let mut steps = Vec::new();
 
-        wait_for_any_accessible_name(
-            driver,
-            window,
-            &["view: configuration", "view: main-window"],
-            step_timeout,
-        )?;
+        wait_for_any_accessible_name(driver, window, &["view: setup", "view: room"], step_timeout)?;
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-python-peer-controlled-room-player-setup-modal".to_owned());
         }
@@ -534,7 +516,7 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
             driver,
             window,
             "Main Window",
-            "view: main-window",
+            "view: room",
             "Window",
             "Show Users",
             step_timeout,
@@ -580,8 +562,8 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
         wait_for_named_control_enabled_state(
             driver,
             window,
-            "New Entry",
-            NativeControlKind::Any,
+            "Add",
+            NativeControlKind::Button,
             true,
             step_timeout,
         )?;

@@ -4,16 +4,14 @@ setting	public-server	Beta	beta.example:9000
 setting	media-search-directory	C:/SmokeMedia
 setting	player-path	C:/Windows/System32/notepad.exe
 setting	shared-playlist-enabled	true
-assert-value	shell:active-view	configuration
+assert-value	shell:active-view	setup
 assert-selected	configuration-root	true
 assert-value	config:Connection:Public Servers	2
-activate	menus-root
-assert-selected	menus-root	true
 assert-enabled	menus:action:0:0	false
 assert-enabled	shell:quick:open-media-file	false
 assert-enabled	menus:action:3:0	false
 activate	menus:action:4:0
-assert-value	shell:active-view	menus-and-dialogs
+assert-value	shell:active-view	setup
 assert-value	shell:open-modal	(none)
 activate	menus:action:4:2
 assert-value	shell:open-modal	(none)
@@ -31,6 +29,7 @@ enter-text	config:Connection:Port	false	8999
 enter-text	config:Connection:Username	false	smoke-user
 enter-text	config:Connection:Room	false	smoke-room
 enter-text	config:Connection:Player Path	false	C:/Windows/System32/notepad.exe
+activate	configuration:tab:overview
 enter-text	config:Media Search:First File Timeout	false	3.0
 enter-text	config:Media Search:Search Timeout	false	30.0
 enter-text	config:Media Search:Double Check Interval	false	2.5
@@ -41,9 +40,9 @@ assert-pending	save-configuration
 complete-pending
 assert-pending	none
 clear-notifications
-activate	public-servers-root
-assert-selected	public-servers-root	true
-assert-value	shell:active-view	public-servers
+activate	configuration:tab:connection
+assert-selected	configuration-root	true
+assert-value	shell:active-view	setup
 activate	public-servers:row:0
 assert-value	config:Connection:Host	alpha.example
 assert-value	config:Connection:Port	8999
@@ -73,9 +72,9 @@ assert-pending	connect-public-server
 cancel-pending
 assert-pending	none
 clear-notifications
-activate	media-search-root
-assert-selected	media-search-root	true
-assert-value	shell:active-view	media-search
+activate	configuration:tab:playback-search
+assert-selected	configuration-root	true
+assert-value	shell:active-view	setup
 assert-value	media-search:timing:first-file	3.00s
 assert-value	media-search:timing:search	30.00s
 assert-value	media-search:timing:double-check	2.50s
@@ -87,5 +86,5 @@ cancel-pending
 assert-pending	none
 open-media-files	C:/SmokeMedia/open-target.mkv
 assert-selected	main-window-root	true
-assert-value	shell:active-view	main-window
+assert-value	shell:active-view	room
 assert-label	main-window:playlist:0	open-target.mkv

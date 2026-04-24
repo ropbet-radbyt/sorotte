@@ -86,7 +86,7 @@ impl SyncplayGuiShellAppState {
         if let Some(message) = self.player_setup_connect_block_message() {
             return self.record_action_error(message);
         }
-        if self.active_view == GuiShellView::Configuration && !self.validation.issues.is_empty() {
+        if self.active_view == GuiShellView::Setup && !self.validation.issues.is_empty() {
             return self.record_action_error(
                 "Configuration connect is unavailable while validation issues remain.",
             );
@@ -102,7 +102,7 @@ impl SyncplayGuiShellAppState {
             );
         };
         self.pending_saved_server_connect_saves_configuration =
-            self.active_view == GuiShellView::Configuration;
+            self.active_view == GuiShellView::Setup;
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ConnectSavedServer,
         });
@@ -128,7 +128,7 @@ impl SyncplayGuiShellAppState {
         };
         self.pending_operation = None;
         self.pending_saved_server_connect_saves_configuration = false;
-        self.active_view = GuiShellView::MainWindow;
+        self.active_view = GuiShellView::Room;
         self.clear_action_error_and_refresh();
         true
     }

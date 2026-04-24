@@ -182,7 +182,9 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
 fn replace_file_atomically(from: &Path, to: &Path) -> Result<(), String> {
     use std::{iter, os::windows::ffi::OsStrExt, ptr::null_mut};
 
-    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
+    };
 
     if !to.exists() {
         return std::fs::rename(from, to).map_err(|error| {
@@ -214,11 +216,24 @@ fn replace_file_atomically(from: &Path, to: &Path) -> Result<(), String> {
             null_mut(),
         )
     };
-    if replaced == 0 {
+    if replaced != 0 {
+        return Ok(());
+    }
+
+    let replace_error = std::io::Error::last_os_error();
+    let moved = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
         return Err(format!(
-            "failed replacing persisted media-search cache '{}' with '{}': {}",
+            "failed replacing persisted media-search cache '{}' with '{}': {}; fallback move failed: {}",
             to.display(),
             from.display(),
+            replace_error,
             std::io::Error::last_os_error()
         ));
     }

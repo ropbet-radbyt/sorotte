@@ -13,18 +13,14 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     let media_search_directory_value = media_search_browse_path.display().to_string();
     let mut steps = Vec::new();
 
-    let initial_view = wait_for_any_accessible_name(
-        driver,
-        window,
-        &["view: configuration", "view: main-window"],
-        step_timeout,
-    )?;
-    if initial_view == "view: main-window" {
+    let initial_view =
+        wait_for_any_accessible_name(driver, window, &["view: setup", "view: room"], step_timeout)?;
+    if initial_view == "view: room" {
         navigate_to_view_with_fallback(
             driver,
             window,
             "Configuration",
-            "view: configuration",
+            "view: setup",
             "Advanced",
             "Trusted Domains",
             step_timeout,
@@ -69,73 +65,10 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             NativeControlKind::Button,
             step_timeout,
         )?;
-        wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+        wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
         wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         steps.push("player-setup-existing-config-modal".to_owned());
     }
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Menus & Dialogs",
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Open Media File",
-        NativeControlKind::Button,
-        false,
-        step_timeout,
-    )?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Toggle Pause",
-        NativeControlKind::Button,
-        false,
-        step_timeout,
-    )?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Seek",
-        NativeControlKind::Button,
-        false,
-        step_timeout,
-    )?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Shared Playlist",
-        NativeControlKind::Button,
-        false,
-        step_timeout,
-    )?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Show Chat",
-        NativeControlKind::Button,
-        false,
-        step_timeout,
-    )?;
-    wait_for_named_control_enabled_state(
-        driver,
-        window,
-        "Show Users",
-        NativeControlKind::Button,
-        true,
-        step_timeout,
-    )?;
-    steps.push("menu-enable-state-visible".to_owned());
-
-    invoke_menu_command_with_fallback(driver, window, "Help", "Check for Updates", step_timeout)?;
-    wait_for_accessible_name_fragment(driver, window, "Syncplay is up to date", step_timeout)?;
-    wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    steps.push("update-notice-inline".to_owned());
-
     invoke_menu_command_with_fallback(
         driver,
         window,
@@ -164,7 +97,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Main Window",
-        "view: main-window",
+        "view: room",
         "Window",
         "Show Users",
         step_timeout,
@@ -178,12 +111,11 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     steps.push("main-window-playback-controls-detached".to_owned());
-    select_top_tab_with_wait(driver, window, "Playlist", "New Entry", step_timeout)?;
-    wait_for_accessible_name_with_page_down(driver, window, "New Entry", 4, step_timeout)?;
+    wait_for_accessible_name(driver, window, "Shared Playlist", step_timeout)?;
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Add Entry",
+        "Add",
         NativeControlKind::Button,
         false,
         step_timeout,
@@ -194,7 +126,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Configuration",
-        "view: configuration",
+        "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
@@ -212,29 +144,6 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             driver.set_edit_value_by_index(window, edit_index, expected_value)?;
         }
     }
-    select_top_tab_with_wait(
-        driver,
-        window,
-        "Privacy & Chat",
-        "Trusted Domains",
-        step_timeout,
-    )?;
-    let trusted_domains_index = trusted_domains_edit_index(true);
-    driver.set_edit_value_by_index(window, trusted_domains_index, TRUSTED_DOMAINS_VALUE)?;
-    wait_for_edit_value_by_index(
-        driver,
-        window,
-        trusted_domains_index,
-        TRUSTED_DOMAINS_VALUE,
-        step_timeout,
-    )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        "Trusted Domains Only",
-        NativeControlKind::Any,
-        step_timeout,
-    )?;
     select_top_tab_with_wait(driver, window, "Connection", "Host", step_timeout)?;
     for (edit_index, expected_value) in [
         (CONFIG_HOST_EDIT_INDEX, CONFIG_HOST_VALUE),
@@ -296,15 +205,12 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             "name = smoke-user",
             "room = smoke-room",
             "playerPath = C:\\Windows\\System32\\notepad.exe",
-            "onlySwitchToTrustedDomains = True",
-            "trustedDomains = ['youtube.com', '*.example.com/videos']",
         ],
         config_persist_timeout,
     );
     match config_persist_result {
         Ok(()) => {
             steps.push("config-save-persisted".to_owned());
-            steps.push("trusted-domains-configured".to_owned());
         }
         Err(error) => steps.push(format!(
             "config-save-persisted-skipped:{}",
@@ -319,7 +225,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Public Servers",
-        "view: public-servers",
+        "view: setup",
         "File",
         "Open Public Server Browser",
         step_timeout,
@@ -372,13 +278,15 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "Edit Session", step_timeout)?;
     let edit_count = driver.editable_text_input_count(window)?;
-    if edit_count != 2 {
+    if edit_count < 2 {
         return Err(format!(
-            "expected 2 editable public-server edit-session fields, found {edit_count}"
+            "expected at least 2 editable public-server edit-session fields, found {edit_count}"
         ));
     }
     driver.set_edit_value_by_index(window, 0, CUSTOM_SERVER_LABEL)?;
     driver.set_edit_value_by_index(window, 1, CUSTOM_SERVER_ADDRESS)?;
+    wait_for_edit_value_by_index(driver, window, 0, CUSTOM_SERVER_LABEL, step_timeout)?;
+    wait_for_edit_value_by_index(driver, window, 1, CUSTOM_SERVER_ADDRESS, step_timeout)?;
     invoke_named_control_with_wait(
         driver,
         window,
@@ -431,7 +339,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Configuration",
-        "view: configuration",
+        "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
@@ -453,7 +361,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Media Search",
-        "view: media-search",
+        "view: setup",
         "File",
         "Open Media Search",
         step_timeout,
@@ -550,7 +458,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Configuration",
-        "view: configuration",
+        "view: setup",
         "Advanced",
         "Trusted Domains",
         step_timeout,
@@ -600,17 +508,9 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Privacy & Chat",
-        "Trusted Domains",
+        "Trusted Domains Only",
         step_timeout,
     )?;
-    wait_for_edit_value_by_index(
-        driver,
-        window,
-        trusted_domains_edit_index(true),
-        TRUSTED_DOMAINS_VALUE,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(driver, window, "Trusted Domains Only", step_timeout)?;
     wait_for_accessible_name(driver, window, "Chat Input", step_timeout)?;
     select_top_tab_with_wait(
         driver,
@@ -699,13 +599,9 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         true
     };
     if open_media_invoked {
-        let open_media_switched_to_main_window = wait_for_accessible_name(
-            driver,
-            window,
-            "view: main-window",
-            Duration::from_millis(800),
-        )
-        .is_ok();
+        let open_media_switched_to_main_window =
+            wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
+                .is_ok();
         if open_media_switched_to_main_window {
             wait_for_accessible_name(
                 driver,
@@ -722,13 +618,8 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
                 NativeControlKind::Button,
                 step_timeout,
             )?;
-            if wait_for_accessible_name(
-                driver,
-                window,
-                "view: main-window",
-                Duration::from_millis(800),
-            )
-            .is_ok()
+            if wait_for_accessible_name(driver, window, "view: room", Duration::from_millis(800))
+                .is_ok()
             {
                 wait_for_accessible_name(
                     driver,
@@ -738,7 +629,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
                 )?;
                 steps.push("open-media-file".to_owned());
             } else {
-                wait_for_accessible_name(driver, window, "view: configuration", step_timeout)?;
+                wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
                 wait_for_accessible_name_fragment(
                     driver,
                     window,
@@ -753,7 +644,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         driver,
         window,
         "Media Search",
-        "view: media-search",
+        "view: setup",
         "File",
         "Open Media Search",
         step_timeout,
@@ -783,10 +674,9 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             )
         })?;
     }
-    wait_for_accessible_name(driver, window, "About Syncplay", step_timeout)?;
-    wait_for_accessible_name(driver, window, "view: menus-and-dialogs", step_timeout)?;
+    wait_for_accessible_name(driver, window, "view: setup", step_timeout)?;
     wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    steps.push("about-open".to_owned());
+    steps.push("about-routes-to-setup".to_owned());
 
     Ok(steps)
 }

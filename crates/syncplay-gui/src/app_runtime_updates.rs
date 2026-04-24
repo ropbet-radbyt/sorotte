@@ -705,7 +705,7 @@ impl SyncplayGuiShellAppState {
             buffer: self.configuration.room_history_multiline_text(),
             is_dirty: false,
         });
-        self.active_view = GuiShellView::Configuration;
+        self.active_view = GuiShellView::Setup;
         self.select_configuration_tab(GuiConfigurationTab::Connection);
         self.clear_action_error_and_refresh();
         true

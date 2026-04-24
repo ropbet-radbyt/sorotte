@@ -23,7 +23,7 @@ use super::support::{
 impl FirstRunConfigurationDialogDraft {
     pub(super) fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
-            "syncplay-gui configuration surface initialized in {} mode ({} startup entries, {} ignored exception).",
+            "syncplay-gui setup surface initialized in {} mode ({} startup entries, {} ignored exception).",
             self.launch_mode.label(),
             self.compatibility_startup_entry_count,
             self.ignored_startup_exception_count,
@@ -42,7 +42,7 @@ impl FirstRunConfigurationDialogDraft {
         }
 
         lines.push(
-            "Native window widgets are still pending; this shell now owns the first grouped GUI configuration state model, a typed dialog control schema, and an editable draft that round-trips back into shared client settings."
+            "Native window widgets use a room-first shell with a grouped setup state model, a typed dialog control schema, and an editable draft that round-trips back into shared client settings."
                 .to_owned(),
         );
         lines
@@ -461,7 +461,7 @@ impl MainWindowShellState {
 
     pub(super) fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![
-            "[Main Window]".to_owned(),
+            "[Room]".to_owned(),
             format!(
                 "Room: {} (shared_playlist={}, controlled_room={})",
                 self.room_name,

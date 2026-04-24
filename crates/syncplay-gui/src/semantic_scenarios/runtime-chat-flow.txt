@@ -15,8 +15,6 @@ push-chat-message	bob	hello from tcp
 assert-value	main-window:chat:0	connected
 assert-value	main-window:chat:1	hello from tcp
 enter-text	main-window:chat-input	true	hello room
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 push-chat-message	smoke-user	hello room
@@ -27,8 +25,6 @@ assert-value	main-window:chat-input	<empty>
 assert-value	main-window:chat:3	/undo
 assert-value	main-window:chat:4	Undo seek requested.
 enter-text	main-window:chat-input	true	//literal
-assert-pending	send-chat-message
-complete-pending
 assert-pending	none
 assert-value	main-window:chat-input	<empty>
 push-chat-message	smoke-user	/literal
