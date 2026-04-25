@@ -37,6 +37,8 @@ $cargoArgs = @(
     "--quiet",
     "-p",
     "syncplay-gui",
+    "--features",
+    "gui-native-smoke,live-python-interop",
     "--bin",
     "syncplay-gui-native-smoke",
     "--"

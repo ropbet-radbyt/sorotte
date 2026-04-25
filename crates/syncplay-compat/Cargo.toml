@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+trace-capture = []
+
 [dependencies]
 serde_json.workspace = true
 syncplay-protocol = { path = "../syncplay-protocol" }

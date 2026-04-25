@@ -8,6 +8,12 @@ rust-version.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+gui-semantic-smoke = []
+gui-native-smoke = ["live-python-interop"]
+live-python-interop = ["dep:syncplay-compat"]
+
 [dependencies]
 eframe = "0.33.3"
 egui = "0.33.3"
@@ -19,7 +25,7 @@ serde.workspace = true
 serde_json = "1.0.149"
 sha2.workspace = true
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
-syncplay-compat = { path = "../syncplay-compat" }
+syncplay-compat = { path = "../syncplay-compat", optional = true }
 syncplay-client-app = { path = "../syncplay-client-app" }
 syncplay-client-core = { path = "../syncplay-client-core" }
 syncplay-player-api = { path = "../syncplay-player-api" }
@@ -35,13 +41,16 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Co
 name = "syncplay-gui-semantic-smoke"
 path = "src/bin/syncplay-gui-semantic-smoke.rs"
 test = false
+required-features = ["gui-semantic-smoke", "live-python-interop"]
 
 [[bin]]
 name = "syncplay-gui-semantic-suite"
 path = "src/bin/syncplay-gui-semantic-suite.rs"
 test = false
+required-features = ["gui-semantic-smoke", "live-python-interop"]
 
 [[bin]]
 name = "syncplay-gui-native-smoke"
 path = "src/bin/syncplay-gui-native-smoke.rs"
 test = false
+required-features = ["gui-native-smoke"]

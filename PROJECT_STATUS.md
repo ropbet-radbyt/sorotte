@@ -11,7 +11,7 @@ Audit snapshot for the Rust Syncplay rewrite.
 - `cargo fmt --all` passed.
 - `cargo test --workspace` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
-- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`11/11` scenarios).
+- `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`12/12` scenarios).
 - `cargo build -p syncplay-gui --bin syncplay-gui` passed.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000` passed.
 - `cargo test -p syncplay-gui gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config -- --ignored` passed with local `SYNCPLAY_MPV_SMOKE_BIN`.
@@ -46,6 +46,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Typed Syncplay protocol message models and fixture decoding coverage (`Hello`, `Set`, `List`, `State`, `Chat`, `Error`, `TLS` families).
 - [x] Client session logic with reconnect/state restoration behaviors covered by tests.
 - [x] Playlist and local command handling in the CLI (including controller/playlist command paths covered by tests).
+- [x] CLI compatibility/unit tests split into behavior-owned modules instead of one crate-level test hotspot.
 - [x] Python-style GUI chat-box slash-command handling, including literal `//` escape behavior, command echo, and runtime-backed seek/undo/offset/playlist/readiness/controller/chat dispatch.
 - [x] `mpv` JSON IPC integration with attach/control/property updates and unit coverage in `syncplay-player-mpv`.
 - [x] Managed `mpv` launch and explicit-IPC attach flows (with additional real-`mpv` smokes available as ignored tests).
@@ -63,6 +64,8 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Localized runtime strings and language-sensitive public-server/update-check service calls, with non-English semantic smoke coverage.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
 - [x] Compatibility/interop test infrastructure comparing Rust runtime behavior to captured Python Syncplay traces/scenarios.
+- [x] Large CLI and GUI test modules split into behavior-owned child modules so the test tree no longer depends on crate-sized hotspot files.
+- [x] GUI app/library production modules split below the 900-line working target, including render actions, native host, runtime bridge, renderer, runtime-owner, runtime-stack, localization, shell-state/projection, semantic, stream, and update surfaces.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
 - [x] Rust server executable alpha entrypoint with `--help`, core startup flags, and listener/network-loop startup wiring over the server runtime.
 - [x] CI/automation basics (`rust-ci.yml`) and coverage workflow (`rust-coverage.yml`), plus local cargo aliases in `.cargo/config.toml`.
@@ -81,7 +84,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
 - [ ] Cross-platform validation beyond the current Windows-oriented GUI workflow.
 - [ ] Expand `syncplay-server` CLI/runtime parity beyond the current alpha slice (remaining gaps include dual-interface binding parity and binary-level operational smoke coverage).
-- [ ] Refactor/maintainability work for very large modules (notably `crates/syncplay-gui/src/app.rs`, still roughly `32.5k` lines but now shedding legacy GUI UI-state persistence into `app_ui_state.rs`, startup/bootstrap support into `app_startup.rs` and `app_startup_support.rs`, shared helper functions into `app_support.rs`, the widget-tree model into `app_widget_tree.rs`, and queued-runtime/native host plumbing into `app_runtime_queue.rs` and `app_native_host.rs`, plus `crates/syncplay-cli/src/main.rs` and `crates/syncplay-client-core/src/lib.rs`) to reduce change risk.
+- [ ] Refactor/maintainability work for remaining large modules (notably reducer/runtime-adapter/localization-pattern leaves, smoke-driver hotspots plus `crates/syncplay-client-core/src/lib.rs`; the CLI production roots, GUI renderer, render actions, native host, runtime bridge, runtime-stack root and transport, runtime localization, shell-state/shell-projection roots, runtime-owner/player surfaces, runtime-owner request routing, live Python interop, stream support, semantic driver, runtime updates, and main-window widget projection are now behavior-owned module trees) to reduce change risk.
 
 ## Optional/next improvements
 

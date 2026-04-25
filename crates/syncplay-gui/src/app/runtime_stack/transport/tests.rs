@@ -1,0 +1,300 @@
+use super::*;
+
+use std::{
+    io::{self, BufRead, BufReader, Write},
+    net::TcpListener,
+    sync::{Arc, mpsc},
+    thread,
+    time::{Duration, Instant},
+};
+
+use rustls::{
+    ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
+    pki_types::CertificateDer,
+};
+
+const TEST_TLS_CERT_PEM: &str = include_str!("../../../../../../fixtures/tls/test_cert.pem");
+const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../../../../fixtures/tls/test_chain.pem");
+const TEST_TLS_PRIVATE_KEY_PEM: &str =
+    include_str!("../../../../../../fixtures/tls/test_privkey.pem");
+
+fn test_tls_client_config() -> Arc<ClientConfig> {
+    GuiTcpSessionTransportDriver::ensure_rustls_crypto_provider();
+    let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("test TLS certificate fixture should parse");
+    let mut roots = RootCertStore::empty();
+    for cert in certs {
+        roots
+            .add(cert)
+            .expect("test TLS certificate should be trusted by the client");
+    }
+    Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+fn test_tls_server_config() -> Arc<ServerConfig> {
+    GuiTcpSessionTransportDriver::ensure_rustls_crypto_provider();
+    let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
+    let mut certificate_chain = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<CertificateDer<'static>>, _>>()
+        .expect("test TLS certificate fixture should parse");
+    let mut chain_reader = io::BufReader::new(TEST_TLS_CHAIN_PEM.as_bytes());
+    certificate_chain.extend(
+        rustls_pemfile::certs(&mut chain_reader)
+            .collect::<Result<Vec<CertificateDer<'static>>, _>>()
+            .expect("test TLS chain fixture should parse"),
+    );
+    let mut key_reader = io::BufReader::new(TEST_TLS_PRIVATE_KEY_PEM.as_bytes());
+    let private_key = rustls_pemfile::private_key(&mut key_reader)
+        .expect("test TLS private key fixture should parse")
+        .expect("test TLS private key fixture should contain a key");
+    Arc::new(
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certificate_chain, private_key)
+            .expect("test TLS server config should build"),
+    )
+}
+
+fn hello_line() -> String {
+    r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned()
+}
+
+#[test]
+fn tcp_session_transport_driver_rejects_invalid_inbound_protocol_lines() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("invalid-line transport test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("invalid-line transport test server should expose its address");
+    let (first_line_tx, first_line_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("invalid-line transport test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("invalid-line transport test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("invalid-line transport test server should read the TLS request");
+        first_line_tx
+            .send(first_line)
+            .expect("invalid-line transport test server should report the TLS request");
+        stream
+            .write_all(br#"{"status":"connected"}"#)
+            .expect("invalid-line transport test server should write the invalid line");
+        stream
+            .write_all(b"\n")
+            .expect("invalid-line transport test server should terminate the invalid line");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
+        "localhost:{}",
+        address.port()
+    ))
+    .expect("invalid-line transport test client driver should connect")
+    .with_inbound_idle_timeout(Duration::from_secs(2));
+    let transport = GuiQueuedSessionTransportHandle::default();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        match driver.pump(&transport) {
+            Ok(()) => {}
+            Err(error) => break error,
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the invalid inbound line to fail the TCP transport",
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let first_line = first_line_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("invalid-line transport test server should receive the TLS request");
+    assert!(first_line.contains(r#""TLS""#));
+    assert!(first_line.contains(r#""startTLS":"send""#));
+    assert!(
+        error.contains("Session transport TCP received an invalid protocol line"),
+        "invalid inbound protocol lines should surface a fatal transport error"
+    );
+    assert!(transport.drain_inbound_protocol_lines().is_empty());
+
+    server_thread
+        .join()
+        .expect("invalid-line transport test server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_driver_falls_back_to_plaintext_when_server_declines_start_tls() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("plaintext TLS-fallback test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("plaintext TLS-fallback test server should expose its address");
+    let (first_line_tx, first_line_rx) = mpsc::channel();
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("plaintext TLS-fallback test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("plaintext TLS-fallback test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("plaintext TLS-fallback test server should read the TLS request");
+        first_line_tx
+            .send(first_line)
+            .expect("plaintext TLS-fallback test server should report the TLS request");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"false"}}"#)
+            .expect("plaintext TLS-fallback test server should write the TLS decline");
+        stream
+            .write_all(b"\n")
+            .expect("plaintext TLS-fallback test server should terminate the TLS decline");
+        let mut hello = String::new();
+        reader
+            .read_line(&mut hello)
+            .expect("plaintext TLS-fallback test server should read the plaintext hello");
+        hello_tx
+            .send(hello)
+            .expect("plaintext TLS-fallback test server should report the plaintext hello");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
+        "localhost:{}",
+        address.port()
+    ))
+    .expect("plaintext TLS-fallback client driver should connect");
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([hello_line()]);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let hello = loop {
+        if let Ok(hello) = hello_rx.try_recv() {
+            break hello;
+        }
+        if let Err(error) = driver.pump(&transport) {
+            if let Ok(hello) = hello_rx.try_recv() {
+                break hello;
+            }
+            panic!("session transport driver should pump: {error}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the plaintext hello after TLS fallback"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let first_line = first_line_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("plaintext TLS-fallback server should receive the TLS request");
+    assert!(first_line.contains(r#""TLS""#));
+    assert!(first_line.contains(r#""startTLS":"send""#));
+    assert!(hello.contains(r#""Hello""#));
+    assert!(hello.contains(r#""alice""#));
+
+    server_thread
+        .join()
+        .expect("plaintext TLS-fallback server thread should join");
+}
+
+#[test]
+fn tcp_session_transport_driver_upgrades_to_tls_before_sending_hello() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("TLS upgrade test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("TLS upgrade test server should expose its address");
+    let server_config = test_tls_server_config();
+    let (first_line_tx, first_line_rx) = mpsc::channel();
+    let (hello_tx, hello_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("TLS upgrade test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("TLS upgrade test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("TLS upgrade test server should read the TLS request");
+        first_line_tx
+            .send(first_line)
+            .expect("TLS upgrade test server should report the TLS request");
+        stream
+            .write_all(br#"{"TLS":{"startTLS":"true"}}"#)
+            .expect("TLS upgrade test server should accept protocol TLS");
+        stream
+            .write_all(b"\n")
+            .expect("TLS upgrade test server should terminate the TLS response");
+
+        let mut tls_stream = StreamOwned::new(
+            ServerConnection::new(server_config)
+                .expect("TLS upgrade test server connection should build"),
+            stream,
+        );
+        let mut hello_reader = BufReader::new(&mut tls_stream);
+        let mut hello = String::new();
+        hello_reader
+            .read_line(&mut hello)
+            .expect("TLS upgrade test server should read the hello over TLS");
+        hello_tx
+            .send(hello)
+            .expect("TLS upgrade test server should report the TLS hello");
+    });
+
+    let mut driver = GuiTcpSessionTransportDriver::connect_from_host_arg(&format!(
+        "localhost:{}",
+        address.port()
+    ))
+    .expect("TLS upgrade client driver should connect")
+    .with_tls_client_config(test_tls_client_config());
+    let transport = GuiQueuedSessionTransportHandle::default();
+    transport.push_outbound_protocol_lines([hello_line()]);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let hello = loop {
+        if let Ok(hello) = hello_rx.try_recv() {
+            break hello;
+        }
+        if let Err(error) = driver.pump(&transport) {
+            if let Ok(hello) = hello_rx.try_recv() {
+                break hello;
+            }
+            panic!("session transport driver should pump: {error}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the hello after the TLS upgrade"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let first_line = first_line_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("TLS upgrade test server should receive the TLS request");
+    assert!(first_line.contains(r#""TLS""#));
+    assert!(first_line.contains(r#""startTLS":"send""#));
+    assert!(hello.contains(r#""Hello""#));
+    assert!(hello.contains(r#""alice""#));
+
+    server_thread
+        .join()
+        .expect("TLS upgrade test server thread should join");
+}

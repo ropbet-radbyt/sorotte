@@ -1,0 +1,187 @@
+use std::path::Path;
+
+use crate::app::shell_state::{
+    GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot, GuiStreamTargetKind,
+    browser_stream_target_kind,
+};
+
+use super::discovery::{discover_stream_helpers, probe_stream_helper_component};
+use super::metadata::{load_managed_stream_helper_metadata, managed_installation_is_stale};
+use super::paths::{discovered_managed_stream_helper_bin_dir, managed_stream_helper_bin_dir};
+use super::{
+    ManagedStreamHelperComponent, StreamHelperAttachMode, StreamHelperExecutable,
+    StreamHelperRuntimeSnapshotDetails, StreamHelperSource,
+};
+
+pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
+    root: Option<&Path>,
+    attach_mode: StreamHelperAttachMode,
+    target: Option<&str>,
+) -> GuiStreamHelperRuntimeSnapshot {
+    let extractor_target = target.and_then(|target| {
+        (browser_stream_target_kind(target, None) == GuiStreamTargetKind::ExtractorPageUrl)
+            .then_some(target)
+    });
+    let install_supported = cfg!(windows) && root.is_some();
+    let integration_supported = root.is_some();
+    let discovery = discover_stream_helpers(root);
+    let metadata = root.and_then(load_managed_stream_helper_metadata);
+    let install_location = root.map(|root| {
+        discovered_managed_stream_helper_bin_dir(root)
+            .unwrap_or_else(|| managed_stream_helper_bin_dir(root))
+            .display()
+            .to_string()
+    });
+    let downloader_probe = probe_stream_helper_component(
+        ManagedStreamHelperComponent::Downloader,
+        attach_mode,
+        discovery.managed_downloader.clone(),
+        discovery.environment_downloader.clone(),
+    );
+    let js_runtime_probe = probe_stream_helper_component(
+        ManagedStreamHelperComponent::JsRuntime,
+        attach_mode,
+        discovery.managed_js_runtime.clone(),
+        discovery.environment_js_runtime.clone(),
+    );
+    let snapshot_details = StreamHelperRuntimeSnapshotDetails {
+        install_location: install_location.clone(),
+        downloader_status: Some(downloader_probe.status.clone()),
+        js_runtime_status: Some(js_runtime_probe.status.clone()),
+        open_install_location_available: root.is_some(),
+    };
+    let status_snapshot = |health: GuiStreamHelperHealth,
+                           message: Option<String>,
+                           target: Option<&str>,
+                           retry_available: bool| {
+        runtime_snapshot_with_details(
+            health,
+            message,
+            target,
+            install_supported,
+            integration_supported,
+            retry_available,
+            snapshot_details.clone(),
+        )
+    };
+
+    let Some(target) = extractor_target else {
+        return status_snapshot(GuiStreamHelperHealth::Healthy, None, None, false);
+    };
+
+    if attach_mode == StreamHelperAttachMode::ExternalPlayer
+        && (downloader_probe.effective_path.is_none() || js_runtime_probe.effective_path.is_none())
+    {
+        return status_snapshot(
+            GuiStreamHelperHealth::ExternalPlayerUnmanaged,
+            Some(
+                "This URL needs yt-dlp and Deno to be visible to the already-running external mpv process. Install them globally or relaunch mpv from Syncplay after setup."
+                    .to_owned(),
+            ),
+            Some(target),
+            true,
+        );
+    }
+
+    let Some(downloader_path) = downloader_probe.effective_path.clone() else {
+        let health = if install_supported {
+            GuiStreamHelperHealth::MissingDownloader
+        } else {
+            GuiStreamHelperHealth::UnsupportedPlatform
+        };
+        let message = if install_supported {
+            "Extractor-backed page URLs need yt-dlp before mpv can load them. Import it or install the managed helper."
+                .to_owned()
+        } else {
+            "Automatic helper installation is not available on this platform yet. Import yt-dlp and Deno or install them manually."
+                .to_owned()
+        };
+        return status_snapshot(health, Some(message), Some(target), true);
+    };
+    if let Some(error) = downloader_probe.effective_error.clone() {
+        return status_snapshot(
+            GuiStreamHelperHealth::Broken,
+            Some(format!("yt-dlp could not be executed: {error}")),
+            Some(target),
+            true,
+        );
+    }
+
+    let Some(js_runtime_path) = js_runtime_probe.effective_path.clone() else {
+        let health = if install_supported {
+            GuiStreamHelperHealth::MissingJsRuntime
+        } else {
+            GuiStreamHelperHealth::UnsupportedPlatform
+        };
+        let message = if install_supported {
+            "This URL needs a JavaScript runtime for yt-dlp extraction. Import Deno or install the managed runtime."
+                .to_owned()
+        } else {
+            "Automatic helper installation is not available on this platform yet. Import yt-dlp and Deno or install them manually."
+                .to_owned()
+        };
+        return status_snapshot(health, Some(message), Some(target), true);
+    };
+    if let Some(error) = js_runtime_probe.effective_error.clone() {
+        return status_snapshot(
+            GuiStreamHelperHealth::Broken,
+            Some(format!("Deno could not be executed: {error}")),
+            Some(target),
+            true,
+        );
+    }
+    let downloader = StreamHelperExecutable {
+        path: downloader_path,
+        source: downloader_probe
+            .effective_source
+            .expect("source should exist with the effective downloader path"),
+        version: downloader_probe.effective_version.clone(),
+    };
+    let js_runtime = StreamHelperExecutable {
+        path: js_runtime_path,
+        source: js_runtime_probe
+            .effective_source
+            .expect("source should exist with the effective JS runtime path"),
+        version: js_runtime_probe.effective_version.clone(),
+    };
+
+    let using_managed_installation = downloader.source == StreamHelperSource::Managed
+        || js_runtime.source == StreamHelperSource::Managed;
+    if using_managed_installation && managed_installation_is_stale(metadata.as_ref()) {
+        return status_snapshot(
+            GuiStreamHelperHealth::Stale,
+            Some(format!(
+                "Managed stream helper found at '{}' and '{}', but it should be refreshed before retrying this URL.",
+                downloader.path.display(),
+                js_runtime.path.display()
+            )),
+            Some(target),
+            true,
+        );
+    }
+
+    status_snapshot(GuiStreamHelperHealth::Healthy, None, Some(target), true)
+}
+
+fn runtime_snapshot_with_details(
+    health: GuiStreamHelperHealth,
+    message: Option<String>,
+    target: Option<&str>,
+    install_supported: bool,
+    integration_supported: bool,
+    retry_available: bool,
+    details: StreamHelperRuntimeSnapshotDetails,
+) -> GuiStreamHelperRuntimeSnapshot {
+    GuiStreamHelperRuntimeSnapshot {
+        health,
+        message,
+        target: target.map(str::to_owned),
+        install_supported,
+        integration_supported,
+        retry_available,
+        install_location: details.install_location,
+        downloader_status: details.downloader_status,
+        js_runtime_status: details.js_runtime_status,
+        open_install_location_available: details.open_install_location_available,
+    }
+}

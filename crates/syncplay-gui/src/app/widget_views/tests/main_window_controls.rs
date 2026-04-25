@@ -1,0 +1,351 @@
+use super::*;
+
+#[test]
+fn gui_shell_app_state_projects_main_window_widget_trees() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(true),
+        shared_playlist_enabled: Some(true),
+        username: Some("Alice".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
+    assert!(
+        state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
+            "One".to_owned(),
+            "Two".to_owned(),
+        ]))
+    );
+    assert!(state.apply(GuiShellAction::SelectMainWindowUser(1)));
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+        GuiDraftRuntimeSnapshot {
+            outgoing_chat_message: Some("hello widget".to_owned()),
+        },
+    )));
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(tree.label, "Room");
+    assert!(tree.find("main-window:tabs").is_none());
+    assert!(tree.find("main-window:tab:overview").is_none());
+    let browser = tree
+        .find("main-window:browser")
+        .expect("room browser should exist in widget tree");
+    assert_eq!(browser.kind, GuiWidgetKind::Panel);
+    let room_group = tree
+        .find("main-window:room-group:0")
+        .expect("current room group should exist in widget tree");
+    assert_eq!(room_group.kind, GuiWidgetKind::Panel);
+    let room_group_state = tree
+        .find("main-window:room-group:0:state")
+        .expect("room-group state should exist in widget tree");
+    assert_eq!(room_group_state.kind, GuiWidgetKind::Status);
+    let user_state = tree
+        .find("main-window:user:1:state")
+        .expect("selected user state should exist in widget tree");
+    assert_eq!(user_state.kind, GuiWidgetKind::Status);
+    assert!(user_state.selected);
+    assert!(tree.find("main-window:user:new").is_none());
+    let room_toggle = tree
+        .find("main-window:room-actions:toggle")
+        .expect("room-change toggle should exist in widget tree");
+    assert_eq!(room_toggle.kind, GuiWidgetKind::Button);
+    assert_eq!(room_toggle.label, "Change Room");
+    assert!(!room_toggle.selected);
+    assert!(
+        tree.find("main-window:room-input").is_none(),
+        "room-change form should be collapsed by default"
+    );
+
+    assert!(state.apply(GuiShellAction::ToggleMainWindowRoomChange));
+    let tree = state.main_window_widget_tree();
+    let room_toggle = tree
+        .find("main-window:room-actions:toggle")
+        .expect("room-change toggle should still exist in widget tree");
+    assert_eq!(room_toggle.label, "Hide Room Change");
+    assert!(room_toggle.selected);
+    let room_input = tree
+        .find("main-window:room-input")
+        .expect("room input should exist once room change is expanded");
+    assert_eq!(room_input.kind, GuiWidgetKind::TextInput);
+    assert_eq!(room_input.label, "Room");
+    assert_eq!(room_input.value.as_deref(), Some("Lounge"));
+    assert!(room_input.enabled);
+    let username = tree
+        .find("main-window:username")
+        .expect("session username should exist in the room summary");
+    assert_eq!(username.kind, GuiWidgetKind::Status);
+    assert_eq!(username.value.as_deref(), Some("Alice"));
+    let room_control = tree
+        .find("main-window:room-control")
+        .expect("room-control status should exist in widget tree");
+    assert_eq!(room_control.kind, GuiWidgetKind::Status);
+    assert_eq!(
+        room_control.value.as_deref(),
+        Some("Unavailable: no active server session.")
+    );
+
+    let playlist = tree
+        .find("main-window:playlist:1")
+        .expect("selected playlist row should exist in widget tree");
+    assert_eq!(playlist.kind, GuiWidgetKind::ListItem);
+    assert!(playlist.selected);
+    let playlist_add_menu = tree
+        .find("main-window:playlist:add-menu")
+        .expect("playlist add menu should exist in widget tree");
+    assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
+    assert_eq!(playlist_add_menu.children.len(), 2);
+    let playlist_header = tree
+        .find("main-window:playlist-header:actions")
+        .expect("playlist header actions should exist in widget tree");
+    assert_eq!(
+        playlist_header
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "main-window:playlist:add-menu",
+            "main-window:playlist:more-menu",
+        ]
+    );
+    let playlist_more_menu = tree
+        .find("main-window:playlist:more-menu")
+        .expect("playlist more menu should exist in widget tree");
+    assert!(
+        playlist_more_menu.enabled,
+        "playlist More menu should remain expandable even when some nested actions are disabled"
+    );
+    assert!(
+        playlist_more_menu
+            .children
+            .iter()
+            .any(|child| child.id == "main-window:playlist:load")
+    );
+    assert!(
+        playlist_more_menu
+            .children
+            .iter()
+            .any(|child| child.id == "main-window:playlist:save")
+    );
+    let playlist_selection_bar = tree
+        .find("main-window:playlist-selection:actions")
+        .expect("playlist selection actions should exist when an entry is selected");
+    assert_eq!(playlist_selection_bar.kind, GuiWidgetKind::Layout);
+    assert!(tree.find("main-window:playlist:count").is_none());
+    assert!(tree.find("main-window:playlist-empty").is_none());
+    assert!(tree.find("main-window:playlist:new").is_none());
+    assert!(tree.find("main-window:playlist:add").is_none());
+    assert!(tree.find("main-window:user:add").is_none());
+
+    let chat_input = tree
+        .find("main-window:chat-input")
+        .expect("chat input should exist in widget tree");
+    assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
+    assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
+    assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
+}
+
+#[test]
+fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.can_toggle_pause = true;
+    snapshot.can_seek = true;
+    snapshot.can_undo_seek = true;
+    snapshot.can_set_offset = true;
+    snapshot.can_set_ready = true;
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    let playback_actions = tree
+        .find("main-window:controls:playback-actions")
+        .expect("compact playback controls should exist");
+    assert_eq!(
+        playback_actions.layout_mode,
+        Some(GuiLayoutMode::CompactButtonWrap {
+            button_width: 40.0,
+            button_height: 36.0,
+            gap: 8.0,
+        })
+    );
+    assert_eq!(playback_actions.children.len(), 6);
+    assert_eq!(
+        tree.find("main-window:control:set-ready")
+            .expect("ready button should exist")
+            .label,
+        "Not Ready"
+    );
+
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, true, false)];
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:control:set-ready")
+            .expect("ready button should still exist")
+            .label,
+        "Ready"
+    );
+
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+    state.pending_local_ready_target = Some(true);
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+
+    let tree = state.main_window_widget_tree();
+    let ready_button = tree
+        .find("main-window:control:set-ready")
+        .expect("ready button should exist while readiness is pending");
+    assert_eq!(ready_button.label, "Ready");
+    assert!(!ready_button.enabled);
+}
+
+#[test]
+fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        room: Some("Lounge".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.commands.can_toggle_pause = true;
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.can_toggle_pause = true;
+    snapshot.can_seek = true;
+    snapshot.can_undo_seek = true;
+    snapshot.can_set_offset = true;
+    snapshot.can_toggle_autoplay = true;
+    snapshot.can_adjust_autoplay_threshold = true;
+    snapshot.can_set_ready = true;
+    snapshot.users = vec![browser_runtime_user("alice", "Lounge", true, false, false)];
+    snapshot.playlist = Vec::new();
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        snapshot.clone(),
+    )));
+
+    let tree = state.main_window_widget_tree();
+    for id in [
+        "main-window:control:play",
+        "main-window:control:pause",
+        "main-window:control:toggle-pause",
+        "main-window:control:seek",
+        "main-window:control:undo-seek",
+        "main-window:control:set-offset",
+        "main-window:control:set-ready",
+        "main-window:control:autoplay-toggle",
+        "main-window:control:autoplay-threshold-up",
+    ] {
+        assert!(
+            !tree
+                .find(id)
+                .unwrap_or_else(|| panic!("{id} should exist"))
+                .enabled,
+            "{id} should be disabled while the shared playlist is empty"
+        );
+    }
+
+    snapshot.playlist = vec!["episode1.mkv".to_owned()];
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+    state.commands.can_toggle_pause = true;
+
+    let tree = state.main_window_widget_tree();
+    assert!(tree.find("main-window:control:play").unwrap().enabled);
+    assert!(
+        tree.find("main-window:control:toggle-pause")
+            .unwrap()
+            .enabled
+    );
+    assert!(tree.find("main-window:control:set-ready").unwrap().enabled);
+    assert!(
+        tree.find("main-window:control:autoplay-toggle")
+            .unwrap()
+            .enabled
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_player_setup_into_main_window_widgets() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        host: Some("syncplay.example".to_owned()),
+        player_path: Some("C:/missing/mpv.exe".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
+            GuiPlayerSetupRuntimeSnapshot {
+                issue: Some(GuiPlayerSetupIssue {
+                    kind: GuiPlayerSetupIssueKind::ExitedAfterLaunch,
+                    message: "GUI-owned mpv exited with exit code 1.".to_owned(),
+                }),
+            },
+        ))
+    );
+
+    let main_window = state.main_window_widget_tree();
+    assert!(main_window.find("main-window:player-setup").is_some());
+    assert!(
+        main_window
+            .find("main-window:player-setup:retry")
+            .expect("retry button should exist")
+            .enabled
+    );
+    assert!(
+        main_window
+            .find("main-window:player-setup:open-settings")
+            .expect("open-settings button should exist")
+            .enabled
+    );
+
+    let shell = state.shell_widget_tree();
+    assert_eq!(
+        shell
+            .find("shell:open-modal")
+            .and_then(|node| node.value.as_deref()),
+        Some("player-setup")
+    );
+    assert!(
+        shell
+            .find("shell:modal:close")
+            .expect("player setup modal close button should exist")
+            .enabled
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_runtime_room_control_status_into_main_window_widget_tree() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("+room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+    snapshot.room_name = "+room1".to_owned();
+    snapshot.controlled_room_active = true;
+    snapshot.room_control_status = "Not granted by server: room controls are locked.".to_owned();
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));
+
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:room-control")
+            .and_then(|node| node.value.as_deref()),
+        Some("Not granted by server: room controls are locked.")
+    );
+}
