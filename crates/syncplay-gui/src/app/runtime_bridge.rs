@@ -16,6 +16,7 @@ use super::support::format_offset_command;
 
 mod pending;
 mod preview_bridge;
+mod request_preview;
 mod requests;
 mod traits;
 

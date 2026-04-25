@@ -172,6 +172,7 @@ impl Default for ClientSession {
 }
 
 mod apply;
+mod file_metadata;
 mod helpers;
 mod lifecycle;
 mod playback;
