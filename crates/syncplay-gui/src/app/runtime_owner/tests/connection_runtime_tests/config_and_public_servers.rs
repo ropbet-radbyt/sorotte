@@ -138,7 +138,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
                     false,
                 )]
             && playlist.is_empty()
-            && chat.is_empty()
+            && runtime_chat_pane_ready(chat)
             && rooms == &browser_runtime_rooms("(no room joined)", false, true)
     )));
     assert!(toggle_actions.iter().any(|action| matches!(
@@ -155,6 +155,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: _,
             },
             pending_operation: None,
         })
@@ -183,10 +184,11 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
                 can_disconnect_session: false,
                 can_search_missing_media: false,
                 can_toggle_pause: false,
-                can_send_chat_message: true,
+                can_send_chat_message: false,
+                chat_unavailable_reason: Some(reason),
             },
             pending_operation: None,
-        })
+        }) if reason == "Chat input is unavailable because no session runtime is connected."
     )));
     assert!(chat_actions.iter().any(|action| matches!(
         action,
@@ -194,7 +196,7 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
             level: GuiTransientNotificationLevel::Error,
             message,
         } if message
-            == "Chat sending requires a session runtime connection; the message was not sent."
+            == "Chat input is unavailable because no session runtime is connected. The message was not sent."
     )));
     for action in chat_actions {
         assert!(chat_state.apply(action));
@@ -630,4 +632,41 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_clears_detached_missing_media_search_without_target() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        media_search_directories: Some(vec!["C:/Media".to_owned()]),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::SearchMissingMedia,
+    ));
+    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    let actions = handle.drain_actions();
+
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::ApplyGuiCommandRuntimeSnapshot(GuiCommandRuntimeSnapshot {
+            pending_operation: None,
+            ..
+        })
+    )));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message,
+        } if message
+            == "Missing-media search through the attached session runtime failed: Detached GUI missing-media search could not determine a target file from the current player or playlist state."
+    )));
+    for action in actions {
+        assert!(state.apply(action));
+    }
+    assert!(state.pending_operation.is_none());
 }

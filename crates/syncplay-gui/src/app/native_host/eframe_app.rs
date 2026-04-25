@@ -346,6 +346,7 @@ impl eframe::App for GuiNativeApp {
             || requested_playback_prompt.is_some()
             || playback_prompt_state_changed
             || pending_completion_requested
+            || auto_pending_completion_requested
             || pending_cancel_requested
         {
             ctx.request_repaint();

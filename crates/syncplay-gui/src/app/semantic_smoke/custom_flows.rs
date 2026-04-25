@@ -506,6 +506,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             ) && !matches!(action, GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(_))
                 && !matches!(action, GuiShellAction::ApplyMainWindowRuntimeSnapshot(_))
                 && !matches!(action, GuiShellAction::ApplyMenuDialogRuntimeSnapshot(_))
+                && !matches!(action, GuiShellAction::ApplyGuiCommandRuntimeSnapshot(_))
         }) {
             return Err(format!(
                 "detached semantic search flow returned unexpected actions: {search_actions:?}"

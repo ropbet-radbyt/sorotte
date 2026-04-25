@@ -5,7 +5,9 @@ use super::super::shell_state::{
     MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState, browser_format_duration_label,
     browser_format_size_label, browser_is_url, browser_uri_is_trusted,
 };
-use super::super::support::{nonempty_room_name_text, normalized_editable_text};
+use super::super::support::{
+    legacy_chat_enabled, nonempty_room_name_text, normalized_editable_text,
+};
 use super::GuiClientCoreChatSessionRuntimeAdapter;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
@@ -279,8 +281,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             managed_rooms_server_supported && session_room_name.is_some();
         let identify_as_controller_enabled = managed_rooms_server_supported
             && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
-        let config_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
-            || settings.chat_output_enabled.unwrap_or(false);
+        let config_chat_enabled = legacy_chat_enabled(&settings);
         let desired_show_chat_enabled =
             config_chat_enabled && self.runtime.session().server_chat_supported() == Some(true);
 

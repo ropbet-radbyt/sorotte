@@ -16,9 +16,7 @@ impl SyncplayGuiShellAppState {
 
     pub(super) fn begin_local_chat_send(&mut self, message: String) -> bool {
         if !self.commands.can_send_chat_message {
-            return self.record_action_error(
-                "Local chat sending is unavailable when chat input is disabled.",
-            );
+            return self.record_action_error(self.chat_send_unavailable_message());
         }
         if normalized_editable_text(&message).is_none() {
             return self.record_action_error("Local chat messages must be non-empty.");

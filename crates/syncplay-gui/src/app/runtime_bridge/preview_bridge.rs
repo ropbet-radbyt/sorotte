@@ -21,10 +21,19 @@ impl GuiPreviewRuntimeBridge {
                     let (playlist_entries, opened_entry_count) = state
                         .map(|state| {
                             let current_count = state.main_window.playlist.len();
+                            let current_index = state
+                                .main_window
+                                .active_playlist_index
+                                .or_else(|| {
+                                    (!state.main_window_playlist_selection_is_local)
+                                        .then_some(state.selection.selected_main_window_playlist)
+                                        .flatten()
+                                });
                             let (playlist_entries, _) = state
-                                .shared_playlist_entries_after_media_open_from_state(
+                                .shared_playlist_entries_after_media_open_from_state_with_current_index(
                                     dispatch.playlist_entries.clone(),
                                     playlist_insert_slot,
+                                    current_index,
                                 );
                             let opened_entry_count = if playlist_insert_slot.is_some() {
                                 playlist_entries.len().saturating_sub(current_count)

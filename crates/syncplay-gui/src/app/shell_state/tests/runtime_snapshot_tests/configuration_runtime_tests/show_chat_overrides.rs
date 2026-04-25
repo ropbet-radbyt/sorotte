@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration_edits() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        chat_input_enabled: Some(true),
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -44,7 +45,8 @@ fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration
 fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration_runtime_snapshots()
 {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        chat_input_enabled: Some(true),
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -95,7 +97,8 @@ fn gui_shell_app_state_preserves_runtime_show_chat_override_across_configuration
 #[test]
 fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuration_catches_up() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        chat_input_enabled: Some(true),
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -113,7 +116,7 @@ fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuratio
     )));
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
         section: "Chat",
-        label: "Chat Input",
+        label: "Chat Output",
         value: false,
     }));
     assert!(state.runtime_menu_action_overrides.is_empty());
@@ -143,7 +146,8 @@ fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuratio
 fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuration_runtime_snapshot_catches_up()
  {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        chat_input_enabled: Some(true),
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(true),
         ..StoredClientSettingsMvp::default()
     });
 
@@ -161,7 +165,7 @@ fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuratio
     )));
 
     let mut draft = state.configuration.to_stored_settings();
-    draft.chat_input_enabled = Some(false);
+    draft.chat_output_enabled = Some(false);
     let saved = state.saved_configuration.clone();
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
@@ -173,7 +177,7 @@ fn gui_shell_app_state_clears_stale_runtime_show_chat_override_when_configuratio
     );
     assert!(state.runtime_menu_action_overrides.is_empty());
 
-    draft.chat_input_enabled = Some(true);
+    draft.chat_output_enabled = Some(true);
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
             GuiConfigurationRuntimeSnapshot {

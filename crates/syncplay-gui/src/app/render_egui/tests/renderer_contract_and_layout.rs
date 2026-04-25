@@ -189,3 +189,54 @@ fn gui_widget_egui_renderer_main_window_top_region_scales_across_compact_medium_
     assert_eq!(wide.column_count, 3);
     assert_eq!(wide.row_count, 1);
 }
+
+#[test]
+fn gui_widget_egui_renderer_room_dashboard_breakpoints_stack_balance_and_widen() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(520.0),
+        super::super::GuiRoomDashboardLayout::Narrow
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(900.0),
+        super::super::GuiRoomDashboardLayout::Medium
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(1440.0),
+        super::super::GuiRoomDashboardLayout::Wide
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(4096.0),
+        super::super::GuiRoomDashboardLayout::Wide
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_dark_semantic_palette_keeps_status_pairs_readable() {
+    fn linear_component(value: u8) -> f32 {
+        let channel = f32::from(value) / 255.0;
+        if channel <= 0.03928 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(color: egui::Color32) -> f32 {
+        (0.2126 * linear_component(color.r()))
+            + (0.7152 * linear_component(color.g()))
+            + (0.0722 * linear_component(color.b()))
+    }
+
+    fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32 {
+        let light = luminance(a).max(luminance(b));
+        let dark = luminance(a).min(luminance(b));
+        (light + 0.05) / (dark + 0.05)
+    }
+
+    let palette = GuiWidgetEguiRenderer::palette_for_dark_mode(true);
+    assert!(contrast_ratio(palette.neutral_text, egui::Color32::from_rgb(38, 45, 54)) >= 4.5);
+    assert!(contrast_ratio(palette.info_text, palette.info_bg) >= 4.5);
+    assert!(contrast_ratio(palette.success_text, palette.success_bg) >= 4.5);
+    assert!(contrast_ratio(palette.warning_text, palette.warning_bg) >= 4.5);
+    assert!(contrast_ratio(palette.controlled_text, palette.controlled_bg) >= 4.5);
+}

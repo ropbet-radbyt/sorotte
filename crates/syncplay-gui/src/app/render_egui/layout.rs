@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::super::shell_state::SyncplayGuiShellAppState;
 use super::super::widget_tree::{GuiLayoutMode, GuiWidgetKind, GuiWidgetNode};
-use super::GuiWidgetEguiRenderer;
+use super::{GuiRoomDashboardLayout, GuiWidgetEguiRenderer};
 
 impl GuiWidgetEguiRenderer {
     pub(super) fn render_room_dashboard(
@@ -36,78 +36,85 @@ impl GuiWidgetEguiRenderer {
             return;
         };
 
-        let available_width = ui.available_width().clamp(0.0, 1420.0);
-        ui.set_max_width(available_width);
+        let available_width = ui.available_width().max(0.0);
         let gap = 12.0;
-        if available_width < 820.0 {
-            self.render_layout(ui, node, state);
-            return;
-        }
-
-        if available_width < 1180.0 {
-            let column_width = ((available_width - gap) * 0.5).max(0.0);
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = gap;
-                ui.spacing_mut().item_spacing = spacing;
-                Self::allocate_fixed_width(ui, column_width, |ui| {
-                    self.render_node(ui, session_panel, state);
-                });
-                Self::allocate_fixed_width(ui, column_width, |ui| {
-                    self.render_node(ui, browser, state);
-                });
-            });
-            ui.add_space(gap);
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = gap;
-                ui.spacing_mut().item_spacing = spacing;
-                Self::allocate_fixed_width(ui, column_width, |ui| {
-                    self.render_node(ui, controls_panel, state);
-                });
-                Self::allocate_fixed_width(ui, column_width, |ui| {
-                    self.render_node(ui, playlist_column, state);
-                });
-            });
-            ui.add_space(gap);
-            self.render_node(ui, chat_panel, state);
-            return;
-        }
-
-        let summary_width = (available_width * 0.30).clamp(330.0, 390.0);
-        let work_width = (available_width - summary_width - gap).max(0.0);
-        let work_column_width = ((work_width - gap) * 0.5).max(240.0);
-        let chat_width = work_width.max(0.0);
-
-        ui.horizontal_top(|ui| {
-            let mut spacing = ui.spacing().item_spacing;
-            spacing.x = gap;
-            ui.spacing_mut().item_spacing = spacing;
-
-            Self::allocate_fixed_width(ui, summary_width, |ui| {
+        match Self::room_dashboard_layout_for_width(available_width) {
+            GuiRoomDashboardLayout::Narrow => {
                 self.render_node(ui, session_panel, state);
                 ui.add_space(gap);
                 self.render_node(ui, controls_panel, state);
-            });
-
-            Self::allocate_fixed_width(ui, work_width, |ui| {
+                ui.add_space(gap);
+                self.render_node(ui, browser, state);
+                ui.add_space(gap);
+                self.render_node(ui, playlist_column, state);
+                ui.add_space(gap);
+                self.render_node(ui, chat_panel, state);
+            }
+            GuiRoomDashboardLayout::Medium => {
+                let column_width = ((available_width - gap) * 0.5).max(0.0);
                 ui.horizontal_top(|ui| {
                     let mut spacing = ui.spacing().item_spacing;
                     spacing.x = gap;
                     ui.spacing_mut().item_spacing = spacing;
-                    Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                    Self::allocate_fixed_width(ui, column_width, |ui| {
+                        self.render_node(ui, session_panel, state);
+                    });
+                    Self::allocate_fixed_width(ui, column_width, |ui| {
                         self.render_node(ui, browser, state);
                     });
-                    Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                });
+                ui.add_space(gap);
+                ui.horizontal_top(|ui| {
+                    let mut spacing = ui.spacing().item_spacing;
+                    spacing.x = gap;
+                    ui.spacing_mut().item_spacing = spacing;
+                    Self::allocate_fixed_width(ui, column_width, |ui| {
+                        self.render_node(ui, controls_panel, state);
+                    });
+                    Self::allocate_fixed_width(ui, column_width, |ui| {
                         self.render_node(ui, playlist_column, state);
                     });
                 });
                 ui.add_space(gap);
-                Self::allocate_fixed_width(ui, chat_width, |ui| {
-                    self.render_node(ui, chat_panel, state);
+                self.render_node(ui, chat_panel, state);
+            }
+            GuiRoomDashboardLayout::Wide => {
+                let summary_width = (available_width * 0.26).clamp(300.0, 380.0);
+                let work_width = (available_width - summary_width - gap).max(0.0);
+                let work_column_width = ((work_width - gap) * 0.5).max(0.0);
+                let chat_width = work_width.max(0.0);
+
+                ui.horizontal_top(|ui| {
+                    let mut spacing = ui.spacing().item_spacing;
+                    spacing.x = gap;
+                    ui.spacing_mut().item_spacing = spacing;
+
+                    Self::allocate_fixed_width(ui, summary_width, |ui| {
+                        self.render_node(ui, session_panel, state);
+                        ui.add_space(gap);
+                        self.render_node(ui, controls_panel, state);
+                    });
+
+                    Self::allocate_fixed_width(ui, work_width, |ui| {
+                        ui.horizontal_top(|ui| {
+                            let mut spacing = ui.spacing().item_spacing;
+                            spacing.x = gap;
+                            ui.spacing_mut().item_spacing = spacing;
+                            Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                                self.render_node(ui, browser, state);
+                            });
+                            Self::allocate_fixed_width(ui, work_column_width, |ui| {
+                                self.render_node(ui, playlist_column, state);
+                            });
+                        });
+                        ui.add_space(gap);
+                        Self::allocate_fixed_width(ui, chat_width, |ui| {
+                            self.render_node(ui, chat_panel, state);
+                        });
+                    });
                 });
-            });
-        });
+            }
+        }
     }
 
     fn allocate_fixed_width(

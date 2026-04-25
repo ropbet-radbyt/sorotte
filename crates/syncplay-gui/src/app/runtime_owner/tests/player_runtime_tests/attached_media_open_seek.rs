@@ -147,7 +147,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
                 active_playlist_index: Some(0),
-                chat: Vec::new(),
+                chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: false,
                 can_seek: false,
                 can_set_offset: false,
@@ -192,7 +192,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 )],
                 playlist: vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()],
                 active_playlist_index: Some(0),
-                chat: Vec::new(),
+                chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: true,
                 can_seek: true,
                 can_set_offset: true,
@@ -273,6 +273,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     can_search_missing_media: false,
                     can_toggle_pause: true,
                     can_send_chat_message: false,
+                    chat_unavailable_reason: Some(
+                        "Chat input is unavailable because no session runtime is connected."
+                            .to_owned(),
+                    ),
                 },
                 pending_operation: None,
             }),

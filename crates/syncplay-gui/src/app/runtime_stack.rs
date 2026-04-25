@@ -39,7 +39,7 @@ use super::shell_state::{
     GuiCommandAvailabilityState, GuiShellAction, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
-use super::support::system_time_seconds;
+use super::support::{legacy_chat_input_enabled, system_time_seconds};
 
 pub(super) use self::client_core_adapter::GuiClientCoreChatSessionRuntimeAdapter;
 pub(super) use self::player::{GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter};

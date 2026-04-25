@@ -136,6 +136,7 @@ impl GuiWidgetEguiRenderer {
                     .desired_width(input_width)
                     .hint_text("Type a message..."),
             );
+            let response = Self::attach_node_tooltip(response, input_node);
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(
                     egui::WidgetType::TextEdit,

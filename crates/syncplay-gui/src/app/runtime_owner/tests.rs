@@ -89,6 +89,17 @@ fn recv_from_channel_while_pumping_runtime<T>(
     }
 }
 
+fn runtime_chat_pane_ready(chat: &[MainWindowRuntimeChatSnapshot]) -> bool {
+    chat == runtime_chat_pane_ready_rows()
+}
+
+fn runtime_chat_pane_ready_rows() -> Vec<MainWindowRuntimeChatSnapshot> {
+    vec![MainWindowRuntimeChatSnapshot {
+        sender: "system".to_owned(),
+        message: "Chat pane ready".to_owned(),
+    }]
+}
+
 mod connection_runtime_tests;
 mod persistence_tests;
 mod player_runtime_tests;

@@ -7,11 +7,30 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn adjust_command_availability(
         &self,
-        _state: &SyncplayGuiShellAppState,
+        state: &SyncplayGuiShellAppState,
         mut command_availability: GuiCommandAvailabilityState,
     ) -> GuiCommandAvailabilityState {
-        if self.runtime.session().server_chat_supported() != Some(true) {
-            command_availability.can_send_chat_message = false;
+        let settings = state.configuration.to_stored_settings();
+        if !legacy_chat_input_enabled(&settings) || state.pending_operation.is_some() {
+            return command_availability;
+        }
+        match self.runtime.session().server_chat_supported() {
+            Some(true) => {
+                command_availability.can_send_chat_message = true;
+                command_availability.chat_unavailable_reason = None;
+            }
+            None => {
+                command_availability.can_send_chat_message = false;
+                command_availability.chat_unavailable_reason = Some(
+                    "Chat input is unavailable until the server Hello confirms chat support."
+                        .to_owned(),
+                );
+            }
+            Some(false) => {
+                command_availability.can_send_chat_message = false;
+                command_availability.chat_unavailable_reason =
+                    Some("Chat input is unavailable because the server disabled chat.".to_owned());
+            }
         }
         command_availability
     }

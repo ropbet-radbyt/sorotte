@@ -175,7 +175,8 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
         assert!(state.apply(action));
     }
     assert!(state.pending_operation.is_none());
-    assert!(state.main_window.chat.is_empty());
+    assert_eq!(state.main_window.chat.len(), 1);
+    assert_eq!(state.main_window.chat[0].message, "Chat pane ready");
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
     assert!(runtime.actions_for_pending_cancel(&state).is_empty());
 }

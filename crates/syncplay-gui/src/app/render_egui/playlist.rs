@@ -391,7 +391,7 @@ impl GuiWidgetEguiRenderer {
         is_room_active: bool,
     ) -> bool {
         let visuals = ui.style().interact(response);
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let active_color = palette.success_text;
         let fill = if is_selected {
             if is_room_active {

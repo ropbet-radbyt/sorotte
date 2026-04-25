@@ -84,6 +84,18 @@ pub(super) fn bool_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+pub(super) fn legacy_chat_input_enabled(settings: &StoredClientSettingsMvp) -> bool {
+    settings.chat_input_enabled.unwrap_or(true)
+}
+
+pub(super) fn legacy_chat_output_enabled(settings: &StoredClientSettingsMvp) -> bool {
+    settings.chat_output_enabled.unwrap_or(true)
+}
+
+pub(super) fn legacy_chat_enabled(settings: &StoredClientSettingsMvp) -> bool {
+    legacy_chat_input_enabled(settings) || legacy_chat_output_enabled(settings)
+}
+
 pub(super) fn autoplay_threshold_from_settings(settings: &StoredClientSettingsMvp) -> usize {
     match settings.autoplay_min_users.as_ref() {
         Some(AutoplayThresholdOverride::Set(count)) => (*count).clamp(2, 99),

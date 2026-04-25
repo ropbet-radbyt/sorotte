@@ -1,6 +1,25 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(super) fn shared_playlist_mutation_current_index(
+        &self,
+        state: &SyncplayGuiShellAppState,
+        allow_local_selection: bool,
+    ) -> Option<usize> {
+        let playlist_len = state.main_window.playlist.len();
+        self.session
+            .as_ref()
+            .and_then(|session| session.current_room_playlist_index())
+            .or(state.main_window.active_playlist_index)
+            .or(self.active_shared_playlist_index)
+            .or_else(|| {
+                allow_local_selection
+                    .then_some(state.selection.selected_main_window_playlist)
+                    .flatten()
+            })
+            .filter(|index| *index < playlist_len)
+    }
+
     pub(super) fn selected_opened_entry_offset(
         selected_playlist_index: Option<usize>,
         opened_entry_count: usize,

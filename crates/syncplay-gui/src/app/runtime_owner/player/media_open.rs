@@ -205,10 +205,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             };
         let current_playlist_entry_count = projected_state.main_window.playlist.len();
+        let current_playlist_index =
+            self.shared_playlist_mutation_current_index(projected_state, false);
         let (playlist_entries, selected_playlist_index) = projected_state
-            .shared_playlist_entries_after_media_open_from_state(
+            .shared_playlist_entries_after_media_open_from_state_with_current_index(
                 dispatch.playlist_entries.clone(),
                 playlist_insert_slot,
+                current_playlist_index,
             );
         let opened_entry_count = if playlist_insert_slot.is_some() {
             playlist_entries

@@ -52,6 +52,13 @@ pub(super) struct GuiResponsiveColumnsPlanEntry {
     pub(super) span: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiRoomDashboardLayout {
+    Narrow,
+    Medium,
+    Wide,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GuiSemanticPalette {
     primary: egui::Color32,
@@ -77,7 +84,36 @@ struct GuiSemanticPalette {
 }
 
 impl GuiWidgetEguiRenderer {
-    fn palette() -> GuiSemanticPalette {
+    fn palette_for_ui(ui: &egui::Ui) -> GuiSemanticPalette {
+        Self::palette_for_dark_mode(ui.visuals().dark_mode)
+    }
+
+    fn palette_for_dark_mode(dark_mode: bool) -> GuiSemanticPalette {
+        if dark_mode {
+            return GuiSemanticPalette {
+                primary: egui::Color32::from_rgb(89, 147, 191),
+                primary_hover: egui::Color32::from_rgb(104, 164, 210),
+                primary_text: egui::Color32::from_rgb(11, 18, 26),
+                danger: egui::Color32::from_rgb(218, 120, 112),
+                danger_hover: egui::Color32::from_rgb(236, 142, 133),
+                danger_text: egui::Color32::from_rgb(24, 10, 10),
+                success_text: egui::Color32::from_rgb(118, 210, 156),
+                success_bg: egui::Color32::from_rgb(24, 60, 42),
+                success_border: egui::Color32::from_rgb(68, 139, 95),
+                warning_text: egui::Color32::from_rgb(236, 190, 107),
+                warning_bg: egui::Color32::from_rgb(69, 52, 23),
+                warning_border: egui::Color32::from_rgb(154, 118, 47),
+                info_text: egui::Color32::from_rgb(141, 203, 234),
+                info_bg: egui::Color32::from_rgb(28, 58, 72),
+                info_border: egui::Color32::from_rgb(79, 142, 171),
+                controlled_text: egui::Color32::from_rgb(200, 181, 238),
+                controlled_bg: egui::Color32::from_rgb(54, 43, 77),
+                controlled_border: egui::Color32::from_rgb(126, 103, 173),
+                neutral_text: egui::Color32::from_rgb(226, 232, 240),
+                neutral_border: egui::Color32::from_rgb(84, 98, 118),
+            };
+        }
+
         GuiSemanticPalette {
             primary: egui::Color32::from_rgb(65, 111, 148),
             primary_hover: egui::Color32::from_rgb(52, 91, 123),
@@ -637,10 +673,10 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         let header_width = ui.available_width().max(0.0);
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         egui::Frame::new()
             .fill(Self::panel_header_fill(ui))
-            .stroke(Self::panel_header_stroke())
+            .stroke(Self::panel_header_stroke(ui))
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.set_min_width(header_width);
@@ -669,8 +705,22 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn panel_header_stroke() -> egui::Stroke {
-        egui::Stroke::new(1.0, Self::palette().neutral_border.gamma_multiply(0.75))
+    fn panel_header_stroke(ui: &egui::Ui) -> egui::Stroke {
+        egui::Stroke::new(
+            1.0,
+            Self::palette_for_ui(ui).neutral_border.gamma_multiply(0.75),
+        )
+    }
+
+    pub(super) fn room_dashboard_layout_for_width(width: f32) -> GuiRoomDashboardLayout {
+        let width = width.max(0.0);
+        if width < 760.0 {
+            GuiRoomDashboardLayout::Narrow
+        } else if width < 1200.0 {
+            GuiRoomDashboardLayout::Medium
+        } else {
+            GuiRoomDashboardLayout::Wide
+        }
     }
 
     fn render_panel_close_button(

@@ -269,7 +269,7 @@ impl GuiWidgetEguiRenderer {
         } else {
             &widget_visuals.noninteractive
         };
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let fill = if pending {
             palette.info_bg
         } else if is_ready {

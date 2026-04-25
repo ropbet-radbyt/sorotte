@@ -36,7 +36,7 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
     assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
     assert!(state.menus.tls_prompt_expected);
     assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
     assert!(state.menus.update_notice_expected);
@@ -70,7 +70,7 @@ fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
     assert!(state.apply(GuiShellAction::TrustTlsCertificatePrompt));
     assert!(!state.menus.tls_prompt_expected);
     assert_eq!(state.open_modal, None);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 }
 
 #[test]

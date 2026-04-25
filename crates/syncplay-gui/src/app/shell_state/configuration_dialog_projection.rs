@@ -102,8 +102,8 @@ impl FirstRunConfigurationDialogState {
                     .folder_search_warning_threshold_seconds,
             },
             chat: GuiChatSection {
-                chat_input_enabled: settings.chat_input_enabled.unwrap_or(false),
-                chat_output_enabled: settings.chat_output_enabled.unwrap_or(false),
+                chat_input_enabled: legacy_chat_input_enabled(settings),
+                chat_output_enabled: legacy_chat_output_enabled(settings),
                 chat_direct_input: settings.chat_direct_input.unwrap_or(false),
                 chat_move_osd: settings.chat_move_osd.unwrap_or(false),
                 chat_max_lines: settings.chat_max_lines,

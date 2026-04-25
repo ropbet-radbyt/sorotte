@@ -33,6 +33,12 @@ mod main_window_playlist_tests;
 mod menu_public_server_tests;
 mod runtime_snapshot_tests;
 
+fn assert_chat_pane_ready(chat: &[super::MainWindowChatRow]) {
+    assert_eq!(chat.len(), 1);
+    assert_eq!(chat[0].sender, "system");
+    assert_eq!(chat[0].message, "Chat pane ready");
+}
+
 #[test]
 fn configuration_surface_defaults_to_first_run_mode() {
     let state =
@@ -42,6 +48,8 @@ fn configuration_surface_defaults_to_first_run_mode() {
     assert_eq!(state.system.language_tag, "en");
     assert_eq!(state.readiness.unpause_action_label, "IfAlreadyReady");
     assert_eq!(state.readiness.autoplay_min_users_label, "app-default");
+    assert!(state.chat.chat_input_enabled);
+    assert!(state.chat.chat_output_enabled);
     assert_eq!(state.chat.chat_input_position_label, "Top");
     assert_eq!(state.chat.chat_output_mode_label, "Chatroom");
     assert_eq!(state.connection.public_server_count, 0);
@@ -93,6 +101,18 @@ fn gui_shell_app_state_defaults_to_setup_connection() {
         state.selected_configuration_tab,
         GuiConfigurationTab::Connection
     );
+}
+
+#[test]
+fn configuration_surface_preserves_explicit_false_chat_settings() {
+    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    assert!(!state.chat.chat_input_enabled);
+    assert!(!state.chat.chat_output_enabled);
 }
 
 #[test]
@@ -332,6 +352,20 @@ fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
 }
 
 #[test]
+fn main_window_shell_state_uses_legacy_chat_output_default() {
+    let state = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert_eq!(state.chat.len(), 1);
+    assert_eq!(state.chat[0].message, "Chat pane ready");
+
+    let explicit_false = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_output_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    assert!(explicit_false.chat.is_empty());
+}
+
+#[test]
 fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
     let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
@@ -384,6 +418,41 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
     assert!(state.tls_prompt_expected);
     assert!(!state.update_notice_expected);
     assert!(state.about_dialog_available);
+}
+
+#[test]
+fn menu_dialog_shell_state_uses_legacy_chat_defaults() {
+    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let show_chat_enabled = state
+        .sections
+        .iter()
+        .find(|section| section.title == "Window")
+        .and_then(|section| {
+            section
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+        })
+        .is_some_and(|action| action.enabled);
+    assert!(show_chat_enabled);
+
+    let explicit_false = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(false),
+        chat_output_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    let show_chat_enabled = explicit_false
+        .sections
+        .iter()
+        .find(|section| section.title == "Window")
+        .and_then(|section| {
+            section
+                .actions
+                .iter()
+                .find(|action| action.label == "Show Chat")
+        })
+        .is_some_and(|action| action.enabled);
+    assert!(!show_chat_enabled);
 }
 
 #[test]

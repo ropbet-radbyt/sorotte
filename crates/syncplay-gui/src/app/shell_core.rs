@@ -13,7 +13,9 @@ use super::shell_state::{
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
     SyncplayGuiShellAppState,
 };
-use super::support::{configured_room_name_text, normalized_editable_text};
+use super::support::{
+    configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
+};
 use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
 
 impl SyncplayGuiShellAppState {
@@ -199,6 +201,43 @@ impl SyncplayGuiShellAppState {
             .as_ref()
             .is_some_and(|issue| issue.kind != GuiPlayerSetupIssueKind::NotConfigured)
             && self.pending_operation.is_none()
+    }
+
+    pub(super) fn chat_send_unavailable_reason_from_settings(
+        &self,
+        settings: &StoredClientSettingsMvp,
+        session_runtime_available: bool,
+    ) -> Option<String> {
+        if !legacy_chat_input_enabled(settings) {
+            return Some("Chat input is disabled in Chat settings.".to_owned());
+        }
+        if self.pending_operation.is_some() {
+            return Some(
+                "Chat input is unavailable while another GUI operation is in progress.".to_owned(),
+            );
+        }
+        if !session_runtime_available {
+            return Some(
+                "Chat input is unavailable because no session runtime is connected.".to_owned(),
+            );
+        }
+        None
+    }
+
+    pub(super) fn chat_send_unavailable_reason(&self) -> String {
+        self.commands
+            .chat_unavailable_reason
+            .clone()
+            .unwrap_or_else(|| "Chat input is unavailable.".to_owned())
+    }
+
+    pub(super) fn chat_send_unavailable_message(&self) -> String {
+        let reason = self.chat_send_unavailable_reason();
+        if reason.ends_with('.') {
+            format!("{reason} The message was not sent.")
+        } else {
+            format!("{reason}; the message was not sent.")
+        }
     }
 
     pub(super) fn stream_helper_issue_title(&self) -> Option<&'static str> {
@@ -564,6 +603,8 @@ impl SyncplayGuiShellAppState {
     ) -> GuiCommandAvailabilityState {
         let settings = self.configuration.to_stored_settings();
         let busy = self.pending_operation.is_some();
+        let chat_unavailable_reason =
+            self.chat_send_unavailable_reason_from_settings(&settings, true);
         GuiCommandAvailabilityState {
             can_save_configuration: !busy && self.validation.issues.is_empty(),
             can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
@@ -576,7 +617,8 @@ impl SyncplayGuiShellAppState {
             can_refresh_public_servers: !busy && self.public_servers.can_refresh,
             can_search_missing_media: !busy && self.media_search.can_search_missing_media,
             can_toggle_pause: !busy && self.main_window.playback.can_toggle_pause,
-            can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
+            can_send_chat_message: chat_unavailable_reason.is_none(),
+            chat_unavailable_reason,
         }
     }
 

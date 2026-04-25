@@ -96,7 +96,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
             && room_control_status == "Pending: waiting for server room state."
             && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
             && playlist.is_empty()
-            && chat.is_empty()
+            && runtime_chat_pane_ready(chat)
             && rooms == &browser_runtime_rooms("room1", false, true)
     )));
     assert!(startup_actions.iter().any(|action| matches!(
@@ -128,6 +128,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: _,
             },
             pending_operation: None,
         })
@@ -181,7 +182,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
             && room_control_status == "Not required: current room is not controlled."
             && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
             && playlist.is_empty()
-            && chat.is_empty()
+            && runtime_chat_pane_ready(chat)
             && rooms == &browser_runtime_rooms("room1", false, true)
     )));
     assert!(hello_actions.iter().any(|action| matches!(
@@ -217,6 +218,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: true,
+                chat_unavailable_reason: _,
             },
             pending_operation: None,
         })

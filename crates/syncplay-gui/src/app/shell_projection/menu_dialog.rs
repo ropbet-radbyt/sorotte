@@ -3,8 +3,7 @@ use super::*;
 impl MenuDialogShellState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
         let shared_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
-        let chat_enabled = settings.chat_input_enabled.unwrap_or(false)
-            || settings.chat_output_enabled.unwrap_or(false);
+        let chat_enabled = legacy_chat_enabled(settings);
 
         Self {
             sections: vec![

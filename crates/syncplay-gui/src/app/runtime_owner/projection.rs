@@ -122,6 +122,8 @@ impl GuiPersistedConfigRuntimeOwner {
             player_attached || self.player_runtime_available_for_actions();
         let settings = state.configuration.to_stored_settings();
         let busy = state.pending_operation.is_some();
+        let chat_unavailable_reason =
+            state.chat_send_unavailable_reason_from_settings(&settings, self.session.is_some());
         let command_availability = GuiCommandAvailabilityState {
             can_save_configuration: !busy && state.validation.issues.is_empty(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
@@ -134,7 +136,8 @@ impl GuiPersistedConfigRuntimeOwner {
             can_refresh_public_servers: !busy && state.public_servers.can_refresh,
             can_search_missing_media: !busy && state.media_search.can_search_missing_media,
             can_toggle_pause: !busy && player_runtime_available,
-            can_send_chat_message: !busy && settings.chat_input_enabled.unwrap_or(false),
+            can_send_chat_message: chat_unavailable_reason.is_none(),
+            chat_unavailable_reason,
         };
         if let Some(session) = self.session.as_ref() {
             session.adjust_command_availability(state, command_availability)

@@ -80,7 +80,7 @@ impl MainWindowShellState {
             }],
             playlist,
             active_playlist_index: None,
-            chat: if settings.chat_output_enabled.unwrap_or(false) {
+            chat: if legacy_chat_output_enabled(settings) {
                 vec![MainWindowChatRow {
                     sender: "system".to_owned(),
                     message: "Chat pane ready".to_owned(),

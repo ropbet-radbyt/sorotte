@@ -1,5 +1,59 @@
 use super::*;
 
+fn seeded_loopback_shared_playlist_owner(
+    active_index: usize,
+) -> (
+    GuiPersistedConfigRuntimeOwner,
+    GuiQueuedRuntimeBridgeHandle,
+    SyncplayGuiShellAppState,
+) {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_loopback_session_runtime("alice", "room1")
+        .expect("client-core loopback runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode3.mkv")
+            .with_path("C:/Media/episode3.mkv".to_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        player_path: Some("mpv".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::ReplacePlaylist {
+        files: vec![
+            "episode1.mkv".to_owned(),
+            "episode2.mkv".to_owned(),
+            "episode3.mkv".to_owned(),
+        ],
+        selected_index: Some(active_index),
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq(["episode1.mkv", "episode2.mkv", "episode3.mkv"])
+                && state.main_window.active_playlist_index == Some(active_index)
+        },
+        "shared-playlist seed with active index",
+    );
+
+    (owner, handle, state)
+}
+
 #[test]
 fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client_core_session_and_player()
  {
@@ -320,6 +374,109 @@ fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_swit
             .as_ref()
             .and_then(|file| file.path.as_deref()),
         Some("C:/Media/episode1.mkv")
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_session_playlist_index_when_local_selection_is_stale_on_append()
+ {
+    let (mut owner, handle, mut state) = seeded_loopback_shared_playlist_owner(2);
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    assert!(state.main_window_playlist_selection_is_local);
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/episode4.mkv".to_owned()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(3),
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq([
+                    "episode1.mkv",
+                    "episode2.mkv",
+                    "episode3.mkv",
+                    "episode4.mkv",
+                ])
+        },
+        "shared-playlist append with stale local selection",
+    );
+
+    assert_eq!(state.main_window.active_playlist_index, Some(2));
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playlist_index()),
+        Some(2)
+    );
+    assert_eq!(owner.active_shared_playlist_index, Some(2));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some("C:/Media/episode3.mkv")
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_remaps_active_playlist_index_when_inserting_before_active() {
+    let (mut owner, handle, mut state) = seeded_loopback_shared_playlist_owner(2);
+
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
+    assert!(state.main_window_playlist_selection_is_local);
+
+    handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
+        paths: vec!["C:/Media/episode1-5.mkv".to_owned()],
+        load_into_shared_playlist: true,
+        playlist_insert_slot: Some(1),
+    });
+    let _ = pump_and_apply_runtime_owner_actions_until(
+        &mut owner,
+        &handle,
+        &mut state,
+        std::time::Duration::from_secs(1),
+        |state| {
+            state
+                .main_window
+                .playlist
+                .iter()
+                .map(|row| row.label.as_str())
+                .eq([
+                    "episode1.mkv",
+                    "episode1-5.mkv",
+                    "episode2.mkv",
+                    "episode3.mkv",
+                ])
+        },
+        "shared-playlist insert before active entry",
+    );
+
+    assert_eq!(state.main_window.active_playlist_index, Some(3));
+    assert_eq!(
+        owner
+            .session
+            .as_ref()
+            .and_then(|session| session.current_room_playlist_index()),
+        Some(3)
+    );
+    assert_eq!(owner.active_shared_playlist_index, Some(3));
+    assert_eq!(
+        owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref()),
+        Some("C:/Media/episode3.mkv")
     );
 }
 

@@ -319,6 +319,7 @@ pub(super) fn wait_for_pending_operation_to_finish<D: NativeGuiDriver>(
         return Ok(());
     }
     wait_for_accessible_name(driver, window, "pending: (none)", timeout)
+        .map_err(|error| format!("pending operation {pending_label:?} did not finish: {error}"))
 }
 
 pub(super) fn wait_for_named_control_enabled_state<D: NativeGuiDriver>(

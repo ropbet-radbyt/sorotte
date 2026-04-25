@@ -27,7 +27,8 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app::runtime_owner) fn send_chat_unavailable_message_impl(&self) -> String {
-        "Chat sending requires a session runtime connection; the message was not sent.".to_owned()
+        "Chat input is unavailable because no session runtime is connected. The message was not sent."
+            .to_owned()
     }
 
     pub(in crate::app::runtime_owner) fn push_player_success_impl(

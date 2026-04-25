@@ -187,7 +187,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
         state.configuration.to_stored_settings(),
     )));
     assert_eq!(state.pending_operation, None);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert_eq!(
@@ -203,7 +203,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
     assert!(state.apply(GuiShellAction::CompletePlaybackPauseToggle));
     assert_eq!(state.pending_operation, None);
     assert!(state.main_window.playback_paused);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 
     assert!(state.apply(GuiShellAction::BeginPlaybackPauseToggle));
     assert!(state.apply(GuiShellAction::CancelPlaybackPauseToggle));

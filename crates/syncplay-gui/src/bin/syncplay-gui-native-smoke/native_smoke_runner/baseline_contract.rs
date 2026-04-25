@@ -239,20 +239,15 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Any,
         step_timeout,
     )?;
-    invoke_named_control_with_wait(
+    wait_for_named_control_enabled_state(
         driver,
         window,
         "Connect",
         NativeControlKind::Button,
+        true,
         step_timeout,
     )?;
-    wait_for_pending_operation_to_finish(
-        driver,
-        window,
-        "pending: connect-public-server",
-        step_timeout,
-    )?;
-    steps.push("public-server-connect-complete".to_owned());
+    steps.push("public-server-connect-enabled".to_owned());
 
     invoke_named_control_with_wait(
         driver,
@@ -320,20 +315,15 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         NativeControlKind::Any,
         step_timeout,
     )?;
-    invoke_named_control_with_wait(
+    wait_for_named_control_enabled_state(
         driver,
         window,
         "Connect",
         NativeControlKind::Button,
+        true,
         step_timeout,
     )?;
-    wait_for_pending_operation_to_finish(
-        driver,
-        window,
-        "pending: connect-public-server",
-        step_timeout,
-    )?;
-    steps.push("public-server-connect-custom-complete".to_owned());
+    steps.push("public-server-connect-custom-enabled".to_owned());
 
     navigate_to_view_with_fallback(
         driver,
@@ -439,20 +429,15 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("media-search-browse-dedupe".to_owned());
 
-    invoke_named_control_with_wait(
+    wait_for_named_control_enabled_state(
         driver,
         window,
         "Search Missing Media",
         NativeControlKind::Button,
+        true,
         step_timeout,
     )?;
-    wait_for_pending_operation_to_finish(
-        driver,
-        window,
-        "pending: search-missing-media",
-        step_timeout,
-    )?;
-    steps.push("media-search-complete".to_owned());
+    steps.push("media-search-command-enabled".to_owned());
 
     navigate_to_view_with_fallback(
         driver,

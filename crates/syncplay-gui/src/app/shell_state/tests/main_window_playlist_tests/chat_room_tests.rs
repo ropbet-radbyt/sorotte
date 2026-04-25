@@ -17,8 +17,8 @@ fn gui_shell_app_state_adds_media_directory_and_pushes_chat_messages() {
     assert_eq!(state.media_search.directories[0].path, "C:/Media");
     assert!(state.media_search.directories[0].is_selected);
     assert!(state.media_search.can_search_missing_media);
-    assert_eq!(state.main_window.chat.len(), 1);
-    assert_eq!(state.main_window.chat[0].message, "Connected");
+    assert_eq!(state.main_window.chat.len(), 2);
+    assert_eq!(state.main_window.chat[1].message, "Connected");
 
     let saved = state.configuration.to_stored_settings();
     assert_eq!(
@@ -46,7 +46,7 @@ fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("again".to_owned(),)));
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.outgoing_chat_message, None);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
     assert!(state.notifications.is_empty());
 
     assert!(state.apply(GuiShellAction::AnnounceRemoteChatMessage {
@@ -85,13 +85,15 @@ fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
-    let mut state =
-        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        chat_input_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
 
     assert!(!state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
-        Some("Local chat sending is unavailable when chat input is disabled.")
+        Some("Chat input is disabled in Chat settings. The message was not sent.")
     );
 
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

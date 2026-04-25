@@ -96,14 +96,28 @@ impl SyncplayGuiShellAppState {
         (opened_entries, Some(0))
     }
 
+    #[cfg(test)]
     pub(super) fn shared_playlist_entries_after_media_open_from_state(
         &self,
         opened_entries: Vec<String>,
         insert_slot: Option<usize>,
     ) -> (Vec<String>, Option<usize>) {
+        self.shared_playlist_entries_after_media_open_from_state_with_current_index(
+            opened_entries,
+            insert_slot,
+            self.selection.selected_main_window_playlist,
+        )
+    }
+
+    pub(super) fn shared_playlist_entries_after_media_open_from_state_with_current_index(
+        &self,
+        opened_entries: Vec<String>,
+        insert_slot: Option<usize>,
+        current_index: Option<usize>,
+    ) -> (Vec<String>, Option<usize>) {
         Self::shared_playlist_entries_after_media_open(
             &self.current_shared_playlist_entries(),
-            self.selection.selected_main_window_playlist,
+            current_index,
             opened_entries,
             insert_slot,
         )

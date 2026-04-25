@@ -338,30 +338,35 @@ impl GuiWidgetEguiRenderer {
         if node.id.ends_with(":close") {
             return self.render_panel_close_button(ui, node, state);
         }
-        let mut clicked = false;
-        ui.add_enabled_ui(node.enabled, |ui| {
-            let mut label = egui::RichText::new(Self::display_text(node));
-            if node.enabled
-                && let Some((_, _, text_color)) = Self::button_colors_for_node(node)
-            {
-                label = label.color(text_color).strong();
-            }
-            let mut button = egui::Button::new(label);
-            if node.enabled
-                && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(node)
-            {
-                button = button.fill(
-                    if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
-                        hover_fill
-                    } else {
-                        fill
-                    },
-                );
-            }
-            clicked = ui
-                .add_sized([ui.available_width().max(0.0), 0.0], button)
-                .clicked();
+        let mut label = egui::RichText::new(Self::display_text(node));
+        if node.enabled
+            && let Some((_, _, text_color)) = Self::button_colors_for_node(ui, node)
+        {
+            label = label.color(text_color).strong();
+        }
+        let mut button =
+            egui::Button::new(label).min_size(egui::vec2(ui.available_width().max(0.0), 0.0));
+        if node.enabled
+            && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(ui, node)
+        {
+            button = button.fill(
+                if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+                    hover_fill
+                } else {
+                    fill
+                },
+            );
+        }
+        let response = ui.add_enabled(node.enabled, button);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                response.enabled(),
+                Self::display_text(node),
+            )
         });
+        let response = Self::attach_node_tooltip(response, node);
+        let clicked = response.clicked();
         if clicked {
             self.handle_button_node_click(state, node);
         }
@@ -452,7 +457,7 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         label: &str,
     ) {
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let visuals = ui.visuals();
         let enabled = response.enabled() && node.enabled;
         let pressed = response.is_pointer_button_down_on();
@@ -464,7 +469,7 @@ impl GuiWidgetEguiRenderer {
         } else if hovered {
             palette.info_bg.gamma_multiply(0.78)
         } else {
-            egui::Color32::from_rgb(248, 250, 252)
+            visuals.widgets.inactive.bg_fill
         };
         let stroke_color = if !enabled {
             visuals
@@ -585,9 +590,10 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn button_colors_for_node(
+        ui: &egui::Ui,
         node: &GuiWidgetNode,
     ) -> Option<(egui::Color32, egui::Color32, egui::Color32)> {
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         match node.id.as_str() {
             "main-window:connection:connect"
             | "main-window:room:join"
@@ -634,5 +640,18 @@ impl GuiWidgetEguiRenderer {
         response
             .on_hover_text(hover_text.clone())
             .on_disabled_hover_text(hover_text)
+    }
+
+    pub(super) fn attach_node_tooltip(
+        response: egui::Response,
+        node: &GuiWidgetNode,
+    ) -> egui::Response {
+        if let Some(tooltip) = node.tooltip.as_ref() {
+            response
+                .on_hover_text(tooltip.clone())
+                .on_disabled_hover_text(tooltip.clone())
+        } else {
+            response
+        }
     }
 }

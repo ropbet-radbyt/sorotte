@@ -149,6 +149,9 @@ impl GuiCommandAvailabilityRuntimeOverride {
             can_send_chat_message: (baseline.can_send_chat_message
                 != snapshot.can_send_chat_message)
                 .then_some(snapshot.can_send_chat_message),
+            chat_unavailable_reason: (baseline.chat_unavailable_reason
+                != snapshot.chat_unavailable_reason)
+                .then_some(snapshot.chat_unavailable_reason.clone()),
         }
     }
 
@@ -182,6 +185,9 @@ impl GuiCommandAvailabilityRuntimeOverride {
         }
         if let Some(value) = self.can_send_chat_message {
             command_availability.can_send_chat_message = value;
+        }
+        if let Some(value) = self.chat_unavailable_reason.as_ref() {
+            command_availability.chat_unavailable_reason = value.clone();
         }
     }
 
@@ -218,6 +224,9 @@ impl GuiCommandAvailabilityRuntimeOverride {
         }
         if self.can_send_chat_message == Some(baseline.can_send_chat_message) {
             self.can_send_chat_message = None;
+        }
+        if self.chat_unavailable_reason == Some(baseline.chat_unavailable_reason.clone()) {
+            self.chat_unavailable_reason = None;
         }
     }
 }

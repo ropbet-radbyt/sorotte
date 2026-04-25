@@ -294,7 +294,12 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
         )]
     );
     assert!(runtime.actions_for_pending_completion(&state).is_empty());
-    assert!(handle.drain_requests().is_empty());
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::CompletePendingOperation(
+            GuiPendingCompletionRequest::SearchMissingMedia
+        )]
+    );
     handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
         GuiMediaIndexRuntimeSnapshot {
             active: false,

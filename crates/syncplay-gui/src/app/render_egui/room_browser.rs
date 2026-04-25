@@ -45,7 +45,7 @@ impl GuiWidgetEguiRenderer {
             let header_width = ui.available_width().max(0.0);
             egui::Frame::new()
                 .fill(Self::panel_header_fill(ui))
-                .stroke(Self::panel_header_stroke())
+                .stroke(Self::panel_header_stroke(ui))
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.set_min_width(header_width);
@@ -53,7 +53,7 @@ impl GuiWidgetEguiRenderer {
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(
                                 egui::RichText::new(&node.label)
-                                    .color(Self::palette().neutral_text),
+                                    .color(Self::palette_for_ui(ui).neutral_text),
                             );
                             ui.add_space(16.0);
                             ui.label(
@@ -76,7 +76,7 @@ impl GuiWidgetEguiRenderer {
                                 .weak(),
                             );
                             if state.main_window.hide_empty_rooms {
-                                let palette = Self::palette();
+                                let palette = Self::palette_for_ui(ui);
                                 Self::render_room_browser_chip(
                                     ui,
                                     "Empty Hidden",
@@ -156,7 +156,7 @@ impl GuiWidgetEguiRenderer {
             .iter()
             .filter(|child| Self::is_room_browser_user_node(child))
             .collect();
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let room_fill = if room_node.selected {
             palette.info_bg.gamma_multiply(0.78)
         } else {
@@ -183,7 +183,7 @@ impl GuiWidgetEguiRenderer {
                     ui.label(egui::RichText::new(prefix).strong());
                     ui.strong(format!("{} ({})", room_node.label, user_nodes.len()));
                     if room_node.selected {
-                        let palette = Self::palette();
+                        let palette = Self::palette_for_ui(ui);
                         Self::render_room_browser_chip(
                             ui,
                             "Current",
@@ -196,7 +196,7 @@ impl GuiWidgetEguiRenderer {
                         .and_then(|status| status.value.as_deref())
                         .is_some_and(|value| Self::browser_status_flag(value, "controlled"))
                     {
-                        let palette = Self::palette();
+                        let palette = Self::palette_for_ui(ui);
                         Self::render_room_browser_chip(
                             ui,
                             "Controlled",
@@ -275,7 +275,7 @@ impl GuiWidgetEguiRenderer {
         let is_ready = state_value.is_some_and(|value| Self::browser_status_flag(value, "ready"));
         let is_controller =
             state_value.is_some_and(|value| Self::browser_status_flag(value, "controller"));
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let card_fill = if user_node.selected {
             palette.info_bg.gamma_multiply(0.62)
         } else {
@@ -305,7 +305,7 @@ impl GuiWidgetEguiRenderer {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui::RichText::new(&user_node.label).strong());
                             if is_self {
-                                let palette = Self::palette();
+                                let palette = Self::palette_for_ui(ui);
                                 Self::render_room_browser_chip(
                                     ui,
                                     "You",
@@ -315,7 +315,7 @@ impl GuiWidgetEguiRenderer {
                                 );
                             }
                             if is_controller {
-                                let palette = Self::palette();
+                                let palette = Self::palette_for_ui(ui);
                                 Self::render_room_browser_chip(
                                     ui,
                                     "Controller",
@@ -325,7 +325,7 @@ impl GuiWidgetEguiRenderer {
                                 );
                             }
                             for cue in &cues {
-                                let palette = Self::palette();
+                                let palette = Self::palette_for_ui(ui);
                                 Self::render_room_browser_chip(
                                     ui,
                                     cue,
@@ -362,7 +362,7 @@ impl GuiWidgetEguiRenderer {
 
     fn render_room_browser_ready_icon(ui: &mut egui::Ui, is_ready: bool) {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let color = if is_ready {
             palette.success_text
         } else {

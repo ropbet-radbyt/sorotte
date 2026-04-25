@@ -105,7 +105,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                     false,
                 )],
                 playlist: Vec::new(),
-                chat: Vec::new(),
+                chat: runtime_chat_pane_ready_rows(),
                 can_toggle_pause: true,
                 can_seek: true,
                 can_set_offset: true,
@@ -161,6 +161,10 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                     can_search_missing_media: false,
                     can_toggle_pause: true,
                     can_send_chat_message: false,
+                    chat_unavailable_reason: Some(
+                        "Chat input is unavailable because no session runtime is connected."
+                            .to_owned(),
+                    ),
                 },
                 pending_operation: None,
             }),
@@ -175,12 +179,16 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
         section: "Chat",
-        label: "Chat Input",
-        value: true,
+        label: "Chat Output",
+        value: false,
     }));
     assert!(
-        state.commands.can_send_chat_message,
-        "config-driven chat availability should update immediately when no runtime field override is active"
+        !state.commands.can_send_chat_message,
+        "chat send should stay disabled while no session runtime is connected"
+    );
+    assert_eq!(
+        state.commands.chat_unavailable_reason.as_deref(),
+        Some("Chat input is unavailable because no session runtime is connected.")
     );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let refreshed_command_actions = handle.drain_actions();
@@ -188,7 +196,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     for action in refreshed_command_actions {
         assert!(state.apply(action));
     }
-    assert!(state.commands.can_send_chat_message);
+    assert!(!state.commands.can_send_chat_message);
     assert!(state.commands.can_reset_configuration);
 
     player_state

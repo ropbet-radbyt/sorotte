@@ -30,9 +30,9 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    pub(super) fn display_status_rich_text(_ui: &egui::Ui, node: &GuiWidgetNode) -> egui::RichText {
+    pub(super) fn display_status_rich_text(ui: &egui::Ui, node: &GuiWidgetNode) -> egui::RichText {
         let text = Self::display_status_value(node);
-        let palette = Self::palette();
+        let palette = Self::palette_for_ui(ui);
         let color = match (node.id.as_str(), node.value.as_deref().unwrap_or("(none)")) {
             ("main-window:connection-status", "connected") => Some(palette.success_text),
             ("main-window:connection-status", "connecting" | "disconnecting") => {

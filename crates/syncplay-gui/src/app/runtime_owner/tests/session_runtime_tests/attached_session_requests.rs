@@ -192,6 +192,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
                     can_search_missing_media: true,
                     can_toggle_pause: false,
                     can_send_chat_message: true,
+                    chat_unavailable_reason: _,
                 },
                 pending_operation: None,
             })

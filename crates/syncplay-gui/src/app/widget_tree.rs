@@ -74,6 +74,7 @@ pub(super) struct GuiWidgetNode {
     pub(super) value: Option<String>,
     pub(super) enabled: bool,
     pub(super) selected: bool,
+    pub(super) tooltip: Option<String>,
     pub(super) layout_mode: Option<GuiLayoutMode>,
     pub(super) column_span: usize,
     pub(super) min_content_height: Option<f32>,
@@ -96,6 +97,7 @@ impl GuiWidgetNode {
             value,
             enabled,
             selected,
+            tooltip: None,
             layout_mode: None,
             column_span: 1,
             min_content_height: None,
@@ -116,6 +118,7 @@ impl GuiWidgetNode {
             value: None,
             enabled: true,
             selected: false,
+            tooltip: None,
             layout_mode: None,
             column_span: 1,
             min_content_height: None,
@@ -136,6 +139,7 @@ impl GuiWidgetNode {
             value: None,
             enabled: true,
             selected: false,
+            tooltip: None,
             layout_mode: Some(mode),
             column_span: 1,
             min_content_height: None,
@@ -150,6 +154,11 @@ impl GuiWidgetNode {
 
     pub(super) fn with_min_content_height(mut self, min_content_height: f32) -> Self {
         self.min_content_height = Some(min_content_height.max(0.0));
+        self
+    }
+
+    pub(super) fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 

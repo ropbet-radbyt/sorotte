@@ -16,8 +16,9 @@ use syncplay_client_app::app_boundary::{
 use super::GuiLaunchMode;
 use super::remote_services;
 use super::support::{
-    bool_label, optional_f64_text, optional_i64_text, optional_port_text, optional_room_text,
-    optional_string_list_multiline_text, optional_text, player_arguments_text_for_path,
+    bool_label, legacy_chat_input_enabled, legacy_chat_output_enabled, optional_f64_text,
+    optional_i64_text, optional_port_text, optional_room_text, optional_string_list_multiline_text,
+    optional_text, player_arguments_text_for_path,
 };
 use super::ui_state::GuiUpdateCheckState;
 use super::widget_tree::GuiWidgetKind;
@@ -380,6 +381,7 @@ pub(super) struct GuiCommandAvailabilityState {
     pub(super) can_search_missing_media: bool,
     pub(super) can_toggle_pause: bool,
     pub(super) can_send_chat_message: bool,
+    pub(super) chat_unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -394,6 +396,7 @@ pub(super) struct GuiCommandAvailabilityRuntimeOverride {
     pub(super) can_search_missing_media: Option<bool>,
     pub(super) can_toggle_pause: Option<bool>,
     pub(super) can_send_chat_message: Option<bool>,
+    pub(super) chat_unavailable_reason: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

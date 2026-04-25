@@ -25,7 +25,7 @@ use super::shell_state::{
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 use super::startup_support::env_trimmed;
-use super::support::system_time_seconds;
+use super::support::{legacy_chat_enabled, system_time_seconds};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
@@ -333,8 +333,7 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &SyncplayGuiShellAppState,
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let settings = state.configuration.to_stored_settings();
-        let desired_show_chat_enabled = settings.chat_input_enabled.unwrap_or(false)
-            || settings.chat_output_enabled.unwrap_or(false);
+        let desired_show_chat_enabled = legacy_chat_enabled(&settings);
         let desired_show_playlist_enabled = settings.shared_playlist_enabled.unwrap_or(false);
         let mut action_overrides = Vec::new();
         for (section_title, action_label, enabled) in [

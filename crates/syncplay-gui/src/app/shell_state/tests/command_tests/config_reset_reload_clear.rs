@@ -50,7 +50,7 @@ fn gui_shell_app_state_handles_configuration_reset_command_actions() {
         Some("SavedRoom")
     );
     assert!(!state.commands.can_reset_configuration);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert_eq!(state.configuration.to_stored_settings(), replacement);
     assert_eq!(state.saved_configuration, replacement);
     assert!(!state.commands.can_reset_configuration);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
     assert_eq!(state.active_view, GuiShellView::Setup);
     assert!(state.menus.tls_prompt_expected);
     assert!(state.menus.update_notice_expected);
@@ -232,7 +232,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
     assert!(state.public_servers.servers.is_empty());
     assert!(state.media_search.directories.is_empty());
     assert_eq!(state.last_media_dialog_directory, None);
-    assert!(state.main_window.chat.is_empty());
+    assert_chat_pane_ready(&state.main_window.chat);
 }
 
 #[test]

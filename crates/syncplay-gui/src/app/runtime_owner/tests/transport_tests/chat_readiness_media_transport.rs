@@ -38,7 +38,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
             && room_control_status == "Pending: waiting for server room state."
             && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
             && playlist.is_empty()
-            && chat.is_empty()
+            && runtime_chat_pane_ready(chat)
             && rooms == &browser_runtime_rooms("room1", false, true)
     )));
     assert!(startup_actions.iter().any(|action| matches!(
@@ -70,6 +70,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: _,
             },
             pending_operation: None,
         })
@@ -125,7 +126,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
             && room_control_status == "Not required: current room is not controlled."
             && users == &vec![browser_runtime_user("alice", "room1", true, false, false)]
             && playlist.is_empty()
-            && chat.is_empty()
+            && runtime_chat_pane_ready(chat)
             && rooms == &browser_runtime_rooms("room1", false, true)
     )));
     assert!(hello_actions.iter().any(|action| matches!(
@@ -161,6 +162,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: true,
+                chat_unavailable_reason: _,
             },
             pending_operation: None,
         })
@@ -224,7 +226,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         assert!(state.apply(action));
     }
     assert!(session_transport.drain_outbound_protocol_lines().is_empty());
-    assert_eq!(state.main_window.chat.len(), 1);
+    assert_eq!(state.main_window.chat.len(), 2);
 }
 
 #[test]
@@ -367,7 +369,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
             .map(|entry| (entry.sender.clone(), entry.message.clone())),
         Some(("alice".to_owned(), "hello room".to_owned()))
     );
-    assert_eq!(state.main_window.chat.len(), 1);
+    assert_eq!(state.main_window.chat.len(), 2);
 
     release_server_tx
         .send(())

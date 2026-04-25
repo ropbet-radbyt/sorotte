@@ -190,7 +190,9 @@ impl GuiQueuedRuntimeBridge {
             self.queued_pending_completion = None;
             return;
         };
-        if self.queued_pending_completion == pending_kind {
+        if self.queued_pending_completion == pending_kind
+            && pending_kind != Some(GuiPendingOperationKind::SearchMissingMedia)
+        {
             return;
         }
         self.handle

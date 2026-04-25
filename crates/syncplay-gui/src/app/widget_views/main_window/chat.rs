@@ -2,6 +2,41 @@ use super::*;
 
 impl SyncplayGuiShellAppState {
     pub(super) fn main_window_chat_panel(&self) -> GuiWidgetNode {
+        let chat_unavailable_reason =
+            (!self.commands.can_send_chat_message).then(|| self.chat_send_unavailable_reason());
+        let chat_input_node = GuiWidgetNode::leaf(
+            "main-window:chat-input",
+            "Chat Input",
+            GuiWidgetKind::TextInput,
+            Some(self.outgoing_chat_message.clone().unwrap_or_default()),
+            self.commands.can_send_chat_message,
+            false,
+        );
+        let chat_input_node = if let Some(reason) = chat_unavailable_reason.as_ref() {
+            chat_input_node.with_tooltip(reason.clone())
+        } else {
+            chat_input_node
+        };
+
+        let send_node = GuiWidgetNode::leaf(
+            "main-window:chat:send",
+            "Send",
+            GuiWidgetKind::Button,
+            None,
+            self.commands.can_send_chat_message
+                && self
+                    .outgoing_chat_message
+                    .as_deref()
+                    .and_then(normalized_editable_text)
+                    .is_some(),
+            false,
+        );
+        let send_node = if let Some(reason) = chat_unavailable_reason {
+            send_node.with_tooltip(reason)
+        } else {
+            send_node
+        };
+
         GuiWidgetNode::branch(
             "main-window:chat-panel",
             "Chat",
@@ -32,29 +67,7 @@ impl SyncplayGuiShellAppState {
                     "main-window:chat-compose",
                     "Chat Compose",
                     GuiLayoutMode::Stack,
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "main-window:chat-input",
-                            "Chat Input",
-                            GuiWidgetKind::TextInput,
-                            Some(self.outgoing_chat_message.clone().unwrap_or_default()),
-                            self.commands.can_send_chat_message,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:chat:send",
-                            "Send",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.commands.can_send_chat_message
-                                && self
-                                    .outgoing_chat_message
-                                    .as_deref()
-                                    .and_then(normalized_editable_text)
-                                    .is_some(),
-                            false,
-                        ),
-                    ],
+                    vec![chat_input_node, send_node],
                 ),
             ],
         )

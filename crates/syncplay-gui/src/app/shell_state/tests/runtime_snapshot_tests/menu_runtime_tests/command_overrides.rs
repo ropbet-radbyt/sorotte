@@ -18,6 +18,7 @@ fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: None,
             },
             pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
         },
@@ -40,6 +41,7 @@ fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
             can_search_missing_media: false,
             can_toggle_pause: false,
             can_send_chat_message: false,
+            chat_unavailable_reason: None,
         }
     );
 
@@ -152,6 +154,7 @@ fn gui_shell_app_state_rejects_invalid_gui_command_runtime_snapshots() {
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: None,
             },
             pending_operation: Some(GuiPendingOperationKind::SaveConfiguration),
         },
@@ -215,6 +218,7 @@ fn gui_shell_app_state_syncs_playback_menu_actions_from_gui_command_runtime_snap
                 can_search_missing_media: false,
                 can_toggle_pause: false,
                 can_send_chat_message: false,
+                chat_unavailable_reason: None,
             },
             pending_operation: Some(GuiPendingOperationKind::RefreshPublicServers),
         },
