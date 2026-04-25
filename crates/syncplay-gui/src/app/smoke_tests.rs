@@ -1,7 +1,4 @@
-use std::{
-    io::{BufRead, Write},
-    path::PathBuf,
-};
+use std::io::{BufRead, Write};
 
 use super::testing::support::{
     pump_and_apply_runtime_owner_actions, pump_and_apply_runtime_owner_actions_until,
@@ -104,6 +101,7 @@ where
 
 #[cfg(feature = "live-python-interop")]
 mod live_python_smoke;
+#[cfg(windows)]
 mod managed_mpv_smoke;
 mod player_setup_smoke;
 mod portable_persistence_transport_smoke;
