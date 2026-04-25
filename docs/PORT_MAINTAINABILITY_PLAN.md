@@ -109,14 +109,12 @@ runtime-bridge, runtime-owner, runtime-stack, runtime-localization, shell-state,
 request-router, main-window projection, live-Python interop, shell-projection, stream-helper,
 semantic-driver, transport, and runtime-update splits. This pass includes `src/bin/` so the native
 smoke tooling binary is visible in the figures.
-`syncplay-cli` production and test hotspots were
-remeasured on 2026-04-25 after the compatibility suite and production hotspot splits. Other
-non-GUI crate figures are carried forward from the earlier audit.
+`syncplay-cli`, `syncplay-client-app`, `syncplay-client-core`, `syncplay-player-mpv`,
+`syncplay-server`, and `syncplay-compat` production and test hotspots were remeasured on
+2026-04-25 after the current production/test hotspot splits.
 
 ### `syncplay-gui` library and app production
 
-- `src/app/runtime_localization/pattern_messages.rs` - 852 lines
-- `src/app/reducer.rs` - 850 lines
 - `src/app/runtime_stack/client_core_adapter/runtime_adapter_impl.rs` - 811 lines
 - `src/app/render_egui.rs` - 739 lines
 - `src/app/remote_services.rs` - 713 lines
@@ -143,6 +141,12 @@ non-GUI crate figures are carried forward from the earlier audit.
   driver, and TCP tests into child modules
 - `src/app/render_actions/buttons.rs` - 529 lines after splitting input, list, menu, surface, and
   helper action concerns out of `src/app/render_actions.rs`
+- `src/app/reducer.rs` - 202 lines after splitting shell/runtime, configuration-operation,
+  editing, main-window, service, and miscellaneous action domains into `src/app/reducer/` child
+  modules; the largest reducer child is `editing_actions.rs` at 313 lines.
+- `src/app/runtime_localization/pattern_messages.rs` - 14 lines after splitting public-server,
+  reconnect, autoplay, controller/update, and user-status pattern localizers into child modules;
+  the largest child is `public_server_media.rs` at 298 lines.
 - `src/app/stream_support.rs` - 128 lines after splitting path, process, metadata, discovery,
   runtime snapshot, install/import, and tests into child modules
 - `src/app/native_host.rs` - 54 lines after splitting app core, eframe app/host, preview host,
@@ -166,12 +170,18 @@ non-GUI crate figures are carried forward from the earlier audit.
 
 ### `syncplay-gui` binaries and tooling
 
-- `src/bin/syncplay-gui-native-smoke/platform_driver.rs` - 1642 lines
-- `src/bin/syncplay-gui-native-smoke.rs` - 1192 lines
-- `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` - 1071 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_runner/shared_helpers.rs` - 807 lines
 - `src/bin/syncplay-gui-native-smoke/native_smoke_runner/baseline_contract.rs` - 660 lines
 - `src/bin/syncplay-gui-native-smoke/native_smoke_runner/live_python_contracts.rs` - 562 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_setup.rs` - 459 lines
 - `src/bin/syncplay-gui-native-smoke/native_smoke_runner/relaunch_contract.rs` - 443 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_accessibility.rs` - 415 lines
+- `src/bin/syncplay-gui-native-smoke/platform_driver/windows_control_actions.rs` - 399 lines
+- `src/bin/syncplay-gui-native-smoke/platform_driver/windows_edit_controls.rs` - 343 lines
+- `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` - 268 lines
+- `src/bin/syncplay-gui-native-smoke/platform_driver/windows_control_queries.rs` - 135 lines
+- `src/bin/syncplay-gui-native-smoke/platform_driver.rs` - 105 lines
+- `src/bin/syncplay-gui-native-smoke.rs` - 180 lines
 - `src/bin/syncplay-gui-semantic-suite.rs` - 227 lines
 - `src/bin/syncplay-gui-semantic-smoke.rs` - 30 lines
 
@@ -221,13 +231,76 @@ non-GUI crate figures are carried forward from the earlier audit.
 - `src/protocol_io.rs` - 27 lines
 - `src/main.rs` - 4 lines
 
-### `syncplay-client-core` from the previous audit
+### `syncplay-client-app` current refactor snapshot
 
-- `src/lib.rs` - 15115 lines
+- `src/legacy_reconnect_diagnostics.rs` - 738 lines
+- `src/legacy_session_loop/tests/connected_session_tests.rs` - 666 lines
+- `src/legacy_local_commands/display.rs` - 604 lines
+- `src/legacy_local_commands/parser.rs` - 564 lines
+- `src/legacy_local_commands/tests.rs` - 533 lines
+- `src/legacy_syncplay_ini/writer.rs` - 523 lines
+- `src/legacy_notifications.rs` - 27 lines after splitting reconnect, controller-auth, duration,
+  user-change, and file-difference notification formatting into child modules; the largest child
+  is `legacy_notifications/reconnect.rs` at 210 lines.
+- `src/legacy_local_commands.rs`, `src/legacy_session_loop.rs`, `src/legacy_syncplay_ini.rs`, and
+  `src/legacy_notifications.rs` are now narrow routers over behavior-owned child modules.
 
-### `syncplay-compat` from the previous audit
+### `syncplay-client-core` current refactor snapshot
 
-- `src/lib.rs` - 10172 lines
+- `src/session/helpers.rs` - 757 lines
+- `src/session/tests/readiness_autoplay_tests.rs` - 737 lines
+- `src/session/tests/reconnect_tests/validation_flow_tests.rs` - 714 lines
+- `src/session/tests/reconnect_tests/validation_policy_tests/disable_recovery_tests.rs` - 709 lines
+- `src/session/tests/reconnect_tests/reset_tests.rs` - 6 lines after splitting core state,
+  fast-forward, feature-flag, rewind, and slowdown reset cases into child modules; the largest
+  child is `slowdown.rs` at 266 lines.
+- `src/runtime.rs` - 13 lines after becoming a router over `runtime/local_actions.rs`,
+  `runtime/queued_control.rs`, `runtime/lifecycle_actions.rs`, and `runtime/accessors.rs`.
+- `src/session/playlist.rs` is now a router over `local_playlist.rs`, `reconnect_actions.rs`,
+  `local_controls.rs`, `trust.rs`, and `shuffle_helpers.rs`.
+
+### `syncplay-protocol` current refactor snapshot
+
+- `src/tests.rs` - 373 lines
+- `src/set.rs` - 302 lines
+- `src/state.rs` - 134 lines
+- `src/message.rs` - 103 lines
+- `src/lib.rs` - 31 lines after becoming a re-export/router layer.
+
+### `syncplay-player-mpv` current refactor snapshot
+
+- `src/adapter.rs` - 770 lines
+- `src/tests/ipc_tests.rs` - 649 lines
+- `src/tests/legacy_ui_tests.rs` - 407 lines
+- `src/adapter/player_adapter.rs` - 273 lines
+- `src/ipc.rs` - 262 lines
+- `src/lib.rs` - 10 lines after becoming a re-export/router layer.
+
+### `syncplay-server` current refactor snapshot
+
+- `src/runtime_maintenance.rs` - 697 lines
+- `src/tests/network_tests.rs` - 668 lines
+- `src/tests/runtime_config_tests.rs` - 619 lines
+- `src/main.rs` - 615 lines
+- `src/runtime_handlers.rs` - 562 lines
+- `src/lib.rs` - 222 lines after becoming a re-export/core-type layer.
+- `src/tests/session_tests.rs` - 639 lines
+- `src/runtime_handlers.rs` - 599 lines
+- `src/tests/state_tests.rs` - 541 lines
+- `src/network.rs` - 342 lines
+- `src/runtime_api.rs` - 281 lines
+- `src/lib.rs` - 243 lines after splitting app, auth, compat, messages, network,
+  persistence, TLS, runtime API, runtime handlers, runtime maintenance, and tests.
+
+### `syncplay-compat` current refactor snapshot
+
+- `src/tests/assertions/legacy_tls_assertions.rs` - 531 lines
+- `src/tests/legacy_client_contract_tests.rs` - 517 lines
+- `src/tests/normalization_support.rs` - 453 lines
+- `src/legacy_process.rs` - 450 lines
+- `src/tests/rooms_motd_fanout_tests/scripted_rooms_motd_tests.rs` - 397 lines
+- `src/tests/chat_fanout_tests/scripted_chat_payload_tests.rs` - 385 lines
+- `src/tests/chat_fanout_tests/scripted_chat_scoping_tests.rs` - 364 lines
 
 ## Current read
 
@@ -279,15 +352,30 @@ non-GUI crate figures are carried forward from the earlier audit.
   `src/tests.rs` is now a shared harness/router, and behavior-owned submodules cover argument
   compatibility, connected-session basics, local commands, desync/reconnect correction,
   stored-settings persistence, notification output, startup playlists, and mpv smokes.
+- `syncplay-client-app` no longer concentrates legacy local command parsing/planning,
+  connected-session/network-loop behavior, legacy `syncplay.ini` parsing/writing, or legacy
+  notification formatting in single files; each now routes through behavior-owned child modules.
+- `syncplay-client-core` keeps the public session surface stable while playlist concerns now live
+  under `src/session/playlist/` by local controls, local playlist mutation, reconnect actions,
+  shuffle helpers, and trusted-domain checks; runtime control/action concerns now live under
+  `src/runtime/` while `src/runtime.rs` stays as the small public router.
+- `syncplay-protocol` no longer concentrates all message families in `src/lib.rs`; message,
+  envelope, hello, list, room, set, state, chat, codec, and fixture tests are owned by focused
+  modules behind a re-export layer.
+- `syncplay-player-mpv` is now split into adapter state, player-trait implementation, JSON IPC
+  transport, legacy Syncplay UI/script formatting, constants, and behavior-owned test modules.
+- `syncplay-server` no longer uses one crate-sized `lib.rs`: app wiring, controlled-room auth,
+  compatibility helpers, message construction, network loop, persistence, TLS loading, runtime API,
+  runtime handlers, runtime maintenance, and test categories are owned by separate modules.
+- `syncplay-gui` reducer and runtime-localization pattern dispatch are now router modules, so GUI
+  action routing and localized runtime pattern families have local ownership instead of single-file
+  match tables.
 
 ### Main risks
 
-- The GUI app/library production tree now has no file above the 900-line working target. The
-  remaining GUI-local maintainability hotspot is
-  `src/bin/syncplay-gui-native-smoke/platform_driver.rs`, which is the only native-smoke
-  production file still above the soft cap.
-- `src/bin/syncplay-gui-native-smoke.rs` still sits slightly above the smoke-harness target
-  because it owns shared launch, config-seeding, and mock-server helpers.
+- The GUI app/library production tree and native-smoke tooling now have no file above the 900-line
+  working target. The next GUI risk is growth control in the 700-900 line behavior leaves rather
+  than a single blocking monolith.
 - The test tree is now in a good local-ownership shape; the next test concern is only preventing
   the new behavior leaves from regrowing past the split threshold.
 - The remaining GUI delta against Python is now mostly optional desktop polish: richer
@@ -296,7 +384,10 @@ non-GUI crate figures are carried forward from the earlier audit.
   are no longer monoliths. The remaining CLI risk is preventing the largest behavior leaves
   (`session_runner/connected_session.rs` and `mpv_startup/explicit_args.rs`) from growing back past
   the split threshold.
-- `syncplay-client-core/src/lib.rs` remains large enough to dominate change risk outside the GUI.
+- Outside the GUI, the previously named protocol, client-core runtime, client-core reconnect-reset,
+  and client-app notification hotspots are now routers. The remaining cleanup surface is local
+  700-900 line behavior leaves and tests, especially client-core readiness/reconnect validation
+  tests, client-app reconnect diagnostics, and a few GUI runtime/adapter leaves.
 - The plan should now describe measured state and decisions, not continue growing as a progress log.
 
 ## Guiding rules
@@ -362,9 +453,9 @@ and shared harness helpers.
   implementation, and localization pattern matchers; render actions, native hosting, runtime
   bridge, interop, stream-helper, shell-projection, semantic-driver, transport, and runtime updates
   are already split.
-- If native smoke tooling keeps growing, move shared launch, config, and mock-server helpers out of
-  `src/bin/syncplay-gui-native-smoke.rs` and split `platform_driver.rs` before expanding the
-  Windows/UIA driver further.
+- If native smoke tooling keeps growing, keep new behavior inside the existing focused modules
+  (`native_smoke_setup.rs`, `native_smoke_accessibility.rs`, `native_smoke_runner/shared_helpers.rs`,
+  and `platform_driver/windows_*`) instead of rebuilding a binary-root helper pile.
 
 ### Suggested target layout
 
@@ -489,10 +580,10 @@ If more GUI work is opened intentionally, prefer one of these small, explicit ta
 
 - optional polish parity: richer About/help/TLS dialogs,
 - optional polish parity: player-path browse/autodetect/icon UX,
-- conditional maintainability: split `platform_driver.rs` only if more Windows/UIA logic lands
-  there,
-- conditional maintainability: split reducer/runtime-adapter/localization plumbing or a regrown app
-  leaf only when those areas are already being changed,
+- conditional maintainability: split `native_smoke_runner/shared_helpers.rs` only if more runner
+  helper logic lands there,
+- conditional maintainability: split runtime-adapter plumbing or another regrown app leaf only when
+  those areas are already being changed,
 - and continued subdivision inside `app/shell_state/tests/` only when a local file crosses the
   test-size threshold.
 
@@ -503,20 +594,19 @@ If more GUI work is opened intentionally, prefer one of these small, explicit ta
 Why first:
 
 - The app/library side of the GUI is now in a defensible state.
-- The native smoke runner is now scenario-owned and no longer the main GUI-local review hazard.
-- The only remaining GUI-local extraction targets are the Windows/UIA driver and, secondarily, the
-  shared helper layer in the native-smoke root binary.
+- The native smoke runner and Windows/UIA driver are now module-owned and no longer the main
+  GUI-local review hazard.
+- The remaining GUI-local extraction targets are local leaves, not binary/root monoliths.
 
 Actions:
 
-- Keep `src/bin/syncplay-gui-native-smoke.rs` focused on process entry plus shared launch/config
-  helpers; do not let scenario logic drift back into it.
-- Keep `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` as the orchestration/helper
-  layer and add new scenarios in owned submodules.
-- Split `src/bin/syncplay-gui-native-smoke/platform_driver.rs` further only if more UIA/Windows
-  driver behavior lands there.
-- Revisit the native-smoke root helper layer only if more launch/config/mock-server behavior lands
-  there.
+- Keep `src/bin/syncplay-gui-native-smoke.rs` focused on process entry, shared types, constants,
+  and module wiring; do not let scenario, launch, or accessibility logic drift back into it.
+- Keep `src/bin/syncplay-gui-native-smoke/native_smoke_runner.rs` as orchestration only and add
+  new scenarios in owned submodules.
+- Split `native_smoke_runner/shared_helpers.rs` only if more runner helper behavior lands there;
+  the Windows/UIA control handling is already divided into action, query, edit-control, input, and
+  automation modules.
 - Keep `app/testing/support.rs` as the shared support seam.
 - Keep semantic, native, and real-`mpv` smoke entrypoints stable while their internals move.
 
@@ -524,8 +614,8 @@ Definition of done:
 
 - The GUI app/library layer stays under the current thresholds and keeps its module ownership clear.
 - The native smoke runner stays scenario-owned and under its current size range.
-- No new GUI extraction starts unless parity work touches `platform_driver.rs`,
-  `syncplay-gui-native-smoke.rs`, or an already split app leaf enough to justify moving a concern.
+- No new GUI extraction starts unless parity work touches a local native-smoke leaf or an already
+  split app leaf enough to justify moving a concern.
 - Existing semantic and Python-interop commands still work unchanged.
 
 ### 2. Thin down `syncplay-cli`
@@ -673,10 +763,11 @@ Execution rule:
       preview-host, and test modules.
 - [x] Split `crates/syncplay-gui/src/app/runtime_bridge.rs` into runtime-owner trait, preview
       bridge, request routing, pending-completion, and test modules.
-- [ ] Split `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke/platform_driver.rs` further
-      only if more Windows driver logic lands there.
-- [ ] Split shared launch/config/mock-server helpers out of
-      `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke.rs` only if more behavior lands there.
+- [x] Split `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke/platform_driver.rs` into a
+      small cross-platform contract plus Windows UI Automation/action modules.
+- [x] Split shared launch/config/accessibility/mock-server helpers out of
+      `crates/syncplay-gui/src/bin/syncplay-gui-native-smoke.rs` and
+      `native_smoke_runner.rs` so native-smoke tooling is below the 900-line working target.
 - [x] Keep the documented full GUI smoke gate for semantic, native, and real-`mpv` coverage.
 - [x] Add `crates/syncplay-cli/src/lib.rs` and reduce `main.rs` to entrypoint code.
 - [x] Extract initial `syncplay-cli` support modules for config path resolution, environment
@@ -711,7 +802,8 @@ Execution rule:
       media-search fallback, startup player defaults, and persistence/cleanup modules.
 - [x] Split `crates/syncplay-cli/src/notifications.rs` into notification-category modules with
       shared mpv OSD helpers.
-- [ ] Split `crates/syncplay-client-core/src/lib.rs` into runtime/session-focused modules.
+- [x] Split `crates/syncplay-client-core/src/lib.rs`/runtime/session concerns into focused
+      runtime, session, playlist, config, control, notification, ping, and view modules.
 - [x] Implement GUI slash-command handling using `syncplay-client-app` command planning.
 - [x] Finish missing configuration dialog controls.
 - [x] Localize runtime strings and language-sensitive service calls.
@@ -776,10 +868,11 @@ The current GUI app/library maintainability round is done:
   smoke concerns in one file,
 - no GUI app/library production module remains above the 900-line working target,
 - the current overlarge GUI test and smoke library files are back under the working thresholds,
-- `native_smoke_runner.rs` is now scenario-owned and back under the working threshold,
-- and the next GUI audit is more about behavior gaps plus the native smoke driver/helper tooling
-  than about app-tree ownership.
+- `native_smoke_runner.rs`, the native-smoke binary root, and the platform driver are now
+  scenario/module-owned and back under the working threshold,
+- and the next GUI audit is more about behavior gaps and preventing local leaves from regrowing
+  than about app-tree or native-smoke ownership.
 
-If another GUI maintainability round is opened, it should start with
-`src/bin/syncplay-gui-native-smoke/platform_driver.rs` or the shared helper layer in
-`src/bin/syncplay-gui-native-smoke.rs`, not with more churn in `src/app/`.
+If another GUI maintainability round is opened, it should start with a concrete regrown leaf such
+as `native_smoke_runner/shared_helpers.rs`, `runtime_stack/client_core_adapter/runtime_adapter_impl.rs`,
+or another touched 700-900 line app file, not with broad churn in `src/app/`.

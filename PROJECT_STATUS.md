@@ -64,8 +64,9 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] Localized runtime strings and language-sensitive public-server/update-check service calls, with non-English semantic smoke coverage.
 - [x] Live Python GUI interop scenarios for readiness/chat/playlist/reconnect/controller flows against the legacy Syncplay server.
 - [x] Compatibility/interop test infrastructure comparing Rust runtime behavior to captured Python Syncplay traces/scenarios.
-- [x] Large CLI and GUI test modules split into behavior-owned child modules so the test tree no longer depends on crate-sized hotspot files.
+- [x] Large CLI, GUI, server, and `mpv` adapter test modules split into behavior-owned child modules so the test tree no longer depends on crate-sized hotspot files.
 - [x] GUI app/library production modules split below the 900-line working target, including render actions, native host, runtime bridge, renderer, runtime-owner, runtime-stack, localization, shell-state/projection, semantic, stream, and update surfaces.
+- [x] Client-app legacy local-command/session-loop/`syncplay.ini`/notification roots, client-core playlist/runtime/reconnect-reset handling, `syncplay-protocol`, `syncplay-player-mpv`, `syncplay-server`, GUI reducer/localization, and GUI native-smoke tooling split into behavior-owned module trees with stable public entry surfaces.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
 - [x] Rust server executable alpha entrypoint with `--help`, core startup flags, and listener/network-loop startup wiring over the server runtime.
 - [x] CI/automation basics (`rust-ci.yml`) and coverage workflow (`rust-coverage.yml`), plus local cargo aliases in `.cargo/config.toml`.
@@ -84,7 +85,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
 - [ ] Cross-platform validation beyond the current Windows-oriented GUI workflow.
 - [ ] Expand `syncplay-server` CLI/runtime parity beyond the current alpha slice (remaining gaps include dual-interface binding parity and binary-level operational smoke coverage).
-- [ ] Refactor/maintainability work for remaining large modules (notably reducer/runtime-adapter/localization-pattern leaves, smoke-driver hotspots plus `crates/syncplay-client-core/src/lib.rs`; the CLI production roots, GUI renderer, render actions, native host, runtime bridge, runtime-stack root and transport, runtime localization, shell-state/shell-projection roots, runtime-owner/player surfaces, runtime-owner request routing, live Python interop, stream support, semantic driver, runtime updates, and main-window widget projection are now behavior-owned module trees) to reduce change risk.
+- [ ] Continue local maintainability trims on the remaining 700-900 line behavior leaves and tests; the previously named native-smoke, GUI reducer/localization, protocol, client-app notification, and client-core runtime/reset monoliths are now split below the 900-line working target.
 
 ## Optional/next improvements
 
