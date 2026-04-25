@@ -82,11 +82,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 errors.push(unavailable_message.clone());
                 continue;
             }
-            let send_result = self
-                .session
-                .as_mut()
-                .expect("session should exist when draining player chat")
-                .send_chat_message(message.clone());
+            let Some(session) = self.session.as_mut() else {
+                errors.push(unavailable_message.clone());
+                continue;
+            };
+            let send_result = session.send_chat_message(message.clone());
             if let Err(error) = send_result {
                 errors.push(format!(
                     "Chat input from the attached player could not be sent: {error}"

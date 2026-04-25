@@ -2,9 +2,7 @@ use super::*;
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SYNCPLAY_CLIENT_HOST";
     let key_name = "SYNCPLAY_CLIENT_NAME";
     let key_server_password = "SYNCPLAY_CLIENT_SERVER_PASSWORD";
@@ -23,17 +21,15 @@ fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
     let prior_pause_on_leave = std::env::var_os(key_pause_on_leave);
     let prior_dont_slow_down_with_me = std::env::var_os(key_dont_slow_down_with_me);
     let prior_rewind_threshold = std::env::var_os(key_rewind_threshold);
-    unsafe {
-        std::env::set_var(key_host, "env.example");
-        std::env::set_var(key_name, "env-user");
-        std::env::set_var(key_server_password, "env-secret");
-        std::env::set_var(key_ready_at_start, "false");
-        std::env::set_var(key_shared_playlist_enabled, "true");
-        std::env::set_var(key_show_osd_warnings, "true");
-        std::env::set_var(key_pause_on_leave, "true");
-        std::env::set_var(key_dont_slow_down_with_me, "true");
-        std::env::set_var(key_rewind_threshold, "9.5");
-    }
+    env.set_var(key_host, "env.example");
+    env.set_var(key_name, "env-user");
+    env.set_var(key_server_password, "env-secret");
+    env.set_var(key_ready_at_start, "false");
+    env.set_var(key_shared_playlist_enabled, "true");
+    env.set_var(key_show_osd_warnings, "true");
+    env.set_var(key_pause_on_leave, "true");
+    env.set_var(key_dont_slow_down_with_me, "true");
+    env.set_var(key_rewind_threshold, "9.5");
 
     let mut config = test_client_loop_config();
     let original_host = config.host.clone();
@@ -178,54 +174,49 @@ fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
     assert_eq!(config.show_different_room_osd_override, Some(false));
 
     match prior_host {
-        Some(value) => unsafe { std::env::set_var(key_host, value) },
-        None => unsafe { std::env::remove_var(key_host) },
+        Some(value) => env.set_var(key_host, value),
+        None => env.remove_var(key_host),
     }
     match prior_name {
-        Some(value) => unsafe { std::env::set_var(key_name, value) },
-        None => unsafe { std::env::remove_var(key_name) },
+        Some(value) => env.set_var(key_name, value),
+        None => env.remove_var(key_name),
     }
     match prior_server_password {
-        Some(value) => unsafe { std::env::set_var(key_server_password, value) },
-        None => unsafe { std::env::remove_var(key_server_password) },
+        Some(value) => env.set_var(key_server_password, value),
+        None => env.remove_var(key_server_password),
     }
     match prior_ready_at_start {
-        Some(value) => unsafe { std::env::set_var(key_ready_at_start, value) },
-        None => unsafe { std::env::remove_var(key_ready_at_start) },
+        Some(value) => env.set_var(key_ready_at_start, value),
+        None => env.remove_var(key_ready_at_start),
     }
     match prior_shared_playlist_enabled {
-        Some(value) => unsafe { std::env::set_var(key_shared_playlist_enabled, value) },
-        None => unsafe { std::env::remove_var(key_shared_playlist_enabled) },
+        Some(value) => env.set_var(key_shared_playlist_enabled, value),
+        None => env.remove_var(key_shared_playlist_enabled),
     }
     match prior_show_osd_warnings {
-        Some(value) => unsafe { std::env::set_var(key_show_osd_warnings, value) },
-        None => unsafe { std::env::remove_var(key_show_osd_warnings) },
+        Some(value) => env.set_var(key_show_osd_warnings, value),
+        None => env.remove_var(key_show_osd_warnings),
     }
     match prior_pause_on_leave {
-        Some(value) => unsafe { std::env::set_var(key_pause_on_leave, value) },
-        None => unsafe { std::env::remove_var(key_pause_on_leave) },
+        Some(value) => env.set_var(key_pause_on_leave, value),
+        None => env.remove_var(key_pause_on_leave),
     }
     match prior_dont_slow_down_with_me {
-        Some(value) => unsafe { std::env::set_var(key_dont_slow_down_with_me, value) },
-        None => unsafe { std::env::remove_var(key_dont_slow_down_with_me) },
+        Some(value) => env.set_var(key_dont_slow_down_with_me, value),
+        None => env.remove_var(key_dont_slow_down_with_me),
     }
     match prior_rewind_threshold {
-        Some(value) => unsafe { std::env::set_var(key_rewind_threshold, value) },
-        None => unsafe { std::env::remove_var(key_rewind_threshold) },
+        Some(value) => env.set_var(key_rewind_threshold, value),
+        None => env.remove_var(key_rewind_threshold),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_applies_server_password() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_server_password = "SYNCPLAY_CLIENT_SERVER_PASSWORD";
     let prior_server_password = std::env::var_os(key_server_password);
-    unsafe {
-        std::env::remove_var(key_server_password);
-    }
-
+    env.remove_var(key_server_password);
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
@@ -238,22 +229,17 @@ fn apply_stored_client_settings_mvp_if_env_absent_applies_server_password() {
     assert_eq!(config.server_password.as_deref(), Some("stored-secret"));
 
     match prior_server_password {
-        Some(value) => unsafe { std::env::set_var(key_server_password, value) },
-        None => unsafe { std::env::remove_var(key_server_password) },
+        Some(value) => env.set_var(key_server_password, value),
+        None => env.remove_var(key_server_password),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_applies_ready_at_start() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_ready_at_start = "SYNCPLAY_CLIENT_READY_AT_START";
     let prior_ready_at_start = std::env::var_os(key_ready_at_start);
-    unsafe {
-        std::env::remove_var(key_ready_at_start);
-    }
-
+    env.remove_var(key_ready_at_start);
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
@@ -266,22 +252,17 @@ fn apply_stored_client_settings_mvp_if_env_absent_applies_ready_at_start() {
     assert_eq!(config.ready_at_start_override, Some(true));
 
     match prior_ready_at_start {
-        Some(value) => unsafe { std::env::set_var(key_ready_at_start, value) },
-        None => unsafe { std::env::remove_var(key_ready_at_start) },
+        Some(value) => env.set_var(key_ready_at_start, value),
+        None => env.remove_var(key_ready_at_start),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_applies_shared_playlist_enabled() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_shared_playlist_enabled = "SYNCPLAY_CLIENT_SHARED_PLAYLIST_ENABLED";
     let prior_shared_playlist_enabled = std::env::var_os(key_shared_playlist_enabled);
-    unsafe {
-        std::env::remove_var(key_shared_playlist_enabled);
-    }
-
+    env.remove_var(key_shared_playlist_enabled);
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
@@ -294,22 +275,17 @@ fn apply_stored_client_settings_mvp_if_env_absent_applies_shared_playlist_enable
     assert_eq!(config.shared_playlists_enabled_override, Some(false));
 
     match prior_shared_playlist_enabled {
-        Some(value) => unsafe { std::env::set_var(key_shared_playlist_enabled, value) },
-        None => unsafe { std::env::remove_var(key_shared_playlist_enabled) },
+        Some(value) => env.set_var(key_shared_playlist_enabled, value),
+        None => env.remove_var(key_shared_playlist_enabled),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_uses_room_list_when_room_missing() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_room = "SYNCPLAY_CLIENT_ROOM";
     let prior_room = std::env::var_os(key_room);
-    unsafe {
-        std::env::remove_var(key_room);
-    }
-
+    env.remove_var(key_room);
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
@@ -331,22 +307,17 @@ fn apply_stored_client_settings_mvp_if_env_absent_uses_room_list_when_room_missi
     );
 
     match prior_room {
-        Some(value) => unsafe { std::env::set_var(key_room, value) },
-        None => unsafe { std::env::remove_var(key_room) },
+        Some(value) => env.set_var(key_room, value),
+        None => env.remove_var(key_room),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_prefers_room_over_room_list() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_room = "SYNCPLAY_CLIENT_ROOM";
     let prior_room = std::env::var_os(key_room);
-    unsafe {
-        std::env::remove_var(key_room);
-    }
-
+    env.remove_var(key_room);
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
         &mut config,
@@ -360,24 +331,20 @@ fn apply_stored_client_settings_mvp_if_env_absent_prefers_room_over_room_list() 
     assert_eq!(config.room, "stored-room");
 
     match prior_room {
-        Some(value) => unsafe { std::env::set_var(key_room, value) },
-        None => unsafe { std::env::remove_var(key_room) },
+        Some(value) => env.set_var(key_room, value),
+        None => env.remove_var(key_room),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_uses_public_servers_when_host_missing() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SYNCPLAY_CLIENT_HOST";
     let key_port = "SYNCPLAY_CLIENT_PORT";
     let prior_host = std::env::var_os(key_host);
     let prior_port = std::env::var_os(key_port);
-    unsafe {
-        std::env::remove_var(key_host);
-        std::env::remove_var(key_port);
-    }
+    env.remove_var(key_host);
+    env.remove_var(key_port);
 
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
@@ -397,28 +364,24 @@ fn apply_stored_client_settings_mvp_if_env_absent_uses_public_servers_when_host_
     assert_eq!(config.port, 7777);
 
     match prior_host {
-        Some(value) => unsafe { std::env::set_var(key_host, value) },
-        None => unsafe { std::env::remove_var(key_host) },
+        Some(value) => env.set_var(key_host, value),
+        None => env.remove_var(key_host),
     }
     match prior_port {
-        Some(value) => unsafe { std::env::set_var(key_port, value) },
-        None => unsafe { std::env::remove_var(key_port) },
+        Some(value) => env.set_var(key_port, value),
+        None => env.remove_var(key_port),
     }
 }
 
 #[test]
 fn apply_stored_client_settings_mvp_if_env_absent_prefers_stored_host_over_public_servers() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SYNCPLAY_CLIENT_HOST";
     let key_port = "SYNCPLAY_CLIENT_PORT";
     let prior_host = std::env::var_os(key_host);
     let prior_port = std::env::var_os(key_port);
-    unsafe {
-        std::env::remove_var(key_host);
-        std::env::remove_var(key_port);
-    }
+    env.remove_var(key_host);
+    env.remove_var(key_port);
 
     let mut config = test_client_loop_config();
     apply_stored_client_settings_mvp_if_env_absent(
@@ -438,11 +401,11 @@ fn apply_stored_client_settings_mvp_if_env_absent_prefers_stored_host_over_publi
     assert_eq!(config.port, 4444);
 
     match prior_host {
-        Some(value) => unsafe { std::env::set_var(key_host, value) },
-        None => unsafe { std::env::remove_var(key_host) },
+        Some(value) => env.set_var(key_host, value),
+        None => env.remove_var(key_host),
     }
     match prior_port {
-        Some(value) => unsafe { std::env::set_var(key_port, value) },
-        None => unsafe { std::env::remove_var(key_port) },
+        Some(value) => env.set_var(key_port, value),
+        None => env.remove_var(key_port),
     }
 }

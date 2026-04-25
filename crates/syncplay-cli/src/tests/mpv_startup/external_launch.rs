@@ -106,57 +106,45 @@ fn legacy_external_player_launch_spec_from_overrides_returns_none_without_player
 
 #[test]
 fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env_respects_mpv_envs() {
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let old_managed = std::env::var_os(key_managed);
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
+    env.remove_var(key_managed);
+    env.remove_var(key_client_ipc);
+    env.remove_var(key_fallback_ipc);
 
-    // SAFETY: Scoped test-local env mutation with restoration before return.
-    unsafe {
-        std::env::remove_var(key_managed);
-        std::env::remove_var(key_client_ipc);
-        std::env::remove_var(key_fallback_ipc);
-    }
     assert!(
         !should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
         "no explicit IPC or managed launch env should allow legacy external spawn path"
     );
-
-    // SAFETY: Scoped test-local env mutation with restoration before return.
-    unsafe {
-        std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-    }
+    env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
     assert!(
         should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
         "explicit client IPC path should skip unmanaged external spawn"
     );
+    env.remove_var(key_client_ipc);
+    env.set_var(key_managed, "1");
 
-    // SAFETY: Scoped test-local env mutation with restoration before return.
-    unsafe {
-        std::env::remove_var(key_client_ipc);
-        std::env::set_var(key_managed, "1");
-    }
     assert!(
         should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
         "managed mpv launch env should skip unmanaged external spawn"
     );
 
     match old_managed {
-        Some(value) => unsafe { std::env::set_var(key_managed, value) },
-        None => unsafe { std::env::remove_var(key_managed) },
+        Some(value) => env.set_var(key_managed, value),
+        None => env.remove_var(key_managed),
     }
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
 }
 

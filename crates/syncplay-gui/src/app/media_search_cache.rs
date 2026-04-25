@@ -206,6 +206,9 @@ fn replace_file_atomically(from: &Path, to: &Path) -> Result<(), String> {
         .encode_wide()
         .chain(iter::once(0))
         .collect::<Vec<_>>();
+    // SAFETY: Both paths are converted from valid Windows `OsStr` values into
+    // null-terminated UTF-16 buffers that live for the duration of the call.
+    // The optional backup/exclusion/reserved pointers are intentionally null.
     let replaced = unsafe {
         ReplaceFileW(
             to_wide.as_ptr(),
@@ -221,6 +224,8 @@ fn replace_file_atomically(from: &Path, to: &Path) -> Result<(), String> {
     }
 
     let replace_error = std::io::Error::last_os_error();
+    // SAFETY: Both path buffers are null-terminated UTF-16 and remain alive for
+    // the duration of the call. Flags request an atomic-ish replace fallback.
     let moved = unsafe {
         MoveFileExW(
             from_wide.as_ptr(),

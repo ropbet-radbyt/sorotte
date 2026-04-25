@@ -130,18 +130,30 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
             true,
         );
     }
+    let Some(downloader_source) = downloader_probe.effective_source else {
+        return status_snapshot(
+            GuiStreamHelperHealth::Broken,
+            Some("yt-dlp discovery reported a path without a source.".to_owned()),
+            Some(target),
+            true,
+        );
+    };
     let downloader = StreamHelperExecutable {
         path: downloader_path,
-        source: downloader_probe
-            .effective_source
-            .expect("source should exist with the effective downloader path"),
+        source: downloader_source,
         version: downloader_probe.effective_version.clone(),
+    };
+    let Some(js_runtime_source) = js_runtime_probe.effective_source else {
+        return status_snapshot(
+            GuiStreamHelperHealth::Broken,
+            Some("Deno discovery reported a path without a source.".to_owned()),
+            Some(target),
+            true,
+        );
     };
     let js_runtime = StreamHelperExecutable {
         path: js_runtime_path,
-        source: js_runtime_probe
-            .effective_source
-            .expect("source should exist with the effective JS runtime path"),
+        source: js_runtime_source,
         version: js_runtime_probe.effective_version.clone(),
     };
 

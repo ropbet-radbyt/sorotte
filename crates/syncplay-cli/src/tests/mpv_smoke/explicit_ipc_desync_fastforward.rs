@@ -180,20 +180,16 @@ async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_se
             .expect("server shutdown should succeed");
     });
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let key_managed = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
     let old_managed = std::env::var_os(key_managed);
-    unsafe {
-        std::env::set_var(key_client_ipc, &pipe_path);
-        std::env::remove_var(key_fallback_ipc);
-        std::env::remove_var(key_managed);
-    }
+    env.set_var(key_client_ipc, &pipe_path);
+    env.remove_var(key_fallback_ipc);
+    env.remove_var(key_managed);
 
     let mut config = test_client_loop_config_with_addr(addr);
     config.max_connected_runtime_seconds = 10.0;
@@ -249,16 +245,16 @@ async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_se
     server_task.await.expect("server task join should succeed");
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
     match old_managed {
-        Some(value) => unsafe { std::env::set_var(key_managed, value) },
-        None => unsafe { std::env::remove_var(key_managed) },
+        Some(value) => env.set_var(key_managed, value),
+        None => env.remove_var(key_managed),
     }
 
     let final_position = runtime.player().position_seconds();

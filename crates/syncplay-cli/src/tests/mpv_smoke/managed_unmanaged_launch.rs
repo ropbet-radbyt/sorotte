@@ -26,22 +26,19 @@ fn managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setu
     let key_ipc = "SYNCPLAY_CLIENT_MPV_MANAGED_IPC_PATH";
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let old_enabled = std::env::var(key_enabled).ok();
     let old_bin = std::env::var(key_bin).ok();
     let old_media = std::env::var(key_media).ok();
     let old_ipc = std::env::var(key_ipc).ok();
     let old_client_ipc = std::env::var(key_client_ipc).ok();
     let old_fallback_ipc = std::env::var(key_fallback_ipc).ok();
-
-    // SAFETY: Scoped ignored smoke test env mutation with restoration before return.
-    unsafe {
-        std::env::set_var(key_enabled, "1");
-        std::env::set_var(key_bin, mpv_bin.as_os_str());
-        std::env::set_var(key_media, media_file.as_os_str());
-        std::env::remove_var(key_ipc);
-        std::env::remove_var(key_client_ipc);
-        std::env::remove_var(key_fallback_ipc);
-    }
+    env.set_var(key_enabled, "1");
+    env.set_var(key_bin, mpv_bin.as_os_str());
+    env.set_var(key_media, media_file.as_os_str());
+    env.remove_var(key_ipc);
+    env.remove_var(key_client_ipc);
+    env.remove_var(key_fallback_ipc);
 
     let result = (|| {
         let config = test_client_loop_config();
@@ -99,51 +96,30 @@ fn managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setu
             last_telemetry
         ))
     })();
+    env.remove_var(key_enabled);
+    env.remove_var(key_bin);
+    env.remove_var(key_media);
+    env.remove_var(key_ipc);
+    env.remove_var(key_client_ipc);
+    env.remove_var(key_fallback_ipc);
 
-    // SAFETY: Scoped ignored smoke test env restoration.
-    unsafe {
-        std::env::remove_var(key_enabled);
-        std::env::remove_var(key_bin);
-        std::env::remove_var(key_media);
-        std::env::remove_var(key_ipc);
-        std::env::remove_var(key_client_ipc);
-        std::env::remove_var(key_fallback_ipc);
-    }
     if let Some(value) = old_enabled {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_enabled, value);
-        }
+        env.set_var(key_enabled, value);
     }
     if let Some(value) = old_bin {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_bin, value);
-        }
+        env.set_var(key_bin, value);
     }
     if let Some(value) = old_media {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_media, value);
-        }
+        env.set_var(key_media, value);
     }
     if let Some(value) = old_ipc {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_ipc, value);
-        }
+        env.set_var(key_ipc, value);
     }
     if let Some(value) = old_client_ipc {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_client_ipc, value);
-        }
+        env.set_var(key_client_ipc, value);
     }
     if let Some(value) = old_fallback_ipc {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_fallback_ipc, value);
-        }
+        env.set_var(key_fallback_ipc, value);
     }
 
     let (published_lines, _last_telemetry, expected_name) =

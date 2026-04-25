@@ -14,12 +14,14 @@ use super::runtime_bridge::{
     GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiPendingCompletionRequest,
     GuiQueuedRuntimeOwner, GuiRuntimeRequest,
 };
-use super::shell_state::{GuiPendingOperationKind, GuiShellAction, SyncplayGuiShellAppState};
+use super::shell_state::{
+    GuiPendingOperationKind, GuiShellAction, GuiTransientNotificationLevel,
+    SyncplayGuiShellAppState,
+};
 use super::support::{nonempty_room_name_text, normalized_editable_text};
 
 type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
 
-#[allow(dead_code)]
 #[derive(Clone, Default)]
 pub(super) struct GuiQueuedRuntimeBridgeHandle {
     queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
@@ -28,7 +30,6 @@ pub(super) struct GuiQueuedRuntimeBridgeHandle {
     threaded_runtime_owner: Arc<Mutex<Option<Weak<GuiThreadedRuntimeOwnerShared>>>>,
 }
 
-#[allow(dead_code)]
 impl GuiQueuedRuntimeBridgeHandle {
     pub(super) fn set_repaint_notifier<F>(&self, notifier: F)
     where
@@ -147,6 +148,7 @@ impl GuiQueuedRuntimeBridgeHandle {
         queue.drain(..).collect()
     }
 
+    #[cfg(test)]
     pub(super) fn drain_preview_response_actions(&self) -> Vec<GuiShellAction> {
         self.drain_requests()
             .into_iter()
@@ -155,7 +157,6 @@ impl GuiQueuedRuntimeBridgeHandle {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 pub(super) struct GuiQueuedRuntimeBridge {
     handle: GuiQueuedRuntimeBridgeHandle,
@@ -163,8 +164,8 @@ pub(super) struct GuiQueuedRuntimeBridge {
     queued_pending_completion: Option<GuiPendingOperationKind>,
 }
 
-#[allow(dead_code)]
 impl GuiQueuedRuntimeBridge {
+    #[cfg(test)]
     pub(super) fn new() -> (Self, GuiQueuedRuntimeBridgeHandle) {
         Self::new_with_manual_pending_controls(false)
     }
@@ -525,7 +526,10 @@ pub(super) struct GuiThreadedRuntimeOwnerPump {
 impl GuiThreadedRuntimeOwnerPump {
     const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-    pub(super) fn new<TOwner>(handle: GuiQueuedRuntimeBridgeHandle, owner: TOwner) -> Self
+    pub(super) fn new<TOwner>(
+        handle: GuiQueuedRuntimeBridgeHandle,
+        owner: TOwner,
+    ) -> Result<Self, String>
     where
         TOwner: GuiQueuedRuntimeOwner + Send + 'static,
     {
@@ -536,24 +540,25 @@ impl GuiThreadedRuntimeOwnerPump {
         handle: GuiQueuedRuntimeBridgeHandle,
         owner: TOwner,
         poll_interval: Duration,
-    ) -> Self
+    ) -> Result<Self, String>
     where
         TOwner: GuiQueuedRuntimeOwner + Send + 'static,
     {
         let shared = Arc::new(GuiThreadedRuntimeOwnerShared::default());
-        handle.set_threaded_runtime_owner(&shared);
         let worker_shared = shared.clone();
+        let worker_handle = handle.clone();
         let worker = thread::Builder::new()
             .name("syncplay-gui-runtime".to_owned())
             .spawn(move || {
-                Self::run_worker_loop(handle, owner, worker_shared, poll_interval);
+                Self::run_worker_loop(worker_handle, owner, worker_shared, poll_interval);
             })
-            .expect("failed to spawn syncplay GUI runtime thread");
-        Self {
+            .map_err(|error| format!("failed to spawn syncplay GUI runtime thread: {error}"))?;
+        handle.set_threaded_runtime_owner(&shared);
+        Ok(Self {
             last_submitted_state: None,
             shared,
             worker: Some(worker),
-        }
+        })
     }
 
     fn run_worker_loop<TOwner>(
@@ -608,6 +613,63 @@ impl GuiThreadedRuntimeOwnerPump {
                 owner.pump(&handle, state);
             }
         }
+    }
+}
+
+pub(super) struct GuiRuntimeThreadUnavailablePump {
+    handle: GuiQueuedRuntimeBridgeHandle,
+    startup_error: String,
+    startup_reported: bool,
+}
+
+impl GuiRuntimeThreadUnavailablePump {
+    pub(super) fn new(handle: GuiQueuedRuntimeBridgeHandle, startup_error: String) -> Self {
+        Self {
+            handle,
+            startup_error,
+            startup_reported: false,
+        }
+    }
+
+    fn startup_error_actions(error: &str) -> Vec<GuiShellAction> {
+        let message = format!(
+            "Syncplay GUI runtime could not start: {error}. Runtime actions are disabled until Syncplay is restarted."
+        );
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: message.clone(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(message),
+        ]
+    }
+
+    fn ignored_requests_message(request_count: usize) -> String {
+        match request_count {
+            1 => "Ignored 1 runtime request because the Syncplay GUI runtime is unavailable."
+                .to_owned(),
+            count => format!(
+                "Ignored {count} runtime requests because the Syncplay GUI runtime is unavailable."
+            ),
+        }
+    }
+}
+
+impl GuiNativeRuntimePump for GuiRuntimeThreadUnavailablePump {
+    fn pump(&mut self, _state: &SyncplayGuiShellAppState) {
+        let mut actions = Vec::new();
+        if !self.startup_reported {
+            actions.extend(Self::startup_error_actions(&self.startup_error));
+            self.startup_reported = true;
+        }
+        let ignored_requests = self.handle.drain_requests().len();
+        if ignored_requests != 0 {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: Self::ignored_requests_message(ignored_requests),
+            });
+        }
+        self.handle.push_actions(actions);
     }
 }
 

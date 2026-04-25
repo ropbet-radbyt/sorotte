@@ -150,10 +150,13 @@ pub fn client_network_loop_attempt_disposition_legacy_compatible(
             ClientNetworkLoopAttemptDisposition::Continue
         }
         ClientNetworkLoopExecutionOutcome::ReconnectExhausted => {
-            ClientNetworkLoopAttemptDisposition::ReconnectExhausted(
-                plan.reconnect_exhausted_error_kind
-                    .expect("reconnect exhaustion must map to a defined error policy"),
-            )
+            match plan.reconnect_exhausted_error_kind {
+                Some(kind) => ClientNetworkLoopAttemptDisposition::ReconnectExhausted(kind),
+                None if plan.event.return_success => {
+                    ClientNetworkLoopAttemptDisposition::ReturnSuccess
+                }
+                None => ClientNetworkLoopAttemptDisposition::Continue,
+            }
         }
     }
 }

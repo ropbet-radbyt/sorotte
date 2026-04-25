@@ -20,9 +20,11 @@ async fn run_reconnect_backoff(
         return Ok(true);
     }
 
-    let delay_seconds = plan
-        .sleep_delay_seconds
-        .expect("active reconnect backoff plan must include a sleep delay");
+    let Some(delay_seconds) = plan.sleep_delay_seconds else {
+        return Err(anyhow!(
+            "active reconnect backoff plan did not include a sleep delay"
+        ));
+    };
     tokio::time::sleep(Duration::from_secs_f64(delay_seconds)).await;
     *retries = plan.next_retries;
     Ok(false)
@@ -73,9 +75,10 @@ fn reconnect_exhausted_error_from_attempt_disposition_legacy_compatible(
     connect_error: Option<anyhow::Error>,
 ) -> anyhow::Error {
     match client_network_loop_reconnect_exhausted_error_action_legacy_compatible(kind) {
-        ClientNetworkLoopReconnectExhaustedErrorAction::UseConnectError => {
-            connect_error.expect("connect-failure exhaustion must carry the original connect error")
-        }
+        ClientNetworkLoopReconnectExhaustedErrorAction::UseConnectError => connect_error
+            .unwrap_or_else(|| {
+                anyhow!("connect-failure exhaustion did not include the original connect error")
+            }),
         ClientNetworkLoopReconnectExhaustedErrorAction::StaticMessage(message) => {
             anyhow!(message)
         }

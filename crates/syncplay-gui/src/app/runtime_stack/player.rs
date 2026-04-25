@@ -101,7 +101,7 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 pub(in super::super) enum GuiOwnedPlayer {
     Test(GuiTestPlayerAdapter),
     Mpv(Box<MpvAdapter>),
-    #[allow(dead_code)] // Custom player injection is a test seam for player-runtime parity cases.
+    #[cfg(test)]
     Custom(Box<dyn PlayerAdapter + Send>),
 }
 
@@ -110,6 +110,7 @@ impl GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.name(),
             Self::Mpv(player) => player.name(),
+            #[cfg(test)]
             Self::Custom(player) => player.name(),
         }
     }
@@ -117,7 +118,10 @@ impl GuiOwnedPlayer {
     pub(in super::super) fn as_mpv_mut(&mut self) -> Option<&mut MpvAdapter> {
         match self {
             Self::Mpv(player) => Some(player),
+            #[cfg(test)]
             Self::Test(_) | Self::Custom(_) => None,
+            #[cfg(not(test))]
+            Self::Test(_) => None,
         }
     }
 }
@@ -131,6 +135,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.open_file(path),
             Self::Mpv(player) => player.open_file(path),
+            #[cfg(test)]
             Self::Custom(player) => player.open_file(path),
         }
     }
@@ -143,6 +148,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.set_option_string(name, value),
             Self::Mpv(player) => player.set_option_string(name, value),
+            #[cfg(test)]
             Self::Custom(player) => player.set_option_string(name, value),
         }
     }
@@ -151,6 +157,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.apply_profile(profile),
             Self::Mpv(player) => player.apply_profile(profile),
+            #[cfg(test)]
             Self::Custom(player) => player.apply_profile(profile),
         }
     }
@@ -159,6 +166,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.set_paused(paused),
             Self::Mpv(player) => player.set_paused(paused),
+            #[cfg(test)]
             Self::Custom(player) => player.set_paused(paused),
         }
     }
@@ -170,6 +178,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.set_position(position_seconds),
             Self::Mpv(player) => player.set_position(position_seconds),
+            #[cfg(test)]
             Self::Custom(player) => player.set_position(position_seconds),
         }
     }
@@ -178,6 +187,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.set_playback_rate(rate),
             Self::Mpv(player) => player.set_playback_rate(rate),
+            #[cfg(test)]
             Self::Custom(player) => player.set_playback_rate(rate),
         }
     }
@@ -186,6 +196,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.take_local_file_update(),
             Self::Mpv(player) => player.take_local_file_update(),
+            #[cfg(test)]
             Self::Custom(player) => player.take_local_file_update(),
         }
     }
@@ -194,6 +205,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.take_playback_telemetry_update(),
             Self::Mpv(player) => player.take_playback_telemetry_update(),
+            #[cfg(test)]
             Self::Custom(player) => player.take_playback_telemetry_update(),
         }
     }
@@ -202,6 +214,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.take_media_load_outcome(),
             Self::Mpv(player) => player.take_media_load_outcome(),
+            #[cfg(test)]
             Self::Custom(player) => player.take_media_load_outcome(),
         }
     }
@@ -210,6 +223,7 @@ impl PlayerAdapter for GuiOwnedPlayer {
         match self {
             Self::Test(player) => player.take_pending_chat_request(),
             Self::Mpv(player) => player.take_pending_chat_request(),
+            #[cfg(test)]
             Self::Custom(player) => player.take_pending_chat_request(),
         }
     }

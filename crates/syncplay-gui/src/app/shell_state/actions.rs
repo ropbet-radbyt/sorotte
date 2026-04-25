@@ -1,7 +1,13 @@
 use super::*;
 
-#[allow(clippy::large_enum_variant)]
-#[allow(dead_code)] // The action enum is the full GUI command vocabulary; feature and smoke paths construct subsets.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The shell action vocabulary is still centralized while reducer domains are being split incrementally."
+)]
+#[allow(
+    dead_code,
+    reason = "The action enum is the full GUI command vocabulary; feature and smoke paths construct subsets."
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiShellAction {
     SwitchView(GuiShellView),

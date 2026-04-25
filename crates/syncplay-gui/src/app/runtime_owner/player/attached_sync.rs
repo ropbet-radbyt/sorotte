@@ -89,12 +89,11 @@ impl GuiPersistedConfigRuntimeOwner {
                         .unwrap_or(true))
             {
                 let sync_position_seconds = (position_seconds + user_offset_seconds).max(0.0);
-                match self
-                    .player
-                    .as_mut()
-                    .expect("player should exist while syncing playback position")
-                    .set_position(sync_position_seconds)
-                {
+                let Some(player) = self.player.as_mut() else {
+                    self.last_applied_attached_room_playstate = None;
+                    return;
+                };
+                match player.set_position(sync_position_seconds) {
                     Ok(()) => {
                         self.player_position_seconds = Some(position_seconds);
                         state_changed = true;
@@ -111,12 +110,11 @@ impl GuiPersistedConfigRuntimeOwner {
             if let Some(paused) = sync_paused_state
                 && (force || self.player_paused != Some(paused))
             {
-                match self
-                    .player
-                    .as_mut()
-                    .expect("player should exist while syncing playback pause state")
-                    .set_paused(paused)
-                {
+                let Some(player) = self.player.as_mut() else {
+                    self.last_applied_attached_room_playstate = None;
+                    return;
+                };
+                match player.set_paused(paused) {
                     Ok(()) => {
                         self.player_paused = Some(paused);
                         state_changed = true;
@@ -145,22 +143,19 @@ impl GuiPersistedConfigRuntimeOwner {
                     for action in actions {
                         match action {
                             GuiAttachedPlayerRuntimeAction::Paused(paused) => {
-                                match self
-                                    .player
-                                    .as_mut()
-                                    .expect(
-                                        "player should exist while applying attached pause correction",
-                                    )
-                                    .set_paused(paused)
-                                {
+                                let Some(player) = self.player.as_mut() else {
+                                    return;
+                                };
+                                match player.set_paused(paused) {
                                     Ok(()) => {
                                         self.player_paused = Some(paused);
                                         state_changed = true;
                                         if let Some(session) = self.session.as_mut()
-                                            && let Err(error) = session.sync_local_playback_telemetry(
-                                                Some(paused),
-                                                self.player_position_seconds,
-                                            )
+                                            && let Err(error) = session
+                                                .sync_local_playback_telemetry(
+                                                    Some(paused),
+                                                    self.player_position_seconds,
+                                                )
                                         {
                                             eprintln!(
                                                 "warning: failed to mirror attached-player pause correction into the session runtime: {error}"
@@ -177,20 +172,19 @@ impl GuiPersistedConfigRuntimeOwner {
                             GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
                                 let sync_position_seconds =
                                     (position_seconds + user_offset_seconds).max(0.0);
-                                match self
-                                    .player
-                                    .as_mut()
-                                    .expect("player should exist while applying desync correction")
-                                    .set_position(sync_position_seconds)
-                                {
+                                let Some(player) = self.player.as_mut() else {
+                                    return;
+                                };
+                                match player.set_position(sync_position_seconds) {
                                     Ok(()) => {
                                         self.player_position_seconds = Some(position_seconds);
                                         state_changed = true;
                                         if let Some(session) = self.session.as_mut()
-                                            && let Err(error) = session.sync_local_playback_telemetry(
-                                                self.player_paused,
-                                                Some(position_seconds),
-                                            )
+                                            && let Err(error) = session
+                                                .sync_local_playback_telemetry(
+                                                    self.player_paused,
+                                                    Some(position_seconds),
+                                                )
                                         {
                                             eprintln!(
                                                 "warning: failed to mirror desync-corrected playback position into the session runtime: {error}"
@@ -205,12 +199,10 @@ impl GuiPersistedConfigRuntimeOwner {
                                 }
                             }
                             GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
-                                if let Err(error) = self
-                                    .player
-                                    .as_mut()
-                                    .expect("player should exist while applying playback-rate correction")
-                                    .set_playback_rate(playback_rate)
-                                {
+                                let Some(player) = self.player.as_mut() else {
+                                    return;
+                                };
+                                if let Err(error) = player.set_playback_rate(playback_rate) {
                                     eprintln!(
                                         "warning: failed to apply attached-player playback-rate correction: {error}"
                                     );

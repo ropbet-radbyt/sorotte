@@ -9,14 +9,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use syncplay_client_app::{
-    legacy_ini_serde::format_serialized_public_servers_list_legacy_compatible,
-    legacy_settings::AutoplayThresholdOverride,
-    legacy_settings::StoredClientSettingsMvp,
-    legacy_syncplay_ini::{
+use syncplay_client_app::app_boundary::{
+    persistence::{
+        format_serialized_public_servers_list_legacy_compatible,
         load_syncplay_ini_stored_client_settings_mvp_from_path,
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
     },
+    state::{AutoplayThresholdOverride, StoredClientSettingsMvp},
 };
 use syncplay_client_core::{PrivacyMode, UnpauseActionMode};
 use syncplay_compat::LegacyServerPythonPeerHarness;

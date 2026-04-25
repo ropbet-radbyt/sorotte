@@ -23,8 +23,8 @@
   - `../syncplay/syncplay/messages_en.py`
   - `../syncplay/syncplay/messages_fr.py`
 - Static comparison of the Rust client implementation:
-- `crates/syncplay-gui/src/app.rs`
-  - `crates/syncplay-gui/src/remote_services.rs`
+- `crates/syncplay-gui/src/app/`
+  - `crates/syncplay-gui/src/app/remote_services.rs`
   - `crates/syncplay-client-core/src/lib.rs`
   - `crates/syncplay-client-app/src/legacy_settings.rs`
   - `crates/syncplay-client-app/src/legacy_language.rs`

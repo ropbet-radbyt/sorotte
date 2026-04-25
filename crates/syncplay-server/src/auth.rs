@@ -52,14 +52,11 @@ impl RoomPasswordProvider {
         let captures = CONTROLLED_ROOM_REGEX
             .captures(room_name)
             .ok_or(RoomPasswordCheckError::NotControlledRoom)?;
-        let base_room = captures
-            .get(1)
-            .expect("controlled room regex always includes base room capture")
-            .as_str();
-        let expected_hash = captures
-            .get(2)
-            .expect("controlled room regex always includes hash capture")
-            .as_str();
+        let (Some(base_room), Some(expected_hash)) = (captures.get(1), captures.get(2)) else {
+            return Err(RoomPasswordCheckError::NotControlledRoom);
+        };
+        let base_room = base_room.as_str();
+        let expected_hash = expected_hash.as_str();
         let computed_hash = self.compute_room_hash(base_room, password);
         Ok(computed_hash == expected_hash)
     }

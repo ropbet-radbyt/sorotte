@@ -253,7 +253,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let selected_path = paths[0].clone();
         let (player_name, open_result) = {
-            let player = self.player.as_mut().expect("player should exist");
+            let player = self.player.as_mut()?;
             (player.name(), player.open_file(&selected_path))
         };
         Some(match open_result {

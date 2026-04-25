@@ -306,11 +306,15 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        let session_result = self
-            .session
-            .as_mut()
-            .expect("session should exist")
-            .replace_playlist(playlist_entries.clone(), selected_playlist_index);
+        let Some(session) = self.session.as_mut() else {
+            Self::push_runtime_unavailable(
+                handle,
+                self.shared_playlist_session_unavailable_message_impl(),
+            );
+            return;
+        };
+        let session_result =
+            session.replace_playlist(playlist_entries.clone(), selected_playlist_index);
         let session_success = session_result.is_ok();
         if session_success {
             self.active_shared_playlist_index = selected_playlist_index;

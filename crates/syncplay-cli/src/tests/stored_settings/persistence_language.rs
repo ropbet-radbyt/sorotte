@@ -2,9 +2,7 @@ use super::*;
 
 #[test]
 fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override_path() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -18,10 +16,7 @@ fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override
 
     let seed_contents = "[general]\nlanguage = en\n";
     std::fs::write(&config_path, seed_contents).expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     let config = ClientLoopConfig {
         host: "stored.example".to_owned(),
         port: 1234,
@@ -178,8 +173,8 @@ fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override
     assert!(written_contents.contains("showDifferentRoomOSD = False\n"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -187,9 +182,7 @@ fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override
 
 #[test]
 fn persist_syncplay_cli_language_setting_legacy_compatible_updates_general_language() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -202,10 +195,7 @@ fn persist_syncplay_cli_language_setting_legacy_compatible_updates_general_langu
     std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
     let config_path = temp_dir.join("syncplay.ini");
     std::fs::write(&config_path, "[general]\nlanguage = en\n").expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_language_setting_legacy_compatible("fr")
         .expect("language setting should persist");
     let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
@@ -217,8 +207,8 @@ fn persist_syncplay_cli_language_setting_legacy_compatible_updates_general_langu
     assert!(written_contents.contains("[general]\nlanguage = fr\n"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -226,9 +216,7 @@ fn persist_syncplay_cli_language_setting_legacy_compatible_updates_general_langu
 
 #[test]
 fn persist_syncplay_cli_language_setting_legacy_compatible_normalizes_supported_aliases() {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -242,10 +230,7 @@ fn persist_syncplay_cli_language_setting_legacy_compatible_normalizes_supported_
     std::fs::create_dir_all(&temp_dir).expect("temp config dir should be created");
     let config_path = temp_dir.join("syncplay.ini");
     std::fs::write(&config_path, "[general]\nlanguage = en\n").expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_language_setting_legacy_compatible("PT-br")
         .expect("language alias should persist");
     let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
@@ -257,8 +242,8 @@ fn persist_syncplay_cli_language_setting_legacy_compatible_normalizes_supported_
     assert!(written_contents.contains("[general]\nlanguage = pt_BR\n"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);

@@ -229,21 +229,18 @@ pub fn run_syncplay_gui_semantic_output(
     run_syncplay_gui_semantic_report(source).map(|report| report.render(format))
 }
 
-#[allow(dead_code)]
 pub fn run_syncplay_gui_semantic_report_from_script(
     script: &str,
 ) -> Result<GuiSemanticScenarioReport, String> {
     run_syncplay_gui_semantic_report(GuiSemanticScenarioSource::InlineScript(script.to_owned()))
 }
 
-#[allow(dead_code)]
 pub fn run_syncplay_gui_semantic_report_from_script_path(
     path: &str,
 ) -> Result<GuiSemanticScenarioReport, String> {
     run_syncplay_gui_semantic_report(GuiSemanticScenarioSource::ScriptPath(path.to_owned()))
 }
 
-#[allow(dead_code)]
 pub(crate) fn run_syncplay_gui_semantic_cli_from_args<I, S>(
     args: I,
 ) -> Result<Option<String>, String>
@@ -272,7 +269,6 @@ where
     cli::run_gui_semantic_scenario_output_from_lookup(lookup)
 }
 
-#[allow(dead_code)]
 pub(crate) fn run_syncplay_gui_semantic_report_from_lookup<F>(
     lookup: F,
 ) -> Result<Option<GuiSemanticScenarioReport>, String>
@@ -291,7 +287,6 @@ where
     run_gui_semantic_scenario_output_from_lookup(lookup)
 }
 
-#[allow(dead_code)]
 pub(crate) fn run_syncplay_gui_semantic_report_from_env()
 -> Result<Option<GuiSemanticScenarioReport>, String> {
     run_syncplay_gui_semantic_report_from_lookup(cli::semantic_env_trimmed)

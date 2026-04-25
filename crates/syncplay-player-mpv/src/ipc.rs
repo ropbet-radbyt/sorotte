@@ -159,10 +159,10 @@ impl MpvPipeTransport {
         {
             use std::os::unix::net::UnixStream;
             let stream = UnixStream::connect(path)?;
-            return Ok(Self {
+            Ok(Self {
                 stream: MpvPipeStream::Unix(stream),
                 read_buffer: Vec::new(),
-            });
+            })
         }
 
         #[cfg(windows)]
@@ -171,17 +171,19 @@ impl MpvPipeTransport {
                 .read(true)
                 .write(true)
                 .open(path)?;
-            return Ok(Self {
+            Ok(Self {
                 stream: MpvPipeStream::Windows(stream),
                 read_buffer: Vec::new(),
-            });
+            })
         }
 
-        #[allow(unreachable_code)]
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "mpv IPC transport not implemented for this platform",
-        ))
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "mpv IPC transport not implemented for this platform",
+            ))
+        }
     }
 }
 

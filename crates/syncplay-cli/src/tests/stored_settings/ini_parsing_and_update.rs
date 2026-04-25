@@ -179,9 +179,7 @@ fn should_run_headless_automatic_update_check_legacy_compatible_honors_frequency
 #[test]
 fn persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible_updates_general_timestamp()
  {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -198,10 +196,7 @@ fn persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible_updat
             "[general]\ncheckForUpdatesAutomatically = True\nlastCheckedForUpdates = 2020-01-01 00:00:00.000\n",
         )
         .expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible(
         "2026-03-02 12:34:56.789",
     )
@@ -217,8 +212,8 @@ fn persist_syncplay_cli_last_checked_for_updates_setting_legacy_compatible_updat
     assert_eq!(loaded.check_for_updates_automatically, Some(true));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

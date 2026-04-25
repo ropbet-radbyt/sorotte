@@ -96,7 +96,7 @@ pub mod session {
         ClientNetworkLoopAttemptPlan, ClientNetworkLoopEventPlan,
         ClientNetworkLoopExecutionOutcome, ClientNetworkLoopReconnectExhaustedErrorAction,
         ClientNetworkLoopReconnectExhaustedErrorKind, ClientNetworkLoopStartupPlan,
-        ClientNetworkLoopStartupPlanInputs, ConnectedSessionBranchPlan,
+        ClientNetworkLoopStartupPlanInputs, ClientReconnectBackoffPlan, ConnectedSessionBranchPlan,
         ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction, ConnectedSessionDrainPlan,
         ConnectedSessionEventExecutionPlan, ConnectedSessionInboundApplyPlan,
         ConnectedSessionInboundPostApplyAction, ConnectedSessionInboundPostApplyPlan,

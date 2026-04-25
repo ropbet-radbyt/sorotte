@@ -59,15 +59,16 @@ use super::{
     user_change_notification_message,
 };
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use syncplay_client_app::legacy_compat::{
+use syncplay_client_app::app_boundary::compatibility::{
     LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
     LegacyConfigurationGetterStartupCompatEntry, legacy_configuration_getter_ini_compat_entries,
     legacy_configuration_getter_startup_compat_entries,
 };
-use syncplay_client_app::legacy_ini_serde::{
+use syncplay_client_app::app_boundary::persistence::{
     format_serialized_per_player_arguments_map_legacy_compatible,
     format_serialized_public_servers_list_legacy_compatible,
     parse_serialized_per_player_arguments_map_legacy_compatible,
@@ -96,6 +97,42 @@ use tokio::sync::mpsc::unbounded_channel;
 static STORED_SETTINGS_CONFIG_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 static LEGACY_GUI_QSETTINGS_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static LEGACY_EXTERNAL_PLAYER_ENV_LOCK: Mutex<()> = Mutex::new(());
+static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct TestEnvGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl<'a> TestEnvGuard<'a> {
+    fn lock(lock: &'a Mutex<()>) -> Self {
+        Self {
+            _guard: lock.lock().expect("lock poisoned"),
+        }
+    }
+
+    fn set_var<K, V>(&self, key: K, value: V)
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        // SAFETY: Environment mutation is process-global in Rust 2024. CLI tests use
+        // TestEnvGuard to hold the relevant domain mutex while mutating and restoring
+        // env state, so test-owned env changes do not race each other.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+
+    fn remove_var<K>(&self, key: K)
+    where
+        K: AsRef<OsStr>,
+    {
+        // SAFETY: See set_var; the same guard serializes test-owned removals.
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
+}
 
 fn ignore_autoplay_notification(
     _notification: &AutoplayCountdownNotification,

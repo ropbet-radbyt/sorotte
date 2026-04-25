@@ -231,6 +231,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .chain(iter::once(0))
                 .collect::<Vec<_>>();
             let mut find_data = std::mem::MaybeUninit::<WIN32_FIND_DATAW>::zeroed();
+            // SAFETY: `search_pattern_wide` is a mutable, null-terminated UTF-16
+            // buffer and `find_data` points to writable storage for the first
+            // result as required by `FindFirstFileExW`.
             let handle = unsafe {
                 FindFirstFileExW(
                     search_pattern_wide.as_mut_ptr(),
@@ -253,6 +256,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
             impl Drop for FindHandleGuard {
                 fn drop(&mut self) {
+                    // SAFETY: The guard is constructed only after a successful
+                    // `FindFirstFileExW` call, so it owns a valid search handle.
                     unsafe {
                         FindClose(self.0);
                     }
@@ -261,6 +266,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
             let _close_guard = FindHandleGuard(handle);
             loop {
+                // SAFETY: `find_data` is initialized by a successful
+                // `FindFirstFileExW` before the loop and by each successful
+                // `FindNextFileW` before the following iteration.
                 let current_find_data = unsafe { find_data.assume_init_ref() };
                 let name_length = current_find_data
                     .cFileName
@@ -276,6 +284,8 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     }
                 }
 
+                // SAFETY: `handle` remains valid while `_close_guard` is alive,
+                // and `find_data` points to writable result storage.
                 let next_result = unsafe { FindNextFileW(handle, find_data.as_mut_ptr()) };
                 if next_result != 0 {
                     continue;

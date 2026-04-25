@@ -1,7 +1,13 @@
 use super::*;
 
-#[allow(clippy::large_enum_variant)]
-#[allow(dead_code)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "GUI runtime requests are intentionally centralized until the runtime bridge is split by domain."
+)]
+#[allow(
+    dead_code,
+    reason = "This enum is the GUI runtime command vocabulary; feature and smoke targets construct different subsets."
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiRuntimeRequest {
     OpenMediaFiles {

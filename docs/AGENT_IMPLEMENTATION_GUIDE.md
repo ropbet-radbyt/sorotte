@@ -51,8 +51,8 @@ Add tests here when the change affects CLI parsing, `syncplay.ini`, legacy QSett
 Use:
 
 - `crates/syncplay-gui/src/semantic_scenarios/*.txt`
-- `crates/syncplay-gui/src/app.rs`
-- `crates/syncplay-gui/src/semantic_smoke.rs`
+- `crates/syncplay-gui/src/app/`
+- `crates/syncplay-gui/src/app/semantic_smoke.rs`
 
 Add or extend a semantic scenario when the change affects configuration editing, main-window state, pending operations, playlist projection, chat flow, reconnect flow, modal behavior, or persistence/reset behavior.
 
@@ -60,7 +60,7 @@ Add or extend a semantic scenario when the change affects configuration editing,
 
 Use:
 
-- `crates/syncplay-gui/src/live_python_interop.rs`
+- `crates/syncplay-gui/src/app/live_python_interop.rs`
 - `crates/syncplay-compat`
 
 Add or extend live interop coverage when the Rust behavior must match an actual Python peer or legacy server end to end.

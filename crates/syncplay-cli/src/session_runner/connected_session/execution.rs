@@ -165,17 +165,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
 ) -> anyhow::Result<()> {
     let actions =
         connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
-    let needs_runtime_inputs = actions.iter().any(|action| {
-        matches!(
-            action,
-            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt
-                | ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck
-                | ConnectedSessionRuntimeStepAction::RunTickAutoplay
-                | ConnectedSessionRuntimeStepAction::RunDesyncCorrection
-        )
-    });
-    let inputs =
-        needs_runtime_inputs.then(|| derive_runtime_loop_inputs(runtime, config, now_seconds));
+    let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
 
     for action in actions {
         match action {
@@ -183,9 +173,6 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 runtime.run_room_pause_sync_if_needed()?;
             }
             ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => {
-                let inputs = inputs
-                    .as_ref()
-                    .expect("runtime inputs must exist for readiness unpause planning");
                 runtime.run_readiness_unpause_attempt(
                     now_seconds,
                     inputs.readiness_supported,
@@ -194,9 +181,6 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 )?;
             }
             ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck => {
-                let inputs = inputs
-                    .as_ref()
-                    .expect("runtime inputs must exist for autoplay update planning");
                 runtime.update_autoplay_check(
                     inputs.readiness_supported,
                     inputs.local_can_control,
@@ -205,9 +189,6 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 );
             }
             ConnectedSessionRuntimeStepAction::RunTickAutoplay => {
-                let inputs = inputs
-                    .as_ref()
-                    .expect("runtime inputs must exist for autoplay tick planning");
                 runtime.tick_autoplay(
                     inputs.readiness_supported,
                     inputs.local_can_control,
@@ -216,9 +197,6 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
                 )?;
             }
             ConnectedSessionRuntimeStepAction::RunDesyncCorrection => {
-                let inputs = inputs
-                    .as_ref()
-                    .expect("runtime inputs must exist for desync planning");
                 runtime.run_desync_correction_if_needed(
                     now_seconds,
                     inputs.local_can_control,
@@ -351,8 +329,9 @@ where
         branch,
     } = context;
     if let Some(inbound_apply) = event_execution_plan.inbound_apply {
-        let inbound_message_line =
-            inbound_message_line.expect("inbound apply plan requires an inbound message line");
+        let inbound_message_line = inbound_message_line.ok_or_else(|| {
+            anyhow::anyhow!("inbound apply plan requires an inbound message line")
+        })?;
         *outbound_state_sync_enabled = apply_connected_session_inbound_message_legacy_compatible(
             runtime,
             inbound_message_line,

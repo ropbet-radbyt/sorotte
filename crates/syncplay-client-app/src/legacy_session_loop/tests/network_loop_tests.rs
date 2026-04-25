@@ -256,6 +256,20 @@ fn client_network_loop_attempt_disposition_legacy_compatible_maps_exhaustion_pol
 }
 
 #[test]
+fn client_network_loop_attempt_disposition_legacy_compatible_handles_missing_exhaustion_policy() {
+    let plan = client_network_loop_attempt_plan_legacy_compatible(
+        ClientNetworkLoopAttemptOutcomeKind::ConnectedSessionRuntimeWindowElapsed,
+    );
+    assert_eq!(
+        client_network_loop_attempt_disposition_legacy_compatible(
+            plan,
+            ClientNetworkLoopExecutionOutcome::ReconnectExhausted,
+        ),
+        ClientNetworkLoopAttemptDisposition::ReturnSuccess,
+    );
+}
+
+#[test]
 fn client_network_loop_reconnect_exhausted_error_action_legacy_compatible_matches_kind() {
     assert_eq!(
         client_network_loop_reconnect_exhausted_error_action_legacy_compatible(

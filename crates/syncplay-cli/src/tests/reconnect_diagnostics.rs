@@ -398,47 +398,31 @@ fn flush_reconnect_correction_diagnostics_to_sink_emits_json_lines_when_requeste
 fn reconnect_correction_diagnostics_format_from_env_prefers_json_when_enabled() {
     let key_text = "SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS";
     let key_json = "SYNCPLAY_CLIENT_LOG_RECONNECT_CORRECTION_DIAGNOSTICS_JSON";
+    let env = TestEnvGuard::lock(&RECONNECT_DIAGNOSTICS_ENV_LOCK);
     let old_text = std::env::var(key_text).ok();
     let old_json = std::env::var(key_json).ok();
+    env.set_var(key_text, "1");
+    env.remove_var(key_json);
 
-    // SAFETY: This unit test mutates process env in a short, local scope and restores it
-    // before returning; it does not spawn threads or perform concurrent env access.
-    unsafe {
-        std::env::set_var(key_text, "1");
-        std::env::remove_var(key_json);
-    }
     assert_eq!(
         reconnect_correction_diagnostics_format_from_env(),
         Some(ReconnectCorrectionDiagnosticsFormat::Text)
     );
-
-    // SAFETY: Same scoped test-only environment mutation reasoning as above.
-    unsafe {
-        std::env::set_var(key_json, "1");
-    }
+    env.set_var(key_json, "1");
     assert_eq!(
         reconnect_correction_diagnostics_format_from_env(),
         Some(ReconnectCorrectionDiagnosticsFormat::Json)
     );
+    env.remove_var(key_text);
+    env.remove_var(key_json);
 
-    // SAFETY: Same scoped test-only environment mutation reasoning as above.
-    unsafe {
-        std::env::remove_var(key_text);
-        std::env::remove_var(key_json);
-    }
     assert_eq!(reconnect_correction_diagnostics_format_from_env(), None);
 
     if let Some(value) = old_text {
-        // SAFETY: Restoring the original test-local env value before exiting the test.
-        unsafe {
-            std::env::set_var(key_text, value);
-        }
+        env.set_var(key_text, value);
     }
     if let Some(value) = old_json {
-        // SAFETY: Restoring the original test-local env value before exiting the test.
-        unsafe {
-            std::env::set_var(key_json, value);
-        }
+        env.set_var(key_json, value);
     }
 }
 
@@ -448,46 +432,31 @@ fn reconnect_correction_diagnostics_alert_thresholds_from_env_parses_values() {
     let key_retry = "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_RETRY_EXHAUSTIONS_DELTA_THRESHOLD";
     let key_mismatch =
         "SYNCPLAY_CLIENT_RECONNECT_CORRECTION_ALERT_CONSECUTIVE_MISMATCH_CYCLES_THRESHOLD";
+    let env = TestEnvGuard::lock(&RECONNECT_DIAGNOSTICS_ENV_LOCK);
     let old_failures = std::env::var(key_failures).ok();
     let old_retry = std::env::var(key_retry).ok();
     let old_mismatch = std::env::var(key_mismatch).ok();
-
-    // SAFETY: Scoped unit-test env mutation with restoration before return.
-    unsafe {
-        std::env::set_var(key_failures, "2");
-        std::env::set_var(key_retry, "5");
-        std::env::set_var(key_mismatch, "3");
-    }
+    env.set_var(key_failures, "2");
+    env.set_var(key_retry, "5");
+    env.set_var(key_mismatch, "3");
 
     let thresholds = reconnect_correction_diagnostics_alert_thresholds_from_env();
     assert_eq!(thresholds.action_failures_delta, Some(2));
     assert_eq!(thresholds.retry_exhaustions_delta, Some(5));
     assert_eq!(thresholds.consecutive_mismatch_cycles, Some(3));
     assert_eq!(thresholds.disables_after_repeated_mismatches_delta, None);
+    env.remove_var(key_failures);
+    env.remove_var(key_retry);
+    env.remove_var(key_mismatch);
 
-    // SAFETY: Scoped unit-test env restoration.
-    unsafe {
-        std::env::remove_var(key_failures);
-        std::env::remove_var(key_retry);
-        std::env::remove_var(key_mismatch);
-    }
     if let Some(value) = old_failures {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_failures, value);
-        }
+        env.set_var(key_failures, value);
     }
     if let Some(value) = old_retry {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_retry, value);
-        }
+        env.set_var(key_retry, value);
     }
     if let Some(value) = old_mismatch {
-        // SAFETY: Restoring original env value.
-        unsafe {
-            std::env::set_var(key_mismatch, value);
-        }
+        env.set_var(key_mismatch, value);
     }
 }
 

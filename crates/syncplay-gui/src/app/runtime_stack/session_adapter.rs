@@ -22,7 +22,10 @@ pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
     PlaybackRate(f64),
 }
 
-#[allow(dead_code)] // Session adapter hooks are exercised by concrete adapters and targeted GUI tests.
+#[allow(
+    dead_code,
+    reason = "Session adapter hooks are exercised by concrete adapters and targeted GUI tests."
+)]
 pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     fn drain_gui_actions(&mut self, _state: &SyncplayGuiShellAppState) -> Vec<GuiShellAction> {
         Vec::new()

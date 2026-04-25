@@ -3,7 +3,6 @@ use super::*;
 mod event_drain;
 mod runtime_adapter_impl;
 
-#[allow(dead_code)]
 pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) username: String,
     pub(super) baseline_room: String,
@@ -20,10 +19,10 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
 
-#[allow(dead_code)]
 impl GuiClientCoreChatSessionRuntimeAdapter {
     const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
+    #[cfg(test)]
     pub(in crate::app) fn new(
         username: impl Into<String>,
         room: impl Into<String>,
@@ -65,12 +64,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             tracked_remote_usernames: BTreeSet::new(),
             optimistic_room_playlist: None,
         })
-    }
-
-    pub(in crate::app) fn with_dont_slow_down_with_me(mut self, enabled: bool) -> Self {
-        self.dont_slow_down_with_me = enabled;
-        self.runtime_settings.settings.dont_slow_down_with_me = Some(enabled);
-        self
     }
 
     pub(in crate::app) fn apply_runtime_settings_snapshot(

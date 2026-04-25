@@ -22,8 +22,12 @@ rust-version = "1.95.0"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+eframe = "0.33.3"
+egui = "0.33.3"
 md-5 = "0.10.6"
 regex = "1.11.1"
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls-webpki-roots-no-provider"] }
+rfd = "0.15.4"
 rustls = "0.23.34"
 rustls-pemfile = "2.2.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
@@ -34,4 +38,15 @@ sha2 = "0.10.8"
 thiserror = "2.0.12"
 tokio = { version = "1.44.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26.2"
-tracing = "0.1.41"
+webpki-roots = "0.26.11"
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

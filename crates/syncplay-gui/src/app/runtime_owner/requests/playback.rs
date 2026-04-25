@@ -60,7 +60,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 let player_target_position_seconds = self
                     .player_target_position_seconds_for_global_position(target_position_seconds);
                 let (player_name, undo_result) = {
-                    let player = self.player.as_mut().expect("player should exist");
+                    let Some(player) = self.player.as_mut() else {
+                        Self::push_runtime_unavailable(
+                            handle,
+                            "Playback undo seek requires a playback runtime connection.".to_owned(),
+                        );
+                        return false;
+                    };
                     (
                         player.name(),
                         player.set_position(player_target_position_seconds),
@@ -226,7 +232,13 @@ impl GuiPersistedConfigRuntimeOwner {
             let player_target_position_seconds =
                 self.player_target_position_seconds_for_global_position(target_position_seconds);
             let (player_name, seek_result) = {
-                let player = self.player.as_mut().expect("player should exist");
+                let Some(player) = self.player.as_mut() else {
+                    Self::push_runtime_unavailable(
+                        handle,
+                        self.seek_unavailable_message(offset_seconds),
+                    );
+                    return false;
+                };
                 (
                     player.name(),
                     player.set_position(player_target_position_seconds),
@@ -295,7 +307,13 @@ impl GuiPersistedConfigRuntimeOwner {
             let player_target_position_seconds =
                 self.player_target_position_seconds_for_global_position(target_position_seconds);
             let (player_name, seek_result) = {
-                let player = self.player.as_mut().expect("player should exist");
+                let Some(player) = self.player.as_mut() else {
+                    Self::push_runtime_unavailable(
+                        handle,
+                        "Playback absolute seek requires a playback runtime connection.".to_owned(),
+                    );
+                    return false;
+                };
                 (
                     player.name(),
                     player.set_position(player_target_position_seconds),

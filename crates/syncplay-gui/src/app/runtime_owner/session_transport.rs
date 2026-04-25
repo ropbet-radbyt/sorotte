@@ -1,7 +1,6 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
-    #[allow(dead_code)]
     pub(in crate::app) fn with_session_runtime(
         mut self,
         session: Box<dyn GuiSessionRuntimeAdapter + Send>,
@@ -16,7 +15,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self
     }
 
-    #[allow(dead_code)]
     fn with_session_transport(
         mut self,
         session_transport: GuiQueuedSessionTransportHandle,
@@ -25,7 +23,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self
     }
 
-    #[allow(dead_code)]
     pub(in crate::app::runtime_owner) fn with_session_transport_driver(
         mut self,
         session_transport_driver: Box<dyn GuiSessionTransportDriver + Send>,
@@ -293,7 +290,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.finish_pending_session_transport_disconnect(handle, projected_state);
     }
 
-    #[allow(dead_code)]
     pub(in crate::app) fn with_client_core_chat_session_runtime(
         self,
         username: impl Into<String>,
@@ -326,7 +322,6 @@ impl GuiPersistedConfigRuntimeOwner {
         ))
     }
 
-    #[allow(dead_code)]
     pub(in crate::app) fn with_client_core_chat_loopback_session_runtime(
         self,
         username: impl Into<String>,
@@ -343,7 +338,6 @@ impl GuiPersistedConfigRuntimeOwner {
         )
     }
 
-    #[allow(dead_code)]
     pub(in crate::app) fn with_client_core_chat_tcp_session_runtime(
         self,
         username: impl Into<String>,

@@ -66,17 +66,13 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
     )
     .expect("should attach to explicit mpv JSON IPC");
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
-    unsafe {
-        std::env::set_var(key_client_ipc, &pipe_path);
-        std::env::remove_var(key_fallback_ipc);
-    }
+    env.set_var(key_client_ipc, &pipe_path);
+    env.remove_var(key_fallback_ipc);
 
     let result = (|| {
         let overrides = LegacyClientArgOverrides {
@@ -303,12 +299,12 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
     })();
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
 
     result.expect("explicit-mpv-IPC startup smoke should apply supported subset to real mpv");

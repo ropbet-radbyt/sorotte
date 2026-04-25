@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiQueuedRuntimeBridge};
+use super::{
+    GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiQueuedRuntimeBridge,
+    GuiRuntimeThreadUnavailablePump,
+};
 
 use crate::app::{
     GuiMediaIndexRuntimeSnapshot, GuiPendingCompletionRequest, GuiPendingOperationKind,
@@ -358,7 +361,8 @@ fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waitin
         handle.clone(),
         GuiPreviewRuntimeOwner,
         Duration::from_secs(30),
-    );
+    )
+    .expect("threaded runtime owner should spawn");
 
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     handle.push_request(GuiRuntimeRequest::SeekOffset(3.5));
@@ -403,7 +407,8 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
             dropped: dropped.clone(),
         },
         Duration::from_millis(10),
-    );
+    )
+    .expect("threaded runtime owner should spawn");
 
     drop(threaded_pump);
 
@@ -423,7 +428,8 @@ fn gui_threaded_runtime_owner_pump_reuses_identical_state_snapshots() {
         GuiQueuedRuntimeBridgeHandle::default(),
         GuiPreviewRuntimeOwner,
         Duration::from_secs(30),
-    );
+    )
+    .expect("threaded runtime owner should spawn");
 
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     let first_snapshot = threaded_pump
@@ -440,6 +446,41 @@ fn gui_threaded_runtime_owner_pump_reuses_identical_state_snapshots() {
     assert!(
         Arc::ptr_eq(&first_snapshot, &second_snapshot),
         "identical UI state submissions should reuse the existing runtime snapshot",
+    );
+}
+
+#[test]
+fn gui_runtime_thread_unavailable_pump_reports_startup_failure_and_drains_requests() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut pump = GuiRuntimeThreadUnavailablePump::new(handle.clone(), "spawn denied".to_owned());
+
+    GuiNativeRuntimePump::pump(&mut pump, &state);
+    assert_eq!(
+        handle.drain_actions(),
+        vec![
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Error,
+                message: "Syncplay GUI runtime could not start: spawn denied. Runtime actions are disabled until Syncplay is restarted.".to_owned(),
+            },
+            GuiShellAction::AnnounceSystemChatEvent(
+                "Syncplay GUI runtime could not start: spawn denied. Runtime actions are disabled until Syncplay is restarted.".to_owned(),
+            ),
+        ]
+    );
+
+    handle.push_request(GuiRuntimeRequest::SeekOffset(1.0));
+    handle.push_request(GuiRuntimeRequest::TogglePlaybackPause);
+    GuiNativeRuntimePump::pump(&mut pump, &state);
+
+    assert!(handle.drain_requests().is_empty());
+    assert_eq!(
+        handle.drain_actions(),
+        vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Error,
+            message: "Ignored 2 runtime requests because the Syncplay GUI runtime is unavailable."
+                .to_owned(),
+        }]
     );
 }
 

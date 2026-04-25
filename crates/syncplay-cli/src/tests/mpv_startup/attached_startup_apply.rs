@@ -16,17 +16,13 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file()
         }
     }
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
-    unsafe {
-        std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-        std::env::remove_var(key_fallback_ipc);
-    }
+    env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+    env.remove_var(key_fallback_ipc);
 
     let overrides = LegacyClientArgOverrides {
         connect_requested: true,
@@ -61,12 +57,12 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file()
     assert_eq!(player.opened, vec!["movie.mkv".to_owned()]);
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
 }
 
@@ -184,17 +180,13 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runt
         }
     }
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
-    unsafe {
-        std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-        std::env::remove_var(key_fallback_ipc);
-    }
+    env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
+    env.remove_var(key_fallback_ipc);
 
     let overrides = LegacyClientArgOverrides {
         connect_requested: true,
@@ -296,12 +288,12 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runt
     );
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
 }
 
@@ -321,17 +313,13 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_withou
         }
     }
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let key_fallback_ipc = "SYNCPLAY_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     let old_fallback_ipc = std::env::var_os(key_fallback_ipc);
-    unsafe {
-        std::env::remove_var(key_client_ipc);
-        std::env::remove_var(key_fallback_ipc);
-    }
+    env.remove_var(key_client_ipc);
+    env.remove_var(key_fallback_ipc);
 
     let overrides = LegacyClientArgOverrides {
         connect_requested: true,
@@ -366,12 +354,12 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_withou
     assert!(player.opened.is_empty());
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
     match old_fallback_ipc {
-        Some(value) => unsafe { std::env::set_var(key_fallback_ipc, value) },
-        None => unsafe { std::env::remove_var(key_fallback_ipc) },
+        Some(value) => env.set_var(key_fallback_ipc, value),
+        None => env.remove_var(key_fallback_ipc),
     }
 }
 
@@ -387,15 +375,10 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
         }
     }
 
-    let _env_lock = LEGACY_EXTERNAL_PLAYER_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_client_ipc = "SYNCPLAY_CLIENT_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
-    unsafe {
-        std::env::set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-    }
-
+    env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
     let overrides = LegacyClientArgOverrides {
         connect_requested: true,
         no_store: false,
@@ -431,7 +414,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
     );
 
     match old_client_ipc {
-        Some(value) => unsafe { std::env::set_var(key_client_ipc, value) },
-        None => unsafe { std::env::remove_var(key_client_ipc) },
+        Some(value) => env.set_var(key_client_ipc, value),
+        None => env.remove_var(key_client_ipc),
     }
 }

@@ -3,9 +3,7 @@ use super::*;
 #[test]
 fn persist_syncplay_cli_player_path_setting_legacy_compatible_updates_client_settings_player_path()
 {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -23,10 +21,7 @@ fn persist_syncplay_cli_player_path_setting_legacy_compatible_updates_client_set
         "[client_settings]\nplayerPath = C:/players/old.exe\n",
     )
     .expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_player_path_setting_legacy_compatible("C:/players/new.exe")
         .expect("player path setting should persist");
     let loaded = load_syncplay_cli_stored_settings_mvp_legacy_compatible()
@@ -38,8 +33,8 @@ fn persist_syncplay_cli_player_path_setting_legacy_compatible_updates_client_set
     assert!(written_contents.contains("playerPath = C:/players/new.exe\n"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -48,9 +43,7 @@ fn persist_syncplay_cli_player_path_setting_legacy_compatible_updates_client_set
 #[test]
 fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_updates_client_settings_per_player_arguments()
  {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -68,10 +61,7 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_updates_c
         "[client_settings]\nperPlayerArguments = {'C:/players/old.exe': ['--old']}\n",
     )
     .expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
         "C:/players/mpv.exe",
         &["--fs".to_owned(), "--profile=fast".to_owned()],
@@ -99,8 +89,8 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_updates_c
     assert!(written_contents.contains("'C:/players/old.exe': ['--old']"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -109,9 +99,7 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_updates_c
 #[test]
 fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_dedupes_windows_path_variants()
  {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -129,10 +117,7 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_dedupes_w
             "[client_settings]\nperPlayerArguments = {'c:/players/MPV.EXE': ['--old'], 'C:/players/other.exe': ['--other']}\n",
         )
         .expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     persist_syncplay_cli_per_player_arguments_setting_legacy_compatible(
         r"C:\Players\mpv.exe",
         &["--new".to_owned()],
@@ -166,8 +151,8 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_dedupes_w
     assert!(!written_contents.contains("'c:/players/MPV.EXE': ['--old']"));
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -176,9 +161,7 @@ fn persist_syncplay_cli_per_player_arguments_setting_legacy_compatible_dedupes_w
 #[test]
 fn clear_syncplay_cli_stored_settings_legacy_compatible_removes_config_file_via_env_override_path()
 {
-    let _env_lock = STORED_SETTINGS_CONFIG_PATH_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
 
@@ -192,10 +175,7 @@ fn clear_syncplay_cli_stored_settings_legacy_compatible_removes_config_file_via_
     let config_path = temp_dir.join("syncplay.ini");
     std::fs::write(&config_path, "[server_data]\nhost = example.org\n")
         .expect("seed config should write");
-    unsafe {
-        std::env::set_var(key, &config_path);
-    }
-
+    env.set_var(key, &config_path);
     let cleared = clear_syncplay_cli_stored_settings_legacy_compatible()
         .expect("clearing stored settings should succeed");
     assert!(cleared, "existing config file should be cleared");
@@ -209,8 +189,8 @@ fn clear_syncplay_cli_stored_settings_legacy_compatible_removes_config_file_via_
     assert!(!cleared_again, "missing config file should report no-op");
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_dir(&temp_dir);
@@ -219,9 +199,7 @@ fn clear_syncplay_cli_stored_settings_legacy_compatible_removes_config_file_via_
 #[test]
 fn clear_syncplay_cli_gui_qsettings_legacy_compatible_removes_known_store_files_via_env_override_root()
  {
-    let _env_lock = LEGACY_GUI_QSETTINGS_ROOT_ENV_LOCK
-        .lock()
-        .expect("lock poisoned");
+    let env = TestEnvGuard::lock(&LEGACY_GUI_QSETTINGS_ROOT_ENV_LOCK);
     let key = "SYNCPLAY_CLIENT_LEGACY_QSETTINGS_ROOT";
     let prior = std::env::var_os(key);
 
@@ -246,10 +224,7 @@ fn clear_syncplay_cli_gui_qsettings_legacy_compatible_removes_known_store_files_
     let unrelated_path = syncplay_dir.join("Unrelated.conf");
     std::fs::write(&unrelated_path, "[keep]\nvalue = 1\n")
         .expect("unrelated qsettings file should write");
-    unsafe {
-        std::env::set_var(key, &temp_root);
-    }
-
+    env.set_var(key, &temp_root);
     let cleared = clear_syncplay_cli_gui_qsettings_legacy_compatible()
         .expect("clearing legacy GUI QSettings should succeed");
     assert!(cleared, "existing QSettings store files should be cleared");
@@ -273,8 +248,8 @@ fn clear_syncplay_cli_gui_qsettings_legacy_compatible_removes_known_store_files_
     );
 
     match prior {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
+        Some(value) => env.set_var(key, value),
+        None => env.remove_var(key),
     }
     let _ = std::fs::remove_file(&unrelated_path);
     let _ = std::fs::remove_dir_all(&temp_root);

@@ -1,6 +1,5 @@
 use super::*;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiPendingCompletionRequest {
     SaveConfiguration(StoredClientSettingsMvp),

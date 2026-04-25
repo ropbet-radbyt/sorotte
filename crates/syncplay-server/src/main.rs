@@ -163,10 +163,10 @@ fn split_long_option(arg: &str) -> Option<(&str, Option<String>)> {
     if !arg.starts_with("--") {
         return None;
     }
-    let mut parts = arg.splitn(2, '=');
-    let name = parts.next().expect("splitn always returns first item");
-    let value = parts.next().map(ToOwned::to_owned);
-    Some((name, value))
+    match arg.split_once('=') {
+        Some((name, value)) => Some((name, Some(value.to_owned()))),
+        None => Some((arg, None)),
+    }
 }
 
 fn parse_server_cli_args<I, S>(args: I) -> Result<CliAction, CliParseError>

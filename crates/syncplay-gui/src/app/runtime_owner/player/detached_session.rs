@@ -77,11 +77,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     return Ok((true, None));
                 }
                 Ok(GuiLocalPlayerUnpauseDecision::Allow) => {
-                    self.player
-                        .as_mut()
-                        .expect("player should exist while applying playback pause change")
-                        .set_paused(false)
-                        .map_err(|error| {
+                    let Some(player) = self.player.as_mut() else {
+                        return Err(
+                            "Playback pause toggle requires a playback runtime connection."
+                                .to_owned(),
+                        );
+                    };
+                    player.set_paused(false).map_err(|error| {
                             format!(
                                 "Playback pause toggle through the attached player failed while resuming playback: {error}"
                             )
@@ -118,13 +120,12 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        self.player
-            .as_mut()
-            .expect("player should exist while applying playback pause change")
-            .set_paused(target_paused)
-            .map_err(|error| {
-                format!("Playback pause toggle through the attached player failed: {error}")
-            })?;
+        let Some(player) = self.player.as_mut() else {
+            return Err("Playback pause toggle requires a playback runtime connection.".to_owned());
+        };
+        player.set_paused(target_paused).map_err(|error| {
+            format!("Playback pause toggle through the attached player failed: {error}")
+        })?;
         self.player_paused = Some(target_paused);
         self.refresh_player_state_impl();
         if let Err(error) = self.sync_playback_pause_into_detached_session_impl(

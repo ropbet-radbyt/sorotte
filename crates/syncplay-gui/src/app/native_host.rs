@@ -18,9 +18,9 @@ use super::runtime_bridge::{
 };
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::{
-    GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiThreadedRuntimeOwnerPump,
+    GuiQueuedRuntimeBridge, GuiQueuedRuntimeBridgeHandle, GuiRuntimeThreadUnavailablePump,
+    GuiThreadedRuntimeOwnerPump,
 };
-use super::runtime_stack::GuiQueuedSessionTransportHandle;
 use super::shell_state::{GuiShellAction, GuiTransientNotificationLevel, SyncplayGuiShellAppState};
 use super::startup::syncplay_gui_qsettings_root_from_env;
 use super::startup_support::env_trimmed;

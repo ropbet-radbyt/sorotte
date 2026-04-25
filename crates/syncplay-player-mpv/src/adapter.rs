@@ -451,11 +451,10 @@ impl MpvAdapter {
         ];
 
         for (observer_id, property_name) in registrations {
-            let registration_result = self
-                .ipc_client
-                .as_mut()
-                .expect("checked is_some above")
-                .observe_property(observer_id, property_name);
+            let Some(ipc_client) = self.ipc_client.as_mut() else {
+                return;
+            };
+            let registration_result = ipc_client.observe_property(observer_id, property_name);
             if registration_result.is_err() {
                 return;
             }
