@@ -8,11 +8,15 @@ impl PlatformNativeGuiDriver {
     fn window_text_for_handle(window: PlatformWindowHandle) -> String {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
 
+        // SAFETY: `window` is an HWND discovered by the native smoke driver; invalid or closed
+        // windows are handled by returning an empty title.
         let text_length = unsafe { GetWindowTextLengthW(window) };
         if text_length <= 0 {
             return String::new();
         }
         let mut buffer = vec![0u16; text_length as usize + 1];
+        // SAFETY: `buffer` has space for the title plus trailing NUL and is valid for writes for
+        // the duration of the call.
         let copied = unsafe { GetWindowTextW(window, buffer.as_mut_ptr(), buffer.len() as i32) };
         if copied <= 0 {
             return String::new();
@@ -34,14 +38,18 @@ unsafe extern "system" fn enum_windows_for_process(
 ) -> windows_sys::core::BOOL {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindowVisible};
 
+    // SAFETY: `lparam` is passed by `find_main_window` as a valid `FindWindowContext` pointer for
+    // the duration of the synchronous `EnumWindows` callback.
     let context = unsafe { &mut *(lparam as *mut FindWindowContext) };
     let mut window_pid = 0u32;
+    // SAFETY: `window` is supplied by EnumWindows and `window_pid` is a valid out-parameter.
     unsafe {
         GetWindowThreadProcessId(window, &mut window_pid);
     }
     if window_pid != context.pid {
         return 1;
     }
+    // SAFETY: `window` is supplied by EnumWindows; a non-visible or invalid window is skipped.
     if unsafe { IsWindowVisible(window) } == 0 {
         return 1;
     }
@@ -66,6 +74,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
             pid,
             window: std::ptr::null_mut(),
         };
+        // SAFETY: The callback and context pointer remain valid for the duration of the
+        // synchronous EnumWindows call.
         unsafe {
             EnumWindows(
                 Some(enum_windows_for_process),
@@ -84,6 +94,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
             SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
         };
 
+        // SAFETY: `window` is the GUI HWND under test. The requested bounds are fixed smoke-test
+        // coordinates and `SetWindowPos` failure is reported to the caller.
         unsafe {
             SetForegroundWindow(window);
             let result = SetWindowPos(
@@ -106,6 +118,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn scroll_active_view_page_down(&self, window: Self::WindowHandle) -> Result<(), String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
 
+        // SAFETY: `window` is the GUI HWND under test; focusing is a best-effort prelude to
+        // sending keyboard input.
         unsafe {
             SetForegroundWindow(window);
         }
@@ -119,6 +133,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn scroll_active_view_page_up(&self, window: Self::WindowHandle) -> Result<(), String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
 
+        // SAFETY: `window` is the GUI HWND under test; focusing is a best-effort prelude to
+        // sending keyboard input.
         unsafe {
             SetForegroundWindow(window);
         }
@@ -160,10 +176,12 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
             GetMenu, GetMenuItemCount, GetMenuStringW, MF_BYPOSITION,
         };
 
+        // SAFETY: `window` is the GUI HWND under test. A null menu is handled as "no native menu".
         let menu = unsafe { GetMenu(window) };
         if menu.is_null() {
             return Ok(Vec::new());
         }
+        // SAFETY: `menu` was returned by GetMenu for this HWND; negative results are reported.
         let count = unsafe { GetMenuItemCount(menu) };
         if count < 0 {
             return Err("could not inspect top-level menu item count".to_owned());
@@ -172,6 +190,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
         let mut labels = Vec::with_capacity(count as usize);
         for index in 0..count {
             let mut buffer = vec![0u16; 256];
+            // SAFETY: `buffer` is valid writable UTF-16 storage and `menu` remains owned by the
+            // GUI window while this synchronous inspection runs.
             let copied = unsafe {
                 GetMenuStringW(
                     menu,
@@ -259,6 +279,8 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
     fn close_window(&self, window: Self::WindowHandle) -> Result<(), String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CLOSE};
 
+        // SAFETY: `window` is the GUI HWND under test. WM_CLOSE is sent synchronously as part of
+        // smoke-test cleanup.
         unsafe {
             SendMessageW(window, WM_CLOSE, 0, 0);
         }

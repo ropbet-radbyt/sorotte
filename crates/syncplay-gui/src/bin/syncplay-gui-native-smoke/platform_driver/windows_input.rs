@@ -8,6 +8,8 @@ impl PlatformNativeGuiDriver {
     ) -> Result<(), String> {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput;
 
+        // SAFETY: `inputs` is a valid contiguous array for the duration of the call, and the
+        // element size matches the Win32 `INPUT` layout from windows-sys.
         let sent = unsafe {
             SendInput(
                 inputs.len() as u32,
@@ -66,18 +68,15 @@ impl PlatformNativeGuiDriver {
     ) -> Result<(), String> {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SendMessageW, SetForegroundWindow, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+            SendMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
         };
 
         unsafe extern "system" {
             fn ScreenToClient(hwnd: PlatformWindowHandle, point: *mut POINT) -> i32;
         }
 
-        let rect = unsafe {
-            element.CurrentBoundingRectangle().map_err(|error| {
-                format!("failed to read UI Automation bounding rectangle for {name:?}: {error}")
-            })?
-        };
+        let rect_context = format!("{name:?}");
+        let rect = Self::automation_element_bounding_rect_required(element, &rect_context)?;
         if rect.right <= rect.left || rect.bottom <= rect.top {
             return Err(format!(
                 "UI Automation bounding rectangle for {name:?} was empty"
@@ -90,9 +89,10 @@ impl PlatformNativeGuiDriver {
             x: center_x,
             y: center_y,
         };
+        Self::focus_window_element(window, element, &rect_context)?;
+        // SAFETY: `client_point` is a valid mutable POINT and `window` is the HWND under test;
+        // failure is converted into a driver error.
         unsafe {
-            SetForegroundWindow(window);
-            let _ = element.SetFocus();
             if ScreenToClient(window, &mut client_point) == 0 {
                 return Err(format!(
                     "failed to convert {name:?} center ({center_x}, {center_y}) to client coordinates"
@@ -100,6 +100,8 @@ impl PlatformNativeGuiDriver {
             }
         }
         thread::sleep(Duration::from_millis(80));
+        // SAFETY: The lparam encodes client coordinates for the current HWND. Messages are sent
+        // synchronously to the GUI window under test to emulate a click in the smoke driver.
         unsafe {
             let lparam =
                 ((client_point.y as u32) << 16 | (client_point.x as u32 & 0xffff)) as isize;

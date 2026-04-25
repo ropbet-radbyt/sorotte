@@ -14,51 +14,28 @@ impl PlatformNativeGuiDriver {
         control_kind: NativeControlKind,
         prefer_last: bool,
     ) -> Result<(), String> {
-        use windows::Win32::UI::Accessibility::{
-            IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
-            IUIAutomationLegacyIAccessiblePattern, IUIAutomationSelectionItemPattern,
-            IUIAutomationTogglePattern, UIA_ExpandCollapsePatternId, UIA_InvokePatternId,
-            UIA_LegacyIAccessiblePatternId, UIA_SelectionItemPatternId, UIA_TogglePatternId,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
         Self::with_ui_automation(window, "UI Automation interaction", |automation, root| {
             let elements = Self::collect_subtree_elements(automation, root)?;
-            let length = unsafe {
-                elements.Length().map_err(|error| {
-                    format!("failed to read UI Automation element count: {error}")
-                })?
-            };
+            let length = Self::automation_element_count(&elements)?;
             let controls_rect = if control_kind == NativeControlKind::Button
                 && is_local_ready_button_request(name)
             {
                 let mut rect = None;
                 for index in 0..length {
-                    let element = unsafe {
-                        match elements.GetElement(index) {
-                            Ok(element) => element,
-                            Err(_) => continue,
-                        }
+                    let Some(element) = Self::automation_element_at(&elements, index) else {
+                        continue;
                     };
-                    let current_name = unsafe {
-                        match element.CurrentName() {
-                            Ok(name_value) => name_value.to_string().trim().to_owned(),
-                            Err(_) => continue,
-                        }
+                    let Some(current_name) = Self::automation_element_name(&element) else {
+                        continue;
                     };
                     if current_name != MAIN_WINDOW_CONTROLS_CONTAINER_NAME {
                         continue;
                     }
-                    let is_offscreen = unsafe {
-                        match element.CurrentIsOffscreen() {
-                            Ok(offscreen) => offscreen.as_bool(),
-                            Err(_) => false,
-                        }
-                    };
+                    let is_offscreen = Self::automation_element_is_offscreen(&element);
                     if is_offscreen {
                         continue;
                     }
-                    rect = unsafe { element.CurrentBoundingRectangle().ok() }
+                    rect = Self::automation_element_bounding_rect(&element)
                         .map(|rect| (rect.left, rect.top, rect.right, rect.bottom));
                     if rect.is_some() {
                         break;
@@ -72,44 +49,26 @@ impl PlatformNativeGuiDriver {
             let mut fallback_candidates = Vec::new();
             let mut matching_states = Vec::new();
             for index in 0..length {
-                let element = unsafe {
-                    match elements.GetElement(index) {
-                        Ok(element) => element,
-                        Err(_) => continue,
-                    }
+                let Some(element) = Self::automation_element_at(&elements, index) else {
+                    continue;
                 };
-                let current_name = unsafe {
-                    match element.CurrentName() {
-                        Ok(name_value) => name_value.to_string().trim().to_owned(),
-                        Err(_) => continue,
-                    }
+                let Some(current_name) = Self::automation_element_name(&element) else {
+                    continue;
                 };
                 if !matches_control_name(name, &current_name) {
                     continue;
                 }
 
-                let current_control_type = unsafe {
-                    match element.CurrentControlType() {
-                        Ok(control_type) => control_type,
-                        Err(_) => continue,
-                    }
+                let Some(current_control_type) = Self::automation_element_control_type(&element)
+                else {
+                    continue;
                 };
                 if !control_kind.matches_control_type(current_control_type) {
                     continue;
                 }
 
-                let is_enabled = unsafe {
-                    match element.CurrentIsEnabled() {
-                        Ok(enabled) => enabled.as_bool(),
-                        Err(_) => false,
-                    }
-                };
-                let is_offscreen = unsafe {
-                    match element.CurrentIsOffscreen() {
-                        Ok(offscreen) => offscreen.as_bool(),
-                        Err(_) => false,
-                    }
-                };
+                let is_enabled = Self::automation_element_is_enabled(&element);
+                let is_offscreen = Self::automation_element_is_offscreen(&element);
                 matching_states.push(format!(
                     "enabled={}, offscreen={}",
                     bool_label(is_enabled),
@@ -122,13 +81,8 @@ impl PlatformNativeGuiDriver {
                     continue;
                 }
 
-                let automation_id = unsafe {
-                    element
-                        .CurrentAutomationId()
-                        .map(|value| value.to_string().trim().to_owned())
-                        .unwrap_or_default()
-                };
-                let rect = unsafe { element.CurrentBoundingRectangle().ok() };
+                let automation_id = Self::automation_element_automation_id(&element);
+                let rect = Self::automation_element_bounding_rect(&element);
                 if control_kind == NativeControlKind::Button
                     && is_local_ready_button_request(name)
                     && (automation_id == MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID
@@ -173,9 +127,8 @@ impl PlatformNativeGuiDriver {
             }
 
             if control_kind == NativeControlKind::Button && is_local_ready_button_request(name) {
-                candidates.sort_by_key(|element| unsafe {
-                    element
-                        .CurrentBoundingRectangle()
+                candidates.sort_by_key(|element| {
+                    Self::automation_element_bounding_rect(element)
                         .map(|rect| rect.top)
                         .unwrap_or(i32::MIN)
                 });
@@ -192,12 +145,7 @@ impl PlatformNativeGuiDriver {
 
                 if control_kind == NativeControlKind::Any && name == MAIN_WINDOW_ROOM_BROWSER_NAME {
                     let focus_result = (|| -> Result<(), String> {
-                        unsafe {
-                            SetForegroundWindow(window);
-                            candidate
-                                .SetFocus()
-                                .map_err(|error| format!("focus failed: {error}"))?;
-                        }
+                        Self::focus_window_element(window, &candidate, "room browser")?;
                         thread::sleep(Duration::from_millis(120));
                         Ok(())
                     })();
@@ -216,77 +164,31 @@ impl PlatformNativeGuiDriver {
                     candidate_errors.push(click_result.err().unwrap_or_default());
                 }
 
-                let invoke_result = (|| -> Result<(), String> {
-                    let invoke_pattern: IUIAutomationInvokePattern = unsafe {
-                        candidate
-                            .GetCurrentPatternAs(UIA_InvokePatternId)
-                            .map_err(|error| format!("invoke pattern unavailable: {error}"))?
-                    };
-                    unsafe { invoke_pattern.Invoke() }
-                        .map_err(|error| format!("invoke pattern action failed: {error}"))
-                })();
+                let invoke_result = Self::invoke_automation_element(&candidate);
                 if invoke_result.is_ok() {
                     return Ok(());
                 }
                 candidate_errors.push(invoke_result.err().unwrap_or_default());
 
-                let legacy_default_result = (|| -> Result<(), String> {
-                    let legacy_pattern: IUIAutomationLegacyIAccessiblePattern = unsafe {
-                        candidate
-                            .GetCurrentPatternAs(UIA_LegacyIAccessiblePatternId)
-                            .map_err(|error| {
-                                format!("legacy accessible pattern unavailable: {error}")
-                            })?
-                    };
-                    unsafe { legacy_pattern.DoDefaultAction() }
-                        .map_err(|error| format!("legacy default action failed: {error}"))
-                })();
+                let legacy_default_result = Self::do_legacy_default_action(&candidate);
                 if legacy_default_result.is_ok() {
                     return Ok(());
                 }
                 candidate_errors.push(legacy_default_result.err().unwrap_or_default());
 
-                let selection_result = (|| -> Result<(), String> {
-                    let selection_pattern: IUIAutomationSelectionItemPattern = unsafe {
-                        candidate
-                            .GetCurrentPatternAs(UIA_SelectionItemPatternId)
-                            .map_err(|error| {
-                                format!("selection-item pattern unavailable: {error}")
-                            })?
-                    };
-                    unsafe { selection_pattern.Select() }
-                        .map_err(|error| format!("selection-item action failed: {error}"))
-                })();
+                let selection_result = Self::select_automation_element(&candidate);
                 if selection_result.is_ok() {
                     return Ok(());
                 }
                 candidate_errors.push(selection_result.err().unwrap_or_default());
 
-                let toggle_result = (|| -> Result<(), String> {
-                    let toggle_pattern: IUIAutomationTogglePattern = unsafe {
-                        candidate
-                            .GetCurrentPatternAs(UIA_TogglePatternId)
-                            .map_err(|error| format!("toggle pattern unavailable: {error}"))?
-                    };
-                    unsafe { toggle_pattern.Toggle() }
-                        .map_err(|error| format!("toggle action failed: {error}"))
-                })();
+                let toggle_result = Self::toggle_automation_element(&candidate);
                 if toggle_result.is_ok() {
                     return Ok(());
                 }
                 candidate_errors.push(toggle_result.err().unwrap_or_default());
 
-                let expand_result = (|| -> Result<(), String> {
-                    let expand_pattern: IUIAutomationExpandCollapsePattern = unsafe {
-                        candidate
-                            .GetCurrentPatternAs(UIA_ExpandCollapsePatternId)
-                            .map_err(|error| {
-                                format!("expand-collapse pattern unavailable: {error}")
-                            })?
-                    };
-                    unsafe { expand_pattern.Expand() }
-                        .map_err(|error| format!("expand action failed: {error}"))
-                })();
+                let expand_result = Self::expand_automation_element(&candidate);
                 if expand_result.is_ok() {
                     return Ok(());
                 }
@@ -319,53 +221,32 @@ impl PlatformNativeGuiDriver {
             "UI Automation scroll interaction",
             |automation, root| {
                 let elements = Self::collect_subtree_elements(automation, root)?;
-                let length = unsafe {
-                    elements.Length().map_err(|error| {
-                        format!("failed to read UI Automation element count: {error}")
-                    })?
-                };
+                let length = Self::automation_element_count(&elements)?;
 
                 let mut matching_states = Vec::new();
                 let mut target_center = None;
                 for index in 0..length {
-                    let element = unsafe {
-                        match elements.GetElement(index) {
-                            Ok(element) => element,
-                            Err(_) => continue,
-                        }
+                    let Some(element) = Self::automation_element_at(&elements, index) else {
+                        continue;
                     };
-                    let current_name = unsafe {
-                        match element.CurrentName() {
-                            Ok(name_value) => name_value.to_string().trim().to_owned(),
-                            Err(_) => continue,
-                        }
+                    let Some(current_name) = Self::automation_element_name(&element) else {
+                        continue;
                     };
                     if !matches_control_name(name, &current_name) {
                         continue;
                     }
 
-                    let current_control_type = unsafe {
-                        match element.CurrentControlType() {
-                            Ok(control_type) => control_type,
-                            Err(_) => continue,
-                        }
+                    let Some(current_control_type) =
+                        Self::automation_element_control_type(&element)
+                    else {
+                        continue;
                     };
                     if !control_kind.matches_control_type(current_control_type) {
                         continue;
                     }
 
-                    let is_enabled = unsafe {
-                        match element.CurrentIsEnabled() {
-                            Ok(enabled) => enabled.as_bool(),
-                            Err(_) => false,
-                        }
-                    };
-                    let is_offscreen = unsafe {
-                        match element.CurrentIsOffscreen() {
-                            Ok(offscreen) => offscreen.as_bool(),
-                            Err(_) => false,
-                        }
-                    };
+                    let is_enabled = Self::automation_element_is_enabled(&element);
+                    let is_offscreen = Self::automation_element_is_offscreen(&element);
                     matching_states.push(format!(
                         "enabled={}, offscreen={}",
                         bool_label(is_enabled),
@@ -375,11 +256,8 @@ impl PlatformNativeGuiDriver {
                         continue;
                     }
 
-                    let rect = unsafe {
-                        element.CurrentBoundingRectangle().map_err(|error| {
-                            format!("failed to read UI Automation bounding rectangle: {error}")
-                        })?
-                    };
+                    let rect =
+                        Self::automation_element_bounding_rect_required(&element, "scroll target")?;
                     if rect.right <= rect.left || rect.bottom <= rect.top {
                         continue;
                     }
@@ -403,6 +281,8 @@ impl PlatformNativeGuiDriver {
                 };
 
                 let mut original_cursor = POINT { x: 0, y: 0 };
+                // SAFETY: `window` is the GUI HWND under test. Cursor APIs are process-global
+                // Win32 calls used only by the native smoke driver and checked for failure.
                 unsafe {
                     SetForegroundWindow(window);
                     let _ = GetCursorPos(&mut original_cursor);
@@ -416,6 +296,8 @@ impl PlatformNativeGuiDriver {
                 thread::sleep(Duration::from_millis(80));
                 let wheel_result = Self::send_mouse_wheel(wheel_delta)
                     .map_err(|error| format!("failed to send mouse-wheel input: {error}"));
+                // SAFETY: `original_cursor` was populated by `GetCursorPos` above; restoring it
+                // is best-effort cleanup for the native smoke interaction.
                 unsafe {
                     let _ = SetCursorPos(original_cursor.x, original_cursor.y);
                 }

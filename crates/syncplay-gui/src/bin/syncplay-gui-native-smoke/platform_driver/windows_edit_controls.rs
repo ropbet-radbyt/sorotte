@@ -7,63 +7,34 @@ impl PlatformNativeGuiDriver {
         automation: &windows::Win32::UI::Accessibility::IUIAutomation,
         root: &windows::Win32::UI::Accessibility::IUIAutomationElement,
     ) -> Result<Vec<windows::Win32::UI::Accessibility::IUIAutomationElement>, String> {
-        use windows::Win32::UI::Accessibility::{
-            IUIAutomationElement, IUIAutomationValuePattern, UIA_EditControlTypeId,
-            UIA_ValuePatternId,
-        };
+        use windows::Win32::UI::Accessibility::{IUIAutomationElement, UIA_EditControlTypeId};
 
         let elements = Self::collect_subtree_elements(automation, root)?;
-        let length = unsafe {
-            elements
-                .Length()
-                .map_err(|error| format!("failed to read UI Automation element count: {error}"))?
-        };
+        let length = Self::automation_element_count(&elements)?;
 
         let mut edit_elements: Vec<IUIAutomationElement> = Vec::new();
         for index in 0..length {
-            let element = unsafe {
-                match elements.GetElement(index) {
-                    Ok(element) => element,
-                    Err(_) => continue,
-                }
+            let Some(element) = Self::automation_element_at(&elements, index) else {
+                continue;
             };
-            let current_control_type = unsafe {
-                match element.CurrentControlType() {
-                    Ok(control_type) => control_type,
-                    Err(_) => continue,
-                }
+            let Some(current_control_type) = Self::automation_element_control_type(&element) else {
+                continue;
             };
             if current_control_type != UIA_EditControlTypeId {
                 continue;
             }
-            let is_enabled = unsafe {
-                match element.CurrentIsEnabled() {
-                    Ok(enabled) => enabled.as_bool(),
-                    Err(_) => false,
-                }
-            };
+            let is_enabled = Self::automation_element_is_enabled(&element);
             if !is_enabled {
                 continue;
             }
-            let is_offscreen = unsafe {
-                match element.CurrentIsOffscreen() {
-                    Ok(offscreen) => offscreen.as_bool(),
-                    Err(_) => false,
-                }
-            };
+            let is_offscreen = Self::automation_element_is_offscreen(&element);
             if is_offscreen {
                 continue;
             }
 
-            let read_only = unsafe {
-                match element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
-                    Ok(pattern) => pattern
-                        .CurrentIsReadOnly()
-                        .map(|flag| flag.as_bool())
-                        .unwrap_or(true),
-                    Err(_) => false,
-                }
-            };
+            let read_only = Self::automation_value_pattern(&element)
+                .as_ref()
+                .is_some_and(Self::automation_value_pattern_is_read_only);
             if read_only {
                 continue;
             }
@@ -78,48 +49,27 @@ impl PlatformNativeGuiDriver {
         value: &str,
         submit: bool,
     ) -> Result<(), String> {
-        use windows::{Win32::UI::Accessibility::IUIAutomationValuePattern, core::BSTR};
-        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-
-        let value_pattern = unsafe {
-            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(
-                windows::Win32::UI::Accessibility::UIA_ValuePatternId,
-            )
-        }
-        .ok();
-        if let Some(pattern) = value_pattern.as_ref() {
-            let value_bstr = BSTR::from(value);
-            if unsafe { pattern.SetValue(&value_bstr) }.is_ok() {
-                thread::sleep(Duration::from_millis(120));
-                let actual = unsafe { pattern.CurrentValue() }
-                    .map(|value| value.to_string())
-                    .unwrap_or_default();
-                if actual == value {
-                    if !submit {
-                        return Ok(());
-                    }
-                    unsafe {
-                        SetForegroundWindow(window);
-                        element.SetFocus().map_err(|error| {
-                            format!("failed to focus edit field for submit key entry: {error}")
-                        })?;
-                    }
-                    thread::sleep(Duration::from_millis(120));
-                    Self::send_enter_key().map_err(|error| {
-                        format!("failed to submit edit entry with Enter key: {error}")
-                    })?;
-                    thread::sleep(Duration::from_millis(120));
+        let value_pattern = Self::automation_value_pattern(element);
+        if let Some(pattern) = value_pattern.as_ref()
+            && Self::set_automation_value(pattern, value).is_ok()
+        {
+            thread::sleep(Duration::from_millis(120));
+            let actual = Self::automation_value(pattern).unwrap_or_default();
+            if actual == value {
+                if !submit {
                     return Ok(());
                 }
+                Self::focus_window_element(window, element, "edit field for submit key entry")?;
+                thread::sleep(Duration::from_millis(120));
+                Self::send_enter_key().map_err(|error| {
+                    format!("failed to submit edit entry with Enter key: {error}")
+                })?;
+                thread::sleep(Duration::from_millis(120));
+                return Ok(());
             }
         }
 
-        unsafe {
-            SetForegroundWindow(window);
-            element.SetFocus().map_err(|error| {
-                format!("failed to focus edit field for keyboard entry: {error}")
-            })?;
-        }
+        Self::focus_window_element(window, element, "edit field for keyboard entry")?;
         thread::sleep(Duration::from_millis(120));
         Self::send_select_all_backspace_and_type(value)
             .map_err(|error| format!("failed keyboard fallback text entry: {error}"))?;
@@ -133,9 +83,7 @@ impl PlatformNativeGuiDriver {
         let Some(verification_pattern) = value_pattern else {
             return Ok(());
         };
-        let actual = unsafe { verification_pattern.CurrentValue() }
-            .map(|value| value.to_string())
-            .unwrap_or_default();
+        let actual = Self::automation_value(&verification_pattern).unwrap_or_default();
         if actual == value {
             Ok(())
         } else {
@@ -153,42 +101,24 @@ impl PlatformNativeGuiDriver {
             "UI Automation editable text count",
             |automation, root| {
                 let elements = Self::collect_subtree_elements(automation, root)?;
-                let length = unsafe {
-                    elements.Length().map_err(|error| {
-                        format!("failed to read UI Automation element count: {error}")
-                    })?
-                };
+                let length = Self::automation_element_count(&elements)?;
 
                 let mut count = 0usize;
                 for index in 0..length {
-                    let element = unsafe {
-                        match elements.GetElement(index) {
-                            Ok(element) => element,
-                            Err(_) => continue,
-                        }
+                    let Some(element) = Self::automation_element_at(&elements, index) else {
+                        continue;
                     };
-                    let current_control_type = unsafe {
-                        match element.CurrentControlType() {
-                            Ok(control_type) => control_type,
-                            Err(_) => continue,
-                        }
+                    let Some(current_control_type) =
+                        Self::automation_element_control_type(&element)
+                    else {
+                        continue;
                     };
                     if current_control_type != UIA_EditControlTypeId {
                         continue;
                     }
-                    let is_enabled = unsafe {
-                        match element.CurrentIsEnabled() {
-                            Ok(enabled) => enabled.as_bool(),
-                            Err(_) => false,
-                        }
-                    };
+                    let is_enabled = Self::automation_element_is_enabled(&element);
                     if is_enabled {
-                        let is_offscreen = unsafe {
-                            match element.CurrentIsOffscreen() {
-                                Ok(offscreen) => offscreen.as_bool(),
-                                Err(_) => false,
-                            }
-                        };
+                        let is_offscreen = Self::automation_element_is_offscreen(&element);
                         if is_offscreen {
                             continue;
                         }
@@ -203,16 +133,8 @@ impl PlatformNativeGuiDriver {
     fn read_edit_element_value(
         element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
     ) -> Result<String, String> {
-        use windows::Win32::UI::Accessibility::{IUIAutomationValuePattern, UIA_ValuePatternId};
-
-        let pattern: IUIAutomationValuePattern = unsafe {
-            element
-                .GetCurrentPatternAs(UIA_ValuePatternId)
-                .map_err(|error| format!("value pattern unavailable for edit control: {error}"))?
-        };
-        let value = unsafe { pattern.CurrentValue() }
-            .map_err(|error| format!("failed to read edit control value: {error}"))?;
-        Ok(value.to_string())
+        let pattern = Self::automation_value_pattern_required(element)?;
+        Self::automation_value(&pattern)
     }
 
     pub(super) fn get_edit_value_by_index(
@@ -251,9 +173,7 @@ impl PlatformNativeGuiDriver {
                 let mut available_names = Vec::new();
                 for element in edit_elements {
                     fallback_last_edit = Some(element.clone());
-                    let element_name = unsafe { element.CurrentName() }
-                        .map(|value| value.to_string().trim().to_owned())
-                        .unwrap_or_default();
+                    let element_name = Self::automation_element_name(&element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }
@@ -320,9 +240,7 @@ impl PlatformNativeGuiDriver {
                 let mut available_names = Vec::new();
                 for element in edit_elements {
                     fallback_last_edit = Some(element.clone());
-                    let element_name = unsafe { element.CurrentName() }
-                        .map(|value| value.to_string().trim().to_owned())
-                        .unwrap_or_default();
+                    let element_name = Self::automation_element_name(&element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }

@@ -4,23 +4,27 @@ const DEFAULT_UPDATE_CHECK_RESPONSE: &str =
     r#"{"version-status":"uptodate","version-message":"Syncplay is up to date."}"#;
 
 fn install_semantic_remote_response_defaults() {
-    if std::env::var_os("SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE").is_none() {
-        // SAFETY: The suite installs deterministic defaults before any scenario runtime threads start.
-        unsafe {
-            std::env::set_var(
-                "SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE",
-                DEFAULT_PUBLIC_SERVER_LIST_RESPONSE,
-            );
-        }
+    set_semantic_env_default(
+        "SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE",
+        DEFAULT_PUBLIC_SERVER_LIST_RESPONSE,
+    );
+    set_semantic_env_default(
+        "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE",
+        DEFAULT_UPDATE_CHECK_RESPONSE,
+    );
+}
+
+fn set_semantic_env_default(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        set_semantic_env_var_before_threads(key, value);
     }
-    if std::env::var_os("SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE").is_none() {
-        // SAFETY: The suite installs deterministic defaults before any scenario runtime threads start.
-        unsafe {
-            std::env::set_var(
-                "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE",
-                DEFAULT_UPDATE_CHECK_RESPONSE,
-            );
-        }
+}
+
+fn set_semantic_env_var_before_threads(key: &str, value: &str) {
+    // SAFETY: The semantic suite installs deterministic defaults before scenario runtime threads
+    // start, and only when the caller has not already provided an environment override.
+    unsafe {
+        std::env::set_var(key, value);
     }
 }
 
