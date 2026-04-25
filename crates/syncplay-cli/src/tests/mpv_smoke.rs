@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(windows)]
 use serde_json::json;
 
 mod explicit_ipc_borderline;

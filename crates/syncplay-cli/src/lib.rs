@@ -103,8 +103,8 @@ use self::mpv_startup::{
     LegacyExplicitMpvIpcStartupPlayerCommand, LegacyExternalPlayerLaunchSpec,
     ManagedMpvLaunchEnvConfig,
     analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible,
-    apply_legacy_client_arg_managed_mpv_overrides, connect_mpv_adapter_with_retry,
-    create_mpv_adapter_from_env, find_default_managed_mpv_bin,
+    apply_legacy_client_arg_managed_mpv_overrides, create_mpv_adapter_from_env,
+    find_default_managed_mpv_bin,
     legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible,
@@ -112,15 +112,19 @@ use self::mpv_startup::{
     managed_mpv_launch_env_config_from_env,
     parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible,
     resolve_managed_mpv_launch_program_legacy_compatible,
-    retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
-    spawn_legacy_external_player_from_spec_legacy_compatible,
 };
 #[cfg(test)]
 use self::mpv_startup::{
     apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
     create_client_runtime_with_managed_mpv_support,
     legacy_player_path_compatibility_warning_line_legacy_compatible,
+};
+#[cfg(all(test, windows))]
+use self::mpv_startup::{
+    connect_mpv_adapter_with_retry,
+    retry_explicit_mpv_ipc_startup_player_command_legacy_compatible,
+    spawn_legacy_external_player_from_spec_legacy_compatible,
 };
 #[cfg(test)]
 use self::notifications::{
