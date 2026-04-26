@@ -622,6 +622,17 @@ impl ServerRuntime {
             .collect()
     }
 
+    pub(crate) fn chat_clients_in_room(&self, room_name: &str) -> Vec<String> {
+        self.sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.room == room_name
+                    && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
+            })
+            .map(|(client_id, _)| client_id.clone())
+            .collect()
+    }
+
     pub(crate) fn clients_all(&self) -> Vec<String> {
         self.sessions.keys().cloned().collect()
     }
@@ -678,6 +689,10 @@ impl ServerRuntime {
         if !self.readiness_enabled {
             return None;
         }
+        self.stored_user_ready(username, room_name)
+    }
+
+    pub(crate) fn stored_user_ready(&self, username: &str, room_name: &str) -> Option<bool> {
         self.domain.users_in_room(room_name).and_then(|users| {
             users
                 .into_iter()

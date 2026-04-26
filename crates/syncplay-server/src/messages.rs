@@ -78,18 +78,6 @@ pub(crate) fn readiness_legacy_chat_message(
     )
 }
 
-pub(crate) fn room_idle_state_message(latency_calculation_seconds: f64) -> ProtocolMessage {
-    state_sync_message(
-        0.0,
-        true,
-        false,
-        StateSyncOptions {
-            latency_calculation_seconds: Some(latency_calculation_seconds),
-            ..StateSyncOptions::default()
-        },
-    )
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StateSyncOptions<'a> {
     pub(crate) set_by: Option<&'a str>,

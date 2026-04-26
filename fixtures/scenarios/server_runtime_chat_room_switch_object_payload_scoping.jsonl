@@ -1,6 +1,6 @@
-{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
-{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
-{"client":"client-3","message":{"Hello":{"username":"carol","room":{"name":"room2"},"version":"1.2.255"}}}
+{"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}}
+{"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.5"}}}
+{"client":"client-3","message":{"Hello":{"username":"carol","room":{"name":"room2"},"version":"1.7.5"}}}
 {"client":"client-2","message":{"Set":{"room":{"name":"room2"}}}}
 {"client":"client-1","message":{"Chat":{"username":"mallory","message":"old room object after bob switch","style":"notice","meta":{"source":"fixture"}}}}
 {"client":"client-3","message":{"Chat":{"username":"eve","message":"new room object after bob switch","style":"notice","meta":{"source":"fixture"}}}}

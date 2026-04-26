@@ -570,6 +570,86 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
 }
 
 #[test]
+fn attached_open_file_completes_pending_load_from_polled_properties_without_file_loaded_event() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":9,"error":"success","data":24.5}"#,
+        r#"{"request_id":10,"error":"success","data":1000}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .open_file("C:/media/movie.mkv")
+        .expect("attached mpv transport should accept loadfile");
+
+    assert_eq!(
+        adapter.take_media_load_outcome(),
+        None,
+        "no async file-loaded event has been observed yet"
+    );
+    let update = adapter
+        .take_local_file_update()
+        .expect("loaded file metadata should be recovered by polling mpv properties");
+    assert_eq!(update.path.as_deref(), Some("C:/media/movie.mkv"));
+    assert_eq!(update.duration_seconds, Some(24.5));
+    assert_eq!(update.size_bytes, Some(1000));
+
+    let outcome = adapter
+        .take_media_load_outcome()
+        .expect("poll completion should also finish the pending media load");
+    assert_eq!(
+        outcome,
+        PlayerMediaLoadOutcome::success(
+            "C:/media/movie.mkv",
+            Some("C:/media/movie.mkv".to_owned())
+        )
+    );
+}
+
+#[test]
+fn pending_open_file_poll_ignores_stale_previous_file_until_requested_target_loads() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success","data":"C:/media/old.mkv"}"#,
+        r#"{"request_id":9,"error":"success","data":10.0}"#,
+        r#"{"request_id":10,"error":"success","data":500}"#,
+        r#"{"request_id":11,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":12,"error":"success","data":24.5}"#,
+        r#"{"request_id":13,"error":"success","data":1000}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .open_file("C:/media/movie.mkv")
+        .expect("attached mpv transport should accept loadfile");
+
+    assert_eq!(
+        adapter.take_local_file_update(),
+        None,
+        "a pending load should not publish metadata for the previous mpv file"
+    );
+    let update = adapter
+        .take_local_file_update()
+        .expect("requested target should publish once mpv reports it");
+    assert_eq!(update.path.as_deref(), Some("C:/media/movie.mkv"));
+    assert_eq!(update.duration_seconds, Some(24.5));
+    assert_eq!(update.size_bytes, Some(1000));
+}
+
+#[test]
 fn attached_open_file_defers_local_file_update_until_duration_is_available() {
     let (transport, _state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,

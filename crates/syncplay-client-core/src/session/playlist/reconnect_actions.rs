@@ -122,9 +122,7 @@ impl ClientSession {
 
         if let Some(file_payload) = self.reconnect_file_restore_intent.take() {
             actions.push(ClientRuntimeAction::SetFile { file_payload });
-            if self.server_chat_supported.is_some() {
-                actions.push(ClientRuntimeAction::RequestUserList);
-            }
+            actions.push(ClientRuntimeAction::RequestUserList);
         }
 
         if !actions.is_empty() {

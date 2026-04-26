@@ -435,11 +435,11 @@ fn hello_fanout_notifies_existing_room_members() {
     );
     assert!(
         has_room_sync_state_update(&directed_messages, "client-1", false),
-        "existing room member should receive baseline room sync state update on peer join"
+        "existing room member should receive current room sync state update on peer join"
     );
     assert!(
         has_room_sync_state_update(&directed_messages, "client-2", false),
-        "new room member should receive baseline room sync state update on join"
+        "new room member should receive current room sync state update on join"
     );
 }
 
@@ -737,13 +737,13 @@ fn chat_and_ready_updates_obey_runtime_disable_flags_and_chat_limit() {
     runtime
         .handle_line(
             "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("alice hello should succeed");
     runtime
         .handle_line(
             "client-2",
-            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("bob hello should succeed");
 
@@ -784,6 +784,39 @@ fn chat_and_ready_updates_obey_runtime_disable_flags_and_chat_limit() {
                 )
         }),
         "chat message should be truncated to runtime max length"
+    );
+}
+
+#[test]
+fn chat_fanout_skips_clients_below_legacy_chat_min_version() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("alice hello should succeed");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should succeed");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Chat":"hello room"}"#)
+        .expect("chat should fan out to supported clients");
+    let chat_recipients: Vec<_> = decode_directed_lines(&directed_lines)
+        .into_iter()
+        .filter_map(|(client_id, message)| {
+            matches!(message, ProtocolMessage::Chat(_)).then_some(client_id)
+        })
+        .collect();
+
+    assert_eq!(
+        chat_recipients,
+        vec!["client-1".to_owned()],
+        "legacy clients below the chat minimum version should not receive Chat frames"
     );
 }
 
@@ -963,6 +996,53 @@ fn ready_updates_are_broadcast_to_room_members() {
         has_ready_update(&directed_messages, "client-2", "alice", true),
         "peer should receive ready update"
     );
+}
+
+#[test]
+fn room_switch_preserves_and_republishes_readiness() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room2"},"version":"1.7.5"}}"#,
+        )
+        .expect("bob hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"ready":{"isReady":true,"manuallyInitiated":true}}}"#,
+        )
+        .expect("alice ready update should succeed");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room switch should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    assert_eq!(runtime.user_ready("alice", "room2"), Some(true));
+    assert!(
+        !has_ready_update(&directed_messages, "client-1", "alice", true)
+            && !has_ready_update(&directed_messages, "client-2", "alice", true),
+        "room switch should preserve readiness without an immediate ready fanout"
+    );
+
+    let outbound_lines = runtime
+        .handle_line("client-2", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected list response");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    assert_eq!(rooms["room2"]["alice"].is_ready, Some(true));
 }
 
 #[test]

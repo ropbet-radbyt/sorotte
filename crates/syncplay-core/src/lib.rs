@@ -30,6 +30,10 @@ pub enum DomainError {
 
 impl SyncDomain {
     pub fn join_room(&mut self, username: &str, room_name: &str) {
+        self.join_room_with_ready(username, room_name, false);
+    }
+
+    pub fn join_room_with_ready(&mut self, username: &str, room_name: &str, ready: bool) {
         let room = self
             .rooms
             .entry(room_name.to_owned())
@@ -42,7 +46,7 @@ impl SyncDomain {
             username.to_owned(),
             UserState {
                 username: username.to_owned(),
-                ready: false,
+                ready,
             },
         );
     }

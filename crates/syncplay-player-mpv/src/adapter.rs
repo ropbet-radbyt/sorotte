@@ -366,7 +366,7 @@ impl MpvAdapter {
     fn poll_ipc_local_file_update_if_attached(&mut self) {
         self.ensure_observers_registered_if_attached();
         self.drain_ipc_events_if_attached();
-        if self.pending_local_file_update.is_some() || self.pending_load_request.is_some() {
+        if self.pending_local_file_update.is_some() {
             return;
         }
 
@@ -380,6 +380,12 @@ impl MpvAdapter {
         let Some(polled_update) = polled_update else {
             return;
         };
+
+        if self.pending_load_request.is_some() {
+            self.complete_pending_load_request_from_polled_update_if_ready(polled_update);
+            self.drain_ipc_events_if_attached();
+            return;
+        }
 
         self.observed_state.path = polled_update.path.clone();
         self.observed_state.duration_seconds = polled_update.duration_seconds;
@@ -425,6 +431,34 @@ impl MpvAdapter {
             self.last_polled_local_file_update = Some(update.clone());
             self.pending_local_file_update = Some(update);
         }
+    }
+
+    fn complete_pending_load_request_from_polled_update_if_ready(
+        &mut self,
+        polled_update: LocalFileUpdate,
+    ) {
+        let Some(requested_target) = self.pending_load_request.as_deref() else {
+            return;
+        };
+        if !Self::local_file_update_matches_request(&polled_update, requested_target)
+            || !Self::local_file_update_ready_for_sync(&polled_update)
+        {
+            return;
+        }
+        let requested_target = self
+            .pending_load_request
+            .take()
+            .expect("pending request should still be present");
+        self.current_path = polled_update.path.clone();
+        self.observed_state.path = polled_update.path.clone();
+        self.observed_state.duration_seconds = polled_update.duration_seconds;
+        self.observed_state.size_bytes = polled_update.size_bytes;
+        self.record_local_file_update_if_changed(polled_update.clone());
+        self.pending_media_load_outcomes
+            .push_back(PlayerMediaLoadOutcome::success(
+                requested_target,
+                polled_update.path,
+            ));
     }
 
     fn queue_playback_telemetry_update(&mut self, update: PlayerPlaybackTelemetryUpdate) {
@@ -564,11 +598,7 @@ impl MpvAdapter {
     }
 
     fn handle_file_loaded_event(&mut self) {
-        let requested_target = self
-            .pending_load_request
-            .take()
-            .or_else(|| self.current_path.clone());
-        let Some(requested_target) = requested_target else {
+        let Some(requested_target) = self.pending_load_request.take() else {
             return;
         };
 
@@ -705,6 +735,35 @@ impl MpvAdapter {
         match update.path.as_deref() {
             Some(path) if !path.contains("://") => update.duration_seconds.is_some(),
             _ => true,
+        }
+    }
+
+    fn local_file_update_matches_request(update: &LocalFileUpdate, requested_target: &str) -> bool {
+        if requested_target.trim().is_empty() {
+            return false;
+        }
+
+        if let Some(path) = update.path.as_deref()
+            && Self::media_target_matches(path, requested_target)
+        {
+            return true;
+        }
+
+        if Self::media_target_matches(&update.name, requested_target) {
+            return true;
+        }
+
+        Path::new(requested_target)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|requested_name| Self::media_target_matches(&update.name, requested_name))
+    }
+
+    fn media_target_matches(left: &str, right: &str) -> bool {
+        if cfg!(windows) {
+            left.eq_ignore_ascii_case(right)
+        } else {
+            left == right
         }
     }
 

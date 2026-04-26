@@ -222,9 +222,7 @@ impl ClientSession {
         let mut actions = vec![ClientRuntimeAction::SetFile {
             file_payload: sanitized_payload,
         }];
-        if self.server_chat_supported.is_some() {
-            actions.push(ClientRuntimeAction::RequestUserList);
-        }
+        actions.push(ClientRuntimeAction::RequestUserList);
         actions
     }
 

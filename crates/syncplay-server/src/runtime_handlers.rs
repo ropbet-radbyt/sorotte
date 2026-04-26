@@ -166,18 +166,21 @@ impl ServerRuntime {
         if !self.chat_enabled {
             return Ok(Vec::new());
         }
-        let session = self
-            .sessions
-            .get(client_id)
-            .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
+        let (username, room_name) = {
+            let session = self
+                .sessions
+                .get(client_id)
+                .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
+            (session.username.clone(), session.room.clone())
+        };
         let message = match chat {
             ChatPayload::Text(message) => message,
             ChatPayload::Message(message_payload) => message_payload.message,
         };
         let message = truncate_text_to_max_chars(&message, self.max_chat_message_length);
-        let outbound_message = ProtocolMessage::chat_message(session.username.clone(), message);
+        let outbound_message = ProtocolMessage::chat_message(username, message);
         Ok(self
-            .clients_in_room(&session.room)
+            .chat_clients_in_room(&room_name)
             .into_iter()
             .map(|peer_client| DirectedProtocolMessage::new(&peer_client, outbound_message.clone()))
             .collect())
@@ -340,12 +343,26 @@ impl ServerRuntime {
             );
         }
 
-        if self.clients_in_room(&room_name).len() > 1 {
-            let idle_state_message = room_idle_state_message(self.current_time_seconds());
-            for room_client in self.clients_in_room(&room_name) {
+        let room_clients = self.clients_in_room(&room_name);
+        if room_clients.len() > 1 {
+            let now_seconds = self.current_time_seconds();
+            let room_playback = self.room_playback_state_at(&room_name, now_seconds);
+            let room_set_by = room_playback.set_by.clone();
+            for room_client in room_clients {
+                let room_state_message = state_sync_message(
+                    room_playback.position,
+                    room_playback.paused,
+                    false,
+                    StateSyncOptions {
+                        set_by: room_set_by.as_deref(),
+                        server_rtt_seconds: self.server_rtt_seconds(&room_client),
+                        latency_calculation_seconds: Some(now_seconds),
+                        ..StateSyncOptions::default()
+                    },
+                );
                 outbound.push(DirectedProtocolMessage::new(
                     room_client,
-                    idle_state_message.clone(),
+                    room_state_message,
                 ));
             }
         }
@@ -391,9 +408,13 @@ impl ServerRuntime {
                 truncate_text_to_max_chars(&room_ref.name, DEFAULT_MAX_ROOM_NAME_LENGTH);
             if session.room != new_room_name {
                 let previous_room = session.room.clone();
+                let previous_ready = self
+                    .stored_user_ready(&session.username, &previous_room)
+                    .unwrap_or(false);
                 self.domain.leave_room(&session.username, &previous_room)?;
                 self.remove_room_controller(&session.username, &previous_room);
-                self.domain.join_room(&session.username, &new_room_name);
+                self.domain
+                    .join_room_with_ready(&session.username, &new_room_name, previous_ready);
                 self.ensure_room_state(&new_room_name);
                 session.room = new_room_name;
                 self.sessions.insert(client_id.to_owned(), session.clone());
