@@ -207,6 +207,13 @@ async fn run_server_network_client_session(
                     Ok(Some(line)) => line,
                     Ok(None) => break,
                     Err(source) => {
+                        if source.kind() == io::ErrorKind::InvalidData
+                            && let Ok(error_line) = encode_message_line(
+                                &ProtocolMessage::error_message(LEGACY_SERVER_LINE_DECODE_ERROR),
+                            )
+                        {
+                            let _ = transport.write_line(&error_line).await;
+                        }
                         session_error = Some(ServerNetworkError::Io(source));
                         break;
                     }

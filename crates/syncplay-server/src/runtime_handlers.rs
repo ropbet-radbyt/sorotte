@@ -66,8 +66,10 @@ impl ServerRuntime {
         client_id: &str,
         json_line: &str,
     ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
-        let message = decode_message_line(json_line)?;
-        let outbound_messages = self.handle_protocol_message_fanout(client_id, message)?;
+        let mut outbound_messages = Vec::new();
+        for message in decode_message_lines(json_line)? {
+            outbound_messages.extend(self.handle_protocol_message_fanout(client_id, message)?);
+        }
         outbound_messages
             .into_iter()
             .map(|message| {
@@ -395,19 +397,24 @@ impl ServerRuntime {
                 self.ensure_room_state(&new_room_name);
                 session.room = new_room_name;
                 self.sessions.insert(client_id.to_owned(), session.clone());
+                let now_seconds = self.current_time_seconds();
                 self.client_next_periodic_state_at.insert(
                     client_id.to_owned(),
-                    self.current_time_seconds() + SERVER_STATE_INTERVAL_SECONDS,
+                    now_seconds + SERVER_STATE_INTERVAL_SECONDS,
                 );
                 self.cleanup_room_if_empty(&previous_room)?;
 
+                let room_playback = self.room_playback_state_at(&session.room, now_seconds);
+                let room_set_by = room_playback.set_by.clone();
                 outbound_messages.push(DirectedProtocolMessage::new(
                     client_id,
-                    room_idle_state_message(self.current_time_seconds()),
-                ));
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    self.forced_state_sync_message_for_client(client_id, 0.0, true, true, None),
+                    self.forced_state_sync_message_for_client(
+                        client_id,
+                        room_playback.position,
+                        room_playback.paused,
+                        true,
+                        room_set_by.as_deref(),
+                    ),
                 ));
 
                 let room_update_message =
@@ -434,10 +441,19 @@ impl ServerRuntime {
                             left_message.clone(),
                         ));
                     }
+                    if let Some(file) = session.file.clone().filter(legacy_json_value_truthy) {
+                        let file_message =
+                            user_file_update_message(&session.username, &session.room, file);
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                file_message.clone(),
+                            ));
+                        }
+                    }
                 }
 
                 let room_playlist = self.room_playlist_state(&session.room);
-                let room_playback = self.room_playback_state(&session.room);
                 let playlist_snapshot_message = playlist_snapshot_change_message(
                     room_playlist.files.clone(),
                     room_playback.set_by.as_deref(),
@@ -685,7 +701,8 @@ impl ServerRuntime {
         };
 
         self.ensure_room_state(&session.room);
-        let room_state_before = self.room_playback_state(&session.room);
+        let now_seconds = self.current_time_seconds();
+        let room_state_before = self.room_playback_state_at(&session.room, now_seconds);
         let can_control_room = self.user_can_control_playlist(&session.username, &session.room);
         let do_seek = playstate.do_seek.unwrap_or(false);
         let forward_delay_seconds = self.forward_delay_seconds(client_id);
@@ -695,15 +712,19 @@ impl ServerRuntime {
 
         if can_control_room {
             let room_state = self.room_playback_state_mut(&session.room);
+            room_state.position = room_state_before.position;
+            room_state.paused = room_state_before.paused;
+            room_state.updated_at_seconds = now_seconds;
             if let Some(paused) = playstate.paused {
                 room_state.paused = paused;
             }
             if let Some(mut position) = playstate.position {
-                if !playstate.paused.unwrap_or(false) {
+                if !playstate.paused.unwrap_or(room_state_before.paused) {
                     position += forward_delay_seconds;
                 }
                 room_state.position = position;
             }
+            room_state.updated_at_seconds = now_seconds;
             room_state.set_by = Some(session.username.clone());
             self.persist_room_if_needed(&session.room)?;
         }
@@ -713,7 +734,7 @@ impl ServerRuntime {
         }
 
         if can_control_room {
-            let room_state = self.room_playback_state(&session.room);
+            let room_state = self.room_playback_state_at(&session.room, now_seconds);
             let mut outbound_messages = Vec::new();
             for peer_client in self.clients_in_room(&session.room) {
                 let state_message = self.forced_state_sync_message_for_client(

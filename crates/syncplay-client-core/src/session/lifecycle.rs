@@ -466,8 +466,10 @@ impl ClientSession {
     }
 
     pub fn apply_message_json(&mut self, json_line: &str) -> Result<(), ProtocolError> {
-        let message = decode_message_line(json_line)?;
-        self.apply_protocol_message(message)
+        for message in decode_message_lines(json_line)? {
+            self.apply_protocol_message(message)?;
+        }
+        Ok(())
     }
 
     pub fn apply_message_json_at(
@@ -475,7 +477,9 @@ impl ClientSession {
         json_line: &str,
         now_seconds: f64,
     ) -> Result<(), ProtocolError> {
-        let message = decode_message_line(json_line)?;
-        self.apply_protocol_message_at(message, now_seconds)
+        for message in decode_message_lines(json_line)? {
+            self.apply_protocol_message_at(message, now_seconds)?;
+        }
+        Ok(())
     }
 }

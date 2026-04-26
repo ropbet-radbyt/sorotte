@@ -272,7 +272,7 @@ fn set_room_moves_session_between_rooms() {
     let outbound_lines = runtime
         .handle_line("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
         .expect("set room should succeed");
-    assert_eq!(outbound_lines.len(), 4);
+    assert_eq!(outbound_lines.len(), 3);
     assert!(!runtime.room_is_present("room1"));
     assert!(runtime.room_is_present("room2"));
     let outbound_messages: Vec<_> = outbound_lines
@@ -298,18 +298,6 @@ fn set_room_moves_session_between_rooms() {
                 message,
                 ProtocolMessage::State(payload)
                 if payload.state.playstate.as_ref().is_some_and(|playstate| {
-                    playstate.do_seek == Some(false) && playstate.paused == Some(true)
-                })
-            )
-        }),
-        "sender should receive baseline room sync state update"
-    );
-    assert!(
-        outbound_messages.iter().any(|message| {
-            matches!(
-                message,
-                ProtocolMessage::State(payload)
-                if payload.state.playstate.as_ref().is_some_and(|playstate| {
                     playstate.do_seek == Some(true) && playstate.paused == Some(true)
                 })
             )
@@ -323,6 +311,47 @@ fn set_room_moves_session_between_rooms() {
             .room
             .as_str(),
         "room2"
+    );
+}
+
+#[test]
+fn batched_top_level_commands_are_processed_in_wire_order() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should establish session");
+
+    let outbound_lines = runtime
+        .handle_line(
+            "client-1",
+            r#"{"Set":{"room":{"name":"room2"}},"List":null}"#,
+        )
+        .expect("batched command line should succeed");
+    let outbound_messages: Vec<_> = outbound_lines
+        .iter()
+        .map(|line| decode_message_line(line).expect("outbound line should decode"))
+        .collect();
+    let list_response = outbound_messages
+        .iter()
+        .find_map(|message| match message {
+            ProtocolMessage::List(payload) => Some(&payload.list),
+            _ => None,
+        })
+        .expect("batched List command should emit a list response");
+    let ListPayload::Rooms(rooms) = list_response else {
+        panic!("batched List response should contain rooms");
+    };
+
+    assert!(
+        rooms.contains_key("room2"),
+        "List should run after the preceding Set.room command"
+    );
+    assert!(
+        !rooms.contains_key("room1"),
+        "old room should be cleaned before the batched List snapshot"
     );
 }
 
@@ -865,6 +894,40 @@ fn isolate_rooms_room_switch_sends_left_to_old_room_without_destination_leak() {
     assert!(
         has_user_room_update(&directed_messages, "client-3", "alice", "room2"),
         "new-room peer should receive room update for moved user"
+    );
+}
+
+#[test]
+fn isolate_rooms_room_switch_republishes_file_to_destination_room() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_isolate_rooms(true);
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should succeed");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789}}}"#,
+        )
+        .expect("alice file update should be stored");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room2"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should succeed");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room switch should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    assert!(
+        has_user_file_update(&directed_messages, "client-2", "alice", "movie.mkv"),
+        "destination room peer should receive the mover's current file metadata"
     );
 }
 

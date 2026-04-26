@@ -63,6 +63,55 @@ async fn server_network_loop_routes_hello_response_to_connected_client() {
 }
 
 #[tokio::test]
+async fn server_network_loop_sends_error_for_invalid_utf8_line() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime,
+        None,
+        shutdown_rx,
+    ));
+
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("client should connect");
+    stream
+        .write_all(&[0xff, b'\n'])
+        .await
+        .expect("invalid utf8 line should write");
+    stream.flush().await.expect("invalid line should flush");
+
+    let response_line = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut stream),
+    )
+    .await
+    .expect("error response should arrive before timeout")
+    .expect("error response read should succeed")
+    .expect("error response line should be present");
+    let error_response = decode_message_line(&response_line).expect("error response should decode");
+    let ProtocolMessage::Error(payload) = error_response else {
+        panic!("invalid utf8 should receive protocol Error");
+    };
+    assert_eq!(payload.error.message, LEGACY_SERVER_LINE_DECODE_ERROR);
+
+    shutdown_tx
+        .send(true)
+        .expect("shutdown signal should send successfully");
+    server_task
+        .await
+        .expect("server task should join cleanly")
+        .expect("server loop should exit without error");
+}
+
+#[tokio::test]
 async fn server_network_loop_forwards_tls_start_transport_action_to_sink() {
     let cert_path = temporary_directory_path("tls-network-loop");
     let _ = fs::remove_dir_all(&cert_path);

@@ -48,10 +48,6 @@ fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
         "destination room peers should not receive direct playlist snapshot for mover"
     );
     assert!(
-        has_room_sync_state_update(&directed_messages, "client-1", false),
-        "moved user should receive baseline room sync state update"
-    );
-    assert!(
         has_room_sync_state_update(&directed_messages, "client-1", true),
         "moved user should receive seek room sync state update"
     );

@@ -22,12 +22,12 @@ use tokio_rustls::TlsConnector;
 use super::{
     DEFAULT_MAX_FILENAME_LENGTH, DEFAULT_MAX_ROOM_NAME_LENGTH, DEFAULT_PLAYLIST_MAX_ITEMS,
     DirectedOutboundLine, DirectedTransportAction, LEGACY_PERSISTENT_ROOMS_NOTICE,
-    LEGACY_SERVER_PASSWORD_REQUIRED_ERROR, LEGACY_SERVER_WRONG_PASSWORD_ERROR,
-    LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError, RoomPasswordProvider, SERVER_REAL_VERSION,
-    SERVER_STATE_INTERVAL_SECONDS, ServerApp, ServerRuntime, ServerRuntimeDispatch,
-    ServerRuntimeError, ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES,
-    default_motd_for_client_version, motd_for_client_version, read_network_line_from_stream,
-    run_server_network_loop_until_shutdown,
+    LEGACY_SERVER_LINE_DECODE_ERROR, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
+    LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError,
+    RoomPasswordProvider, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS, ServerApp,
+    ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError, ServerTransportAction,
+    TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version, motd_for_client_version,
+    read_network_line_from_stream, run_server_network_loop_until_shutdown,
 };
 use syncplay_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
@@ -94,6 +94,33 @@ fn has_user_room_update(
                 .and_then(|users| users.get(username))
                 .and_then(|user| user.room.as_ref())
                 .is_some_and(|room_ref| room_ref.name == room),
+            _ => false,
+        }
+    })
+}
+
+fn has_user_file_update(
+    directed_messages: &[(String, ProtocolMessage)],
+    recipient: &str,
+    username: &str,
+    filename: &str,
+) -> bool {
+    directed_messages.iter().any(|(client_id, message)| {
+        if client_id != recipient {
+            return false;
+        }
+        match message {
+            ProtocolMessage::Set(payload) => {
+                payload
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get(username))
+                    .and_then(|user| user.file.as_ref())
+                    .and_then(|file| file.get("name"))
+                    .and_then(Value::as_str)
+                    == Some(filename)
+            }
             _ => false,
         }
     })

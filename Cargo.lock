@@ -3351,6 +3351,7 @@ dependencies = [
 name = "syncplay-client-core"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "serde_json",
  "sha2",
  "syncplay-core",

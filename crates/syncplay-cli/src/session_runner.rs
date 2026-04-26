@@ -40,7 +40,7 @@ use syncplay_client_app::app_boundary::{
 };
 use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ClientRuntime,
-    QueuedRuntimeControl, SYNCPLAY_COMPAT_VERSION_LEGACY,
+    QueuedRuntimeControl, SYNCPLAY_COMPAT_VERSION_LEGACY, legacy_server_password_token,
 };
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{

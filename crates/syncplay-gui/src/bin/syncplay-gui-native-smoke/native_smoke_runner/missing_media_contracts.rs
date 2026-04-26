@@ -172,10 +172,11 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
     let session_server = start_mock_session_server(
         &[
             r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+            r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
             r#"{"Set":{"playlistChange":{"files":["missing-source-a.mkv","missing-target.mkv"],"user":"smoke-user"}}}"#,
             r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
             r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
-            r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"smoke-user"},"ping":{"latencyCalculation":123.0}}}"#,
         ],
         &[],
         &[],
@@ -297,10 +298,10 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
         wait_for_main_window_user_row_name(
             driver,
             window,
-            "self=no, ready=yes, controller=yes",
+            TRANSPORT_SESSION_USERNAME,
             step_timeout,
         )
-        .map_err(|error| format!("transport initial remote row: {error}"))?;
+        .map_err(|error| format!("transport initial local row: {error}"))?;
 
         navigate_to_view_with_fallback(
             driver,
@@ -347,7 +348,7 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
         wait_for_main_window_user_row_name(
             driver,
             window,
-            "self=no, ready=yes, controller=yes",
+            TRANSPORT_SESSION_USERNAME,
             step_timeout,
         )?;
         steps.push("main-window-missing-media-continue-session".to_owned());

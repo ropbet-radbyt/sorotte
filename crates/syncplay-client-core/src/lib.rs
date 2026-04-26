@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use md5::Md5;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use syncplay_core::SyncDomain;
@@ -11,7 +12,7 @@ use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
     PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
     ProtocolMessage, ReadyPayload, RoomRef, SetPayload, StatePayload, decode_message_line,
-    encode_message_line, extract_hello_from_message,
+    decode_message_lines, encode_message_line, extract_hello_from_message,
 };
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
@@ -72,6 +73,10 @@ const MUSIC_FORMATS: [&str; 8] = [
 ];
 pub const AUTOPLAY_TICK_INTERVAL_SECONDS: f64 = AUTOPLAY_COUNTDOWN_STEP_SECONDS;
 const LEGACY_PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
+
+pub fn legacy_server_password_token(password: &str) -> String {
+    format!("{:x}", Md5::digest(password.as_bytes()))
+}
 
 mod config;
 mod control;

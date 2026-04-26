@@ -117,7 +117,7 @@ where
     {
         hello_payload.extra.insert(
             "password".to_owned(),
-            Value::String(server_password.to_owned()),
+            Value::String(legacy_server_password_token(server_password)),
         );
     }
     hello_payload.features = Some(client_hello_features_legacy_compatible(config));

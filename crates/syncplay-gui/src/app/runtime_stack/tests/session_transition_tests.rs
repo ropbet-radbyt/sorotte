@@ -236,6 +236,47 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_projects_remote_user_after_playlist_seed() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("smoke-user".to_owned()),
+        room: Some("smoke-room".to_owned()),
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("smoke-user", "smoke-room")
+        .expect("client-core chat adapter should bootstrap");
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    for line in [
+        r#"{"Hello":{"username":"smoke-user","room":{"name":"smoke-room"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
+        r#"{"Set":{"user":{"bob":{"room":{"name":"smoke-room"},"file":{"name":"bob.mp4"},"isReady":true,"controller":true}}}}"#,
+        r#"{"Set":{"playlistChange":{"files":["missing-source-a.mkv","missing-target.mkv"],"user":"smoke-user"}}}"#,
+        r#"{"Set":{"playlistIndex":{"index":1,"user":"smoke-user"}}}"#,
+        r#"{"Set":{"ready":{"isReady":true,"username":"smoke-user"}}}"#,
+        r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"smoke-user"},"ping":{"latencyCalculation":123.0}}}"#,
+    ] {
+        adapter
+            .apply_message_json(line)
+            .expect("inbound missing-media seed line should apply");
+    }
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+
+    assert!(
+        state
+            .main_window
+            .users
+            .iter()
+            .any(|user| user.username == "bob" && user.is_ready && user.is_controller),
+        "remote participant from the missing-media seed should be projected"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_stops_reconnect_on_server_error() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

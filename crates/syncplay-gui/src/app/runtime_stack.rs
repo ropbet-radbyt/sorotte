@@ -25,7 +25,7 @@ use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientRuntime, ClientRuntimeAction,
     ClientRuntimeControl, ClientSession, DesyncCorrectionConfig, PrivacyMode, QueuedRuntimeControl,
     ReadinessAutoplayConfig, RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
-    SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig,
+    SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig, legacy_server_password_token,
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_protocol::{

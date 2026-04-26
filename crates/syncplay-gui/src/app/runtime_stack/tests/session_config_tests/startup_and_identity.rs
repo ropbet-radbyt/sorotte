@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_and_full_features()
-{
+fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_password_and_full_features()
+ {
     let runtime_settings =
         stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
             username: Some("bob".to_owned()),
@@ -39,7 +39,7 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_password_
             .extra
             .get("password")
             .and_then(serde_json::Value::as_str),
-        Some("secret-pass")
+        Some("591fac3e56ffbdc6f310c1b646050c09")
     );
 
     let features = hello

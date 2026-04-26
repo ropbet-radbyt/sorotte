@@ -1,5 +1,35 @@
 use super::*;
 
+fn user_row_wait_error<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    name: &str,
+    error: String,
+) -> String {
+    let snapshot = driver
+        .accessible_names(window)
+        .map(|names| {
+            render_accessible_name_snapshot_for_patterns(
+                &names,
+                &[
+                    name,
+                    "Room",
+                    "Participants",
+                    "No users",
+                    "smoke",
+                    "bob",
+                    "missing",
+                    "Inbound",
+                    "failed",
+                    "pending",
+                    "view:",
+                ],
+            )
+        })
+        .unwrap_or_else(|_| "unavailable".to_owned());
+    format!("{error}; participant snapshot: {snapshot}")
+}
+
 pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     driver: &D,
     window: D::WindowHandle,
@@ -16,7 +46,7 @@ pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return initial_result;
+        return initial_result.map_err(|error| user_row_wait_error(driver, window, name, error));
     }
     if wait_for_accessible_name_with_page_up(
         driver,
@@ -31,7 +61,7 @@ pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return initial_result;
+        return initial_result.map_err(|error| user_row_wait_error(driver, window, name, error));
     }
     if wait_for_accessible_name_with_named_control_scroll_up(
         driver,
@@ -48,7 +78,7 @@ pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return initial_result;
+        return initial_result.map_err(|error| user_row_wait_error(driver, window, name, error));
     }
     if wait_for_accessible_name_with_named_control_scroll_down(
         driver,
@@ -65,7 +95,7 @@ pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return initial_result;
+        return initial_result.map_err(|error| user_row_wait_error(driver, window, name, error));
     }
     wait_for_accessible_name_with_page_down(
         driver,
@@ -75,6 +105,7 @@ pub(super) fn wait_for_main_window_user_row_name<D: NativeGuiDriver>(
         remaining,
     )
     .map(|_| ())
+    .map_err(|error| user_row_wait_error(driver, window, name, error))
 }
 
 pub(super) fn navigate_to_room_surface<D: NativeGuiDriver>(
@@ -99,7 +130,56 @@ pub(super) fn wait_for_room_browser_visible<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     navigate_to_room_surface(driver, window, timeout)?;
-    wait_for_accessible_name(driver, window, MAIN_WINDOW_ROOM_BROWSER_NAME, timeout).map(|_| ())
+    wait_for_any_accessible_name(
+        driver,
+        window,
+        &[
+            MAIN_WINDOW_ROOM_BROWSER_NAME,
+            "Participants",
+            "Playlist",
+            "view: room",
+        ],
+        timeout,
+    )
+    .map(|_| ())
+}
+
+pub(super) fn join_room_from_main_window<D: NativeGuiDriver>(
+    driver: &D,
+    window: D::WindowHandle,
+    room: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    navigate_to_room_surface(driver, window, timeout)?;
+
+    if wait_for_accessible_name(driver, window, "Join Room", Duration::from_millis(800)).is_err() {
+        let _ = wait_for_accessible_name_with_page_up(
+            driver,
+            window,
+            "Change Room",
+            MAIN_WINDOW_LOCAL_READY_BUTTON_MAX_PAGE_DOWNS,
+            timeout.min(Duration::from_millis(1_200)),
+        );
+        invoke_named_control_with_wait(
+            driver,
+            window,
+            "Change Room",
+            NativeControlKind::Button,
+            timeout,
+        )
+        .map_err(|error| format!("failed to expand room controls: {error}"))?;
+        wait_for_accessible_name(driver, window, "Join Room", timeout)?;
+    }
+
+    driver.set_named_edit_value(window, "Room", room, false)?;
+    wait_for_named_edit_value(driver, window, "Room", room, timeout)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Join Room",
+        NativeControlKind::Button,
+        timeout,
+    )
 }
 
 pub(super) fn wait_for_shared_playlist_visible<D: NativeGuiDriver>(

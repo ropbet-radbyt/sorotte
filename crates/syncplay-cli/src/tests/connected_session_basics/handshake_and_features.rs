@@ -418,7 +418,7 @@ async fn connected_client_session_suppresses_playlist_commands_when_shared_playl
 }
 
 #[tokio::test]
-async fn connected_client_session_includes_server_password_in_hello_when_configured() {
+async fn connected_client_session_includes_hashed_server_password_in_hello_when_configured() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -442,7 +442,9 @@ async fn connected_client_session_includes_server_password_in_hello_when_configu
         };
         assert_eq!(
             hello_message.hello.extra.get("password"),
-            Some(&Value::String("server-secret".to_owned()))
+            Some(&Value::String(
+                "e8e1176287cec19598090813ad01afab".to_owned()
+            ))
         );
     });
 

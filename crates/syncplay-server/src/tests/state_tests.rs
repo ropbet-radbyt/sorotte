@@ -498,6 +498,93 @@ fn periodic_state_updates_emit_after_time_advance() {
 }
 
 #[test]
+fn periodic_state_updates_age_playing_room_position() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(0.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("playing state update should be accepted");
+    runtime
+        .handle_line_fanout("client-1", r#"{"State":{"ignoringOnTheFly":{"server":1}}}"#)
+        .expect("client should acknowledge forced state before periodic tick");
+
+    let periodic_lines = runtime
+        .advance_time_and_collect_fanout(super::SERVER_STATE_INTERVAL_SECONDS)
+        .expect("periodic state tick should encode outbound fanout lines");
+    let periodic_messages = decode_directed_lines(&periodic_lines);
+    let state_message = periodic_messages
+        .iter()
+        .find_map(|(recipient, message)| {
+            if recipient == "client-1" {
+                Some(message)
+            } else {
+                None
+            }
+        })
+        .expect("client should receive a periodic state update");
+    let ProtocolMessage::State(payload) = state_message else {
+        panic!("periodic output should be state message");
+    };
+    let playstate = payload
+        .state
+        .playstate
+        .as_ref()
+        .expect("periodic state update should include playstate");
+
+    assert!(
+        playstate
+            .position
+            .is_some_and(|position| (position - 13.0).abs() <= 0.000_001),
+        "playing room position should be aged by elapsed playback time"
+    );
+    assert_eq!(playstate.paused, Some(false));
+}
+
+#[test]
+fn room_switch_sends_destination_room_playstate() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room2"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":40.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("alice should make room1 active");
+
+    runtime.set_time_now_override_seconds(Some(103.0));
+    let directed_lines = runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"room":{"name":"room1"}}}"#)
+        .expect("bob room switch should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    assert!(
+        has_state_update(&directed_messages, "client-2", "alice", 43.0, false, true),
+        "switching client should receive destination room's aged playstate"
+    );
+}
+
+#[test]
 fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(0.0));

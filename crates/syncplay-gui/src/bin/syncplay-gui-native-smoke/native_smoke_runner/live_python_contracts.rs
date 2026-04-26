@@ -172,21 +172,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         )
         .map_err(|error| format!("live Python interop peer connect row: {error}"))?;
         steps.push("transport-python-peer-connect".to_owned());
-        driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ALT_ROOM)?;
-        wait_for_edit_value_by_index(
-            driver,
-            window,
-            0,
-            LIVE_PYTHON_INTEROP_ALT_ROOM,
-            step_timeout,
-        )?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Join Draft Room",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
+        join_room_from_main_window(driver, window, LIVE_PYTHON_INTEROP_ALT_ROOM, step_timeout)?;
         thread::sleep(Duration::from_millis(500));
         wait_for_accessible_name(
             driver,
@@ -197,15 +183,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         .map_err(|error| format!("live Python interop alternate-room local row: {error}"))?;
         steps.push("main-window-room-joined".to_owned());
 
-        driver.set_edit_value_by_index(window, 0, LIVE_PYTHON_INTEROP_ROOM)?;
-        wait_for_edit_value_by_index(driver, window, 0, LIVE_PYTHON_INTEROP_ROOM, step_timeout)?;
-        invoke_named_control_with_wait(
-            driver,
-            window,
-            "Join Draft Room",
-            NativeControlKind::Button,
-            step_timeout,
-        )?;
+        join_room_from_main_window(driver, window, LIVE_PYTHON_INTEROP_ROOM, step_timeout)?;
         wait_for_accessible_name(
             driver,
             window,
@@ -254,15 +232,8 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
         )?;
         steps.push("transport-python-peer-chat-peer-to-local".to_owned());
 
-        if wait_for_named_control_enabled_state(
-            driver,
-            window,
-            "Add",
-            NativeControlKind::Button,
-            true,
-            Duration::from_millis(500),
-        )
-        .is_err()
+        if wait_for_shared_playlist_controls_enabled(driver, window, Duration::from_millis(500))
+            .is_err()
         {
             navigate_to_view_with_fallback(
                 driver,
@@ -559,14 +530,7 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
             })?;
         steps.push("transport-python-peer-controlled-room-auth".to_owned());
 
-        wait_for_named_control_enabled_state(
-            driver,
-            window,
-            "Add",
-            NativeControlKind::Button,
-            true,
-            step_timeout,
-        )?;
+        wait_for_shared_playlist_controls_enabled(driver, window, step_timeout)?;
         steps.push("transport-python-peer-controlled-room-playlist-enabled".to_owned());
 
         driver.close_window(window)?;

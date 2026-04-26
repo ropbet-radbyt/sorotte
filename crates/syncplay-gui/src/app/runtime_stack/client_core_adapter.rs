@@ -262,7 +262,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             hello.extra.insert(
                 "password".to_owned(),
-                Value::String(server_password.to_owned()),
+                Value::String(legacy_server_password_token(server_password)),
             );
         }
 

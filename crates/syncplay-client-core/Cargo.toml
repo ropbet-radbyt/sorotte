@@ -12,6 +12,7 @@ workspace = true
 syncplay-core = { path = "../syncplay-core" }
 syncplay-protocol = { path = "../syncplay-protocol" }
 syncplay-player-api = { path = "../syncplay-player-api" }
+md-5.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true

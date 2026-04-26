@@ -5,8 +5,9 @@ use serde_json::json;
 
 use super::{
     ChatPayload, HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
-    ReadyPayload, RoomRef, SetPayload, StatePayload, decode_line, decode_message_line, encode_line,
-    encode_message_line, extract_hello, extract_hello_from_message,
+    ReadyPayload, RoomRef, SetPayload, StatePayload, decode_line, decode_message_line,
+    decode_message_lines, encode_line, encode_message_line, extract_hello,
+    extract_hello_from_message,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -142,6 +143,16 @@ fn playlist_index_message_with_null_index_decodes_as_noop_set() {
         set_message.set.playlist_index.is_none(),
         "nullable legacy playlistIndex payload should be treated as absent"
     );
+}
+
+#[test]
+fn decode_message_lines_preserves_top_level_command_order() {
+    let messages = decode_message_lines(r#"{"Set":{"room":{"name":"room2"}},"List":null}"#)
+        .expect("multi-command protocol line should decode");
+
+    assert_eq!(messages.len(), 2);
+    assert!(matches!(messages[0], ProtocolMessage::Set(_)));
+    assert!(matches!(messages[1], ProtocolMessage::List(_)));
 }
 
 #[test]

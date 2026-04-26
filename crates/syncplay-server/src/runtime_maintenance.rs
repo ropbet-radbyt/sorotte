@@ -161,7 +161,7 @@ impl ServerRuntime {
         {
             self.room_playback_state_mut(&session.room).set_by = Some(set_by_username);
         }
-        let room_state = self.room_playback_state(&session.room);
+        let room_state = self.room_playback_state_at(&session.room, ticked_at);
 
         let mut outbound = Vec::new();
         if let Some(state_message) = self.periodic_state_sync_message_for_client(
@@ -275,6 +275,7 @@ impl ServerRuntime {
         &mut self,
         persisted_rooms: BTreeMap<String, PersistedRoomState>,
     ) {
+        let now_seconds = self.current_time_seconds();
         for (room_name, persisted_room) in persisted_rooms {
             self.room_playlists.insert(
                 room_name.clone(),
@@ -285,6 +286,7 @@ impl ServerRuntime {
             );
             let room_playback = self.room_playback_states.entry(room_name).or_default();
             room_playback.position = persisted_room.position;
+            room_playback.updated_at_seconds = now_seconds;
         }
     }
 
@@ -292,6 +294,7 @@ impl ServerRuntime {
         if self.room_persistence.is_none() {
             return;
         }
+        let now_seconds = self.current_time_seconds();
         for room_name in self.permanent_rooms.clone() {
             self.room_playlists
                 .entry(room_name.clone())
@@ -300,7 +303,9 @@ impl ServerRuntime {
                     index: Some(0),
                 });
             self.room_controllers.entry(room_name.clone()).or_default();
-            self.room_playback_states.entry(room_name).or_default();
+            self.room_playback_states
+                .entry(room_name)
+                .or_insert_with(|| RoomPlaybackState::new_at(now_seconds));
         }
     }
 
@@ -324,7 +329,7 @@ impl ServerRuntime {
             return Ok(());
         };
         let playlist = self.room_playlist_state(room_name);
-        let playback = self.room_playback_state(room_name);
+        let playback = self.room_playback_state_at(room_name, self.current_time_seconds());
         room_persistence.save_room(
             room_name,
             &playlist.files,
@@ -368,13 +373,14 @@ impl ServerRuntime {
     }
 
     pub(crate) fn ensure_room_state(&mut self, room_name: &str) {
+        let now_seconds = self.current_time_seconds();
         self.room_playlists.entry(room_name.to_owned()).or_default();
         self.room_controllers
             .entry(room_name.to_owned())
             .or_default();
         self.room_playback_states
             .entry(room_name.to_owned())
-            .or_default();
+            .or_insert_with(|| RoomPlaybackState::new_at(now_seconds));
     }
 
     pub(crate) fn room_playlist_state_mut(&mut self, room_name: &str) -> &mut RoomPlaylistState {
@@ -389,16 +395,25 @@ impl ServerRuntime {
     }
 
     pub(crate) fn room_playback_state_mut(&mut self, room_name: &str) -> &mut RoomPlaybackState {
+        let now_seconds = self.current_time_seconds();
         self.room_playback_states
             .entry(room_name.to_owned())
-            .or_default()
+            .or_insert_with(|| RoomPlaybackState::new_at(now_seconds))
     }
 
     pub(crate) fn room_playback_state(&self, room_name: &str) -> RoomPlaybackState {
         self.room_playback_states
             .get(room_name)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_else(|| RoomPlaybackState::new_at(self.current_time_seconds()))
+    }
+
+    pub(crate) fn room_playback_state_at(
+        &self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> RoomPlaybackState {
+        self.room_playback_state(room_name).aged_at(now_seconds)
     }
 
     pub(crate) fn acknowledge_server_ignoring_counter(

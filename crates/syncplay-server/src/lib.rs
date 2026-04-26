@@ -21,7 +21,7 @@ use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
     ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
     PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_line,
+    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_lines,
     encode_message_line,
 };
 use tokio::{
@@ -66,6 +66,7 @@ const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chai
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";
 const LEGACY_SERVER_NOT_JSON_ERROR_PREFIX: &str = "Not a json encoded string";
+const LEGACY_SERVER_LINE_DECODE_ERROR: &str = "Not a utf-8 string";
 const LEGACY_SERVER_NOT_KNOWN_ERROR: &str =
     "You must be known to server before sending this command";
 const LEGACY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
@@ -231,15 +232,42 @@ struct RoomPlaybackState {
     position: f64,
     paused: bool,
     set_by: Option<String>,
+    updated_at_seconds: f64,
 }
 
 impl Default for RoomPlaybackState {
     fn default() -> Self {
+        Self::new_at(0.0)
+    }
+}
+
+impl RoomPlaybackState {
+    fn new_at(updated_at_seconds: f64) -> Self {
         Self {
             position: 0.0,
             paused: true,
             set_by: None,
+            updated_at_seconds,
         }
+    }
+
+    fn position_at(&self, now_seconds: f64) -> f64 {
+        if self.paused {
+            return self.position;
+        }
+        let elapsed_seconds = now_seconds - self.updated_at_seconds;
+        if elapsed_seconds.is_finite() && elapsed_seconds > 0.0 {
+            self.position + elapsed_seconds
+        } else {
+            self.position
+        }
+    }
+
+    fn aged_at(&self, now_seconds: f64) -> Self {
+        let mut aged = self.clone();
+        aged.position = self.position_at(now_seconds);
+        aged.updated_at_seconds = now_seconds;
+        aged
     }
 }
 
