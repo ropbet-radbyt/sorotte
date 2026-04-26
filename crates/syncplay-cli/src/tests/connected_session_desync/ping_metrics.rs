@@ -30,11 +30,12 @@ async fn connected_client_session_inbound_state_ping_updates_outbound_state_ping
                 .await
                 .expect("server hello write should succeed");
 
-        let inbound_latency_calculation = SystemTime::now()
+        let now_seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0)
-            - 0.05;
+            .unwrap_or(0.0);
+        let inbound_latency_calculation = now_seconds - 0.05;
+        let inbound_client_latency_calculation = now_seconds - 0.08;
         let inbound_state_line = encode_message_line(&ProtocolMessage::state(
             StatePayload::new()
                 .with_playstate(
@@ -45,7 +46,10 @@ async fn connected_client_session_inbound_state_ping_updates_outbound_state_ping
                         .with_set_by("remote-user"),
                 )
                 .with_ping(
-                    PingPayload::new().with_latency_calculation(inbound_latency_calculation),
+                    PingPayload::new()
+                        .with_latency_calculation(inbound_latency_calculation)
+                        .with_client_latency_calculation(inbound_client_latency_calculation)
+                        .with_server_rtt(0.02),
                 ),
         ))
         .expect("inbound state line should encode");
@@ -201,15 +205,16 @@ async fn connected_client_session_inbound_state_ping_server_rtt_enables_borderli
 
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            let inbound_latency_calculation = SystemTime::now()
+            let inbound_timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_secs_f64())
                 .unwrap_or(0.0)
                 - 0.35;
-            let mut inbound_ping =
-                PingPayload::new().with_latency_calculation(inbound_latency_calculation);
+            let mut inbound_ping = PingPayload::new().with_latency_calculation(inbound_timestamp);
             if include_server_rtt {
-                inbound_ping = inbound_ping.with_server_rtt(0.05);
+                inbound_ping = inbound_ping
+                    .with_client_latency_calculation(inbound_timestamp)
+                    .with_server_rtt(0.05);
             }
             let inbound_state_line = encode_message_line(&ProtocolMessage::state(
                 StatePayload::new()

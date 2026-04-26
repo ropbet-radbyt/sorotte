@@ -78,6 +78,7 @@ fn state_playstate_without_seek_or_pause_change_produces_no_immediate_outbound_m
 #[test]
 fn state_forced_update_forwards_sender_client_metadata_once() {
     let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
     runtime
         .handle_line(
             "client-1",
@@ -174,6 +175,7 @@ fn state_forced_update_forwards_sender_client_metadata_once() {
 #[test]
 fn state_ping_only_client_metadata_is_forwarded_on_next_forced_update() {
     let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
     runtime
         .handle_line(
             "client-1",
@@ -198,6 +200,7 @@ fn state_ping_only_client_metadata_is_forwarded_on_next_forced_update() {
         "ping-only updates should still emit no immediate fanout"
     );
 
+    runtime.set_time_now_override_seconds(Some(100.25));
     let forced_lines = runtime
         .handle_line_fanout(
             "client-1",
@@ -221,7 +224,7 @@ fn state_ping_only_client_metadata_is_forwarded_on_next_forced_update() {
             .ping
             .as_ref()
             .and_then(|ping| ping.client_latency_calculation),
-        Some(222.2)
+        Some(222.45)
     );
     assert_eq!(
         payload

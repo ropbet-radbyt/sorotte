@@ -20,7 +20,9 @@ fn client_runtime_state_sync_reconcile_legacy_ping_wrapper_tracks_and_emits_ping
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
 
-    let inbound_latency_calculation = unix_wall_clock_time_seconds_legacy_compatible() - 0.05;
+    let now = unix_wall_clock_time_seconds_legacy_compatible();
+    let inbound_latency_calculation = now - 0.05;
+    let inbound_client_latency_calculation = now - 0.08;
     let sent = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
         StatePayload::new()
             .with_playstate(
@@ -29,7 +31,12 @@ fn client_runtime_state_sync_reconcile_legacy_ping_wrapper_tracks_and_emits_ping
                     .with_paused(false)
                     .with_set_by("bob"),
             )
-            .with_ping(PingPayload::new().with_latency_calculation(inbound_latency_calculation)),
+            .with_ping(
+                PingPayload::new()
+                    .with_latency_calculation(inbound_latency_calculation)
+                    .with_client_latency_calculation(inbound_client_latency_calculation)
+                    .with_server_rtt(0.02),
+            ),
         false,
     );
 
@@ -72,19 +79,35 @@ fn client_ping_metrics_legacy_compatible_tracks_rtt_from_inbound_state_ping() {
     let mut ping_metrics = ClientPingMetricsLegacyCompatible::default();
     let inbound_state = StatePayload::new().with_ping(
         PingPayload::new()
-            .with_latency_calculation(100.0)
-            .with_client_rtt(0.25),
+            .with_latency_calculation(99.0)
+            .with_client_latency_calculation(100.0)
+            .with_server_rtt(0.05),
     );
 
     ping_metrics.observe_inbound_state_at(&inbound_state, 100.2);
 
     assert!(
         (ping_metrics.client_rtt_seconds() - 0.2).abs() < 1e-9,
-        "client RTT should be computed from now - inbound latencyCalculation"
+        "client RTT should be computed from now - inbound clientLatencyCalculation"
     );
     assert!(
-        (ping_metrics.forward_delay_seconds() - 0.1).abs() < 1e-9,
-        "without inbound serverRtt, forward delay should default to averageRTT/2"
+        (ping_metrics.forward_delay_seconds() - 0.25).abs() < 1e-9,
+        "forward delay should include the server RTT delta reported by the sender"
+    );
+}
+
+#[test]
+fn client_ping_metrics_legacy_compatible_does_not_measure_rtt_from_latency_echo() {
+    let mut ping_metrics = ClientPingMetricsLegacyCompatible::default();
+    let inbound_state =
+        StatePayload::new().with_ping(PingPayload::new().with_latency_calculation(100.0));
+
+    ping_metrics.observe_inbound_state_at(&inbound_state, 100.2);
+
+    assert_eq!(
+        ping_metrics.client_rtt_seconds(),
+        0.0,
+        "latencyCalculation is echoed back to the server and should not update client RTT"
     );
 }
 
@@ -95,8 +118,8 @@ fn client_ping_metrics_legacy_compatible_tracks_server_rtt_and_forward_delay_est
     ping_metrics.observe_inbound_state_at(
         &StatePayload::new().with_ping(
             PingPayload::new()
-                .with_latency_calculation(100.0)
-                .with_client_rtt(0.25)
+                .with_latency_calculation(99.0)
+                .with_client_latency_calculation(100.0)
                 .with_server_rtt(0.12),
         ),
         100.3,
@@ -104,7 +127,7 @@ fn client_ping_metrics_legacy_compatible_tracks_server_rtt_and_forward_delay_est
 
     assert!(
         (ping_metrics.client_rtt_seconds() - 0.3).abs() < 1e-9,
-        "client RTT should track now - inbound latencyCalculation"
+        "client RTT should track now - inbound clientLatencyCalculation"
     );
     assert!(
         (ping_metrics.server_rtt_seconds() - 0.12).abs() < 1e-9,
@@ -124,7 +147,8 @@ fn client_ping_metrics_legacy_compatible_ignores_invalid_negative_ping_inputs() 
         &StatePayload::new().with_ping(
             PingPayload::new()
                 .with_latency_calculation(10.0)
-                .with_client_rtt(0.1),
+                .with_client_latency_calculation(10.0)
+                .with_server_rtt(0.1),
         ),
         10.4,
     );
@@ -134,7 +158,8 @@ fn client_ping_metrics_legacy_compatible_ignores_invalid_negative_ping_inputs() 
         &StatePayload::new().with_ping(
             PingPayload::new()
                 .with_latency_calculation(20.0)
-                .with_client_rtt(-1.0),
+                .with_client_latency_calculation(20.0)
+                .with_server_rtt(-1.0),
         ),
         20.5,
     );
@@ -142,13 +167,17 @@ fn client_ping_metrics_legacy_compatible_ignores_invalid_negative_ping_inputs() 
         &StatePayload::new().with_ping(
             PingPayload::new()
                 .with_latency_calculation(25.0)
-                .with_client_rtt(0.1)
-                .with_server_rtt(-1.0),
+                .with_client_latency_calculation(25.0),
         ),
         25.4,
     );
     ping_metrics.observe_inbound_state_at(
-        &StatePayload::new().with_ping(PingPayload::new().with_latency_calculation(30.0)),
+        &StatePayload::new().with_ping(
+            PingPayload::new()
+                .with_latency_calculation(29.5)
+                .with_client_latency_calculation(30.0)
+                .with_server_rtt(0.1),
+        ),
         29.0,
     );
 

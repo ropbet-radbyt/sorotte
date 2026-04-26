@@ -35,6 +35,20 @@ pub(crate) fn is_client_version_outdated(client_version: &str, server_version: &
     client_components < server_components
 }
 
+pub(crate) fn client_version_meets_minimum(client_version: &str, minimum_version: &str) -> bool {
+    let Some(mut client_components) = parse_numeric_version_components(client_version) else {
+        return false;
+    };
+    let Some(mut minimum_components) = parse_numeric_version_components(minimum_version) else {
+        return false;
+    };
+
+    let width = client_components.len().max(minimum_components.len());
+    client_components.resize(width, 0);
+    minimum_components.resize(width, 0);
+    client_components >= minimum_components
+}
+
 pub(crate) fn render_motd_template(template: &str, client_version: &str) -> String {
     template
         .replace("{client_version}", client_version)
@@ -72,6 +86,37 @@ pub(crate) fn truncate_text_to_max_chars(value: &str, max_chars: usize) -> Strin
     value.chars().take(max_chars).collect()
 }
 
+pub(crate) fn truncate_file_payload_name(file: &mut Value, max_chars: usize) {
+    let Some(file_object) = file.as_object_mut() else {
+        return;
+    };
+    let Some(name_value) = file_object.get_mut("name") else {
+        return;
+    };
+    let Some(name) = name_value.as_str() else {
+        return;
+    };
+    *name_value = Value::String(truncate_text_to_max_chars(name, max_chars));
+}
+
+pub(crate) fn legacy_json_value_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
+pub(crate) fn playlist_is_valid(files: &[String]) -> bool {
+    if files.len() > DEFAULT_PLAYLIST_MAX_ITEMS {
+        return false;
+    }
+    files.iter().map(|file| file.chars().count()).sum::<usize>() <= DEFAULT_PLAYLIST_MAX_CHARACTERS
+}
+
 pub(crate) fn hello_server_password_token(hello: &HelloPayload) -> Option<&str> {
     hello.extra.get("password").and_then(Value::as_str)
 }
@@ -90,9 +135,16 @@ pub(crate) fn server_password_token_matches_legacy_compatible(
 }
 
 pub(crate) fn client_supports_persistent_rooms(advertised_features: Option<&Value>) -> bool {
+    client_supports_feature(advertised_features, "persistentRooms")
+}
+
+pub(crate) fn client_supports_feature(
+    advertised_features: Option<&Value>,
+    feature_name: &str,
+) -> bool {
     advertised_features
         .and_then(Value::as_object)
-        .and_then(|features| features.get("persistentRooms"))
+        .and_then(|features| features.get(feature_name))
         .and_then(Value::as_bool)
         .unwrap_or(false)
 }

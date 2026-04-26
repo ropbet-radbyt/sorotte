@@ -18,6 +18,21 @@ pub(crate) fn user_room_update_message(username: &str, room_name: &str) -> Proto
     user_setting_message(username, room_name, None)
 }
 
+pub(crate) fn user_file_update_message(
+    username: &str,
+    room_name: &str,
+    file: Value,
+) -> ProtocolMessage {
+    let mut users = BTreeMap::new();
+    users.insert(
+        username.to_owned(),
+        UserSetPayload::new()
+            .with_room(RoomRef::new(room_name))
+            .with_file(file),
+    );
+    ProtocolMessage::set(SetPayload::new().with_user(users))
+}
+
 pub(crate) fn user_event_message(username: &str, room_name: &str, event: Value) -> ProtocolMessage {
     user_setting_message(username, room_name, Some(event))
 }
@@ -49,6 +64,18 @@ pub(crate) fn ready_update_message(
         payload = payload.with_set_by(set_by);
     }
     ProtocolMessage::set(SetPayload::new().with_ready(payload))
+}
+
+pub(crate) fn readiness_legacy_chat_message(
+    set_by_username: &str,
+    username: &str,
+    is_ready: bool,
+) -> ProtocolMessage {
+    let readiness = if is_ready { "ready" } else { "not ready" };
+    ProtocolMessage::chat_message(
+        set_by_username,
+        format!("I have set {username} as {readiness}."),
+    )
 }
 
 pub(crate) fn room_idle_state_message(latency_calculation_seconds: f64) -> ProtocolMessage {
@@ -177,10 +204,12 @@ pub(crate) fn server_feature_list(
         "managedRooms": true,
         "persistentRooms": persistent_rooms_enabled,
         "chat": chat_enabled,
+        "maxFilenameLength": DEFAULT_MAX_FILENAME_LENGTH,
+        "maxRoomNameLength": DEFAULT_MAX_ROOM_NAME_LENGTH,
         "maxChatMessageLength": max_chat_message_length,
         "maxUsernameLength": max_username_length,
         "featureList": true,
         "setOthersReadiness": true,
-        "uiMode": "UNKNOWN",
+        "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
 }

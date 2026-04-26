@@ -237,3 +237,98 @@ fn controlled_room_playlist_updates_require_controller_auth() {
         "controller playlist change should fan out to room peers"
     );
 }
+
+#[test]
+fn invalid_playlist_change_is_rejected_with_current_room_playlist_correction() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let files: Vec<String> = (0..=DEFAULT_PLAYLIST_MAX_ITEMS)
+        .map(|index| format!("episode-{index}.mkv"))
+        .collect();
+    let messages = runtime
+        .handle_protocol_message_fanout(
+            "client-1",
+            ProtocolMessage::set(
+                SetPayload::new().with_playlist_change(PlaylistChangePayload::new(files)),
+            ),
+        )
+        .expect("invalid playlist should be rejected with correction");
+
+    assert_eq!(
+        runtime.room_playlist_state("room1").files,
+        Vec::<String>::new(),
+        "invalid playlist should not replace room playlist state"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.client_id == "client-1"
+                && matches!(
+                    &message.message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_change.as_ref().is_some_and(|playlist| {
+                            playlist.files.is_empty()
+                                && playlist.user.as_deref() == Some("room1")
+                        })
+                )
+        }),
+        "sender should receive current playlist correction"
+    );
+}
+
+#[test]
+fn non_controller_playlist_index_update_receives_current_index_correction() {
+    let controlled_room_name = controlled_room_name_for_test("room1", "AB-123-456");
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = format!(
+            r#"{{"Hello":{{"username":"{username}","room":{{"name":"{controlled_room_name}"}},"version":"1.2.255"}}}}"#
+        );
+        runtime
+            .handle_line(client_id, &hello)
+            .expect("hello should establish session");
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"Set":{{"controllerAuth":{{"room":"{controlled_room_name}","password":"AB-123-456"}}}}}}"#
+            ),
+        )
+        .expect("alice auth should succeed");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("controller playlist change should succeed");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":1}}}"#)
+        .expect("controller playlist index should succeed");
+
+    let bob_index_attempt = runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("non-controller playlist index attempt should respond");
+    let bob_messages = decode_directed_lines(&bob_index_attempt);
+
+    assert!(
+        bob_messages.iter().any(|(client_id, message)| {
+            client_id == "client-2"
+                && matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_index.as_ref().is_some_and(|playlist_index| {
+                            playlist_index.index == 1
+                                && playlist_index.user.as_deref()
+                                    == Some(controlled_room_name.as_str())
+                        })
+                )
+        }),
+        "non-controller should receive current playlistIndex correction"
+    );
+}

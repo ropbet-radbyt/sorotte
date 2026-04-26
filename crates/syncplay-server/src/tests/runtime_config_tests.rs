@@ -505,6 +505,80 @@ fn tls_send_dispatch_includes_transport_action_bundle() {
 }
 
 #[test]
+fn protocol_error_dispatch_sends_not_json_error_and_close() {
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", "not-json")
+        .expect("malformed protocol line should produce protocol error dispatch");
+
+    assert_eq!(
+        dispatch_error_message(&dispatch).as_deref(),
+        Some("Not a json encoded string not-json")
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "malformed protocol line should schedule connection close after Error"
+    );
+}
+
+#[test]
+fn protocol_error_dispatch_sends_unknown_command_error_and_close() {
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", r#"{"Bogus":{"x":1}}"#)
+        .expect("unknown command should produce protocol error dispatch");
+
+    assert!(
+        dispatch_error_message(&dispatch)
+            .as_deref()
+            .is_some_and(|message| message.starts_with("Unknown command")),
+        "unknown command should be serialized as protocol Error"
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "unknown command should schedule connection close after Error"
+    );
+}
+
+#[test]
+fn protocol_error_dispatch_sends_not_known_error_for_pre_hello_command_and_close() {
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", r#"{"List":null}"#)
+        .expect("pre-hello command should produce protocol error dispatch");
+
+    assert_eq!(
+        dispatch_error_message(&dispatch).as_deref(),
+        Some("You must be known to server before sending this command")
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "pre-hello command should schedule connection close after Error"
+    );
+}
+
+#[test]
+fn protocol_error_dispatch_sends_hello_argument_error_and_close() {
+    let mut runtime = ServerRuntime::new();
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions("client-1", r#"{"Hello":{"username":"alice"}}"#)
+        .expect("invalid hello should produce protocol error dispatch");
+
+    assert_eq!(
+        dispatch_error_message(&dispatch).as_deref(),
+        Some("Not enough Hello arguments")
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "invalid hello should schedule connection close after Error"
+    );
+}
+
+#[test]
 fn tls_send_returns_false_for_logged_client_even_when_tls_bundle_is_present() {
     let cert_path = temporary_directory_path("tls-after-hello");
     let _ = fs::remove_dir_all(&cert_path);

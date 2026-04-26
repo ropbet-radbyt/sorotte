@@ -385,7 +385,9 @@ impl MpvAdapter {
         self.observed_state.duration_seconds = polled_update.duration_seconds;
         self.observed_state.size_bytes = polled_update.size_bytes;
         self.current_path = polled_update.path.clone();
-        self.record_local_file_update_if_changed(polled_update);
+        if Self::local_file_update_ready_for_sync(&polled_update) {
+            self.record_local_file_update_if_changed(polled_update);
+        }
         self.drain_ipc_events_if_attached();
     }
 
@@ -580,7 +582,9 @@ impl MpvAdapter {
         self.observed_state.path = loaded_update.path.clone();
         self.observed_state.duration_seconds = loaded_update.duration_seconds;
         self.observed_state.size_bytes = loaded_update.size_bytes;
-        self.record_local_file_update_if_changed(loaded_update.clone());
+        if Self::local_file_update_ready_for_sync(&loaded_update) {
+            self.record_local_file_update_if_changed(loaded_update.clone());
+        }
         self.pending_media_load_outcomes
             .push_back(PlayerMediaLoadOutcome::success(
                 requested_target,
@@ -661,7 +665,9 @@ impl MpvAdapter {
         if let Some(size_bytes) = self.observed_state.size_bytes {
             update = update.with_size_bytes(size_bytes);
         }
-        self.record_local_file_update_if_changed(update);
+        if Self::local_file_update_ready_for_sync(&update) {
+            self.record_local_file_update_if_changed(update);
+        }
     }
 
     fn send_ipc_command_if_attached(&mut self, command: Value) -> Result<(), PlayerError> {
@@ -693,6 +699,13 @@ impl MpvAdapter {
         LocalFileUpdate::new(name)
             .with_size_bytes(size_bytes)
             .with_path(path.to_owned())
+    }
+
+    fn local_file_update_ready_for_sync(update: &LocalFileUpdate) -> bool {
+        match update.path.as_deref() {
+            Some(path) if !path.contains("://") => update.duration_seconds.is_some(),
+            _ => true,
+        }
     }
 
     fn media_load_failure_kind_from_message(message: &str) -> PlayerMediaLoadFailureKind {

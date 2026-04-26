@@ -20,15 +20,18 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 use super::{
+    DEFAULT_MAX_FILENAME_LENGTH, DEFAULT_MAX_ROOM_NAME_LENGTH, DEFAULT_PLAYLIST_MAX_ITEMS,
     DirectedOutboundLine, DirectedTransportAction, LEGACY_PERSISTENT_ROOMS_NOTICE,
     LEGACY_SERVER_PASSWORD_REQUIRED_ERROR, LEGACY_SERVER_WRONG_PASSWORD_ERROR,
-    RoomPasswordCheckError, RoomPasswordProvider, SERVER_REAL_VERSION,
-    SERVER_STATE_INTERVAL_SECONDS, ServerApp, ServerRuntime, ServerRuntimeError,
-    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
-    motd_for_client_version, read_network_line_from_stream, run_server_network_loop_until_shutdown,
+    LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError, RoomPasswordProvider, SERVER_REAL_VERSION,
+    SERVER_STATE_INTERVAL_SECONDS, ServerApp, ServerRuntime, ServerRuntimeDispatch,
+    ServerRuntimeError, ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES,
+    default_motd_for_client_version, motd_for_client_version, read_network_line_from_stream,
+    run_server_network_loop_until_shutdown,
 };
 use syncplay_protocol::{
-    ChatPayload, ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
+    ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,
+    decode_message_line, extract_hello_from_message,
 };
 
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
@@ -428,6 +431,22 @@ fn tls_start_response(lines: &[String]) -> Option<String> {
 fn has_start_tls_transport_action(actions: &[DirectedTransportAction], recipient: &str) -> bool {
     actions.iter().any(|action| {
         action.client_id == recipient && action.action == ServerTransportAction::StartTls
+    })
+}
+
+fn has_close_transport_action(actions: &[DirectedTransportAction], recipient: &str) -> bool {
+    actions.iter().any(|action| {
+        action.client_id == recipient && action.action == ServerTransportAction::Close
+    })
+}
+
+fn dispatch_error_message(dispatch: &ServerRuntimeDispatch) -> Option<String> {
+    dispatch.outbound_lines.iter().find_map(|line| {
+        let message = decode_message_line(&line.line).ok()?;
+        let ProtocolMessage::Error(payload) = message else {
+            return None;
+        };
+        Some(payload.error.message)
     })
 }
 

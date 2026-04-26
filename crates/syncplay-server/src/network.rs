@@ -26,6 +26,15 @@ fn dispatch_transport_actions_to_sink(
     }
 }
 
+fn transport_actions_close_client(
+    transport_actions: &[DirectedTransportAction],
+    client_id: &str,
+) -> bool {
+    transport_actions.iter().any(|action| {
+        action.client_id == client_id && action.action == ServerTransportAction::Close
+    })
+}
+
 async fn write_network_line_to_stream<S>(stream: &mut S, line: &str) -> io::Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -216,6 +225,8 @@ async fn run_server_network_client_session(
                         break;
                     }
                 };
+                let close_after_dispatch =
+                    transport_actions_close_client(&dispatch.transport_actions, &client_id);
                 if let Err(source) = route_outbound_lines_for_client_session(
                     &mut transport,
                     &client_id,
@@ -240,6 +251,9 @@ async fn run_server_network_client_session(
                 .await
                 {
                     session_error = Some(ServerNetworkError::Io(source));
+                    break;
+                }
+                if close_after_dispatch {
                     break;
                 }
             }

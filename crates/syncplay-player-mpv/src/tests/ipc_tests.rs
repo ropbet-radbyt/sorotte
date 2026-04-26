@@ -538,9 +538,15 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         r#"{"event":"property-change","name":"path","data":"movie.mkv"}"#,
         r#"{"event":"property-change","name":"duration","data":24.5}"#,
         r#"{"event":"file-loaded"}"#,
-        r#"{"request_id":2,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":3,"error":"success","data":24.5}"#,
-        r#"{"request_id":4,"error":"success","data":1000}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":4,"error":"success","data":24.5}"#,
+        r#"{"request_id":5,"error":"success","data":1000}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -559,6 +565,56 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         .take_local_file_update()
         .expect("file-loaded should emit a local file update");
     assert_eq!(update.path.as_deref(), Some("movie.mkv"));
+    assert_eq!(update.duration_seconds, Some(24.5));
+    assert_eq!(update.size_bytes, Some(1000));
+}
+
+#[test]
+fn attached_open_file_defers_local_file_update_until_duration_is_available() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":4,"error":"success","data":null}"#,
+        r#"{"request_id":5,"error":"success","data":1000}"#,
+        r#"{"request_id":6,"error":"success"}"#,
+        r#"{"request_id":7,"error":"success"}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success"}"#,
+        r#"{"request_id":11,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":12,"error":"success","data":null}"#,
+        r#"{"request_id":13,"error":"success","data":1000}"#,
+        r#"{"request_id":14,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":15,"error":"success","data":24.5}"#,
+        r#"{"request_id":16,"error":"success","data":1000}"#,
+    ]);
+    let mut adapter = MpvAdapter::with_test_transport(transport);
+
+    adapter
+        .open_file("movie.mkv")
+        .expect("attached mpv transport should accept loadfile");
+
+    let outcome = adapter
+        .take_media_load_outcome()
+        .expect("file-loaded should still emit a success outcome");
+    assert_eq!(
+        outcome,
+        PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
+    );
+    assert_eq!(
+        adapter.take_local_file_update(),
+        None,
+        "local file metadata should not publish a transient zero duration while mpv is still probing"
+    );
+
+    let update = adapter
+        .take_local_file_update()
+        .expect("duration availability should release the local file update");
+    assert_eq!(update.path.as_deref(), Some("movie.mkv"));
+    assert_eq!(update.duration_seconds, Some(24.5));
+    assert_eq!(update.size_bytes, Some(1000));
 }
 
 #[test]

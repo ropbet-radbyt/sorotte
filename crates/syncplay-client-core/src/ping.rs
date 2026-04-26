@@ -18,39 +18,29 @@ impl ClientPingMetricsLegacyCompatible {
         let Some(ping) = state.ping.as_ref() else {
             return;
         };
-        let Some(latency_calculation) = ping.latency_calculation else {
+        let Some(client_latency_calculation) = ping.client_latency_calculation else {
             return;
         };
-        let sender_rtt = ping.client_rtt.unwrap_or(0.0);
-        if !sender_rtt.is_finite() || sender_rtt < 0.0 {
+        let Some(server_rtt) = ping.server_rtt else {
             return;
-        }
-        let server_rtt = ping.server_rtt;
-        if let Some(server_rtt_value) = server_rtt
-            && (!server_rtt_value.is_finite() || server_rtt_value < 0.0)
-        {
+        };
+        if !client_latency_calculation.is_finite() || !server_rtt.is_finite() || server_rtt < 0.0 {
             return;
         }
 
-        let current_rtt = now_seconds - latency_calculation;
+        let current_rtt = now_seconds - client_latency_calculation;
         if !current_rtt.is_finite() || current_rtt < 0.0 {
             return;
         }
         self.client_rtt_seconds = current_rtt;
-        if let Some(server_rtt_value) = server_rtt {
-            self.server_rtt_seconds = server_rtt_value;
-        }
+        self.server_rtt_seconds = server_rtt;
         if self.average_rtt_seconds == 0.0 {
             self.average_rtt_seconds = current_rtt;
         }
         self.average_rtt_seconds = self.average_rtt_seconds * LEGACY_PING_MOVING_AVERAGE_WEIGHT
             + current_rtt * (1.0 - LEGACY_PING_MOVING_AVERAGE_WEIGHT);
-        self.forward_delay_seconds = if let Some(server_rtt_value) = server_rtt {
-            if server_rtt_value < current_rtt {
-                self.average_rtt_seconds / 2.0 + (current_rtt - server_rtt_value)
-            } else {
-                self.average_rtt_seconds / 2.0
-            }
+        self.forward_delay_seconds = if server_rtt < current_rtt {
+            self.average_rtt_seconds / 2.0 + (current_rtt - server_rtt)
         } else {
             self.average_rtt_seconds / 2.0
         };

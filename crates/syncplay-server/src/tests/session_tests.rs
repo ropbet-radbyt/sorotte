@@ -30,6 +30,236 @@ fn list_request_returns_room_snapshot_for_session() {
 }
 
 #[test]
+fn hello_truncates_room_name_to_legacy_limit() {
+    let mut runtime = ServerRuntime::default();
+    let long_room = "r".repeat(DEFAULT_MAX_ROOM_NAME_LENGTH + 10);
+    let hello = format!(
+        r#"{{"Hello":{{"username":"alice","room":{{"name":"{long_room}"}},"version":"1.2.255"}}}}"#
+    );
+
+    runtime
+        .handle_line("client-1", &hello)
+        .expect("hello should establish session");
+
+    let expected_room = "r".repeat(DEFAULT_MAX_ROOM_NAME_LENGTH);
+    assert_eq!(
+        runtime
+            .session("client-1")
+            .expect("session should exist")
+            .room,
+        expected_room
+    );
+}
+
+#[test]
+fn set_file_broadcasts_user_file_update_and_list_includes_file() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789}}}"#,
+        )
+        .expect("set file should fan out");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    for recipient in ["client-1", "client-2"] {
+        let file = directed_messages
+            .iter()
+            .find_map(|(client_id, message)| {
+                if client_id != recipient {
+                    return None;
+                }
+                let ProtocolMessage::Set(payload) = message else {
+                    return None;
+                };
+                payload
+                    .set
+                    .user
+                    .as_ref()
+                    .and_then(|users| users.get("alice"))
+                    .and_then(|user| user.file.as_ref())
+            })
+            .expect("recipient should receive alice file update");
+        assert_eq!(file.get("name").and_then(Value::as_str), Some("movie.mkv"));
+        assert_eq!(file.get("duration").and_then(Value::as_f64), Some(95.5));
+        assert_eq!(file.get("size").and_then(Value::as_i64), Some(123456789));
+    }
+
+    let outbound_lines = runtime
+        .handle_line("client-2", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected List message");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    let alice_file = rooms["room1"]["alice"]
+        .file
+        .as_ref()
+        .expect("alice list entry should include file");
+    assert_eq!(
+        alice_file.get("name").and_then(Value::as_str),
+        Some("movie.mkv")
+    );
+    assert_eq!(
+        alice_file.get("duration").and_then(Value::as_f64),
+        Some(95.5)
+    );
+}
+
+#[test]
+fn set_features_updates_list_snapshot_features() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"uiMode":"CLI","chat":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let outbound_lines = runtime
+        .handle_line(
+            "client-1",
+            r#"{"Set":{"features":{"uiMode":"GUI","chat":false}}}"#,
+        )
+        .expect("feature update should be accepted");
+    assert!(
+        outbound_lines.is_empty(),
+        "Python server stores feature updates without immediate fanout"
+    );
+
+    let outbound_lines = runtime
+        .handle_line("client-1", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected List message");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    assert_eq!(
+        rooms["room1"]["alice"].features.as_ref(),
+        Some(&json!({"uiMode":"GUI","chat":false}))
+    );
+}
+
+#[test]
+fn set_room_truncates_room_name_to_legacy_limit() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let long_room = "r".repeat(DEFAULT_MAX_ROOM_NAME_LENGTH + 10);
+    let set_room = format!(r#"{{"Set":{{"room":{{"name":"{long_room}"}}}}}}"#);
+    runtime
+        .handle_line("client-1", &set_room)
+        .expect("set room should succeed");
+
+    assert_eq!(
+        runtime
+            .session("client-1")
+            .expect("session should exist")
+            .room
+            .chars()
+            .count(),
+        DEFAULT_MAX_ROOM_NAME_LENGTH
+    );
+}
+
+#[test]
+fn set_empty_file_clears_list_file_without_broadcast() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5}}}"#,
+        )
+        .expect("initial set file should succeed");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"file":{}}}"#)
+        .expect("empty set file should succeed");
+    assert!(
+        directed_lines.is_empty(),
+        "Python server stores empty file state but does not broadcast falsey file updates"
+    );
+
+    let outbound_lines = runtime
+        .handle_line("client-1", r#"{"List":null}"#)
+        .expect("list request should succeed");
+    let response = decode_message_line(&outbound_lines[0]).expect("list response should decode");
+    let ProtocolMessage::List(payload) = response else {
+        panic!("expected List message");
+    };
+    let ListPayload::Rooms(rooms) = payload.list else {
+        panic!("expected room snapshot list");
+    };
+    assert_eq!(rooms["room1"]["alice"].file.as_ref(), Some(&json!({})));
+}
+
+#[test]
+fn set_file_truncates_filename_to_legacy_limit() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let long_name = "x".repeat(DEFAULT_MAX_FILENAME_LENGTH + 10);
+    let set_file = format!(r#"{{"Set":{{"file":{{"name":"{long_name}"}}}}}}"#);
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", &set_file)
+        .expect("set file should succeed");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let file_name = directed_messages
+        .iter()
+        .find_map(|(_, message)| {
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            payload
+                .set
+                .user
+                .as_ref()
+                .and_then(|users| users.get("alice"))
+                .and_then(|user| user.file.as_ref())
+                .and_then(|file| file.get("name"))
+                .and_then(Value::as_str)
+        })
+        .expect("file update should include a name");
+
+    assert_eq!(file_name.chars().count(), DEFAULT_MAX_FILENAME_LENGTH);
+}
+
+#[test]
 fn set_room_moves_session_between_rooms() {
     let mut runtime = ServerRuntime::default();
     runtime
@@ -303,8 +533,20 @@ fn hello_response_features_reflect_chat_readiness_and_length_limits() {
         Some(42)
     );
     assert_eq!(
+        features.get("maxRoomNameLength").and_then(Value::as_u64),
+        Some(DEFAULT_MAX_ROOM_NAME_LENGTH as u64)
+    );
+    assert_eq!(
+        features.get("maxFilenameLength").and_then(Value::as_u64),
+        Some(DEFAULT_MAX_FILENAME_LENGTH as u64)
+    );
+    assert_eq!(
         features.get("maxUsernameLength").and_then(Value::as_u64),
         Some(12)
+    );
+    assert_eq!(
+        features.get("uiMode").and_then(Value::as_str),
+        Some(LEGACY_UI_MODE_UNKNOWN)
     );
 }
 
@@ -364,6 +606,28 @@ fn hello_requires_server_password_token_when_configured() {
     assert!(
         runtime.session("client-1").is_none(),
         "session should not be created after password failure"
+    );
+}
+
+#[test]
+fn hello_password_error_dispatch_schedules_close_after_error() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_server_password_token(Some("secret".to_owned()));
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("password error should produce dispatch");
+
+    assert_eq!(
+        dispatch_error_message(&dispatch).as_deref(),
+        Some(LEGACY_SERVER_PASSWORD_REQUIRED_ERROR)
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "password error should close after Error like Python dropWithError"
     );
 }
 
@@ -636,4 +900,160 @@ fn ready_updates_are_broadcast_to_room_members() {
         has_ready_update(&directed_messages, "client-2", "alice", true),
         "peer should receive ready update"
     );
+}
+
+#[test]
+fn ready_update_defaults_manually_initiated_false_when_omitted() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"ready":{"isReady":true}}}"#)
+        .expect("ready update should fan out");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let manually_initiated = directed_messages
+        .iter()
+        .find_map(|(_, message)| {
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            payload
+                .set
+                .ready
+                .as_ref()
+                .and_then(|ready| ready.manually_initiated)
+        })
+        .expect("ready update should include manuallyInitiated");
+
+    assert!(
+        !manually_initiated,
+        "Python server defaults missing manuallyInitiated to false"
+    );
+}
+
+#[test]
+fn controller_can_set_other_user_readiness_in_current_room() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"ready":{"username":"bob","isReady":true,"manuallyInitiated":true}}}"#,
+        )
+        .expect("controller ready update should fan out");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    for recipient in ["client-1", "client-2"] {
+        assert!(
+            directed_messages.iter().any(|(client_id, message)| {
+                if client_id != recipient {
+                    return false;
+                }
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.ready.as_ref().is_some_and(|ready| {
+                            ready.username.as_deref() == Some("bob")
+                                && ready.is_ready
+                                && ready.set_by.as_deref() == Some("alice")
+                        })
+                )
+            }),
+            "room peer should receive bob readiness update setBy alice"
+        );
+    }
+    assert_eq!(runtime.user_ready("bob", "room1"), Some(true));
+}
+
+#[test]
+fn controller_ready_update_sends_legacy_chat_only_to_clients_without_set_others_readiness() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"setOthersReadiness":true}}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.7.1"}}"#,
+        )
+        .expect("bob hello should establish session");
+    runtime
+        .handle_line(
+            "client-3",
+            r#"{"Hello":{"username":"carol","room":{"name":"room1"},"version":"1.7.5","features":{"setOthersReadiness":true}}}"#,
+        )
+        .expect("carol hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"ready":{"username":"bob","isReady":true,"manuallyInitiated":true}}}"#,
+        )
+        .expect("controller ready update should fan out");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let chat_recipients: Vec<_> = directed_messages
+        .iter()
+        .filter_map(|(client_id, message)| match message {
+            ProtocolMessage::Chat(payload) => Some((client_id.as_str(), &payload.chat)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(chat_recipients.len(), 1);
+    assert_eq!(chat_recipients[0].0, "client-2");
+    assert_eq!(
+        chat_recipients[0].1,
+        &ChatPayload::message("alice", "I have set bob as ready.")
+    );
+}
+
+#[test]
+fn non_controller_cannot_set_other_user_readiness_in_controlled_room() {
+    let mut runtime = ServerRuntime::default();
+    let controlled_room = controlled_room_name_for_test("room1", "ABC-123-456");
+    let alice_hello = format!(
+        r#"{{"Hello":{{"username":"alice","room":{{"name":"{controlled_room}"}},"version":"1.2.255"}}}}"#
+    );
+    let bob_hello = format!(
+        r#"{{"Hello":{{"username":"bob","room":{{"name":"{controlled_room}"}},"version":"1.2.255"}}}}"#
+    );
+    runtime
+        .handle_line("client-1", &alice_hello)
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line("client-2", &bob_hello)
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"ready":{"username":"bob","isReady":true,"manuallyInitiated":true}}}"#,
+        )
+        .expect("non-controller ready update should be ignored");
+
+    assert!(
+        directed_lines.is_empty(),
+        "non-controller should not be allowed to change another user's readiness"
+    );
+    assert_eq!(runtime.user_ready("bob", &controlled_room), Some(false));
 }

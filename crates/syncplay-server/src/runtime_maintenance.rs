@@ -448,11 +448,13 @@ impl ServerRuntime {
         client_id: &str,
         client_latency: f64,
     ) {
+        let now_seconds = self.current_time_seconds();
         let state_counters = self
             .client_state_counters
             .entry(client_id.to_owned())
             .or_default();
         state_counters.pending_client_latency_calculation = Some(client_latency);
+        state_counters.pending_client_latency_calculation_arrival_time = Some(now_seconds);
     }
 
     pub(crate) fn ingest_client_ping_metrics(
@@ -512,11 +514,22 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
     ) -> (Option<f64>, Option<u32>) {
+        let now_seconds = self.current_time_seconds();
         let state_counters = self
             .client_state_counters
             .entry(client_id.to_owned())
             .or_default();
         let pending_client_latency = state_counters.pending_client_latency_calculation.take();
+        let pending_client_latency_arrival_time = state_counters
+            .pending_client_latency_calculation_arrival_time
+            .take();
+        let pending_client_latency = pending_client_latency.map(|client_latency| {
+            let processing_time = pending_client_latency_arrival_time
+                .map(|arrival_time| now_seconds - arrival_time)
+                .filter(|processing_time| processing_time.is_finite() && *processing_time >= 0.0)
+                .unwrap_or(0.0);
+            client_latency + processing_time
+        });
         let pending_client_ignoring = state_counters.pending_client_ignoring_on_the_fly.take();
         (pending_client_latency, pending_client_ignoring)
     }
@@ -578,6 +591,18 @@ impl ServerRuntime {
         self.sessions
             .iter()
             .filter(|(_, session)| session.room == room_name)
+            .map(|(client_id, _)| client_id.clone())
+            .collect()
+    }
+
+    pub(crate) fn legacy_readiness_chat_clients_in_room(&self, room_name: &str) -> Vec<String> {
+        self.sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.room == room_name
+                    && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
+                    && !client_supports_feature(session.features.as_ref(), "setOthersReadiness")
+            })
             .map(|(client_id, _)| client_id.clone())
             .collect()
     }
@@ -678,7 +703,7 @@ impl ServerRuntime {
             let ready = self.user_ready(&session.username, &session.room);
             let mut entry = ListUserEntry::new()
                 .with_position(0.0)
-                .with_file(json!({}))
+                .with_file(session.file.clone().unwrap_or_else(|| json!({})))
                 .with_controller(self.user_is_room_controller(&session.username, &session.room));
             if let Some(ready) = ready {
                 entry = entry.with_is_ready(ready);

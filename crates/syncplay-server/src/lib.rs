@@ -21,7 +21,8 @@ use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
     ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
     PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_message_line, encode_message_line,
+    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_line,
+    encode_message_line,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -44,11 +45,16 @@ const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
 const LEGACY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
 const LEGACY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
 const LEGACY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
+const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
 const LEGACY_UI_MODE_GRAPHICAL: &str = "GUI";
 const LEGACY_UI_MODE_UNKNOWN: &str = "Unknown";
 const DEFAULT_CONTROLLED_ROOM_HASH_SALT: &str = "syncplay-rs-controlled-room-v1";
 const DEFAULT_MAX_CHAT_MESSAGE_LENGTH: usize = 150;
 const DEFAULT_MAX_USERNAME_LENGTH: usize = 16;
+const DEFAULT_MAX_ROOM_NAME_LENGTH: usize = 35;
+const DEFAULT_MAX_FILENAME_LENGTH: usize = 250;
+const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
+const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
 const SERVER_STATE_INTERVAL_SECONDS: f64 = 1.0;
 const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
@@ -58,6 +64,11 @@ const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
 const TLS_CERT_FILENAME: &str = "cert.pem";
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
+const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";
+const LEGACY_SERVER_NOT_JSON_ERROR_PREFIX: &str = "Not a json encoded string";
+const LEGACY_SERVER_NOT_KNOWN_ERROR: &str =
+    "You must be known to server before sending this command";
+const LEGACY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
 
 mod app;
 mod auth;
@@ -90,6 +101,7 @@ pub struct ServerSession {
     pub room: String,
     pub version: String,
     pub features: Option<Value>,
+    pub file: Option<Value>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -152,6 +164,7 @@ pub struct ServerRuntimeDispatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerTransportAction {
     StartTls,
+    Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +248,7 @@ struct ClientStateCounters {
     server_ignoring_on_the_fly: u32,
     pending_client_ignoring_on_the_fly: Option<u32>,
     pending_client_latency_calculation: Option<f64>,
+    pending_client_latency_calculation_arrival_time: Option<f64>,
     ping_rtt_seconds: f64,
     ping_average_rtt_seconds: f64,
     ping_forward_delay_seconds: f64,
