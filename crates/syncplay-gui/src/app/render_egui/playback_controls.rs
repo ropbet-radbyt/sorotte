@@ -72,8 +72,9 @@ impl GuiWidgetEguiRenderer {
             .push_id(&node.id, |ui| {
                 let mut clicked = false;
                 ui.horizontal(|ui| {
-                    let button_width = Self::playback_ready_button_width(ui.available_width());
-                    let side_space = ((ui.available_width() - button_width).max(0.0)) * 0.5;
+                    let available_width = Self::visible_available_width(ui);
+                    let button_width = Self::playback_ready_button_width(available_width);
+                    let side_space = ((available_width - button_width).max(0.0)) * 0.5;
                     if side_space > 0.0 {
                         ui.add_space(side_space);
                     }
@@ -121,10 +122,14 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn playback_button_size(ui: &egui::Ui) -> egui::Vec2 {
-        egui::vec2(
-            ui.available_width().max(0.0),
-            ui.available_height().max(ui.spacing().interact_size.y),
-        )
+        let available_height = ui.available_height();
+        let min_height = ui.spacing().interact_size.y.min(36.0).max(1.0);
+        let height = if available_height.is_finite() && available_height > 0.0 {
+            available_height.clamp(min_height, 40.0)
+        } else {
+            40.0
+        };
+        egui::vec2(Self::visible_available_width(ui).max(1.0), height)
     }
 
     fn playback_ready_button_width(available_width: f32) -> f32 {

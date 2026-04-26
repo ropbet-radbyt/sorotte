@@ -3,7 +3,8 @@ use syncplay_client_app::app_boundary::commands::controlled_room_base_name_legac
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
     GuiConfigurationTab, GuiPendingOperationKind, GuiShellModal, GuiShellView,
-    SyncplayGuiShellAppState, browser_domain_from_url, browser_is_url, browser_uri_is_trusted,
+    GuiStreamHelperHealth, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    playlist_entries_from_multiline_text,
 };
 use super::support::{
     bool_label, configured_room_name_text, joined_room_name_text, normalized_editable_text,
@@ -15,6 +16,7 @@ mod configuration;
 mod main_window;
 mod media_search;
 mod menus;
+mod plugins;
 mod public_servers;
 mod shell;
 

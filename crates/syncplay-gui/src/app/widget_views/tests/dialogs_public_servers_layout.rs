@@ -201,8 +201,10 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     );
     let summary_column = main_window.find("main-window:summary-column").unwrap();
     assert_eq!(summary_column.kind, GuiWidgetKind::Layout);
-    let browser = main_window.find("main-window:browser").unwrap();
-    assert_eq!(browser.min_content_height, Some(260.0));
+    let room_panel = main_window.find("main-window:connection").unwrap();
+    assert_eq!(room_panel.label, "Room");
+    assert_eq!(room_panel.min_content_height, Some(320.0));
+    assert!(main_window.find("main-window:browser").is_none());
     let playlist = main_window.find("main-window:playlist").unwrap();
     assert_eq!(playlist.min_content_height, Some(220.0));
     let chat = main_window.find("main-window:chat").unwrap();
@@ -217,26 +219,11 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
         .collect();
     assert_eq!(
         top_region_children,
-        vec!["main-window:summary-column", "main-window:work-area"]
-    );
-    let work_area = top_region.find("main-window:work-area").unwrap();
-    assert_eq!(work_area.column_span, 2);
-    let work_top_region = top_region.find("main-window:work-top-region").unwrap();
-    assert_eq!(
-        work_top_region.layout_mode,
-        Some(GuiLayoutMode::ResponsiveColumns {
-            min_column_width: 240.0,
-            max_columns: 2,
-        })
-    );
-    let work_top_children: Vec<_> = work_top_region
-        .children
-        .iter()
-        .map(|child| child.id.as_str())
-        .collect();
-    assert_eq!(
-        work_top_children,
-        vec!["main-window:browser", "main-window:playlist-column"]
+        vec![
+            "main-window:summary-column",
+            "main-window:playlist-column",
+            "main-window:chat-panel",
+        ]
     );
 
     let public_servers = state.public_server_widget_tree();
@@ -249,4 +236,21 @@ fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() 
     assert_eq!(media_search.kind, GuiWidgetKind::Panel);
     assert!(media_search.find("media-search:directories").is_some());
     assert!(media_search.find("media-search:utility").is_some());
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins.layout_mode,
+        Some(GuiLayoutMode::ResponsiveColumns {
+            min_column_width: 260.0,
+            max_columns: 3,
+        })
+    );
+    assert!(plugins.find("plugins:list:stream-support").is_some());
+    assert_eq!(
+        plugins
+            .find("plugins:stream-support")
+            .expect("stream support plugin detail should exist")
+            .column_span,
+        2
+    );
 }

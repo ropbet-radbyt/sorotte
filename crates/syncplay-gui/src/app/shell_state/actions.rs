@@ -77,6 +77,7 @@ pub(in crate::app) enum GuiShellAction {
         message: String,
     },
     DismissTransientNotification(usize),
+    DismissSetupAlert,
     ClearTransientNotifications,
     BeginConfigurationTextEdit {
         section: &'static str,

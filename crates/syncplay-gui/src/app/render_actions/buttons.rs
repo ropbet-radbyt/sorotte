@@ -59,6 +59,16 @@ impl GuiWidgetEguiRenderer {
                 .map(|domain| vec![GuiShellAction::AddTrustedDomain(domain)])
                 .unwrap_or_default();
         }
+        if let Some(index) = Self::main_window_playlist_row_action_index(&node.id, "remove") {
+            return (index < state.main_window.playlist.len())
+                .then(|| {
+                    vec![
+                        GuiShellAction::SelectMainWindowPlaylist(index),
+                        GuiShellAction::RemoveSelectedMainWindowPlaylist,
+                    ]
+                })
+                .unwrap_or_default();
+        }
         if node.id == "main-window:playlist:add-files" {
             return Self::pick_media_files(state)
                 .map(Self::shared_playlist_entries_for_media_paths)
@@ -139,6 +149,18 @@ impl GuiWidgetEguiRenderer {
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "configuration:alert:close" => vec![GuiShellAction::DismissSetupAlert],
+            "configuration:alert:fix-player-path" => vec![
+                GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+                GuiShellAction::FocusConfigurationControl {
+                    section: "Connection",
+                    label: "Player Path",
+                },
+                GuiShellAction::BeginConfigurationTextEdit {
+                    section: "Connection",
+                    label: "Player Path",
+                },
+            ],
             "config-player-setup:autodetect" | "main-window:player-setup:autodetect" => {
                 Self::actions_for_player_setup_autodetect()
             }
@@ -148,21 +170,31 @@ impl GuiWidgetEguiRenderer {
             "config-player-setup:retry" | "main-window:player-setup:retry" => {
                 vec![GuiShellAction::RetryPlayerLaunch]
             }
-            "config-stream-support:import-downloader" => {
+            "config-stream-support:import-downloader"
+            | "plugins:stream-support:import-downloader" => {
                 Self::actions_for_stream_helper_import_downloader(state)
             }
-            "config-stream-support:import-js-runtime" => {
+            "config-stream-support:import-js-runtime"
+            | "plugins:stream-support:import-js-runtime" => {
                 Self::actions_for_stream_helper_import_js_runtime(state)
             }
             "config-stream-support:manage" => {
                 vec![GuiShellAction::OpenModal(GuiShellModal::StreamSupport)]
             }
-            "config-stream-support:install" => vec![GuiShellAction::InstallStreamHelper],
-            "config-stream-support:open-location" => {
+            "config-stream-support:install"
+            | "plugins:stream-support:install"
+            | "plugins:stream-support:alert:install" => vec![GuiShellAction::InstallStreamHelper],
+            "config-stream-support:open-location" | "plugins:stream-support:open-location" => {
                 vec![GuiShellAction::OpenStreamHelperInstallLocation]
             }
-            "config-stream-support:recheck" => vec![GuiShellAction::RecheckStreamHelper],
-            "config-stream-support:retry" => vec![GuiShellAction::RetryPendingStreamMediaOpen],
+            "config-stream-support:recheck"
+            | "plugins:stream-support:recheck"
+            | "plugins:stream-support:alert:recheck" => vec![GuiShellAction::RecheckStreamHelper],
+            "config-stream-support:retry"
+            | "plugins:stream-support:retry"
+            | "plugins:stream-support:alert:retry" => {
+                vec![GuiShellAction::RetryPendingStreamMediaOpen]
+            }
             "main-window:player-setup:open-settings" => vec![
                 GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
@@ -418,8 +450,7 @@ impl GuiWidgetEguiRenderer {
             }
             "shell:modal:stream-support:open-settings" => vec![
                 GuiShellAction::CloseModal,
-                GuiShellAction::SwitchView(GuiShellView::Setup),
-                GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+                GuiShellAction::SwitchView(GuiShellView::Plugins),
             ],
             "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
             "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],

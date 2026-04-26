@@ -81,6 +81,7 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::CancelMainWindowUserEdit => self.apply_editing_action(action),
             GuiShellAction::PushTransientNotification { .. }
             | GuiShellAction::DismissTransientNotification(_)
+            | GuiShellAction::DismissSetupAlert
             | GuiShellAction::ClearTransientNotifications
             | GuiShellAction::BeginConfigurationTextEdit { .. }
             | GuiShellAction::UpdateConfigurationTextEdit(_)

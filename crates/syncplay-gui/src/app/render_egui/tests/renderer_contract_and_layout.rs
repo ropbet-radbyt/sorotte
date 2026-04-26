@@ -45,6 +45,7 @@ fn gui_widget_egui_renderer_responsive_column_planner_covers_compact_medium_and_
     let compact = GuiWidgetEguiRenderer::plan_responsive_columns(340.0, 12.0, 360.0, 3, [1, 1, 1]);
     assert_eq!(compact.column_count, 1);
     assert_eq!(compact.row_count, 3);
+    assert_eq!(compact.column_width, 340.0);
     assert_eq!(
         compact.rows,
         vec![
@@ -178,7 +179,7 @@ fn gui_widget_egui_renderer_main_window_top_region_scales_across_compact_medium_
     let compact =
         GuiWidgetEguiRenderer::plan_responsive_columns(340.0, 12.0, 360.0, 3, spans.clone());
     assert_eq!(compact.column_count, 1);
-    assert_eq!(compact.row_count, 2);
+    assert_eq!(compact.row_count, 3);
 
     let medium =
         GuiWidgetEguiRenderer::plan_responsive_columns(820.0, 12.0, 360.0, 3, spans.clone());
@@ -197,8 +198,12 @@ fn gui_widget_egui_renderer_room_dashboard_breakpoints_stack_balance_and_widen()
         super::super::GuiRoomDashboardLayout::Narrow
     );
     assert_eq!(
-        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(900.0),
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(760.0),
         super::super::GuiRoomDashboardLayout::Medium
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_layout_for_width(900.0),
+        super::super::GuiRoomDashboardLayout::Wide
     );
     assert_eq!(
         GuiWidgetEguiRenderer::room_dashboard_layout_for_width(1440.0),
@@ -208,6 +213,74 @@ fn gui_widget_egui_renderer_room_dashboard_breakpoints_stack_balance_and_widen()
         GuiWidgetEguiRenderer::room_dashboard_layout_for_width(4096.0),
         super::super::GuiRoomDashboardLayout::Wide
     );
+}
+
+#[test]
+fn gui_widget_egui_renderer_room_dashboard_keeps_inset_inside_viewport() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_content_width(0.0),
+        0.0
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_content_width(820.0),
+        796.0
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_content_width(1600.0),
+        1576.0
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_room_dashboard_row_groups_align_wide_top_panels() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_row_groups_for_width(520.0),
+        vec![vec![
+            "main-window:connection",
+            "main-window:playlist-column",
+            "main-window:chat-panel",
+        ]]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_row_groups_for_width(760.0),
+        vec![
+            vec!["main-window:connection", "main-window:playlist-column"],
+            vec!["main-window:chat-panel"],
+        ]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::room_dashboard_row_groups_for_width(920.0),
+        vec![
+            vec!["main-window:connection", "main-window:playlist-column"],
+            vec!["main-window:chat-panel"],
+        ]
+    );
+}
+
+#[test]
+fn gui_widget_egui_renderer_plugins_surface_uses_bounded_rail_on_wide_widths() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::plugins_surface_split_for_width(520.0),
+        None
+    );
+
+    let (medium_rail, medium_detail) =
+        GuiWidgetEguiRenderer::plugins_surface_split_for_width(900.0)
+            .expect("medium plugins surface should split");
+    assert_eq!(medium_rail, 220.0);
+    assert_eq!(medium_detail, 668.0);
+
+    let (wide_rail, wide_detail) = GuiWidgetEguiRenderer::plugins_surface_split_for_width(1600.0)
+        .expect("wide plugins surface should split");
+    assert_eq!(wide_rail, 280.0);
+    assert_eq!(wide_detail, 1308.0);
+}
+
+#[test]
+fn gui_widget_egui_renderer_form_label_width_stays_inside_available_row() {
+    assert_eq!(GuiWidgetEguiRenderer::form_label_width(560.0, 160.0), 160.0);
+    assert_eq!(GuiWidgetEguiRenderer::form_label_width(240.0, 160.0), 96.0);
+    assert_eq!(GuiWidgetEguiRenderer::form_label_width(60.0, 160.0), 60.0);
 }
 
 #[test]

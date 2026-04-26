@@ -134,7 +134,83 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
 }
 
 #[test]
-fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
+fn gui_shell_app_state_projects_actionable_setup_alerts_only_after_feedback() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    assert!(
+        state
+            .configuration_widget_tree()
+            .find("configuration:action-alert")
+            .is_none(),
+        "setup alerts should be hidden by default"
+    );
+
+    assert!(state.apply(GuiShellAction::PushTransientNotification {
+        level: GuiTransientNotificationLevel::Success,
+        message: "Configuration saved.".to_owned(),
+    }));
+    let success_tree = state.configuration_widget_tree();
+    assert_eq!(
+        success_tree
+            .find("configuration:alert:level")
+            .and_then(|node| node.value.as_deref()),
+        Some("success")
+    );
+    assert_eq!(
+        success_tree
+            .find("configuration:alert:message")
+            .and_then(|node| node.value.as_deref()),
+        Some("Configuration saved.")
+    );
+    let close = success_tree
+        .find("configuration:alert:close")
+        .expect("setup alert close button should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, close),
+        vec![GuiShellAction::DismissSetupAlert]
+    );
+    assert!(state.apply(GuiShellAction::DismissSetupAlert));
+    assert!(
+        state
+            .configuration_widget_tree()
+            .find("configuration:action-alert")
+            .is_none()
+    );
+
+    assert!(state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
+        GuiErrorRuntimeSnapshot {
+            last_action_error: Some("Player path is invalid.".to_owned()),
+        },
+    )));
+    let error_tree = state.configuration_widget_tree();
+    assert_eq!(
+        error_tree
+            .find("configuration:alert:level")
+            .and_then(|node| node.value.as_deref()),
+        Some("error")
+    );
+    let fix_player_path = error_tree
+        .find("configuration:alert:fix-player-path")
+        .expect("player-path alert action should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, fix_player_path),
+        vec![
+            GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
+            GuiShellAction::FocusConfigurationControl {
+                section: "Connection",
+                label: "Player Path",
+            },
+            GuiShellAction::BeginConfigurationTextEdit {
+                section: "Connection",
+                label: "Player Path",
+            },
+        ]
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         ..StoredClientSettingsMvp::default()
     });
@@ -163,17 +239,30 @@ fn gui_shell_app_state_projects_stream_support_into_configuration_widgets() {
     );
 
     let configuration = state.configuration_widget_tree();
-    assert!(configuration.find("config-stream-support").is_some());
     assert_eq!(
-        configuration
-            .find("config-stream-support:summary")
+        configuration.find("config-stream-support"),
+        None,
+        "stream support should not be projected inside setup"
+    );
+
+    let plugins = state.plugins_widget_tree();
+    assert!(plugins.find("plugins:stream-support").is_some());
+    assert_eq!(
+        plugins
+            .find("plugins:stream-support:summary")
             .and_then(|node| node.value.as_deref()),
         Some("Extractor-backed page URLs need yt-dlp before mpv can load them.")
     );
+    assert_eq!(
+        plugins
+            .find("plugins:stream-support:alert:level")
+            .and_then(|node| node.value.as_deref()),
+        Some("warning")
+    );
     assert!(
-        configuration
-            .find("config-stream-support:manage")
-            .expect("manage button should exist")
+        plugins
+            .find("plugins:stream-support:recheck")
+            .expect("recheck button should exist")
             .enabled
     );
 
@@ -244,23 +333,23 @@ fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets(
         )
     ));
 
-    let configuration = state.configuration_widget_tree();
+    let plugins = state.plugins_widget_tree();
     assert_eq!(
-        configuration
-            .find("config-stream-support:remediation")
+        plugins
+            .find("plugins:stream-support:remediation")
             .and_then(|node| node.value.as_deref()),
         Some("Downloading yt-dlp")
     );
     assert_eq!(
-        configuration
-            .find("config-stream-support:remediation-progress")
+        plugins
+            .find("plugins:stream-support:remediation-progress")
             .and_then(|node| node.value.as_deref()),
         Some("25%")
     );
     assert!(
-        configuration
-            .find("config-stream-support:manage")
-            .expect("manage button should exist")
+        !plugins
+            .find("plugins:stream-support:install")
+            .expect("install button should exist")
             .enabled
     );
 

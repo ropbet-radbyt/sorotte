@@ -14,6 +14,21 @@ impl SyncplayGuiShellAppState {
         let has_joined_room = joined_room_name_text(&self.main_window.room_name).is_some();
         let playlist_has_entries = !self.main_window.playlist.is_empty();
         let controls_available = playlist_has_entries && self.pending_operation.is_none();
+        let local_user_ready = self.displayed_local_main_window_user_ready();
+        let ready_button = GuiWidgetNode::leaf(
+            "main-window:control:set-ready",
+            if local_user_ready {
+                "Ready"
+            } else {
+                "Not Ready"
+            },
+            GuiWidgetKind::Button,
+            None,
+            self.main_window.playback.can_set_ready
+                && controls_available
+                && !self.local_ready_transition_pending(),
+            false,
+        );
         let saved_session_target = self.saved_session_connect_target();
         let connection_status = match self.pending_operation.as_ref().map(|pending| pending.kind) {
             Some(GuiPendingOperationKind::ConnectSavedServer) => "connecting",
@@ -26,12 +41,6 @@ impl SyncplayGuiShellAppState {
             .as_ref()
             .map(|target| target.address.clone())
             .unwrap_or_else(|| "(not configured)".to_owned());
-        let username = self
-            .configuration
-            .control_value("Connection", "Username")
-            .and_then(normalized_editable_text)
-            .unwrap_or_else(|| "(not configured)".to_owned());
-
         let player_setup_panel = self.player_setup_issue.as_ref().map(|issue| {
             GuiWidgetNode::branch(
                 "main-window:player-setup",
@@ -107,59 +116,168 @@ impl SyncplayGuiShellAppState {
             )
         });
 
+        let connection_status_tooltip = match connection_status {
+            "connected" => format!("Connected to {connection_target}."),
+            "connecting" => format!("Connecting to {connection_target}."),
+            "disconnecting" => "Disconnecting from the current session.".to_owned(),
+            "disconnected" => format!("Disconnected. Saved server: {connection_target}."),
+            _ => "No server is configured.".to_owned(),
+        };
+        let room_control_tooltip = self.main_window.room_control_status.clone();
+        let mut participant_indices: Vec<usize> = self
+            .main_window
+            .users
+            .iter()
+            .enumerate()
+            .filter(|(_, user)| user.room_name == self.main_window.room_name)
+            .map(|(index, _)| index)
+            .collect();
+        participant_indices.sort_by_key(|index| {
+            let user = &self.main_window.users[*index];
+            (!user.is_self, *index)
+        });
+        let mut participant_children = participant_indices
+            .into_iter()
+            .map(|user_index| {
+                let user = &self.main_window.users[user_index];
+                let mut cue_parts = Vec::new();
+                if !user.has_file {
+                    cue_parts.push("no-file".to_owned());
+                }
+                if user.filename_differs {
+                    cue_parts.push("name-diff".to_owned());
+                }
+                if user.filesize_differs {
+                    cue_parts.push("size-diff".to_owned());
+                }
+                if user.fileduration_differs {
+                    cue_parts.push("duration-diff".to_owned());
+                }
+                if user.file_is_url && !user.file_is_trusted {
+                    cue_parts.push("untrusted-url".to_owned());
+                }
+                let cue_suffix = if cue_parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", cue_parts.join(", "))
+                };
+                let mut user_children = vec![GuiWidgetNode::layout(
+                    format!("main-window:user:{user_index}:summary"),
+                    format!("{} Summary", user.username),
+                    GuiLayoutMode::KeyValueGrid {
+                        min_pair_width: 220.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:state"),
+                            "State",
+                            GuiWidgetKind::Status,
+                            Some(format!(
+                                "self={}, ready={}, controller={}",
+                                bool_label(user.is_self),
+                                bool_label(user.is_ready),
+                                bool_label(user.is_controller),
+                            )),
+                            true,
+                            user.is_self,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:size"),
+                            "Size",
+                            GuiWidgetKind::Status,
+                            Some(if user.file_size_label.is_empty() {
+                                "(none)".to_owned()
+                            } else {
+                                user.file_size_label.clone()
+                            }),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:duration"),
+                            "Duration",
+                            GuiWidgetKind::Status,
+                            Some(if user.file_duration_label.is_empty() {
+                                "(none)".to_owned()
+                            } else {
+                                user.file_duration_label.clone()
+                            }),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            format!("main-window:user:{user_index}:file"),
+                            "File",
+                            GuiWidgetKind::Status,
+                            Some(format!("{}{}", user.file_name_label, cue_suffix)),
+                            true,
+                            false,
+                        ),
+                    ],
+                )];
+                if user.is_self {
+                    user_children.push(ready_button.clone());
+                }
+
+                let mut user_panel = GuiWidgetNode::branch(
+                    format!("main-window:user:{user_index}"),
+                    &user.username,
+                    GuiWidgetKind::Panel,
+                    user_children,
+                );
+                user_panel.selected = user.is_self;
+                user_panel
+            })
+            .collect::<Vec<_>>();
+        if participant_children.is_empty() {
+            participant_children.push(GuiWidgetNode::leaf(
+                "main-window:participants:empty",
+                "Participants",
+                GuiWidgetKind::Status,
+                Some("No users in this room.".to_owned()),
+                true,
+                false,
+            ));
+        }
+
         let mut session_summary_children = vec![
-            GuiWidgetNode::layout(
-                "main-window:session-summary:grid",
-                "Session Summary Grid",
-                GuiLayoutMode::KeyValueGrid {
-                    min_pair_width: 220.0,
-                },
-                vec![
-                    GuiWidgetNode::leaf(
-                        "main-window:connection-status",
-                        "Status",
-                        GuiWidgetKind::Status,
-                        Some(connection_status.to_owned()),
-                        true,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:connection-target",
-                        "Server",
-                        GuiWidgetKind::Status,
-                        Some(connection_target),
-                        true,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:username",
-                        "Username",
-                        GuiWidgetKind::Status,
-                        Some(username),
-                        true,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:room",
-                        "Room",
-                        GuiWidgetKind::Status,
-                        Some(self.main_window.room_name.clone()),
-                        true,
-                        false,
-                    ),
-                    GuiWidgetNode::leaf(
-                        "main-window:room-control",
-                        "Room Control",
-                        GuiWidgetKind::Status,
-                        Some(self.main_window.room_control_status.clone()),
-                        true,
-                        false,
-                    ),
-                ],
+            GuiWidgetNode::leaf(
+                "main-window:connection-status",
+                "Status",
+                GuiWidgetKind::Status,
+                Some(connection_status.to_owned()),
+                true,
+                false,
+            )
+            .with_tooltip(connection_status_tooltip),
+            GuiWidgetNode::leaf(
+                "main-window:connection-target",
+                "Server",
+                GuiWidgetKind::Status,
+                Some(connection_target),
+                true,
+                false,
             ),
+            GuiWidgetNode::leaf(
+                "main-window:room",
+                "Room",
+                GuiWidgetKind::Status,
+                Some(self.main_window.room_name.clone()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "main-window:room-control",
+                "Room Control",
+                GuiWidgetKind::Status,
+                Some(self.main_window.room_control_status.clone()),
+                true,
+                false,
+            )
+            .with_tooltip(room_control_tooltip),
             GuiWidgetNode::layout(
-                "main-window:connection:buttons",
-                "Connection Buttons",
+                "main-window:room-header:actions",
+                "Room Header Actions",
                 GuiLayoutMode::ButtonWrap {
                     min_button_width: 140.0,
                 },
@@ -182,26 +300,24 @@ impl SyncplayGuiShellAppState {
                     ),
                 ],
             ),
-            GuiWidgetNode::layout(
-                "main-window:room-actions:toggle-row",
-                "Room Change",
-                GuiLayoutMode::ButtonWrap {
-                    min_button_width: 140.0,
-                },
-                vec![GuiWidgetNode::leaf(
+        ];
+
+        if let Some(header_actions) = session_summary_children
+            .iter_mut()
+            .find(|node| node.id == "main-window:room-header:actions")
+        {
+            header_actions.children.insert(
+                1,
+                GuiWidgetNode::leaf(
                     "main-window:room-actions:toggle",
-                    if self.main_window_room_change_expanded {
-                        "Hide Room Change"
-                    } else {
-                        "Change Room"
-                    },
+                    "Change Room",
                     GuiWidgetKind::Button,
                     None,
                     true,
                     self.main_window_room_change_expanded,
-                )],
-            ),
-        ];
+                ),
+            );
+        }
 
         if self.main_window_room_change_expanded {
             session_summary_children.push(GuiWidgetNode::branch(
@@ -288,204 +404,26 @@ impl SyncplayGuiShellAppState {
             ));
         }
 
+        session_summary_children.push(GuiWidgetNode::layout(
+            "main-window:participants",
+            "Participants",
+            GuiLayoutMode::Stack,
+            participant_children,
+        ));
+
         let session_summary = GuiWidgetNode::branch(
             "main-window:connection",
-            "Session",
+            "Room",
             GuiWidgetKind::Panel,
             session_summary_children,
-        );
-
-        let mut control_buttons = Vec::new();
-        if self.main_window.show_playback_buttons {
-            control_buttons.extend([
-                GuiWidgetNode::leaf(
-                    "main-window:control:play",
-                    "Play",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.main_window.playback.can_toggle_pause && controls_available,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:control:pause",
-                    "Pause",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.main_window.playback.can_toggle_pause && controls_available,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:control:toggle-pause",
-                    "Toggle Pause",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.commands.can_toggle_pause && controls_available,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:control:seek",
-                    "Seek",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.main_window.playback.can_seek && controls_available,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:control:undo-seek",
-                    "Undo Seek",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.main_window.playback.can_undo_seek && controls_available,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "main-window:control:set-offset",
-                    "Set Offset",
-                    GuiWidgetKind::Button,
-                    None,
-                    self.main_window.playback.can_set_offset && controls_available,
-                    false,
-                ),
-            ]);
-        }
-        let local_user_ready = self.displayed_local_main_window_user_ready();
-        let ready_button = GuiWidgetNode::leaf(
-            "main-window:control:set-ready",
-            if local_user_ready {
-                "Ready"
-            } else {
-                "Not Ready"
-            },
-            GuiWidgetKind::Button,
-            None,
-            self.main_window.playback.can_set_ready
-                && controls_available
-                && !self.local_ready_transition_pending(),
-            false,
-        );
-        let controls_panel = GuiWidgetNode::branch(
-            "main-window:controls",
-            "Controls",
-            GuiWidgetKind::Panel,
-            vec![
-                GuiWidgetNode::layout(
-                    "main-window:playback-summary:grid",
-                    "Playback Summary Grid",
-                    GuiLayoutMode::KeyValueGrid {
-                        min_pair_width: 220.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "main-window:playback-paused",
-                            "Playback",
-                            GuiWidgetKind::Status,
-                            Some(bool_label(self.main_window.playback_paused).to_owned()),
-                            true,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:autoplay",
-                            "Autoplay",
-                            GuiWidgetKind::Status,
-                            Some(bool_label(self.main_window.autoplay_active).to_owned()),
-                            true,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:autoplay-threshold",
-                            "Min Users",
-                            GuiWidgetKind::Status,
-                            Some(self.main_window.autoplay_threshold.to_string()),
-                            true,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:user-offset",
-                            "Offset",
-                            GuiWidgetKind::Status,
-                            Some(format!("{:.3}", self.main_window.user_offset_seconds)),
-                            true,
-                            false,
-                        ),
-                    ],
-                ),
-                GuiWidgetNode::layout(
-                    "main-window:controls:playback-actions",
-                    "Playback Controls",
-                    GuiLayoutMode::CompactButtonWrap {
-                        button_width: 40.0,
-                        button_height: 36.0,
-                        gap: 8.0,
-                    },
-                    control_buttons,
-                ),
-                GuiWidgetNode::layout(
-                    "main-window:controls:ready",
-                    "Playback Ready",
-                    GuiLayoutMode::ButtonWrap {
-                        min_button_width: 140.0,
-                    },
-                    vec![ready_button],
-                ),
-            ],
-        );
-
-        let autoplay_panel = self.main_window.show_autoplay_controls.then(|| {
-            GuiWidgetNode::branch(
-                "main-window:autoplay-controls",
-                "Autoplay Controls",
-                GuiWidgetKind::Panel,
-                vec![GuiWidgetNode::layout(
-                    "main-window:autoplay-controls:buttons",
-                    "Autoplay Control Buttons",
-                    GuiLayoutMode::ButtonWrap {
-                        min_button_width: 140.0,
-                    },
-                    vec![
-                        GuiWidgetNode::leaf(
-                            "main-window:control:autoplay-toggle",
-                            "Autoplay",
-                            GuiWidgetKind::Checkbox,
-                            Some(self.main_window.autoplay_active.to_string()),
-                            self.main_window.playback.can_toggle_autoplay && controls_available,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:control:autoplay-threshold-down",
-                            "Autoplay -",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.main_window.playback.can_adjust_autoplay_threshold
-                                && controls_available
-                                && self.main_window.autoplay_threshold > 2,
-                            false,
-                        ),
-                        GuiWidgetNode::leaf(
-                            "main-window:control:autoplay-threshold-up",
-                            "Autoplay +",
-                            GuiWidgetKind::Button,
-                            None,
-                            self.main_window.playback.can_adjust_autoplay_threshold
-                                && controls_available
-                                && self.main_window.autoplay_threshold < 99,
-                            false,
-                        ),
-                    ],
-                )],
-            )
-        });
+        )
+        .with_min_content_height(320.0);
 
         let summary_column = GuiWidgetNode::layout(
             "main-window:summary-column",
             "Summary Column",
             GuiLayoutMode::Stack,
-            autoplay_panel.clone().into_iter().fold(
-                vec![session_summary.clone(), controls_panel.clone()],
-                |mut children, panel| {
-                    children.push(panel);
-                    children
-                },
-            ),
+            vec![session_summary.clone()],
         );
 
         (player_setup_panel, summary_column)

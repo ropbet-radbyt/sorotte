@@ -111,11 +111,11 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         step_timeout,
     )?;
     steps.push("main-window-playback-controls-detached".to_owned());
-    wait_for_accessible_name(driver, window, "Shared Playlist", step_timeout)?;
+    wait_for_accessible_name(driver, window, "Playlist", step_timeout)?;
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Add",
+        "Paste URLs...",
         NativeControlKind::Button,
         false,
         step_timeout,

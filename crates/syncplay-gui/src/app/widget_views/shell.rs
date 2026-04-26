@@ -153,6 +153,9 @@ impl SyncplayGuiShellAppState {
         let mut main_window = self.main_window_widget_tree();
         main_window.selected = self.active_view == GuiShellView::Room;
 
+        let mut plugins = self.plugins_widget_tree();
+        plugins.selected = self.active_view == GuiShellView::Plugins;
+
         let menus = self.menu_dialog_widget_tree();
 
         let notifications = GuiWidgetNode::branch(
@@ -288,6 +291,7 @@ impl SyncplayGuiShellAppState {
                 notifications,
                 main_window,
                 configuration,
+                plugins,
                 menus,
             ],
         )

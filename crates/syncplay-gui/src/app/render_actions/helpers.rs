@@ -52,4 +52,13 @@ impl GuiWidgetEguiRenderer {
         let (index, suffix) = identity.split_once(':')?;
         (suffix == action).then(|| index.parse().ok()).flatten()
     }
+
+    pub(in crate::app::render_actions) fn main_window_playlist_row_action_index(
+        id: &str,
+        action: &str,
+    ) -> Option<usize> {
+        let identity = id.strip_prefix("main-window:playlist:")?;
+        let (index, suffix) = identity.split_once(':')?;
+        (suffix == action).then(|| index.parse().ok()).flatten()
+    }
 }

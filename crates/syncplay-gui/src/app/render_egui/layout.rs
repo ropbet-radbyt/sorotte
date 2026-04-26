@@ -15,10 +15,6 @@ impl GuiWidgetEguiRenderer {
             self.render_layout(ui, node, state);
             return;
         };
-        let Some(browser) = node.find("main-window:browser") else {
-            self.render_layout(ui, node, state);
-            return;
-        };
         let Some(playlist_column) = node.find("main-window:playlist-column") else {
             self.render_layout(ui, node, state);
             return;
@@ -31,90 +27,181 @@ impl GuiWidgetEguiRenderer {
             self.render_layout(ui, node, state);
             return;
         };
-        let Some(controls_panel) = summary_column.find("main-window:controls") else {
-            self.render_layout(ui, node, state);
-            return;
-        };
-
-        let available_width = ui.available_width().max(0.0);
+        let viewport_width = Self::visible_available_width(ui);
+        let available_width = Self::room_dashboard_content_width(viewport_width);
+        let available_height = Self::visible_available_height(ui);
         let gap = 12.0;
+        let playlist_editor_active = playlist_column.find("main-window:playlist-edit").is_some()
+            || playlist_column
+                .find("main-window:playlist-url-edit")
+                .is_some();
         match Self::room_dashboard_layout_for_width(available_width) {
             GuiRoomDashboardLayout::Narrow => {
-                self.render_node(ui, session_panel, state);
-                ui.add_space(gap);
-                self.render_node(ui, controls_panel, state);
-                ui.add_space(gap);
-                self.render_node(ui, browser, state);
-                ui.add_space(gap);
-                self.render_node(ui, playlist_column, state);
-                ui.add_space(gap);
-                self.render_node(ui, chat_panel, state);
+                let column_width = available_width.min(720.0).max(0.0);
+                Self::allocate_centered_row(ui, column_width, |ui| {
+                    Self::allocate_fixed_width(ui, column_width, |ui| {
+                        self.render_node(ui, session_panel, state);
+                        ui.add_space(gap);
+                        self.render_node(ui, playlist_column, state);
+                        ui.add_space(gap);
+                        self.render_node(ui, chat_panel, state);
+                    });
+                });
             }
             GuiRoomDashboardLayout::Medium => {
-                let column_width = ((available_width - gap) * 0.5).max(0.0);
-                ui.horizontal_top(|ui| {
-                    let mut spacing = ui.spacing().item_spacing;
-                    spacing.x = gap;
-                    ui.spacing_mut().item_spacing = spacing;
-                    Self::allocate_fixed_width(ui, column_width, |ui| {
-                        self.render_node(ui, session_panel, state);
-                    });
-                    Self::allocate_fixed_width(ui, column_width, |ui| {
-                        self.render_node(ui, browser, state);
-                    });
+                let column_width = ((available_width - gap) * 0.5).clamp(320.0, 640.0);
+                let row_width = (column_width * 2.0) + gap;
+                let top_row_height =
+                    Self::room_dashboard_top_row_height(available_height, playlist_editor_active);
+                let bottom_row_height =
+                    Self::room_dashboard_bottom_row_height(available_height, top_row_height);
+                Self::allocate_centered_row(ui, row_width, |ui| {
+                    self.render_fixed_width_row_with_min_heights(
+                        ui,
+                        gap,
+                        [column_width, column_width],
+                        [
+                            Some(("main-window:connection", top_row_height)),
+                            Some(("main-window:playlist-surface", top_row_height)),
+                        ],
+                        |renderer, ui, index| match index {
+                            0 => renderer.render_node(ui, session_panel, state),
+                            1 => renderer.render_node(ui, playlist_column, state),
+                            _ => {}
+                        },
+                    );
                 });
                 ui.add_space(gap);
-                ui.horizontal_top(|ui| {
-                    let mut spacing = ui.spacing().item_spacing;
-                    spacing.x = gap;
-                    ui.spacing_mut().item_spacing = spacing;
-                    Self::allocate_fixed_width(ui, column_width, |ui| {
-                        self.render_node(ui, controls_panel, state);
-                    });
-                    Self::allocate_fixed_width(ui, column_width, |ui| {
-                        self.render_node(ui, playlist_column, state);
-                    });
+                Self::allocate_centered_row(ui, row_width, |ui| {
+                    self.push_node_min_height_override("main-window:chat-panel", bottom_row_height);
+                    self.render_node(ui, chat_panel, state);
+                    self.pop_node_min_height_override();
                 });
-                ui.add_space(gap);
-                self.render_node(ui, chat_panel, state);
             }
             GuiRoomDashboardLayout::Wide => {
-                let summary_width = (available_width * 0.26).clamp(300.0, 380.0);
-                let work_width = (available_width - summary_width - gap).max(0.0);
-                let work_column_width = ((work_width - gap) * 0.5).max(0.0);
-                let chat_width = work_width.max(0.0);
+                let row_width = available_width.min(1600.0).max(0.0);
+                let room_panel_width = (row_width * 0.46)
+                    .clamp(420.0, 720.0)
+                    .min((row_width - gap - 360.0).max(0.0));
+                let playlist_panel_width = (row_width - room_panel_width - gap).max(0.0);
+                let top_row_height =
+                    Self::room_dashboard_top_row_height(available_height, playlist_editor_active);
+                let bottom_row_height =
+                    Self::room_dashboard_bottom_row_height(available_height, top_row_height);
 
-                ui.horizontal_top(|ui| {
-                    let mut spacing = ui.spacing().item_spacing;
-                    spacing.x = gap;
-                    ui.spacing_mut().item_spacing = spacing;
-
-                    Self::allocate_fixed_width(ui, summary_width, |ui| {
-                        self.render_node(ui, session_panel, state);
-                        ui.add_space(gap);
-                        self.render_node(ui, controls_panel, state);
-                    });
-
-                    Self::allocate_fixed_width(ui, work_width, |ui| {
-                        ui.horizontal_top(|ui| {
-                            let mut spacing = ui.spacing().item_spacing;
-                            spacing.x = gap;
-                            ui.spacing_mut().item_spacing = spacing;
-                            Self::allocate_fixed_width(ui, work_column_width, |ui| {
-                                self.render_node(ui, browser, state);
-                            });
-                            Self::allocate_fixed_width(ui, work_column_width, |ui| {
-                                self.render_node(ui, playlist_column, state);
-                            });
-                        });
-                        ui.add_space(gap);
-                        Self::allocate_fixed_width(ui, chat_width, |ui| {
-                            self.render_node(ui, chat_panel, state);
-                        });
-                    });
+                Self::allocate_centered_row(ui, row_width, |ui| {
+                    self.render_fixed_width_row_with_min_heights(
+                        ui,
+                        gap,
+                        [room_panel_width, playlist_panel_width],
+                        [
+                            Some(("main-window:connection", top_row_height)),
+                            Some(("main-window:playlist-surface", top_row_height)),
+                        ],
+                        |renderer, ui, index| match index {
+                            0 => renderer.render_node(ui, session_panel, state),
+                            1 => renderer.render_node(ui, playlist_column, state),
+                            _ => {}
+                        },
+                    );
+                });
+                ui.add_space(gap);
+                Self::allocate_centered_row(ui, row_width, |ui| {
+                    self.push_node_min_height_override("main-window:chat-panel", bottom_row_height);
+                    self.render_node(ui, chat_panel, state);
+                    self.pop_node_min_height_override();
                 });
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn room_dashboard_row_groups_for_width(width: f32) -> Vec<Vec<&'static str>> {
+        match Self::room_dashboard_layout_for_width(width) {
+            GuiRoomDashboardLayout::Narrow => vec![vec![
+                "main-window:connection",
+                "main-window:playlist-column",
+                "main-window:chat-panel",
+            ]],
+            GuiRoomDashboardLayout::Medium => vec![
+                vec!["main-window:connection", "main-window:playlist-column"],
+                vec!["main-window:chat-panel"],
+            ],
+            GuiRoomDashboardLayout::Wide => vec![
+                vec!["main-window:connection", "main-window:playlist-column"],
+                vec!["main-window:chat-panel"],
+            ],
+        }
+    }
+
+    pub(super) fn room_dashboard_content_width(viewport_width: f32) -> f32 {
+        (viewport_width - 24.0).max(0.0)
+    }
+
+    fn render_fixed_width_row_with_min_heights<const N: usize>(
+        &mut self,
+        ui: &mut egui::Ui,
+        gap: f32,
+        widths: [f32; N],
+        min_heights: [Option<(&'static str, f32)>; N],
+        mut add_contents: impl FnMut(&mut Self, &mut egui::Ui, usize),
+    ) {
+        ui.horizontal_top(|ui| {
+            let mut spacing = ui.spacing().item_spacing;
+            spacing.x = gap;
+            ui.spacing_mut().item_spacing = spacing;
+            for (index, width) in widths.into_iter().enumerate() {
+                Self::allocate_fixed_width(ui, width, |ui| {
+                    if let Some((node_id, min_height)) = min_heights[index] {
+                        self.push_node_min_height_override(node_id, min_height);
+                        add_contents(self, ui, index);
+                        self.pop_node_min_height_override();
+                    } else {
+                        add_contents(self, ui, index);
+                    }
+                });
+            }
+        });
+    }
+
+    fn room_dashboard_top_row_height(available_height: f32, editor_active: bool) -> f32 {
+        if editor_active {
+            if available_height > 0.0 && available_height < 520.0 {
+                return 400.0;
+            }
+            return 560.0;
+        }
+        if available_height > 0.0 && available_height < 460.0 {
+            360.0
+        } else if available_height > 0.0 && available_height < 620.0 {
+            440.0
+        } else {
+            520.0
+        }
+    }
+
+    fn room_dashboard_bottom_row_height(available_height: f32, top_row_height: f32) -> f32 {
+        if available_height > 0.0 {
+            (available_height - top_row_height - 24.0).clamp(220.0, 320.0)
+        } else {
+            260.0
+        }
+    }
+
+    fn allocate_centered_row(
+        ui: &mut egui::Ui,
+        row_width: f32,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        let available_width = Self::visible_available_width(ui);
+        let row_width = row_width.min(available_width).max(0.0);
+        let side_space = ((available_width - row_width) * 0.5).max(0.0);
+        ui.horizontal_top(|ui| {
+            if side_space > 0.0 {
+                ui.add_space(side_space);
+            }
+            Self::allocate_fixed_width(ui, row_width, add_contents);
+        });
     }
 
     fn allocate_fixed_width(
@@ -131,6 +218,55 @@ impl GuiWidgetEguiRenderer {
                 add_contents(ui);
             },
         );
+    }
+
+    pub(super) fn constrain_ui_width_with_clip_bleed(
+        ui: &mut egui::Ui,
+        width: f32,
+        clip_bleed: f32,
+    ) {
+        let width = width.max(0.0);
+        ui.set_width(width);
+        ui.set_max_width(width);
+        let left = ui.cursor().left();
+        let clip_rect = egui::Rect::from_min_max(
+            egui::pos2(left, ui.clip_rect().top()),
+            egui::pos2(left + width + clip_bleed.max(0.0), ui.clip_rect().bottom()),
+        );
+        ui.shrink_clip_rect(clip_rect);
+    }
+
+    pub(super) fn visible_available_width(ui: &egui::Ui) -> f32 {
+        let cursor_left = ui.cursor().left();
+        let clip_width = (ui.clip_rect().right() - cursor_left).max(0.0);
+        let max_rect_width = (ui.max_rect().right() - cursor_left).max(0.0);
+        ui.available_width()
+            .min(clip_width)
+            .min(max_rect_width)
+            .max(0.0)
+    }
+
+    pub(super) fn panel_available_width(ui: &egui::Ui) -> f32 {
+        let cursor_left = ui.cursor().left();
+        let max_rect_width = (ui.max_rect().right() - cursor_left).max(0.0);
+        Self::visible_available_width(ui)
+            .max(ui.available_width().max(0.0))
+            .max(max_rect_width)
+            .max(0.0)
+    }
+
+    pub(super) fn width_inside_horizontal_margin(outer_width: f32, margin_sum: f32) -> f32 {
+        (outer_width - margin_sum).max(0.0)
+    }
+
+    pub(super) fn visible_available_height(ui: &egui::Ui) -> f32 {
+        let cursor_top = ui.cursor().top();
+        let clip_height = (ui.clip_rect().bottom() - cursor_top).max(0.0);
+        let max_rect_height = (ui.max_rect().bottom() - cursor_top).max(0.0);
+        ui.available_height()
+            .min(clip_height)
+            .min(max_rect_height)
+            .max(0.0)
     }
 
     pub(super) fn render_layout(
@@ -156,7 +292,7 @@ impl GuiWidgetEguiRenderer {
                 max_columns,
             } => {
                 let plan = Self::plan_responsive_columns(
-                    ui.available_width(),
+                    Self::visible_available_width(ui),
                     12.0,
                     min_column_width,
                     max_columns,
@@ -182,6 +318,7 @@ impl GuiWidgetEguiRenderer {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(child_width);
+                                    ui.set_max_width(child_width);
                                     self.render_node(ui, &node.children[entry.child_index], state);
                                 },
                             );
@@ -200,7 +337,7 @@ impl GuiWidgetEguiRenderer {
                 let edge_padding = 8.0;
                 let gap = 8.0;
                 let plan = Self::plan_responsive_columns(
-                    (ui.available_width() - (edge_padding * 2.0)).max(0.0),
+                    (Self::visible_available_width(ui) - (edge_padding * 2.0)).max(0.0),
                     gap,
                     min_tab_width,
                     node.children.len().max(1),
@@ -220,6 +357,7 @@ impl GuiWidgetEguiRenderer {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(child_width);
+                                    ui.set_max_width(child_width);
                                     self.render_tab_button(
                                         ui,
                                         &node.children[entry.child_index],
@@ -243,40 +381,13 @@ impl GuiWidgetEguiRenderer {
                 label_width,
                 min_field_width,
             } => {
-                let stacked = (ui.available_width() - label_width) < min_field_width;
                 for child in &node.children {
-                    if stacked {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(&child.label).strong());
-                            self.render_field_control(ui, child, state, true);
-                        });
-                    } else {
-                        ui.horizontal_top(|ui| {
-                            let label_height = ui
-                                .spacing()
-                                .interact_size
-                                .y
-                                .max(ui.text_style_height(&egui::TextStyle::Body));
-                            let (label_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(label_width, label_height),
-                                egui::Sense::hover(),
-                            );
-                            ui.scope_builder(
-                                egui::UiBuilder::new()
-                                    .max_rect(label_rect)
-                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                                |ui| {
-                                    ui.label(egui::RichText::new(&child.label).strong());
-                                },
-                            );
-                            self.render_field_control(ui, child, state, true);
-                        });
-                    }
+                    self.render_form_row(ui, child, state, label_width, min_field_width);
                 }
             }
             GuiLayoutMode::KeyValueGrid { min_pair_width } => {
                 let plan = Self::plan_responsive_columns(
-                    ui.available_width(),
+                    Self::visible_available_width(ui),
                     12.0,
                     min_pair_width,
                     2,
@@ -294,6 +405,7 @@ impl GuiWidgetEguiRenderer {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(child_width);
+                                    ui.set_max_width(child_width);
                                     self.render_key_value_item(
                                         ui,
                                         &node.children[entry.child_index],
@@ -312,11 +424,12 @@ impl GuiWidgetEguiRenderer {
                 }
             }
             GuiLayoutMode::ButtonWrap { min_button_width } => {
-                let buttons_per_row = ((ui.available_width() + 12.0) / (min_button_width + 12.0))
+                let available_width = Self::visible_available_width(ui);
+                let buttons_per_row = ((available_width + 12.0) / (min_button_width + 12.0))
                     .floor()
                     .max(1.0) as usize;
                 for chunk in node.children.chunks(buttons_per_row) {
-                    let row_button_width = ((ui.available_width()
+                    let row_button_width = ((available_width
                         - (12.0 * (chunk.len().saturating_sub(1)) as f32))
                         / chunk.len() as f32)
                         .max(0.0);
@@ -330,6 +443,7 @@ impl GuiWidgetEguiRenderer {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(row_button_width);
+                                    ui.set_max_width(row_button_width);
                                     self.render_button_like(ui, child, state);
                                 },
                             );
@@ -346,13 +460,14 @@ impl GuiWidgetEguiRenderer {
                 let button_width = button_width.max(1.0);
                 let button_height = button_height.max(1.0);
                 let gap = gap.max(0.0);
-                let buttons_per_row = ((ui.available_width() + gap) / (button_width + gap))
+                let buttons_per_row = ((Self::visible_available_width(ui) + gap)
+                    / (button_width + gap))
                     .floor()
                     .max(1.0) as usize;
                 let row_count = node.children.len().div_ceil(buttons_per_row);
                 for (row_index, chunk) in node.children.chunks(buttons_per_row).enumerate() {
                     ui.horizontal_top(|ui| {
-                        let available_width = ui.available_width();
+                        let available_width = Self::visible_available_width(ui);
                         let row_width = (button_width * chunk.len() as f32)
                             + (gap * chunk.len().saturating_sub(1) as f32);
                         let side_space = ((available_width - row_width).max(0.0)) * 0.5;
@@ -425,17 +540,7 @@ impl GuiWidgetEguiRenderer {
                 });
             }
             GuiWidgetKind::ReadOnly | GuiWidgetKind::Status => {
-                if Self::should_render_combined_status_label(node) {
-                    ui.label(Self::display_text(node));
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        let mut spacing = ui.spacing().item_spacing;
-                        spacing.x = spacing.x.max(4.0);
-                        ui.spacing_mut().item_spacing = spacing;
-                        ui.label(egui::RichText::new(format!("{}:", node.label)).strong());
-                        ui.label(Self::display_status_rich_text(ui, node));
-                    });
-                }
+                self.render_status_pair(ui, node);
             }
             GuiWidgetKind::Panel | GuiWidgetKind::List => {}
         }

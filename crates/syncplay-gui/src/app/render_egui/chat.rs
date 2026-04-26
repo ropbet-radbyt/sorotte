@@ -6,32 +6,38 @@ use super::GuiWidgetEguiRenderer;
 
 impl GuiWidgetEguiRenderer {
     pub(super) fn render_chat_history(&mut self, ui: &mut egui::Ui, node: &GuiWidgetNode) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            let history_height = node.min_content_height.unwrap_or(180.0).clamp(120.0, 260.0);
-            ui.set_min_width(ui.available_width().max(0.0));
-            ui.set_min_height(history_height);
-            ui.set_max_height(history_height);
-            egui::ScrollArea::vertical()
-                .id_salt(&node.id)
-                .max_height(history_height)
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width().max(0.0));
-                    if node.children.is_empty() {
-                        Self::paint_empty_chat_history_state(ui);
-                        return;
-                    }
-                    for (index, child) in node.children.iter().enumerate() {
-                        Self::paint_chat_history_row(ui, child, index);
-                    }
-                });
-        });
+        let outer_width = Self::visible_available_width(ui);
+        let content_width = Self::width_inside_horizontal_margin(outer_width, 2.0);
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                let history_height = node.min_content_height.unwrap_or(180.0).clamp(120.0, 260.0);
+                ui.set_min_width(content_width);
+                ui.set_max_width(content_width);
+                ui.set_min_height(history_height);
+                ui.set_max_height(history_height);
+                egui::ScrollArea::vertical()
+                    .id_salt(&node.id)
+                    .max_height(history_height)
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.set_min_width(content_width);
+                        ui.set_max_width(content_width);
+                        if node.children.is_empty() {
+                            Self::paint_empty_chat_history_state(ui);
+                            return;
+                        }
+                        for (index, child) in node.children.iter().enumerate() {
+                            Self::paint_chat_history_row(ui, child, index);
+                        }
+                    });
+            });
     }
 
     fn paint_empty_chat_history_state(ui: &mut egui::Ui) {
         let row_height = 40.0;
-        let available_width = ui.available_width().max(0.0);
+        let available_width = Self::visible_available_width(ui);
         let (rect, _response) = ui.allocate_exact_size(
             egui::vec2(available_width, row_height),
             egui::Sense::hover(),
@@ -51,7 +57,7 @@ impl GuiWidgetEguiRenderer {
 
     fn paint_chat_history_row(ui: &mut egui::Ui, node: &GuiWidgetNode, index: usize) {
         let row_height = 28.0;
-        let available_width = ui.available_width().max(0.0);
+        let available_width = Self::visible_available_width(ui);
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(available_width, row_height),
             egui::Sense::hover(),
@@ -127,7 +133,7 @@ impl GuiWidgetEguiRenderer {
         ui.horizontal(|ui| {
             let mut value = Self::editable_text_value(input_node);
             let send_width = 84.0;
-            let input_width = (ui.available_width() - send_width - 8.0).max(160.0);
+            let input_width = (Self::visible_available_width(ui) - send_width - 8.0).max(1.0);
             let response = ui.add_enabled(
                 input_node.enabled,
                 egui::TextEdit::singleline(&mut value)

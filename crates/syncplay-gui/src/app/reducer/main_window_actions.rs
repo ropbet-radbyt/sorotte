@@ -49,6 +49,17 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::DismissSetupAlert => {
+                let had_action_error = self.validation.last_action_error.take().is_some();
+                let notification_index = self.notifications.iter().rposition(|notification| {
+                    !matches!(notification.level, GuiTransientNotificationLevel::Info)
+                });
+                let had_notification = notification_index
+                    .map(|index| self.notifications.remove(index))
+                    .is_some();
+                self.refresh_validation();
+                had_action_error || had_notification
+            }
             GuiShellAction::ClearTransientNotifications => {
                 let had_notifications = !self.notifications.is_empty();
                 self.notifications.clear();

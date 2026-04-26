@@ -30,24 +30,36 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(tree.label, "Room");
     assert!(tree.find("main-window:tabs").is_none());
     assert!(tree.find("main-window:tab:overview").is_none());
-    let browser = tree
-        .find("main-window:browser")
-        .expect("room browser should exist in widget tree");
-    assert_eq!(browser.kind, GuiWidgetKind::Panel);
-    let room_group = tree
-        .find("main-window:room-group:0")
-        .expect("current room group should exist in widget tree");
-    assert_eq!(room_group.kind, GuiWidgetKind::Panel);
-    let room_group_state = tree
-        .find("main-window:room-group:0:state")
-        .expect("room-group state should exist in widget tree");
-    assert_eq!(room_group_state.kind, GuiWidgetKind::Status);
-    let user_state = tree
+    let room_panel = tree
+        .find("main-window:connection")
+        .expect("combined room panel should exist in widget tree");
+    assert_eq!(room_panel.kind, GuiWidgetKind::Panel);
+    assert_eq!(room_panel.label, "Room");
+    assert!(tree.find("main-window:browser").is_none());
+    let participants = tree
+        .find("main-window:participants")
+        .expect("current-room participants should exist in widget tree");
+    assert_eq!(
+        participants
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main-window:user:0", "main-window:user:1"]
+    );
+    let local_user_state = tree
+        .find("main-window:user:0:state")
+        .expect("local user state should exist in widget tree");
+    assert_eq!(local_user_state.kind, GuiWidgetKind::Status);
+    assert!(local_user_state.selected);
+    let selected_remote_user_state = tree
         .find("main-window:user:1:state")
-        .expect("selected user state should exist in widget tree");
-    assert_eq!(user_state.kind, GuiWidgetKind::Status);
-    assert!(user_state.selected);
+        .expect("remote user state should exist in widget tree");
+    assert_eq!(selected_remote_user_state.kind, GuiWidgetKind::Status);
+    assert!(!selected_remote_user_state.selected);
     assert!(tree.find("main-window:user:new").is_none());
+    assert!(tree.find("main-window:user:1:open").is_none());
+    assert!(tree.find("main-window:user:1:ready").is_none());
     let room_toggle = tree
         .find("main-window:room-actions:toggle")
         .expect("room-change toggle should exist in widget tree");
@@ -64,7 +76,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     let room_toggle = tree
         .find("main-window:room-actions:toggle")
         .expect("room-change toggle should still exist in widget tree");
-    assert_eq!(room_toggle.label, "Hide Room Change");
+    assert_eq!(room_toggle.label, "Change Room");
     assert!(room_toggle.selected);
     let room_input = tree
         .find("main-window:room-input")
@@ -73,11 +85,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert_eq!(room_input.label, "Room");
     assert_eq!(room_input.value.as_deref(), Some("Lounge"));
     assert!(room_input.enabled);
-    let username = tree
-        .find("main-window:username")
-        .expect("session username should exist in the room summary");
-    assert_eq!(username.kind, GuiWidgetKind::Status);
-    assert_eq!(username.value.as_deref(), Some("Alice"));
+    assert!(tree.find("main-window:username").is_none());
     let room_control = tree
         .find("main-window:room-control")
         .expect("room-control status should exist in widget tree");
@@ -92,11 +100,14 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .expect("selected playlist row should exist in widget tree");
     assert_eq!(playlist.kind, GuiWidgetKind::ListItem);
     assert!(playlist.selected);
-    let playlist_add_menu = tree
-        .find("main-window:playlist:add-menu")
-        .expect("playlist add menu should exist in widget tree");
-    assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
-    assert_eq!(playlist_add_menu.children.len(), 2);
+    let playlist_add_files = tree
+        .find("main-window:playlist:add-files")
+        .expect("playlist add-files button should exist in widget tree");
+    assert_eq!(playlist_add_files.kind, GuiWidgetKind::Button);
+    let playlist_add_url = tree
+        .find("main-window:playlist:add-url")
+        .expect("playlist add-url button should exist in widget tree");
+    assert_eq!(playlist_add_url.kind, GuiWidgetKind::Button);
     let playlist_header = tree
         .find("main-window:playlist-header:actions")
         .expect("playlist header actions should exist in widget tree");
@@ -107,7 +118,8 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
             .map(|child| child.id.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "main-window:playlist:add-menu",
+            "main-window:playlist:add-files",
+            "main-window:playlist:add-url",
             "main-window:playlist:more-menu",
         ]
     );
@@ -130,10 +142,22 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
             .iter()
             .any(|child| child.id == "main-window:playlist:save")
     );
-    let playlist_selection_bar = tree
-        .find("main-window:playlist-selection:actions")
-        .expect("playlist selection actions should exist when an entry is selected");
-    assert_eq!(playlist_selection_bar.kind, GuiWidgetKind::Layout);
+    assert_eq!(
+        playlist_more_menu
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main-window:playlist:load", "main-window:playlist:save"]
+    );
+    let playlist_row_remove = tree
+        .find("main-window:playlist:1:remove")
+        .expect("playlist row remove action should exist on the selected row");
+    assert_eq!(playlist_row_remove.kind, GuiWidgetKind::Button);
+    assert!(
+        tree.find("main-window:playlist-selection:actions")
+            .is_none()
+    );
     assert!(tree.find("main-window:playlist:count").is_none());
     assert!(tree.find("main-window:playlist-empty").is_none());
     assert!(tree.find("main-window:playlist:new").is_none());
@@ -169,9 +193,17 @@ fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text(
     )));
 
     let tree = state.main_window_widget_tree();
+    assert!(
+        tree.find("main-window:controls").is_none(),
+        "standalone Controls panel should be folded into the Playlist panel"
+    );
+    let playlist_playback = tree
+        .find("main-window:playlist-playback")
+        .expect("playlist playback footer should exist");
+    assert_eq!(playlist_playback.label, "Playback");
     let playback_actions = tree
         .find("main-window:controls:playback-actions")
-        .expect("compact playback controls should exist");
+        .expect("compact playback controls should exist in the playlist footer");
     assert_eq!(
         playback_actions.layout_mode,
         Some(GuiLayoutMode::CompactButtonWrap {
@@ -180,7 +212,11 @@ fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text(
             gap: 8.0,
         })
     );
-    assert_eq!(playback_actions.children.len(), 6);
+    assert_eq!(playback_actions.children.len(), 5);
+    assert!(
+        tree.find("main-window:control:set-offset").is_none(),
+        "Set Offset should not be exposed in the consolidated playlist controls"
+    );
     assert_eq!(
         tree.find("main-window:control:set-ready")
             .expect("ready button should exist")
@@ -245,10 +281,7 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
         "main-window:control:toggle-pause",
         "main-window:control:seek",
         "main-window:control:undo-seek",
-        "main-window:control:set-offset",
         "main-window:control:set-ready",
-        "main-window:control:autoplay-toggle",
-        "main-window:control:autoplay-threshold-up",
     ] {
         assert!(
             !tree
@@ -272,9 +305,8 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
     );
     assert!(tree.find("main-window:control:set-ready").unwrap().enabled);
     assert!(
-        tree.find("main-window:control:autoplay-toggle")
-            .unwrap()
-            .enabled
+        tree.find("main-window:control:autoplay-toggle").is_none(),
+        "autoplay controls should not be shown in the consolidated Room dashboard"
     );
 }
 

@@ -64,7 +64,7 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
             ),
             ("shell:modal:stream-support:recheck", "Recheck Support"),
             ("shell:modal:stream-support:retry", "Retry URL"),
-            ("shell:modal:stream-support:open-settings", "Open Settings"),
+            ("shell:modal:stream-support:open-settings", "Open Plugins"),
         ]
     );
 }

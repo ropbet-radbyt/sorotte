@@ -5,6 +5,7 @@ impl GuiWidgetEguiRenderer {
         let view = match node.id.as_str() {
             "configuration-root" => GuiShellView::Setup,
             "main-window-root" => GuiShellView::Room,
+            "plugins-root" => GuiShellView::Plugins,
             _ => return None,
         };
         Some(GuiShellAction::SwitchView(view))

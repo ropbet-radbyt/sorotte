@@ -75,7 +75,9 @@ fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_
     let main_window = state.main_window_widget_tree();
     assert!(main_window.find("main-window:chat-input").is_some());
     assert!(main_window.find("main-window:playlist").is_some());
-    assert!(main_window.find("main-window:browser").is_some());
+    assert!(main_window.find("main-window:connection").is_some());
+    assert!(main_window.find("main-window:participants").is_some());
+    assert!(main_window.find("main-window:browser").is_none());
 
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::InterfaceSystem,
@@ -162,6 +164,27 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         .find("public-servers-root")
         .expect("public server subtree should exist");
     assert!(!public_servers.selected);
+
+    let plugins = tree
+        .find("plugins-root")
+        .expect("plugins subtree should exist");
+    assert_eq!(plugins.label, "Plugins");
+    assert!(!plugins.selected);
+
+    assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Plugins)));
+    let plugins_tree = state.shell_widget_tree();
+    assert_eq!(
+        plugins_tree
+            .find("shell:active-view")
+            .and_then(|node| node.value.as_deref()),
+        Some("plugins")
+    );
+    assert!(
+        plugins_tree
+            .find("plugins-root")
+            .expect("plugins subtree should exist")
+            .selected
+    );
 }
 
 #[test]

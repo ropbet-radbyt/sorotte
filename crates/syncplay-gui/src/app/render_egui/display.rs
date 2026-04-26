@@ -11,7 +11,7 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn display_status_value(node: &GuiWidgetNode) -> String {
+    pub(super) fn display_status_value(node: &GuiWidgetNode) -> String {
         let value = node.value.as_deref().unwrap_or("(none)");
         match (node.id.as_str(), value) {
             ("main-window:connection-status", "connected") => "Connected".to_owned(),
@@ -86,6 +86,9 @@ impl GuiWidgetEguiRenderer {
     }
 
     pub(super) fn is_surface_node(node: &GuiWidgetNode) -> bool {
-        matches!(node.id.as_str(), "configuration-root" | "main-window-root")
+        matches!(
+            node.id.as_str(),
+            "configuration-root" | "main-window-root" | "plugins-root"
+        )
     }
 }

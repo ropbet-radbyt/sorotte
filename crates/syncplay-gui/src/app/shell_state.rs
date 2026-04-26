@@ -739,6 +739,7 @@ pub(super) enum GuiShellView {
     #[default]
     Setup,
     Room,
+    Plugins,
 }
 
 impl GuiShellView {
@@ -746,6 +747,7 @@ impl GuiShellView {
         match self {
             Self::Setup => "setup",
             Self::Room => "room",
+            Self::Plugins => "plugins",
         }
     }
 
@@ -755,6 +757,7 @@ impl GuiShellView {
                 Some(Self::Setup)
             }
             "room" | "main-window" => Some(Self::Room),
+            "plugins" | "stream-support" => Some(Self::Plugins),
             _ => None,
         }
     }

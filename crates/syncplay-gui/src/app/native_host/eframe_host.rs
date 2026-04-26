@@ -6,7 +6,7 @@ impl GuiEframeNativeHost {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Syncplay GUI")
                 .with_inner_size([1280.0, 820.0])
-                .with_min_inner_size([960.0, 640.0])
+                .with_min_inner_size([640.0, 520.0])
                 .with_drag_and_drop(true),
             ..Default::default()
         }

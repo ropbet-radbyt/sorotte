@@ -128,7 +128,7 @@ impl GuiWidgetEguiRenderer {
                 ),
                 ("shell:modal:stream-support:recheck", "Recheck Support"),
                 ("shell:modal:stream-support:retry", "Retry URL"),
-                ("shell:modal:stream-support:open-settings", "Open Settings"),
+                ("shell:modal:stream-support:open-settings", "Open Plugins"),
             ],
         }
     }

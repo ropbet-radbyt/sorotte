@@ -1,6 +1,5 @@
 use super::*;
 
-mod browser;
 mod chat;
 mod editors;
 mod playlist;
@@ -13,25 +12,6 @@ impl SyncplayGuiShellAppState {
         let playlist_column = self.main_window_playlist_column();
         let chat_panel = self.main_window_chat_panel();
 
-        let room_browser = self
-            .main_window_browser_widget_node()
-            .with_min_content_height(260.0);
-        let work_top_region = GuiWidgetNode::layout(
-            "main-window:work-top-region",
-            "Room Work Top Region",
-            GuiLayoutMode::ResponsiveColumns {
-                min_column_width: 240.0,
-                max_columns: 2,
-            },
-            vec![room_browser.clone(), playlist_column.clone()],
-        );
-        let work_area = GuiWidgetNode::layout(
-            "main-window:work-area",
-            "Room Work Area",
-            GuiLayoutMode::Stack,
-            vec![work_top_region, chat_panel.clone()],
-        )
-        .with_span(2);
         let top_region = GuiWidgetNode::layout(
             "main-window:top-region",
             "Room Dashboard",
@@ -39,7 +19,11 @@ impl SyncplayGuiShellAppState {
                 min_column_width: 240.0,
                 max_columns: 3,
             },
-            vec![summary_column.clone(), work_area],
+            vec![
+                summary_column.clone(),
+                playlist_column.clone(),
+                chat_panel.clone(),
+            ],
         );
 
         let mut overview_children = vec![top_region];

@@ -108,7 +108,7 @@ pub(super) fn wait_for_shared_playlist_visible<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     navigate_to_room_surface(driver, window, timeout)?;
-    wait_for_accessible_name(driver, window, "Shared Playlist", timeout).map(|_| ())
+    wait_for_accessible_name(driver, window, "Playlist", timeout).map(|_| ())
 }
 
 pub(super) fn wait_for_shared_playlist_controls_enabled<D: NativeGuiDriver>(
@@ -120,7 +120,7 @@ pub(super) fn wait_for_shared_playlist_controls_enabled<D: NativeGuiDriver>(
     wait_for_named_control_enabled_state(
         driver,
         window,
-        "Add",
+        "Paste URLs...",
         NativeControlKind::Button,
         true,
         timeout,
@@ -190,16 +190,15 @@ pub(super) fn add_shared_playlist_url_entry<D: NativeGuiDriver>(
     timeout: Duration,
 ) -> Result<(), String> {
     wait_for_shared_playlist_controls_enabled(driver, window, timeout)?;
-    invoke_button_or_any_named_control(driver, window, "Add", timeout)?;
     invoke_button_or_any_named_control(driver, window, "Paste URLs...", timeout)?;
-    wait_for_accessible_name(driver, window, "Playlist URLs", timeout)?;
+    wait_for_accessible_name(driver, window, "Add URLs", timeout)?;
     driver.set_named_edit_value(window, "URLs", entry, false)?;
     wait_for_named_edit_value(driver, window, "URLs", entry, timeout)?;
     invoke_button_or_any_named_control(driver, window, "Add URLs To Playlist", timeout)?;
     wait_for_named_control_count(
         driver,
         window,
-        "Playlist URLs",
+        "Add URLs",
         NativeControlKind::Any,
         0,
         timeout,

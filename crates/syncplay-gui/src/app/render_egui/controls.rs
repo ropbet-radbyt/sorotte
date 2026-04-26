@@ -6,8 +6,9 @@ use super::{GuiResponsiveColumnsPlan, GuiResponsiveColumnsPlanEntry, GuiWidgetEg
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuiCompactActionIcon {
-    Add,
-    More,
+    AddFile,
+    AddUrl,
+    PlaylistOptions,
 }
 
 impl GuiWidgetEguiRenderer {
@@ -35,34 +36,7 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
     ) {
-        let mut value = Self::editable_text_value(node);
-        ui.horizontal(|ui| {
-            ui.label(&node.label);
-            let response = ui.add_enabled(
-                node.enabled,
-                egui::TextEdit::singleline(&mut value)
-                    .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
-                    .desired_width(ui.available_width().max(120.0)),
-            );
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::TextEdit,
-                    response.enabled(),
-                    node.label.clone(),
-                )
-            });
-            let submitted =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if let Some(actions) = Self::actions_for_text_input_node(
-                state,
-                node,
-                &value,
-                response.changed(),
-                submitted,
-            ) {
-                self.actions.extend(actions);
-            }
-        });
+        self.render_form_row(ui, node, state, 140.0, 180.0);
     }
 
     pub(super) fn render_text_area(
@@ -71,31 +45,148 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
     ) {
-        let mut value = node.value.clone().unwrap_or_default();
-        ui.vertical(|ui| {
-            ui.label(&node.label);
-            let response = ui.add_enabled(
-                node.enabled,
-                egui::TextEdit::multiline(&mut value)
-                    .desired_width(ui.available_width().max(160.0))
-                    .desired_rows(6),
-            );
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::TextEdit,
-                    response.enabled(),
-                    node.label.clone(),
-                )
-            });
-            if let Some(actions) =
-                Self::actions_for_text_input_node(state, node, &value, response.changed(), false)
-            {
-                self.actions.extend(actions);
-            }
-        });
+        self.render_form_row(ui, node, state, 140.0, 180.0);
     }
 
     pub(super) fn render_select(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        self.render_form_row(ui, node, state, 140.0, 180.0);
+    }
+
+    pub(super) fn render_form_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        label_width: f32,
+        min_field_width: f32,
+    ) {
+        let available_width = Self::visible_available_width(ui);
+        let gap = 10.0;
+        let label_width = Self::form_label_width(available_width, label_width);
+        let field_width = (available_width - label_width - gap).max(0.0);
+        let stacked = field_width < min_field_width || available_width < 360.0;
+
+        if stacked {
+            self.render_form_label(ui, node, available_width, false);
+            ui.add_space(3.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(available_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(available_width);
+                    ui.set_max_width(available_width);
+                    self.render_field_control(ui, node, state, true);
+                },
+            );
+            ui.add_space(4.0);
+            return;
+        }
+
+        ui.horizontal_top(|ui| {
+            let label_align_top = matches!(node.kind, GuiWidgetKind::TextArea);
+            ui.allocate_ui_with_layout(
+                egui::vec2(label_width, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(if label_align_top {
+                    egui::Align::Min
+                } else {
+                    egui::Align::Center
+                }),
+                |ui| {
+                    ui.set_width(label_width);
+                    ui.set_max_width(label_width);
+                    self.render_form_label(ui, node, label_width, true);
+                },
+            );
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(
+                egui::vec2(field_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(field_width);
+                    ui.set_max_width(field_width);
+                    self.render_field_control(ui, node, state, true);
+                },
+            );
+        });
+    }
+
+    pub(super) fn form_label_width(available_width: f32, preferred_width: f32) -> f32 {
+        preferred_width
+            .min((available_width * 0.38).max(96.0))
+            .min(available_width.max(0.0))
+            .max(0.0)
+    }
+
+    fn render_form_label(
+        &self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        width: f32,
+        truncate: bool,
+    ) {
+        let label = egui::Label::new(
+            egui::RichText::new(&node.label)
+                .strong()
+                .color(Self::palette_for_ui(ui).muted_text),
+        );
+        let label = if truncate { label.truncate() } else { label };
+        ui.set_width(width.max(0.0));
+        ui.set_max_width(width.max(0.0));
+        let response = ui.add(label);
+        if truncate {
+            response.on_hover_text(node.label.clone());
+        }
+    }
+
+    pub(super) fn render_status_pair(&mut self, ui: &mut egui::Ui, node: &GuiWidgetNode) {
+        if Self::should_render_combined_status_label(node) {
+            ui.label(Self::display_text(node));
+            return;
+        }
+
+        let available_width = Self::visible_available_width(ui);
+        let gap = 8.0;
+        let label_width = Self::form_label_width(available_width, 150.0);
+        let value_width = (available_width - label_width - gap).max(0.0);
+        let stacked = value_width < 100.0 || available_width < 300.0;
+        if stacked {
+            self.render_form_label(ui, node, available_width, false);
+            ui.label(Self::display_status_rich_text(ui, node));
+            return;
+        }
+
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(label_width, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(label_width);
+                    ui.set_max_width(label_width);
+                    self.render_form_label(ui, node, label_width, true);
+                },
+            );
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(
+                egui::vec2(value_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(value_width);
+                    ui.set_max_width(value_width);
+                    let value = Self::display_status_value(node);
+                    let response = ui
+                        .add(egui::Label::new(Self::display_status_rich_text(ui, node)).truncate());
+                    response.on_hover_text(value);
+                },
+            );
+        });
+    }
+
+    fn render_raw_select(
         &mut self,
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
@@ -105,18 +196,15 @@ impl GuiWidgetEguiRenderer {
         let previous = value.clone();
         let options = Self::configuration_select_options_for_node(state, node)
             .unwrap_or_else(|| vec![previous.clone()]);
-        ui.horizontal(|ui| {
-            ui.label(&node.label);
-            ui.add_enabled_ui(node.enabled, |ui| {
-                egui::ComboBox::from_id_salt(&node.id)
-                    .selected_text(if value.is_empty() { "(unset)" } else { &value })
-                    .width(ui.available_width().max(120.0))
-                    .show_ui(ui, |ui| {
-                        for option in &options {
-                            ui.selectable_value(&mut value, option.clone(), option);
-                        }
-                    });
-            });
+        ui.add_enabled_ui(node.enabled, |ui| {
+            egui::ComboBox::from_id_salt(&node.id)
+                .selected_text(if value.is_empty() { "(unset)" } else { &value })
+                .width(Self::visible_available_width(ui).max(1.0))
+                .show_ui(ui, |ui| {
+                    for option in &options {
+                        ui.selectable_value(&mut value, option.clone(), option);
+                    }
+                });
         });
         if value != previous
             && let Some(actions) =
@@ -138,7 +226,7 @@ impl GuiWidgetEguiRenderer {
     {
         let max_columns = max_columns.max(1);
         let min_column_width = min_column_width.max(1.0);
-        let available_width = available_width.max(min_column_width);
+        let available_width = available_width.max(0.0);
         let column_count = (((available_width + gap) / (min_column_width + gap)).floor() as usize)
             .clamp(1, max_columns);
         let column_width = ((available_width - (gap * (column_count.saturating_sub(1)) as f32))
@@ -188,17 +276,7 @@ impl GuiWidgetEguiRenderer {
     ) {
         match node.kind {
             GuiWidgetKind::Status | GuiWidgetKind::ReadOnly => {
-                if Self::should_render_combined_status_label(node) {
-                    ui.label(Self::display_text(node));
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        let mut spacing = ui.spacing().item_spacing;
-                        spacing.x = spacing.x.max(4.0);
-                        ui.spacing_mut().item_spacing = spacing;
-                        ui.label(egui::RichText::new(format!("{}:", node.label)).strong());
-                        ui.label(Self::display_status_rich_text(ui, node));
-                    });
-                }
+                self.render_status_pair(ui, node);
             }
             _ => self.render_node(ui, node, state),
         }
@@ -223,7 +301,7 @@ impl GuiWidgetEguiRenderer {
                     node.enabled,
                     egui::TextEdit::singleline(&mut value)
                         .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
-                        .desired_width(ui.available_width().max(120.0)),
+                        .desired_width(Self::visible_available_width(ui).max(1.0)),
                 );
                 let submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -245,8 +323,8 @@ impl GuiWidgetEguiRenderer {
                 let response = ui.add_enabled(
                     node.enabled,
                     egui::TextEdit::multiline(&mut value)
-                        .desired_width(ui.available_width().max(160.0))
-                        .desired_rows(6),
+                        .desired_width(Self::visible_available_width(ui).max(1.0))
+                        .desired_rows(Self::text_area_rows_for_node(node)),
                 );
                 if let Some(actions) = Self::actions_for_text_input_node(
                     state,
@@ -259,29 +337,10 @@ impl GuiWidgetEguiRenderer {
                 }
             }
             GuiWidgetKind::Select => {
-                let mut value = node.value.clone().unwrap_or_default();
-                let previous = value.clone();
-                let options = Self::configuration_select_options_for_node(state, node)
-                    .unwrap_or_else(|| vec![previous.clone()]);
                 if !omit_label {
                     ui.label(&node.label);
                 }
-                ui.add_enabled_ui(node.enabled, |ui| {
-                    egui::ComboBox::from_id_salt(&node.id)
-                        .selected_text(if value.is_empty() { "(unset)" } else { &value })
-                        .width(ui.available_width().max(120.0))
-                        .show_ui(ui, |ui| {
-                            for option in &options {
-                                ui.selectable_value(&mut value, option.clone(), option);
-                            }
-                        });
-                });
-                if value != previous
-                    && let Some(actions) =
-                        Self::actions_for_text_input_node(state, node, &value, true, false)
-                {
-                    self.actions.extend(actions);
-                }
+                self.render_raw_select(ui, node, state);
             }
             GuiWidgetKind::Checkbox => {
                 let mut checked = matches!(node.value.as_deref(), Some("yes" | "true"));
@@ -315,6 +374,17 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    fn text_area_rows_for_node(node: &GuiWidgetNode) -> usize {
+        if matches!(
+            node.id.as_str(),
+            "main-window:playlist-url-edit:text" | "main-window:media-url-edit:text"
+        ) {
+            3
+        } else {
+            6
+        }
+    }
+
     pub(super) fn render_button_like(
         &mut self,
         ui: &mut egui::Ui,
@@ -345,7 +415,7 @@ impl GuiWidgetEguiRenderer {
             label = label.color(text_color).strong();
         }
         let mut button =
-            egui::Button::new(label).min_size(egui::vec2(ui.available_width().max(0.0), 0.0));
+            egui::Button::new(label).min_size(egui::vec2(Self::visible_available_width(ui), 0.0));
         if node.enabled
             && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(ui, node)
         {
@@ -379,16 +449,14 @@ impl GuiWidgetEguiRenderer {
     pub(super) const COMPACT_ACTION_BUTTON_GAP: f32 = 8.0;
 
     pub(super) fn compact_action_button_size(node: &GuiWidgetNode) -> egui::Vec2 {
+        if Self::compact_action_icon(node).is_some() {
+            return egui::vec2(if node.children.is_empty() { 40.0 } else { 52.0 }, 40.0);
+        }
         let text_width = Self::display_text(node).chars().count() as f32 * 7.5;
-        let icon_width = if Self::compact_action_icon(node).is_some() {
-            24.0
-        } else {
-            0.0
-        };
         let menu_indicator_width = if node.children.is_empty() { 0.0 } else { 14.0 };
         let horizontal_padding = 28.0;
         egui::vec2(
-            (text_width + icon_width + menu_indicator_width + horizontal_padding).clamp(
+            (text_width + menu_indicator_width + horizontal_padding).clamp(
                 Self::COMPACT_ACTION_BUTTON_MIN_WIDTH,
                 Self::COMPACT_ACTION_BUTTON_MAX_WIDTH,
             ),
@@ -445,8 +513,9 @@ impl GuiWidgetEguiRenderer {
 
     fn compact_action_icon(node: &GuiWidgetNode) -> Option<GuiCompactActionIcon> {
         match node.id.as_str() {
-            "main-window:playlist:add-menu" => Some(GuiCompactActionIcon::Add),
-            "main-window:playlist:more-menu" => Some(GuiCompactActionIcon::More),
+            "main-window:playlist:add-files" => Some(GuiCompactActionIcon::AddFile),
+            "main-window:playlist:add-url" => Some(GuiCompactActionIcon::AddUrl),
+            "main-window:playlist:more-menu" => Some(GuiCompactActionIcon::PlaylistOptions),
             _ => None,
         }
     }
@@ -499,16 +568,26 @@ impl GuiWidgetEguiRenderer {
             egui::StrokeKind::Inside,
         );
 
-        let mut text_left = rect.left() + 12.0;
         if let Some(icon) = Self::compact_action_icon(node) {
             let icon_rect = egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 16.0, rect.center().y),
-                egui::vec2(14.0, 14.0),
+                egui::pos2(
+                    if node.children.is_empty() {
+                        rect.center().x
+                    } else {
+                        rect.left() + 18.0
+                    },
+                    rect.center().y,
+                ),
+                egui::vec2(21.0, 21.0),
             );
             Self::paint_compact_action_icon(ui, icon_rect, icon, text_color);
-            text_left = icon_rect.right() + 8.0;
+            if !node.children.is_empty() {
+                Self::paint_compact_menu_indicator(ui, rect, text_color);
+            }
+            return;
         }
 
+        let text_left = rect.left() + 12.0;
         let indicator_width = if node.children.is_empty() { 0.0 } else { 14.0 };
         let text_right = (rect.right() - 10.0 - indicator_width).max(text_left);
         let text_width = (text_right - text_left).max(0.0);
@@ -540,34 +619,89 @@ impl GuiWidgetEguiRenderer {
         icon: GuiCompactActionIcon,
         color: egui::Color32,
     ) {
+        let stroke = egui::Stroke::new(1.8, color);
         match icon {
-            GuiCompactActionIcon::Add => {
-                let stroke = egui::Stroke::new(1.8, color);
+            GuiCompactActionIcon::AddFile => {
+                let body = egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + 2.0, rect.top() + 1.0),
+                    egui::pos2(rect.right() - 5.0, rect.bottom() - 1.0),
+                );
+                ui.painter()
+                    .rect_stroke(body, 1, stroke, egui::StrokeKind::Inside);
                 ui.painter().line_segment(
                     [
-                        egui::pos2(rect.left(), rect.center().y),
-                        egui::pos2(rect.right(), rect.center().y),
+                        egui::pos2(body.right() - 5.0, body.top()),
+                        egui::pos2(body.right(), body.top() + 5.0),
                     ],
                     stroke,
                 );
                 ui.painter().line_segment(
                     [
-                        egui::pos2(rect.center().x, rect.top()),
-                        egui::pos2(rect.center().x, rect.bottom()),
+                        egui::pos2(body.right(), body.top() + 5.0),
+                        egui::pos2(body.right(), body.bottom()),
                     ],
                     stroke,
+                );
+                Self::paint_small_plus(
+                    ui,
+                    egui::pos2(rect.right() - 3.0, rect.bottom() - 4.0),
+                    color,
                 );
             }
-            GuiCompactActionIcon::More => {
-                for x_offset in [-4.5_f32, 0.0, 4.5] {
-                    ui.painter().circle_filled(
-                        egui::pos2(rect.center().x + x_offset, rect.center().y),
-                        1.8,
-                        color,
+            GuiCompactActionIcon::AddUrl => {
+                let left = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + 1.0, rect.center().y - 4.0),
+                    egui::vec2(11.0, 8.0),
+                );
+                let right = left.translate(egui::vec2(9.0, 0.0));
+                ui.painter().circle_stroke(left.center(), 5.0, stroke);
+                ui.painter().circle_stroke(right.center(), 5.0, stroke);
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(left.center().x + 3.0, left.center().y),
+                        egui::pos2(right.center().x - 3.0, right.center().y),
+                    ],
+                    stroke,
+                );
+                Self::paint_small_plus(
+                    ui,
+                    egui::pos2(rect.right() - 2.5, rect.bottom() - 4.0),
+                    color,
+                );
+            }
+            GuiCompactActionIcon::PlaylistOptions => {
+                for row in 0..3 {
+                    let y = rect.top() + 4.0 + (row as f32 * 6.0);
+                    ui.painter()
+                        .circle_filled(egui::pos2(rect.left() + 4.0, y), 1.5, color);
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(rect.left() + 9.0, y),
+                            egui::pos2(rect.right() - 2.0, y),
+                        ],
+                        stroke,
                     );
                 }
             }
         }
+    }
+
+    fn paint_small_plus(ui: &egui::Ui, center: egui::Pos2, color: egui::Color32) {
+        let stroke = egui::Stroke::new(1.8, color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 4.0, center.y),
+                egui::pos2(center.x + 4.0, center.y),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x, center.y - 4.0),
+                egui::pos2(center.x, center.y + 4.0),
+            ],
+            stroke,
+        );
     }
 
     fn paint_compact_menu_indicator(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {
@@ -589,22 +723,31 @@ impl GuiWidgetEguiRenderer {
         );
     }
 
-    fn button_colors_for_node(
+    pub(super) fn button_colors_for_node(
         ui: &egui::Ui,
         node: &GuiWidgetNode,
     ) -> Option<(egui::Color32, egui::Color32, egui::Color32)> {
         let palette = Self::palette_for_ui(ui);
         match node.id.as_str() {
-            "main-window:connection:connect"
+            "config-command:connect"
+            | "config-command:save"
+            | "configuration:alert:fix-player-path"
+            | "main-window:connection:connect"
             | "main-window:room:join"
             | "main-window:room:set"
             | "main-window:room-actions:create-controlled-room"
             | "main-window:room-actions:identify-controller"
+            | "main-window:playlist-url-edit:commit"
             | "main-window:media-url-edit:commit"
-            | "main-window:chat:send" => {
+            | "main-window:chat:send"
+            | "plugins:stream-support:install"
+            | "plugins:stream-support:alert:install"
+            | "plugins:stream-support:recheck"
+            | "plugins:stream-support:alert:recheck" => {
                 Some((palette.primary, palette.primary_hover, palette.primary_text))
             }
-            "main-window:connection:disconnect"
+            "config-command:disconnect"
+            | "main-window:connection:disconnect"
             | "main-window:room:leave"
             | "main-window:media-url-edit:cancel" => {
                 Some((palette.danger, palette.danger_hover, palette.danger_text))

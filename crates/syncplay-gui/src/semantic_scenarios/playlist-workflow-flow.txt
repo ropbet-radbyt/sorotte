@@ -4,18 +4,12 @@ setting	shared-playlist-enabled	true
 activate	main-window-root
 apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-user,true,false,false	episode1.mkv|episode2.mkv	system>playlist-ready
 apply-main-window-playlist-selection	1
-activate	main-window:playlist:edit
-assert-enabled	main-window:playlist-edit:text	true
-enter-text	main-window:playlist-edit:text	false	episode3.mkv
-activate	main-window:playlist-edit:commit
-assert-label	main-window:playlist:0	episode3.mkv
 activate	main-window:playlist:add-url
 assert-enabled	main-window:playlist-url-edit:text	true
 enter-text	main-window:playlist-url-edit:text	false	https://example.com/live
 activate	main-window:playlist-url-edit:commit
+assert-label	main-window:playlist:2	https://example.com/live
+activate	main-window:playlist:1:remove
 assert-label	main-window:playlist:1	https://example.com/live
-assert-selected	main-window:playlist:0	true
-activate	main-window:playlist:undo
-assert-label	main-window:playlist:0	episode3.mkv
-assert-selected	main-window:playlist:0	true
+assert-selected	main-window:playlist:1	true
 assert-value	shell:active-view	room

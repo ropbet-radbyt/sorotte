@@ -27,6 +27,215 @@ impl GuiWidgetEguiRenderer {
         ui.add_space(8.0);
     }
 
+    pub(super) fn render_playlist_surface_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        let panel_width = Self::panel_available_width(ui);
+        let min_height = self.node_min_content_height(node).unwrap_or(0.0);
+        let footer_height = 76.0;
+        ui.allocate_ui_with_layout(
+            egui::vec2(panel_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(panel_width);
+                ui.set_max_width(panel_width);
+                let panel_response =
+                    egui::Frame::group(ui.style())
+                        .fill(Self::palette_for_ui(ui).surface)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::same(0))
+                        .show(ui, |ui| {
+                            ui.set_width(panel_width);
+                            ui.set_max_width(panel_width);
+                            ui.set_min_height(min_height);
+                            self.render_panel_header(ui, node, None, state, panel_width);
+                            let body_response =
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(10, 8))
+                                    .show(ui, |ui| {
+                                        let body_width =
+                                            Self::width_inside_horizontal_margin(panel_width, 20.0);
+                                        ui.set_width(body_width);
+                                        ui.set_max_width(body_width);
+                                        let body_top = ui.cursor().top();
+                                        let editor_active = node.children.iter().any(|child| {
+                                            child.id == "main-window:playlist-edit"
+                                                || child.id == "main-window:playlist-url-edit"
+                                        });
+                                        for child in node.children.iter().filter(|child| {
+                                            child.id != "main-window:playlist-playback"
+                                        }) {
+                                            self.render_node(ui, child, state);
+                                        }
+                                        let used_height = ui.cursor().top() - body_top;
+                                        let target_body_height =
+                                            (min_height - 43.0 - 16.0).max(footer_height);
+                                        let spacer = if editor_active {
+                                            8.0
+                                        } else {
+                                            (target_body_height - used_height - footer_height)
+                                                .max(0.0)
+                                        };
+                                        if spacer > 0.0 {
+                                            ui.add_space(spacer);
+                                        }
+                                        if let Some(footer) = node.children.iter().find(|child| {
+                                            child.id == "main-window:playlist-playback"
+                                        }) {
+                                            self.render_playlist_playback_footer(
+                                                ui,
+                                                footer,
+                                                state,
+                                                footer_height,
+                                            );
+                                        }
+                                    });
+                            let _ = body_response;
+                        });
+                Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+            },
+        );
+    }
+
+    pub(super) fn render_playlist_playback_footer(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        height: f32,
+    ) {
+        let width = Self::visible_available_width(ui);
+        let content_width = Self::width_inside_horizontal_margin(width, 24.0);
+        let palette = Self::palette_for_ui(ui);
+        let status_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:playback-paused");
+        let actions_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:controls:playback-actions");
+        egui::Frame::new()
+            .fill(palette.surface_muted)
+            .stroke(egui::Stroke::new(1.0, palette.border))
+            .corner_radius(egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 6,
+                se: 6,
+            })
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                let content_height = (height - 20.0).max(40.0);
+                ui.set_min_height(content_height);
+                ui.set_width(content_width);
+                ui.set_max_width(content_width);
+                ui.horizontal(|ui| {
+                    let controls_width = actions_node.map_or(0.0, |actions| {
+                        let button_count = actions.children.len() as f32;
+                        if button_count <= 0.0 {
+                            0.0
+                        } else {
+                            (button_count * 40.0) + ((button_count - 1.0) * 8.0)
+                        }
+                    });
+                    let state_width = 132.0;
+                    let label_width = (Self::visible_available_width(ui) - controls_width - 12.0)
+                        .clamp(state_width, 184.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_width, content_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new("Room state")
+                                    .small()
+                                    .color(palette.muted_text),
+                            );
+                            if let Some(status_node) = status_node {
+                                ui.add_space(8.0);
+                                Self::render_playback_state_icon(ui, status_node);
+                            }
+                        },
+                    );
+                    if let Some(actions_node) = actions_node {
+                        ui.add_space(12.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(controls_width, 40.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_width(controls_width);
+                                ui.set_max_width(controls_width);
+                                self.render_layout(ui, actions_node, state);
+                            },
+                        );
+                    }
+                });
+            });
+    }
+
+    fn render_playback_state_icon(ui: &mut egui::Ui, node: &GuiWidgetNode) {
+        let paused = matches!(node.value.as_deref(), Some("yes" | "true"));
+        let palette = Self::palette_for_ui(ui);
+        let label = if paused {
+            "Room state: paused"
+        } else {
+            "Room state: playing"
+        };
+        let (fill, stroke, icon_color) = if paused {
+            (
+                palette.warning_bg,
+                palette.warning_border,
+                palette.warning_text,
+            )
+        } else {
+            (
+                palette.success_bg,
+                palette.success_border,
+                palette.success_text,
+            )
+        };
+        let (_, response) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, response.enabled(), label)
+        });
+        let response = Self::attach_hover_text(response, label);
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter().rect(
+            rect,
+            20,
+            fill,
+            egui::Stroke::new(1.0, stroke),
+            egui::StrokeKind::Inside,
+        );
+        let icon_rect = rect.shrink2(egui::vec2(12.0, 10.0));
+        if paused {
+            let bar_width = icon_rect.width() * 0.26;
+            let gap = icon_rect.width() * 0.18;
+            let left = icon_rect.center().x - ((bar_width * 2.0) + gap) / 2.0;
+            let first_bar = egui::Rect::from_min_max(
+                egui::pos2(left, icon_rect.top()),
+                egui::pos2(left + bar_width, icon_rect.bottom()),
+            );
+            let second_bar = first_bar.translate(egui::vec2(bar_width + gap, 0.0));
+            ui.painter().rect_filled(first_bar, 1.5, icon_color);
+            ui.painter().rect_filled(second_bar, 1.5, icon_color);
+        } else {
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(icon_rect.left(), icon_rect.top()),
+                    egui::pos2(icon_rect.right(), icon_rect.center().y),
+                    egui::pos2(icon_rect.left(), icon_rect.bottom()),
+                ],
+                icon_color,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+
     pub(super) fn render_playlist_list(
         &mut self,
         ui: &mut egui::Ui,
@@ -39,43 +248,50 @@ impl GuiWidgetEguiRenderer {
         let mut first_row_rect = None;
         let mut last_row_rect = None;
         let mut playlist_focus_requested = false;
-        let response = egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_min_width(ui.available_width().max(0.0));
-            if let Some(min_content_height) = node.min_content_height {
-                ui.set_min_height(min_content_height);
-            }
-            if node.children.is_empty() {
-                Self::paint_empty_playlist_state(ui, node);
-            } else {
-                for child in &node.children {
-                    let row_rect = self.render_playlist_list_item(
-                        ui,
-                        child,
-                        state,
-                        playlist_len,
-                        playlist_focused,
-                        &mut playlist_focus_requested,
-                    );
-                    if first_row_rect.is_none() {
-                        first_row_rect = row_rect;
-                    }
-                    if row_rect.is_some() {
-                        last_row_rect = row_rect;
+        let available_width = Self::visible_available_width(ui);
+        let min_height = self.node_min_content_height(node).unwrap_or(0.0);
+        let response = ui.allocate_ui_with_layout(
+            egui::vec2(available_width, min_height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(available_width);
+                ui.set_max_width(available_width);
+                if let Some(min_content_height) = self.node_min_content_height(node) {
+                    ui.set_min_height(min_content_height);
+                }
+                if node.children.is_empty() {
+                    Self::paint_empty_playlist_state(ui, node);
+                } else {
+                    for child in &node.children {
+                        let row_rect = self.render_playlist_list_item(
+                            ui,
+                            child,
+                            state,
+                            playlist_len,
+                            playlist_focused,
+                            &mut playlist_focus_requested,
+                        );
+                        if first_row_rect.is_none() {
+                            first_row_rect = row_rect;
+                        }
+                        if row_rect.is_some() {
+                            last_row_rect = row_rect;
+                        }
                     }
                 }
-            }
-            if self.playlist_drop_target_slot.is_none()
-                && let Some(pointer_pos) = ui.ctx().pointer_hover_pos()
-            {
-                if playlist_len == 0
-                    || first_row_rect.is_some_and(|rect| pointer_pos.y < rect.top())
+                if self.playlist_drop_target_slot.is_none()
+                    && let Some(pointer_pos) = ui.ctx().pointer_hover_pos()
                 {
-                    self.playlist_drop_target_slot = Some(0);
-                } else if last_row_rect.is_some_and(|rect| pointer_pos.y > rect.bottom()) {
-                    self.playlist_drop_target_slot = Some(playlist_len);
+                    if playlist_len == 0
+                        || first_row_rect.is_some_and(|rect| pointer_pos.y < rect.top())
+                    {
+                        self.playlist_drop_target_slot = Some(0);
+                    } else if last_row_rect.is_some_and(|rect| pointer_pos.y > rect.bottom()) {
+                        self.playlist_drop_target_slot = Some(playlist_len);
+                    }
                 }
-            }
-        });
+            },
+        );
         response.response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Label,
@@ -97,7 +313,7 @@ impl GuiWidgetEguiRenderer {
 
     fn paint_empty_playlist_state(ui: &mut egui::Ui, node: &GuiWidgetNode) {
         let row_height = 38.0;
-        let available_width = ui.available_width().max(0.0);
+        let available_width = Self::visible_available_width(ui);
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(available_width, row_height),
             egui::Sense::hover(),
@@ -158,17 +374,31 @@ impl GuiWidgetEguiRenderer {
             return None;
         };
         let can_drag_reorder = node.enabled && state.main_window.playback.can_manage_playlist;
+        let remove_button = node
+            .children
+            .iter()
+            .find(|child| child.id.ends_with(":remove"));
         let text = Self::display_text(node).to_owned();
         let is_room_active = state.main_window.active_playlist_index == Some(index);
 
-        let button_response = ui
+        let (button_response, remove_clicked) = ui
             .push_id(&node.id, |ui| {
                 ui.add_enabled_ui(node.enabled, |ui| {
-                    let response = ui.add_sized(
-                        [ui.available_width().max(0.0), 38.0],
-                        egui::Button::new("")
-                            .frame(false)
-                            .sense(Self::playlist_row_sense(can_drag_reorder)),
+                    let width = Self::visible_available_width(ui);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+                    let remove_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - 18.0, rect.center().y),
+                        egui::vec2(30.0, 30.0),
+                    );
+                    let row_rect = egui::Rect::from_min_max(
+                        rect.left_top(),
+                        egui::pos2(remove_rect.left() - 8.0, rect.bottom()),
+                    );
+                    let response = ui.interact(
+                        row_rect,
+                        ui.id().with("row"),
+                        Self::playlist_row_sense(can_drag_reorder),
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
@@ -179,16 +409,34 @@ impl GuiWidgetEguiRenderer {
                     });
                     let truncated = Self::paint_playlist_row(
                         ui,
+                        rect,
                         &response,
                         &text,
                         node.selected,
                         is_room_active,
+                        remove_button.is_some(),
                     );
-                    if truncated {
+                    let response = if truncated {
                         response.on_hover_text(text.clone())
                     } else {
                         response
-                    }
+                    };
+                    let remove_clicked = remove_button.is_some_and(|button| {
+                        let remove_response =
+                            ui.interact(remove_rect, ui.id().with("remove"), egui::Sense::click());
+                        remove_response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                remove_response.enabled(),
+                                button.label.clone(),
+                            )
+                        });
+                        let remove_response =
+                            Self::attach_hover_text(remove_response, button.label.clone());
+                        Self::paint_playlist_remove_button(ui, &remove_response, button.enabled);
+                        remove_response.clicked() && button.enabled
+                    });
+                    (response, remove_clicked)
                 })
                 .inner
             })
@@ -201,11 +449,18 @@ impl GuiWidgetEguiRenderer {
             button_response.dnd_set_drag_payload(GuiDraggedPlaylistRow { index });
         }
 
-        let pointer_actions = Self::playlist_row_pointer_actions(
-            index,
-            button_response.clicked(),
-            button_response.double_clicked(),
-        );
+        let pointer_actions = if remove_clicked {
+            vec![
+                GuiShellAction::SelectMainWindowPlaylist(index),
+                GuiShellAction::RemoveSelectedMainWindowPlaylist,
+            ]
+        } else {
+            Self::playlist_row_pointer_actions(
+                index,
+                button_response.clicked(),
+                button_response.double_clicked(),
+            )
+        };
         if !pointer_actions.is_empty() {
             button_response.surrender_focus();
             *playlist_focus_requested = true;
@@ -385,10 +640,12 @@ impl GuiWidgetEguiRenderer {
 
     fn paint_playlist_row(
         ui: &egui::Ui,
+        row_rect: egui::Rect,
         response: &egui::Response,
         label: &str,
         is_selected: bool,
         is_room_active: bool,
+        has_remove_button: bool,
     ) -> bool {
         let visuals = ui.style().interact(response);
         let palette = Self::palette_for_ui(ui);
@@ -413,10 +670,10 @@ impl GuiWidgetEguiRenderer {
         } else {
             visuals.bg_stroke.color
         };
-        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        let rect = row_rect.shrink2(egui::vec2(0.5, 0.5));
         ui.painter().rect(
             rect,
-            2,
+            5,
             fill,
             egui::Stroke::new(
                 if is_room_active {
@@ -466,7 +723,8 @@ impl GuiWidgetEguiRenderer {
         }
 
         let text_left = rect.left() + if is_room_active { 50.0 } else { 36.0 };
-        let text_right = (rect.right() - 12.0).max(text_left);
+        let remove_padding = if has_remove_button { 46.0 } else { 12.0 };
+        let text_right = (rect.right() - remove_padding).max(text_left);
         let text_width = (text_right - text_left).max(0.0);
         let (display_label, truncated) = Self::truncate_single_line_text_for_width(
             ui,
@@ -485,6 +743,39 @@ impl GuiWidgetEguiRenderer {
             .with_clip_rect(rect.shrink2(egui::vec2(8.0, 4.0)))
             .galley(text_pos, galley, text_color);
         truncated
+    }
+
+    fn paint_playlist_remove_button(ui: &egui::Ui, response: &egui::Response, enabled: bool) {
+        let palette = Self::palette_for_ui(ui);
+        let fill = if response.hovered() && enabled {
+            palette.danger.gamma_multiply(0.14)
+        } else {
+            palette.surface
+        };
+        let stroke_color = if response.hovered() && enabled {
+            palette.danger
+        } else {
+            palette.border
+        };
+        let icon_color = if enabled {
+            palette.danger
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter().rect(
+            rect,
+            4,
+            fill,
+            egui::Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Inside,
+        );
+        let stroke = egui::Stroke::new(1.8, icon_color);
+        let icon_rect = rect.shrink2(egui::vec2(9.5, 9.5));
+        ui.painter()
+            .line_segment([icon_rect.left_top(), icon_rect.right_bottom()], stroke);
+        ui.painter()
+            .line_segment([icon_rect.right_top(), icon_rect.left_bottom()], stroke);
     }
 
     fn paint_playlist_file_icon(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {

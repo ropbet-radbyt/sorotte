@@ -59,6 +59,8 @@ fn gui_persisted_ui_state_maps_legacy_active_views_to_room_and_setup() {
         ("public-servers", GuiShellView::Setup),
         ("media-search", GuiShellView::Setup),
         ("menus-and-dialogs", GuiShellView::Setup),
+        ("plugins", GuiShellView::Plugins),
+        ("stream-support", GuiShellView::Plugins),
     ] {
         let root = test_temp_root(&format!("persisted-ui-active-view-{legacy_view}"));
         std::fs::create_dir_all(root.join("Syncplay")).expect("test root should be writable");

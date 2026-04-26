@@ -6,7 +6,7 @@ use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
-    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiShellAction, GuiShellModal,
+    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, SyncplayGuiShellAppState,

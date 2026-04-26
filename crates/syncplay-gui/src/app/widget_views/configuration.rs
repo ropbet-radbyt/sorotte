@@ -149,79 +149,6 @@ impl SyncplayGuiShellAppState {
             )
         });
 
-        let stream_support_panel = self.stream_helper_status_available().then(|| {
-            let mut content = vec![
-                GuiWidgetNode::leaf(
-                    "config-stream-support:title",
-                    "Title",
-                    GuiWidgetKind::Status,
-                    Some(self.stream_helper_status_title().to_owned()),
-                    true,
-                    false,
-                ),
-                GuiWidgetNode::leaf(
-                    "config-stream-support:summary",
-                    "Summary",
-                    GuiWidgetKind::Status,
-                    Some(self.stream_helper_status_summary()),
-                    true,
-                    false,
-                ),
-            ];
-            if self.stream_helper_remediation.active {
-                content.push(GuiWidgetNode::leaf(
-                    "config-stream-support:remediation",
-                    "Remediation",
-                    GuiWidgetKind::Status,
-                    self.stream_helper_remediation.label.clone(),
-                    true,
-                    false,
-                ));
-                content.push(GuiWidgetNode::leaf(
-                    "config-stream-support:remediation-progress",
-                    "Progress",
-                    GuiWidgetKind::Status,
-                    Some(format!(
-                        "{:.0}%",
-                        self.stream_helper_remediation.progress_fraction * 100.0
-                    )),
-                    true,
-                    false,
-                ));
-                if let Some(detail) = self.stream_helper_remediation.detail.as_ref() {
-                    content.push(GuiWidgetNode::leaf(
-                        "config-stream-support:remediation-detail",
-                        "Remediation Detail",
-                        GuiWidgetKind::Status,
-                        Some(detail.clone()),
-                        true,
-                        false,
-                    ));
-                }
-            }
-            content.push(GuiWidgetNode::layout(
-                "config-stream-support:actions",
-                "Stream Support Actions",
-                GuiLayoutMode::ButtonWrap {
-                    min_button_width: 140.0,
-                },
-                vec![GuiWidgetNode::leaf(
-                    "config-stream-support:manage",
-                    "Manage Stream Support",
-                    GuiWidgetKind::Button,
-                    None,
-                    true,
-                    self.open_modal == Some(GuiShellModal::StreamSupport),
-                )],
-            ));
-            GuiWidgetNode::branch(
-                "config-stream-support",
-                "Stream Support",
-                GuiWidgetKind::Panel,
-                content,
-            )
-        });
-
         let commands_panel = GuiWidgetNode::branch(
             "config-commands",
             "Commands",
@@ -455,7 +382,7 @@ impl SyncplayGuiShellAppState {
             GuiLayoutMode::Stack,
             player_setup_panel
                 .into_iter()
-                .chain(stream_support_panel)
+                .chain(self.setup_action_alert_widget_tree())
                 .chain([
                     GuiWidgetNode::layout(
                         "configuration:tabs",
@@ -513,5 +440,73 @@ impl SyncplayGuiShellAppState {
                 ])
                 .collect(),
         )
+    }
+
+    fn setup_action_alert_widget_tree(&self) -> Option<GuiWidgetNode> {
+        let (level, message) = if let Some(error) = self.validation.last_action_error.as_ref() {
+            (GuiTransientNotificationLevel::Error, error.clone())
+        } else {
+            let notification = self.notifications.iter().rev().find(|notification| {
+                !matches!(notification.level, GuiTransientNotificationLevel::Info)
+            })?;
+            (notification.level, notification.message.clone())
+        };
+
+        let mut children = vec![
+            GuiWidgetNode::leaf(
+                "configuration:alert:close",
+                "Dismiss Alert",
+                GuiWidgetKind::Button,
+                None,
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "configuration:alert:level",
+                "Level",
+                GuiWidgetKind::Status,
+                Some(level.label().to_owned()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "configuration:alert:message",
+                "Message",
+                GuiWidgetKind::Status,
+                Some(message.clone()),
+                true,
+                false,
+            ),
+        ];
+
+        let lower_message = message.to_ascii_lowercase();
+        let mut actions = Vec::new();
+        if lower_message.contains("player") || lower_message.contains("mpv") {
+            actions.push(GuiWidgetNode::leaf(
+                "configuration:alert:fix-player-path",
+                "Fix Player Path",
+                GuiWidgetKind::Button,
+                None,
+                self.pending_operation.is_none(),
+                false,
+            ));
+        }
+        if !actions.is_empty() {
+            children.push(GuiWidgetNode::layout(
+                "configuration:alert:actions",
+                "Alert Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 150.0,
+                },
+                actions,
+            ));
+        }
+
+        Some(GuiWidgetNode::branch(
+            "configuration:action-alert",
+            level.label(),
+            GuiWidgetKind::Panel,
+            children,
+        ))
     }
 }

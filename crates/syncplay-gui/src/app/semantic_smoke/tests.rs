@@ -75,7 +75,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         gui_semantic_scenario_script("playlist-workflow-flow")
             .expect("playlist workflow scenario should expose a script")
-            .contains("main-window:playlist:edit")
+            .contains("main-window:playlist:1:remove")
     );
     assert!(
         gui_semantic_scenario_script("player-setup-flow")

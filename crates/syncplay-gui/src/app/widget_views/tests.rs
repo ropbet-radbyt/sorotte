@@ -2,11 +2,12 @@ use super::{GuiLayoutMode, GuiWidgetRenderer};
 
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
-    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiMediaIndexRuntimeSnapshot,
-    GuiPlayerSetupIssue, GuiPlayerSetupIssueKind, GuiPlayerSetupRuntimeSnapshot, GuiShellAction,
-    GuiShellModal, GuiShellView, GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
-    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, GuiWidgetKind, GuiWidgetNode,
-    MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
+    GuiConfigurationTab, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
+    GuiMediaIndexRuntimeSnapshot, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
+    GuiPlayerSetupRuntimeSnapshot, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, GuiWidgetEguiRenderer,
+    GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeSnapshot, SyncplayGuiShellAppState,
 };
 
 use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;

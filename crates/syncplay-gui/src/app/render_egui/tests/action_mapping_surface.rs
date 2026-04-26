@@ -71,16 +71,12 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     state.commands.can_send_chat_message = true;
     let shell_tree = state.shell_widget_tree();
     let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
+    let plugins_surface = shell_tree.find("plugins-root").unwrap();
     let menu_action = shell_tree.find("menus:action:0:0").unwrap();
     let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
     let seek_menu_action = shell_tree.find("menus:action:1:3").unwrap();
     let quick_open_media = shell_tree.find("shell:quick:open-media-file").unwrap();
     let playlist_row = shell_tree.find("main-window:playlist:0").unwrap();
-    let browser_join_button = shell_tree.find("main-window:room-group:1:join").unwrap();
-    let hide_empty_checkbox = shell_tree.find("main-window:browser:hide-empty").unwrap();
-    let user_open_button = shell_tree.find("main-window:user:1:open").unwrap();
-    let user_trust_button = shell_tree.find("main-window:user:1:trust").unwrap();
-    let user_ready_button = shell_tree.find("main-window:user:1:ready").unwrap();
     let room_toggle_button = shell_tree.find("main-window:room-actions:toggle").unwrap();
     let room_set_button = shell_tree.find("main-window:room:set").unwrap();
     let room_join_button = shell_tree.find("main-window:room:join").unwrap();
@@ -93,15 +89,31 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let toggle_pause_button = shell_tree.find("main-window:control:toggle-pause").unwrap();
     let seek_button = shell_tree.find("main-window:control:seek").unwrap();
     let undo_seek_button = shell_tree.find("main-window:control:undo-seek").unwrap();
-    let set_offset_button = shell_tree.find("main-window:control:set-offset").unwrap();
     let local_ready_button = shell_tree.find("main-window:control:set-ready").unwrap();
-    let playlist_add_menu = shell_tree.find("main-window:playlist:add-menu").unwrap();
+    let playlist_add_files_button = shell_tree.find("main-window:playlist:add-files").unwrap();
+    let playlist_add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
     let playlist_more_menu = shell_tree.find("main-window:playlist:more-menu").unwrap();
-    let playlist_remove_button = shell_tree.find("main-window:playlist:remove").unwrap();
+    let playlist_remove_button = shell_tree.find("main-window:playlist:0:remove").unwrap();
     let chat_send_button = shell_tree.find("main-window:chat:send").unwrap();
     assert!(
         shell_tree.find("main-window:control:open-url").is_none(),
         "Open URL should not be exposed from the Controls pane"
+    );
+    assert!(
+        shell_tree.find("main-window:browser").is_none(),
+        "the old separate room browser should not be projected"
+    );
+    assert!(
+        shell_tree.find("main-window:room-group:1:join").is_none(),
+        "other-room join actions should not be exposed from the combined current-room panel"
+    );
+    assert!(
+        shell_tree.find("main-window:user:1:open").is_none(),
+        "per-user open buttons should not be exposed from the combined room panel"
+    );
+    assert!(
+        shell_tree.find("main-window:user:1:ready").is_none(),
+        "per-user ready buttons should not be exposed from the combined room panel"
     );
     let edit_button = shell_tree.find("public-servers:command:edit").unwrap();
     let directory_remove_button = shell_tree.find("media-search:directory:remove").unwrap();
@@ -109,6 +121,10 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_surface_node(public_servers_surface),
         None
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_surface_node(plugins_surface),
+        Some(GuiShellAction::SwitchView(GuiShellView::Plugins))
     );
     assert!(GuiWidgetEguiRenderer::is_open_media_file_menu_action(
         &state,
@@ -151,31 +167,6 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         Some(GuiShellAction::SelectMainWindowPlaylist(0))
     );
     assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, browser_join_button),
-        vec![GuiShellAction::JoinMainWindowRoom("Cinema".to_owned())]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, hide_empty_checkbox, true),
-        Some(GuiShellAction::ToggleMainWindowHideEmptyRooms)
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, user_open_button),
-        vec![GuiShellAction::RequestMainWindowUserMediaOpen(
-            "https://example.com/live".to_owned()
-        )]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, user_trust_button),
-        vec![GuiShellAction::AddTrustedDomain("example.com".to_owned())]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, user_ready_button),
-        vec![GuiShellAction::RequestMainWindowUserReady {
-            username: "Bob".to_owned(),
-            ready: true,
-        }]
-    );
-    assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, room_toggle_button),
         vec![GuiShellAction::ToggleMainWindowRoomChange]
     );
@@ -215,20 +206,31 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_seek_button),
         vec![GuiShellAction::RequestPlaybackUndoSeek]
     );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, set_offset_button),
-        vec![GuiShellAction::RequestOffsetPrompt]
+    assert!(
+        shell_tree.find("main-window:control:set-offset").is_none(),
+        "Set Offset should not be exposed in the consolidated playlist controls"
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, local_ready_button),
         vec![GuiShellAction::AnnounceLocalUserReady]
     );
-    assert_eq!(playlist_add_menu.kind, GuiWidgetKind::Button);
-    assert_eq!(playlist_add_menu.children.len(), 2);
+    assert_eq!(playlist_add_files_button.kind, GuiWidgetKind::Button);
+    assert_eq!(playlist_add_url_button.kind, GuiWidgetKind::Button);
     assert_eq!(playlist_more_menu.kind, GuiWidgetKind::Button);
     assert_eq!(
+        playlist_more_menu
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main-window:playlist:load", "main-window:playlist:save"]
+    );
+    assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_remove_button),
-        vec![GuiShellAction::RemoveSelectedMainWindowPlaylist]
+        vec![
+            GuiShellAction::SelectMainWindowPlaylist(0),
+            GuiShellAction::RemoveSelectedMainWindowPlaylist
+        ]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, chat_send_button),

@@ -18,90 +18,58 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
 
     let shell_tree = state.shell_widget_tree();
-    let add_menu_button = shell_tree.find("main-window:playlist:add-menu").unwrap();
+    let add_files_button = shell_tree.find("main-window:playlist:add-files").unwrap();
     let more_menu_button = shell_tree.find("main-window:playlist:more-menu").unwrap();
     let add_url_button = shell_tree.find("main-window:playlist:add-url").unwrap();
     assert!(
         shell_tree.find("main-window:control:open-url").is_none(),
         "Open URL should not be exposed from the Controls pane"
     );
-    let open_selected_button = shell_tree
-        .find("main-window:playlist:open-selected")
-        .unwrap();
-    let trust_selected_button = shell_tree
-        .find("main-window:playlist:trust-selected")
-        .unwrap();
-    let shuffle_remaining_button = shell_tree
-        .find("main-window:playlist:shuffle-remaining")
-        .unwrap();
-    let shuffle_entire_button = shell_tree
-        .find("main-window:playlist:shuffle-entire")
-        .unwrap();
-    let undo_button = shell_tree.find("main-window:playlist:undo").unwrap();
-    let edit_button = shell_tree.find("main-window:playlist:edit").unwrap();
+    let row_remove_button = shell_tree.find("main-window:playlist:1:remove").unwrap();
 
-    assert_eq!(add_menu_button.kind, GuiWidgetKind::Button);
-    assert_eq!(add_menu_button.children.len(), 2);
+    assert_eq!(add_files_button.kind, GuiWidgetKind::Button);
+    assert_eq!(add_url_button.kind, GuiWidgetKind::Button);
     assert_eq!(more_menu_button.kind, GuiWidgetKind::Button);
-    let add_menu_size = GuiWidgetEguiRenderer::compact_action_button_size(add_menu_button);
+    let add_files_size = GuiWidgetEguiRenderer::compact_action_button_size(add_files_button);
+    let add_url_size = GuiWidgetEguiRenderer::compact_action_button_size(add_url_button);
     let more_menu_size = GuiWidgetEguiRenderer::compact_action_button_size(more_menu_button);
-    assert_eq!(add_menu_size.y, 32.0);
-    assert_eq!(more_menu_size.y, 32.0);
-    assert!(
-        add_menu_size.x >= 86.0 && more_menu_size.x >= add_menu_size.x,
-        "playlist toolbar actions should share the compact action button standard"
-    );
+    assert_eq!(add_files_size, egui::vec2(40.0, 40.0));
+    assert_eq!(add_url_size, egui::vec2(40.0, 40.0));
+    assert_eq!(more_menu_size, egui::vec2(52.0, 40.0));
     assert_eq!(
         more_menu_button
             .children
             .iter()
             .map(|child| child.id.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            "main-window:playlist:load",
-            "main-window:playlist:save",
-            "main-window:playlist:load-shuffle",
-            "main-window:playlist:undo",
-            "main-window:playlist:shuffle-remaining",
-            "main-window:playlist:shuffle-entire",
-            "main-window:playlist:edit",
-        ]
+        vec!["main-window:playlist:load", "main-window:playlist:save"]
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, add_url_button),
         vec![GuiShellAction::BeginSharedPlaylistUrlEdit]
     );
     assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, open_selected_button),
-        vec![GuiShellAction::RequestMainWindowUserMediaOpen(
-            "https://example.com/live".to_owned()
-        )]
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, row_remove_button),
+        vec![
+            GuiShellAction::SelectMainWindowPlaylist(1),
+            GuiShellAction::RemoveSelectedMainWindowPlaylist
+        ]
     );
-    assert!(
-        shell_tree
-            .find("main-window:playlist:open-selected-folder")
-            .is_none()
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, trust_selected_button),
-        vec![GuiShellAction::AddTrustedDomain("example.com".to_owned())]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, shuffle_remaining_button),
-        vec![GuiShellAction::ShuffleRemainingSharedPlaylist]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, shuffle_entire_button),
-        vec![GuiShellAction::ShuffleEntireSharedPlaylist]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, undo_button),
-        vec![GuiShellAction::UndoSharedPlaylistChange]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, edit_button),
-        vec![GuiShellAction::BeginSharedPlaylistTextEdit]
-    );
+    for removed_id in [
+        "main-window:playlist:open-selected",
+        "main-window:playlist:open-selected-folder",
+        "main-window:playlist:trust-selected",
+        "main-window:playlist:load-shuffle",
+        "main-window:playlist:undo",
+        "main-window:playlist:shuffle-remaining",
+        "main-window:playlist:shuffle-entire",
+        "main-window:playlist:edit",
+    ] {
+        assert!(
+            shell_tree.find(removed_id).is_none(),
+            "{removed_id} should not be exposed in the consolidated playlist toolbar"
+        );
+    }
 
     assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
     assert!(state.apply(GuiShellAction::UpdateSharedPlaylistTextEdit(
@@ -142,6 +110,9 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     let playlist_url_text_node = shell_tree
         .find("main-window:playlist-url-edit:text")
         .unwrap();
+    let playlist_url_helper = shell_tree
+        .find("main-window:playlist-url-edit:helper")
+        .unwrap();
     let playlist_url_commit = shell_tree
         .find("main-window:playlist-url-edit:commit")
         .unwrap();
@@ -161,6 +132,10 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_text_cancel),
         vec![GuiShellAction::CancelSharedPlaylistTextEdit]
+    );
+    assert_eq!(
+        playlist_url_helper.value.as_deref(),
+        Some("1 URL detected.")
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, playlist_url_commit),
@@ -243,13 +218,46 @@ fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_acti
         ))
     );
     let configuration_tree = state.configuration_widget_tree();
-    let manage_button = configuration_tree
-        .find("config-stream-support:manage")
-        .expect("stream-support manage button should exist");
+    assert!(
+        configuration_tree.find("config-stream-support").is_none(),
+        "stream support should be relocated out of setup"
+    );
+    let plugins_tree = state.plugins_widget_tree();
+    let install_plugin_button = plugins_tree
+        .find("plugins:stream-support:install")
+        .expect("stream-support plugin install button should exist");
+    let import_downloader_button = plugins_tree
+        .find("plugins:stream-support:import-downloader")
+        .expect("stream-support plugin import downloader button should exist");
+    let recheck_plugin_button = plugins_tree
+        .find("plugins:stream-support:recheck")
+        .expect("stream-support plugin recheck button should exist");
+    let open_location_plugin_button = plugins_tree
+        .find("plugins:stream-support:open-location")
+        .expect("stream-support plugin open-location button should exist");
+    let retry_plugin_button = plugins_tree
+        .find("plugins:stream-support:retry")
+        .expect("stream-support plugin retry button should exist");
 
     assert_eq!(
-        GuiWidgetEguiRenderer::actions_for_button_node(&state, manage_button),
-        vec![GuiShellAction::OpenModal(GuiShellModal::StreamSupport)]
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, install_plugin_button),
+        vec![GuiShellAction::InstallStreamHelper]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, recheck_plugin_button),
+        vec![GuiShellAction::RecheckStreamHelper]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, open_location_plugin_button),
+        vec![GuiShellAction::OpenStreamHelperInstallLocation]
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, retry_plugin_button),
+        vec![GuiShellAction::RetryPendingStreamMediaOpen]
+    );
+    assert_eq!(
+        import_downloader_button.enabled,
+        state.stream_helper.integration_supported
     );
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::StreamSupport)));
     let modal_tree = state.shell_modal_widget_tree();
