@@ -155,23 +155,6 @@
           "client": "client-1",
           "message": {
             "State": {
-              "ping": {
-                "latencyCalculation": 0.0,
-                "serverRtt": 0
-              },
-              "playstate": {
-                "doSeek": false,
-                "paused": true,
-                "position": 0.0,
-                "setBy": null
-              }
-            }
-          }
-        },
-        {
-          "client": "client-1",
-          "message": {
-            "State": {
               "ignoringOnTheFly": {
                 "server": 2
               },

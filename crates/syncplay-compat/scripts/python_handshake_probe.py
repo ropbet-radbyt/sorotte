@@ -7,6 +7,7 @@ for a focused subset of protocol behavior: Hello, List, Set, State, TLS.
 
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -392,6 +393,7 @@ class FanoutBatchProbe:
                 "position": 0.0,
                 "paused": True,
                 "setBy": None,
+                "updatedAt": self.current_time_seconds,
             }
 
     def _apply_permanent_rooms_snapshot(self):
@@ -502,6 +504,16 @@ class FanoutBatchProbe:
 
     def _room_is_permanent(self, room_name):
         return self.persistent_rooms_enabled and room_name in self.permanent_rooms
+
+    def _room_playback_state_at(self, room_name, now_seconds):
+        self._ensure_room_state(room_name)
+        state = dict(self.room_playback[room_name])
+        if not state["paused"]:
+            elapsed = float(now_seconds) - float(state.get("updatedAt", now_seconds))
+            if math.isfinite(elapsed) and elapsed > 0:
+                state["position"] = float(state["position"]) + elapsed
+        state["updatedAt"] = now_seconds
+        return state
 
     def _room_should_be_retained_when_empty(self, room_name):
         self._ensure_room_state(room_name)
@@ -822,7 +834,7 @@ class FanoutBatchProbe:
             fallback_set_by = self._fallback_room_set_by_username(room_name)
             if isinstance(fallback_set_by, str) and fallback_set_by:
                 self.room_playback[room_name]["setBy"] = fallback_set_by
-        room_state = self.room_playback[room_name]
+        room_state = self._room_playback_state_at(room_name, ticked_at)
 
         outputs = []
         periodic_state = self._periodic_state_sync_message(
@@ -1003,17 +1015,18 @@ class FanoutBatchProbe:
                     self.client_next_periodic_state_at[client_id] = (
                         self.current_time_seconds + SERVER_STATE_INTERVAL_SECONDS
                     )
-                    outputs.append(
-                        {
-                            "client": client_id,
-                            "message": self._room_sync_state_message(False, False),
-                        }
+                    room_state = self._room_playback_state_at(
+                        room_name, self.current_time_seconds
                     )
                     outputs.append(
                         {
                             "client": client_id,
                             "message": self._forced_state_sync_message(
-                                client_id, 0.0, True, True, None
+                                client_id,
+                                room_state["position"],
+                                room_state["paused"],
+                                True,
+                                room_state["setBy"],
                             ),
                         }
                     )
@@ -1180,7 +1193,7 @@ class FanoutBatchProbe:
             return []
         room_name = session["room"]
         self._ensure_room_state(room_name)
-        room_state_before = dict(self.room_playback[room_name])
+        room_state_before = self._room_playback_state_at(room_name, self.current_time_seconds)
         can_control_room = self._user_can_control_playlist(room_name, session["username"])
         paused = playstate.get("paused")
         has_paused = isinstance(paused, bool)
@@ -1188,6 +1201,9 @@ class FanoutBatchProbe:
         pause_changed = bool(has_paused and paused != room_state_before["paused"])
 
         if can_control_room:
+            self.room_playback[room_name]["position"] = room_state_before["position"]
+            self.room_playback[room_name]["paused"] = room_state_before["paused"]
+            self.room_playback[room_name]["updatedAt"] = self.current_time_seconds
             if has_paused:
                 self.room_playback[room_name]["paused"] = paused
             position = playstate.get("position")
@@ -1196,13 +1212,16 @@ class FanoutBatchProbe:
                 if not (has_paused and paused):
                     adjusted_position += self._forward_delay_for_client(client_id)
                 self.room_playback[room_name]["position"] = adjusted_position
+            self.room_playback[room_name]["updatedAt"] = self.current_time_seconds
             self.room_playback[room_name]["setBy"] = session["username"]
 
         if not do_seek and not pause_changed:
             return []
 
         if can_control_room:
-            room_state = self.room_playback[room_name]
+            room_state = self._room_playback_state_at(
+                room_name, self.current_time_seconds
+            )
             outputs = []
             for peer_id in self._room_client_ids(room_name):
                 outputs.append(

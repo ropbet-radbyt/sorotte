@@ -303,6 +303,13 @@ impl GuiWidgetEguiRenderer {
                         .password(matches!(node.kind, GuiWidgetKind::PasswordInput))
                         .desired_width(Self::visible_available_width(ui).max(1.0)),
                 );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::TextEdit,
+                        response.enabled(),
+                        node.label.clone(),
+                    )
+                });
                 let submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 if let Some(actions) = Self::actions_for_text_input_node(
@@ -326,6 +333,13 @@ impl GuiWidgetEguiRenderer {
                         .desired_width(Self::visible_available_width(ui).max(1.0))
                         .desired_rows(Self::text_area_rows_for_node(node)),
                 );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::TextEdit,
+                        response.enabled(),
+                        node.label.clone(),
+                    )
+                });
                 if let Some(actions) = Self::actions_for_text_input_node(
                     state,
                     node,

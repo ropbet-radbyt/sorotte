@@ -3,6 +3,104 @@ use std::{thread, time::Duration};
 use super::{PlatformNativeGuiDriver, PlatformWindowHandle};
 
 impl PlatformNativeGuiDriver {
+    fn rect_is_nonempty(rect: &windows::Win32::Foundation::RECT) -> bool {
+        rect.right > rect.left && rect.bottom > rect.top
+    }
+
+    fn rect_vertical_gap(
+        first: &windows::Win32::Foundation::RECT,
+        second: &windows::Win32::Foundation::RECT,
+    ) -> i32 {
+        if first.bottom < second.top {
+            second.top - first.bottom
+        } else if second.bottom < first.top {
+            first.top - second.bottom
+        } else {
+            0
+        }
+    }
+
+    fn rect_horizontal_gap(
+        first: &windows::Win32::Foundation::RECT,
+        second: &windows::Win32::Foundation::RECT,
+    ) -> i32 {
+        if first.right < second.left {
+            second.left - first.right
+        } else if second.right < first.left {
+            first.left - second.right
+        } else {
+            0
+        }
+    }
+
+    fn nearest_editable_element_to_named_label(
+        automation: &windows::Win32::UI::Accessibility::IUIAutomation,
+        root: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+        name: &str,
+        edit_elements: &[windows::Win32::UI::Accessibility::IUIAutomationElement],
+    ) -> Result<Option<windows::Win32::UI::Accessibility::IUIAutomationElement>, String> {
+        use windows::Win32::UI::Accessibility::UIA_EditControlTypeId;
+
+        let elements = Self::collect_subtree_elements(automation, root)?;
+        let length = Self::automation_element_count(&elements)?;
+        let mut label_rects = Vec::new();
+        for index in 0..length {
+            let Some(element) = Self::automation_element_at(&elements, index) else {
+                continue;
+            };
+            let element_name = Self::automation_element_name(&element).unwrap_or_default();
+            if element_name != name {
+                continue;
+            }
+            if Self::automation_element_control_type(&element) == Some(UIA_EditControlTypeId) {
+                continue;
+            }
+            if Self::automation_element_is_offscreen(&element) {
+                continue;
+            }
+            let Some(rect) = Self::automation_element_bounding_rect(&element) else {
+                continue;
+            };
+            if Self::rect_is_nonempty(&rect) {
+                label_rects.push(rect);
+            }
+        }
+
+        let mut best_match = None;
+        for edit_element in edit_elements {
+            let Some(edit_rect) = Self::automation_element_bounding_rect(edit_element) else {
+                continue;
+            };
+            if !Self::rect_is_nonempty(&edit_rect) {
+                continue;
+            }
+            for label_rect in &label_rects {
+                let edit_center_y = (edit_rect.top + edit_rect.bottom) / 2;
+                let label_center_y = (label_rect.top + label_rect.bottom) / 2;
+                let vertical_gap = Self::rect_vertical_gap(label_rect, &edit_rect);
+                let horizontal_gap = Self::rect_horizontal_gap(label_rect, &edit_rect);
+                let direction_penalty = if edit_rect.left >= label_rect.left - 8
+                    && edit_rect.top >= label_rect.top - 120
+                {
+                    0
+                } else {
+                    10_000
+                };
+                let score = i64::from(direction_penalty)
+                    + i64::from(vertical_gap) * 100
+                    + i64::from((edit_center_y - label_center_y).abs())
+                    + i64::from(horizontal_gap);
+                if best_match
+                    .as_ref()
+                    .is_none_or(|(best_score, _)| score < *best_score)
+                {
+                    best_match = Some((score, edit_element.clone()));
+                }
+            }
+        }
+        Ok(best_match.map(|(_, element)| element))
+    }
+
     fn collect_editable_elements(
         automation: &windows::Win32::UI::Accessibility::IUIAutomation,
         root: &windows::Win32::UI::Accessibility::IUIAutomationElement,
@@ -69,8 +167,10 @@ impl PlatformNativeGuiDriver {
             }
         }
 
-        Self::focus_window_element(window, element, "edit field for keyboard entry")?;
-        thread::sleep(Duration::from_millis(120));
+        if Self::click_element_center(window, element, "edit field for keyboard entry").is_err() {
+            Self::focus_window_element(window, element, "edit field for keyboard entry")?;
+            thread::sleep(Duration::from_millis(120));
+        }
         Self::send_select_all_backspace_and_type(value)
             .map_err(|error| format!("failed keyboard fallback text entry: {error}"))?;
         thread::sleep(Duration::from_millis(120));
@@ -171,24 +271,34 @@ impl PlatformNativeGuiDriver {
                 let edit_elements = Self::collect_editable_elements(automation, root)?;
                 let mut fallback_last_edit = None;
                 let mut available_names = Vec::new();
-                for element in edit_elements {
+                for element in &edit_elements {
                     fallback_last_edit = Some(element.clone());
-                    let element_name = Self::automation_element_name(&element).unwrap_or_default();
+                    let element_name = Self::automation_element_name(element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }
                     if element_name == name {
-                        return Self::read_edit_element_value(&element).map_err(|error| {
+                        return Self::read_edit_element_value(element).map_err(|error| {
                             format!("failed to read edit field named {name:?}: {error}")
                         });
                     }
                 }
+                if let Some(element) = Self::nearest_editable_element_to_named_label(
+                    automation,
+                    root,
+                    name,
+                    &edit_elements,
+                )? {
+                    return Self::read_edit_element_value(&element).map_err(|error| {
+                        format!("failed to read edit field nearest label {name:?}: {error}")
+                    });
+                }
                 if let Some(element) = fallback_last_edit {
                     return Self::read_edit_element_value(&element).map_err(|error| {
-                    format!(
-                        "failed to read fallback unnamed edit field while targeting {name:?}: {error}"
-                    )
-                });
+                        format!(
+                            "failed to read fallback unnamed edit field while targeting {name:?}: {error}"
+                        )
+                    });
                 }
                 available_names.sort();
                 available_names.dedup();
@@ -238,18 +348,30 @@ impl PlatformNativeGuiDriver {
                 let edit_elements = Self::collect_editable_elements(automation, root)?;
                 let mut fallback_last_edit = None;
                 let mut available_names = Vec::new();
-                for element in edit_elements {
+                for element in &edit_elements {
                     fallback_last_edit = Some(element.clone());
-                    let element_name = Self::automation_element_name(&element).unwrap_or_default();
+                    let element_name = Self::automation_element_name(element).unwrap_or_default();
                     if !element_name.is_empty() {
                         available_names.push(element_name.clone());
                     }
                     if element_name == name {
-                        return Self::set_edit_element_value(window, &element, value, submit)
+                        return Self::set_edit_element_value(window, element, value, submit)
                             .map_err(|error| {
                                 format!("failed to write edit field named {name:?}: {error}")
                             });
                     }
+                }
+                if let Some(element) = Self::nearest_editable_element_to_named_label(
+                    automation,
+                    root,
+                    name,
+                    &edit_elements,
+                )? {
+                    return Self::set_edit_element_value(window, &element, value, submit).map_err(
+                        |error| {
+                            format!("failed to write edit field nearest label {name:?}: {error}")
+                        },
+                    );
                 }
                 if let Some(element) = fallback_last_edit {
                     return Self::set_edit_element_value(window, &element, value, submit).map_err(
