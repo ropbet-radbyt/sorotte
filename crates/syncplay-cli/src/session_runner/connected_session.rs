@@ -2,10 +2,94 @@ use super::*;
 
 mod execution;
 
+use std::sync::{Arc, OnceLock};
+
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
     run_connected_session_event_plan_legacy_compatible,
 };
+use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_rustls::TlsConnector;
+
+trait ConnectedSessionAsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> ConnectedSessionAsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAsyncStream>>;
+
+fn normalized_tls_server_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn ensure_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
+    RUSTLS_PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
+fn default_tls_client_config() -> Arc<ClientConfig> {
+    static TLS_CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    TLS_CLIENT_CONFIG
+        .get_or_init(|| {
+            ensure_rustls_crypto_provider();
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            )
+        })
+        .clone()
+}
+
+fn start_tls_negotiation_enabled_legacy_compatible() -> bool {
+    #[cfg(test)]
+    const DEFAULT_START_TLS_NEGOTIATION_ENABLED: bool = false;
+    #[cfg(not(test))]
+    const DEFAULT_START_TLS_NEGOTIATION_ENABLED: bool = true;
+
+    env_flag_override("SYNCPLAY_CLIENT_STARTTLS").unwrap_or(DEFAULT_START_TLS_NEGOTIATION_ENABLED)
+}
+
+async fn negotiate_start_tls_legacy_compatible(
+    mut stream: TcpStream,
+    host: &str,
+) -> anyhow::Result<Box<dyn ConnectedSessionAsyncStream>> {
+    let tls_request_line = encode_message_line(&ProtocolMessage::start_tls("send"))?;
+    write_protocol_line(&mut stream, &tls_request_line).await?;
+
+    let mut reader = BufReader::new(stream);
+    let mut tls_response_line = String::new();
+    let read_bytes = reader.read_line(&mut tls_response_line).await?;
+    if read_bytes == 0 {
+        return Err(anyhow!(
+            "server closed connection before TLS negotiation completed"
+        ));
+    }
+
+    let upgrade_to_tls = matches!(
+        decode_message_line(tls_response_line.trim()),
+        Ok(ProtocolMessage::Tls(tls_message)) if tls_message.tls.start_tls.contains("true")
+    );
+    let stream = reader.into_inner();
+    if !upgrade_to_tls {
+        return Ok(Box::new(stream));
+    }
+
+    let server_name = ServerName::try_from(normalized_tls_server_host(host).trim().to_owned())
+        .map_err(|error| {
+            anyhow!("client TLS negotiation failed because the server name is invalid: {error}")
+        })?;
+    let tls_stream = TlsConnector::from(default_tls_client_config())
+        .connect(server_name, stream)
+        .await?;
+    Ok(Box::new(tls_stream))
+}
 
 #[cfg(test)]
 pub(crate) async fn run_connected_client_session<F, G>(
@@ -128,7 +212,13 @@ where
     runtime.session_mut().clear_server_feature_support_state();
 
     let hello_line = encode_message_line(&hello_message)?;
-    let (reader, mut writer) = stream.into_split();
+    let stream: Box<dyn ConnectedSessionAsyncStream> =
+        if start_tls_negotiation_enabled_legacy_compatible() {
+            negotiate_start_tls_legacy_compatible(stream, &config.host).await?
+        } else {
+            Box::new(stream)
+        };
+    let (reader, mut writer) = tokio::io::split(stream);
     write_protocol_line(&mut writer, &hello_line).await?;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
     publish_pending_local_file_updates(runtime, config)?;
@@ -332,5 +422,57 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn starttls_negotiation_sends_request_and_accepts_plain_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("server should accept");
+            let (reader, mut writer) = socket.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            let tls_line = lines
+                .next_line()
+                .await
+                .expect("TLS line read should succeed")
+                .expect("TLS line should be present");
+            assert!(
+                tls_line.contains(r#""TLS":{"startTLS":"send"}"#),
+                "client should request StartTLS before Hello"
+            );
+            writer
+                .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
+                .await
+                .expect("server TLS fallback write should succeed");
+            writer
+                .flush()
+                .await
+                .expect("server TLS fallback flush should succeed");
+        });
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect to test server");
+        let _stream = negotiate_start_tls_legacy_compatible(stream, "127.0.0.1")
+            .await
+            .expect("plain TLS fallback should complete");
+
+        server_task
+            .await
+            .expect("server task should complete without panic");
     }
 }

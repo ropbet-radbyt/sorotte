@@ -3328,6 +3328,7 @@ name = "syncplay-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rustls",
  "serde_json",
  "syncplay-client-app",
  "syncplay-client-core",
@@ -3336,6 +3337,8 @@ dependencies = [
  "syncplay-protocol",
  "syncplay-server",
  "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

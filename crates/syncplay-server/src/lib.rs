@@ -37,8 +37,8 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
-const SERVER_REAL_VERSION: &str = "syncplay-rs-dev-server";
 const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
+const SERVER_REAL_VERSION: &str = LEGACY_COMPAT_SERVER_VERSION;
 const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
     "You are using Syncplay {client_version} but a newer version is available from {upgrade_url}";

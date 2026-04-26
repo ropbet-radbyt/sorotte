@@ -632,9 +632,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(lines)
     }
 
-    pub(in crate::app) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
-        let message = decode_message_line(json_line)
-            .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
+    fn apply_protocol_message(&mut self, message: ProtocolMessage) -> Result<(), String> {
         let inbound_is_server_hello = matches!(&message, ProtocolMessage::Hello(_));
         let message_updates_authoritative_local_room =
             self.message_updates_authoritative_local_room(&message);
@@ -698,5 +696,14 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
         self.sync_optimistic_room_playlist();
         result
+    }
+
+    pub(in crate::app) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
+        let messages = decode_message_lines(json_line)
+            .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
+        for message in messages {
+            self.apply_protocol_message(message)?;
+        }
+        Ok(())
     }
 }

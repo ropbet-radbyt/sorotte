@@ -131,7 +131,7 @@ fn apply_connected_session_inbound_message_legacy_compatible(
 
 async fn apply_connected_session_protocol_plan_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    writer: &mut ConnectedSessionWriteHalf,
     startup_playlist_file_on_connect: &mut Option<String>,
     plan: ConnectedSessionProtocolPlan,
 ) -> anyhow::Result<()> {
@@ -290,7 +290,7 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     pub(super) config: &'a ClientLoopConfig,
-    pub(super) writer: &'a mut tokio::net::tcp::OwnedWriteHalf,
+    pub(super) writer: &'a mut ConnectedSessionWriteHalf,
     pub(super) startup_playlist_file_on_connect: &'a mut Option<String>,
     pub(super) diagnostics_config: &'a ClientLoopDiagnosticsConfig,
     pub(super) reconnect_correction_diagnostics_state: &'a mut ReconnectCorrectionDiagnosticsState,

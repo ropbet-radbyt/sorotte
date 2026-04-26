@@ -239,14 +239,33 @@ async fn expect_client_hello_and_send_standard_test_server_hello(
     lines: &mut TestServerLines,
     writer: &mut OwnedWriteHalf,
 ) {
-    let hello_line = lines
+    let first_line = lines
         .next_line()
         .await
-        .expect("hello line read should succeed")
-        .expect("hello line should be present");
+        .expect("first client line read should succeed")
+        .expect("first client line should be present");
+    let hello_line =
+        match decode_message_line(&first_line).expect("first client line should decode") {
+            ProtocolMessage::Tls(tls_message) if tls_message.tls.start_tls == "send" => {
+                writer
+                    .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
+                    .await
+                    .expect("server TLS fallback write should succeed");
+                writer
+                    .flush()
+                    .await
+                    .expect("server TLS fallback flush should succeed");
+                lines
+                    .next_line()
+                    .await
+                    .expect("hello line read should succeed")
+                    .expect("hello line should be present")
+            }
+            _ => first_line,
+        };
     assert!(
         hello_line.contains("\"Hello\""),
-        "first client line should be a Hello message"
+        "client should send a Hello message after TLS negotiation"
     );
     writer
             .write_all(

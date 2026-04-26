@@ -29,7 +29,7 @@ use syncplay_client_core::{
 };
 use syncplay_player_api::PlayerPlaybackTelemetryUpdate;
 use syncplay_protocol::{
-    HelloPayload, ListPayload, ProtocolMessage, decode_message_line, encode_message_line,
+    HelloPayload, ListPayload, ProtocolMessage, decode_message_lines, encode_message_line,
 };
 
 use self::player::GuiNoopClientRuntimePlayer;

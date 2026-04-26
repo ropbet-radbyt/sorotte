@@ -57,7 +57,7 @@ use crate::client_config::{
     shared_playlists_enabled_cli_legacy_compatible,
 };
 use crate::diagnostics_config::{ClientLoopDiagnosticsConfig, client_loop_diagnostics_config};
-use crate::env_support::{env_flag_enabled, env_trimmed};
+use crate::env_support::{env_flag_enabled, env_flag_override, env_trimmed};
 use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
 use crate::local_runtime_actions::{
     PLAYER_CHAT_INPUT_POLL_INTERVAL_MS, drain_player_chat_input_legacy_compatible,

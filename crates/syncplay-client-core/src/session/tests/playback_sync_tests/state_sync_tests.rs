@@ -91,6 +91,71 @@ fn client_runtime_state_sync_reconcile_queues_outbound_state_after_inbound_state
 }
 
 #[test]
+fn client_runtime_state_sync_reconcile_emits_ping_only_without_local_playback_state() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    let sent = runtime.run_state_sync_reconcile_with_inbound_state(
+        StatePayload::new()
+            .with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob"),
+            )
+            .with_ping(PingPayload::new().with_latency_calculation(42.0)),
+        100.0,
+        0.25,
+        false,
+    );
+
+    assert!(
+        sent,
+        "state sync should echo ping even without local playback telemetry"
+    );
+    assert_eq!(
+        runtime.control().outbound_messages().len(),
+        1,
+        "state sync should queue one outbound state message"
+    );
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    assert_eq!(
+        state_message.state.playstate, None,
+        "ping-only response should omit playstate without local telemetry"
+    );
+    let ping = state_message
+        .state
+        .ping
+        .as_ref()
+        .expect("ping-only response should include ping metadata");
+    assert_eq!(
+        ping.latency_calculation,
+        Some(42.0),
+        "ping-only response should echo inbound latencyCalculation"
+    );
+    assert_eq!(
+        ping.client_latency_calculation,
+        Some(100.0),
+        "ping-only response should include client latency calculation"
+    );
+    assert_eq!(
+        ping.client_rtt,
+        Some(0.25),
+        "ping-only response should include client RTT"
+    );
+}
+
+#[test]
 fn client_runtime_state_sync_heartbeat_emits_ping_only_without_local_playback_state() {
     let mut session = ClientSession::default();
     session

@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use syncplay_protocol::{
     PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage, SetPayload, encode_message_line,
 };
+use tokio::io::AsyncWrite;
 pub(super) fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
     path: &Path,
 ) -> anyhow::Result<Vec<String>> {
@@ -33,7 +34,7 @@ pub(super) fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatib
 }
 
 pub(super) async fn emit_startup_playlist_load_from_file_legacy_compatible(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    writer: &mut (impl AsyncWrite + Unpin),
     playlist_path: &str,
 ) -> anyhow::Result<bool> {
     let lines = protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(Path::new(

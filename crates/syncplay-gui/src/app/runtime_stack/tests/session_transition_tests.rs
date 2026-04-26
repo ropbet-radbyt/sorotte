@@ -157,6 +157,34 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_applies_batched_top_level_commands() {
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        chat_output_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}},"Chat":{"username":"bob","message":"hello room"}}"#,
+        )
+        .expect("batched server message should apply");
+
+    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            GuiShellAction::PushChatMessage { sender, message }
+                if sender == "bob" && message == "hello room"
+        )),
+        "batched Chat command should be applied after Hello; actions were {actions:?}"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_state_without_media() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
