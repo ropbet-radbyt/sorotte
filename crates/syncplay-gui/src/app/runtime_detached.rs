@@ -100,7 +100,8 @@ impl GuiPersistedConfigRuntimeOwner {
             .filesize_privacy_mode
             .unwrap_or(PrivacyMode::SendRaw);
         let player_local_file = self.player_local_file.clone();
-        let file_publish_pending = player_local_file != self.last_published_local_file;
+        let file_publish_pending = !self.player_local_file_placeholder
+            && player_local_file != self.last_published_local_file;
         let playlist_control_available = self
             .session
             .as_ref()

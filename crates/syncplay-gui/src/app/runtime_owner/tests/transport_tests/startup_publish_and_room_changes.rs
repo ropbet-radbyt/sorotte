@@ -251,6 +251,74 @@ fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_l
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_over_transport() {
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert_eq!(startup_protocol_lines.len(), 1);
+    assert!(startup_protocol_lines[0].contains("\"Hello\""));
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+
+    owner.player_local_file = Some(
+        GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path("C:/Media/episode1.mkv"),
+    );
+    owner.player_local_file_placeholder = true;
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let placeholder_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        placeholder_protocol_lines.iter().all(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|message| message.get("Set").and_then(|set| set.get("file")).cloned())
+                .is_none()
+        }),
+        "placeholder local file metadata should not be published before real player metadata arrives",
+    );
+    assert!(owner.last_published_local_file.is_none());
+
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_duration_seconds(42.0)
+            .with_size_bytes(1234)
+            .with_path("C:/Media/episode1.mkv"),
+    );
+    owner.player_local_file_placeholder = false;
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        outbound_protocol_lines.iter().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            let Some(file) = message.get("Set").and_then(|set| set.get("file")) else {
+                return false;
+            };
+            file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
+                && file.get("duration").and_then(serde_json::Value::as_f64) == Some(42.0)
+                && file.get("size").and_then(serde_json::Value::as_i64) == Some(1234)
+        }),
+        "real local file metadata should publish after the placeholder is replaced",
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
     use std::{
         io::{BufRead, BufReader, Write},
