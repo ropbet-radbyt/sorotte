@@ -2,7 +2,16 @@ use eframe::egui;
 
 use super::super::shell_state::SyncplayGuiShellAppState;
 use super::super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
-use super::GuiWidgetEguiRenderer;
+use super::{GuiPanelShellOptions, GuiWidgetEguiRenderer};
+
+#[derive(Clone, Copy)]
+struct CombinedRoomIdentityNodes<'a> {
+    status: Option<&'a GuiWidgetNode>,
+    server: Option<&'a GuiWidgetNode>,
+    room: Option<&'a GuiWidgetNode>,
+    room_control: Option<&'a GuiWidgetNode>,
+    playback_state: Option<&'a GuiWidgetNode>,
+}
 
 impl GuiWidgetEguiRenderer {
     pub(super) fn render_combined_room_panel(
@@ -27,6 +36,10 @@ impl GuiWidgetEguiRenderer {
             .children
             .iter()
             .find(|child| child.id == "main-window:room-control");
+        let playback_state_node = node
+            .children
+            .iter()
+            .find(|child| child.id == "main-window:room-playback-state");
         let header_actions = node
             .children
             .iter()
@@ -40,173 +53,165 @@ impl GuiWidgetEguiRenderer {
             .iter()
             .find(|child| child.id == "main-window:participants");
         let panel_width = Self::panel_available_width(ui);
-        let frame = egui::Frame::group(ui.style())
-            .fill(Self::palette_for_ui(ui).surface)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(0));
+        let header_content_width = (panel_width - 24.0).max(0.0);
+        let compact = header_content_width < 720.0;
+        let header_height = if compact { 118.0 } else { 64.0 };
 
-        ui.allocate_ui_with_layout(
-            egui::vec2(panel_width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(panel_width);
-                ui.set_max_width(panel_width);
-                let panel_response = frame.show(ui, |ui| {
-                    ui.set_width(panel_width);
-                    ui.set_max_width(panel_width);
-                    if let Some(min_content_height) = self.node_min_content_height(node) {
-                        ui.set_min_height(min_content_height);
+        self.render_panel_shell_with_header(
+            ui,
+            GuiPanelShellOptions::new(panel_width)
+                .min_content_height(self.node_min_content_height(node))
+                .header_height(header_height)
+                .header_content_margin(egui::vec2(12.0, 10.0))
+                .body_margin(egui::Margin::same(0))
+                .body_horizontal_margin(0.0),
+            |renderer, ui, header_content_width| {
+                if compact {
+                    renderer.render_combined_room_identity_row(
+                        ui,
+                        CombinedRoomIdentityNodes {
+                            status: status_node,
+                            server: server_node,
+                            room: room_node,
+                            room_control: room_control_node,
+                            playback_state: playback_state_node,
+                        },
+                        header_content_width,
+                    );
+                    if let Some(header_actions) = header_actions {
+                        ui.add_space(8.0);
+                        renderer.render_combined_room_header_actions(
+                            ui,
+                            header_actions,
+                            state,
+                            header_content_width,
+                            true,
+                        );
                     }
-
-                    let header_content_width = (panel_width - 24.0).max(0.0);
-                    let compact = header_content_width < 720.0;
-                    let header_height = if compact { 118.0 } else { 64.0 };
-                    let (header_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(panel_width, header_height),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(
-                        header_rect,
-                        Self::panel_header_corner_radius(),
-                        Self::panel_header_fill(ui),
-                    );
-                    let header_content_rect = header_rect.shrink2(egui::vec2(12.0, 10.0));
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .max_rect(header_content_rect)
-                            .layout(egui::Layout::top_down(egui::Align::Min)),
-                        |ui| {
-                            ui.set_width(header_content_width);
-                            ui.set_max_width(header_content_width);
-                            if compact {
-                                self.render_combined_room_identity_row(
+                } else {
+                    ui.horizontal(|ui| {
+                        let action_width = header_actions
+                            .map_or(0.0_f32, |_| 386.0_f32)
+                            .min(header_content_width);
+                        let control_width = if room_control_node.is_some() {
+                            42.0
+                        } else {
+                            0.0
+                        };
+                        let playback_state_width = if playback_state_node.is_some() {
+                            42.0
+                        } else {
+                            0.0
+                        };
+                        let trailing_icon_width = match (room_control_node, playback_state_node) {
+                            (Some(_), Some(_)) => control_width + playback_state_width + 8.0,
+                            _ => control_width + playback_state_width,
+                        };
+                        let identity_width =
+                            (header_content_width - action_width - trailing_icon_width - 18.0)
+                                .max(160.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(identity_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(identity_width);
+                                ui.set_max_width(identity_width);
+                                renderer.render_combined_room_identity_row(
                                     ui,
-                                    status_node,
-                                    server_node,
-                                    room_node,
-                                    room_control_node,
-                                    header_content_width,
+                                    CombinedRoomIdentityNodes {
+                                        status: status_node,
+                                        server: server_node,
+                                        room: room_node,
+                                        room_control: None,
+                                        playback_state: None,
+                                    },
+                                    identity_width,
                                 );
-                                if let Some(header_actions) = header_actions {
-                                    ui.add_space(8.0);
-                                    self.render_combined_room_header_actions(
+                            },
+                        );
+                        if let Some(header_actions) = header_actions {
+                            ui.add_space(8.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(action_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(action_width);
+                                    ui.set_max_width(action_width);
+                                    renderer.render_combined_room_header_actions(
                                         ui,
                                         header_actions,
                                         state,
-                                        header_content_width,
-                                        true,
+                                        action_width,
+                                        false,
                                     );
+                                },
+                            );
+                        }
+                        if playback_state_node.is_some() || room_control_node.is_some() {
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if let Some(playback_state_node) = playback_state_node {
+                                    Self::render_playback_state_icon(ui, playback_state_node, 34.0);
                                 }
-                            } else {
-                                ui.horizontal(|ui| {
-                                    let action_width = header_actions
-                                        .map_or(0.0_f32, |_| 386.0_f32)
-                                        .min(header_content_width);
-                                    let control_width = if room_control_node.is_some() {
-                                        42.0
-                                    } else {
-                                        0.0
-                                    };
-                                    let identity_width = (header_content_width
-                                        - action_width
-                                        - control_width
-                                        - 18.0)
-                                        .max(160.0);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(identity_width, 0.0),
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
-                                            ui.set_width(identity_width);
-                                            ui.set_max_width(identity_width);
-                                            self.render_combined_room_identity_row(
-                                                ui,
-                                                status_node,
-                                                server_node,
-                                                room_node,
-                                                None,
-                                                identity_width,
-                                            );
-                                        },
-                                    );
-                                    if let Some(header_actions) = header_actions {
+                                if let Some(room_control_node) = room_control_node {
+                                    if playback_state_node.is_some() {
                                         ui.add_space(8.0);
-                                        ui.allocate_ui_with_layout(
-                                            egui::vec2(action_width, 0.0),
-                                            egui::Layout::top_down(egui::Align::Min),
-                                            |ui| {
-                                                ui.set_width(action_width);
-                                                ui.set_max_width(action_width);
-                                                self.render_combined_room_header_actions(
-                                                    ui,
-                                                    header_actions,
-                                                    state,
-                                                    action_width,
-                                                    false,
-                                                );
-                                            },
-                                        );
                                     }
-                                    if let Some(room_control_node) = room_control_node {
-                                        ui.add_space(8.0);
-                                        self.render_room_control_icon(ui, room_control_node);
-                                    }
-                                });
-                            }
-                        },
-                    );
-                    Self::paint_panel_header_separator(ui, header_rect);
-
-                    if let Some(room_actions) = room_actions {
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(12, 10))
-                            .fill(Self::palette_for_ui(ui).surface)
-                            .show(ui, |ui| {
-                                let body_width =
-                                    Self::width_inside_horizontal_margin(panel_width, 24.0);
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(body_width, 0.0),
-                                    egui::Layout::top_down(egui::Align::Min),
-                                    |ui| {
-                                        ui.set_width(body_width);
-                                        ui.set_max_width(body_width);
-                                        self.render_room_change_section(ui, room_actions, state);
-                                    },
-                                );
+                                    renderer.render_room_control_icon(ui, room_control_node);
+                                }
                             });
-                        ui.add_space(2.0);
-                    }
-
+                        }
+                    });
+                }
+            },
+            |renderer, ui, body_width| {
+                if let Some(room_actions) = room_actions {
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(12, 10))
+                        .fill(Self::palette_for_ui(ui).surface)
                         .show(ui, |ui| {
-                            let body_width =
-                                Self::width_inside_horizontal_margin(panel_width, 24.0);
+                            let section_width =
+                                Self::width_inside_horizontal_margin(body_width, 24.0);
                             ui.allocate_ui_with_layout(
-                                egui::vec2(body_width, 0.0),
+                                egui::vec2(section_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    ui.set_width(body_width);
-                                    ui.set_max_width(body_width);
-                                    ui.label(
-                                        egui::RichText::new("Participants")
-                                            .small()
-                                            .strong()
-                                            .color(Self::palette_for_ui(ui).muted_text),
-                                    );
-                                    ui.add_space(6.0);
-                                    if let Some(participants) = participants {
-                                        self.render_combined_room_participants(
-                                            ui,
-                                            participants,
-                                            state,
-                                        );
-                                    }
+                                    ui.set_width(section_width);
+                                    ui.set_max_width(section_width);
+                                    renderer.render_room_change_section(ui, room_actions, state);
                                 },
                             );
                         });
-                });
-                Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+                    ui.add_space(2.0);
+                }
+
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        let section_width = Self::width_inside_horizontal_margin(body_width, 24.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(section_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(section_width);
+                                ui.set_max_width(section_width);
+                                ui.label(
+                                    egui::RichText::new("Participants")
+                                        .small()
+                                        .strong()
+                                        .color(Self::palette_for_ui(ui).muted_text),
+                                );
+                                ui.add_space(6.0);
+                                if let Some(participants) = participants {
+                                    renderer.render_combined_room_participants(
+                                        ui,
+                                        participants,
+                                        state,
+                                    );
+                                }
+                            },
+                        );
+                    });
             },
         );
     }
@@ -214,21 +219,20 @@ impl GuiWidgetEguiRenderer {
     fn render_combined_room_identity_row(
         &self,
         ui: &mut egui::Ui,
-        status_node: Option<&GuiWidgetNode>,
-        server_node: Option<&GuiWidgetNode>,
-        room_node: Option<&GuiWidgetNode>,
-        room_control_node: Option<&GuiWidgetNode>,
+        nodes: CombinedRoomIdentityNodes<'_>,
         row_width: f32,
     ) {
         ui.horizontal(|ui| {
-            if let Some(status_node) = status_node {
+            if let Some(status_node) = nodes.status {
                 self.render_connection_status_dot(ui, status_node);
                 ui.add_space(8.0);
             }
-            let icon_width = if room_control_node.is_some() {
-                42.0
-            } else {
+            let icon_count = usize::from(nodes.room_control.is_some())
+                + usize::from(nodes.playback_state.is_some());
+            let icon_width = if icon_count == 0 {
                 0.0
+            } else {
+                (icon_count as f32 * 34.0) + ((icon_count.saturating_sub(1)) as f32 * 8.0)
             };
             let text_width = (row_width - icon_width - 34.0).max(80.0);
             ui.allocate_ui_with_layout(
@@ -237,7 +241,8 @@ impl GuiWidgetEguiRenderer {
                 |ui| {
                     ui.set_width(text_width);
                     ui.set_max_width(text_width);
-                    let room_label = room_node
+                    let room_label = nodes
+                        .room
                         .and_then(|node| node.value.as_deref())
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or("(no room joined)");
@@ -252,7 +257,8 @@ impl GuiWidgetEguiRenderer {
                     if room_label != "(no room joined)" {
                         room_response.on_hover_text(room_label.to_owned());
                     }
-                    let server_label = server_node
+                    let server_label = nodes
+                        .server
                         .and_then(|node| node.value.as_deref())
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or("(not configured)");
@@ -269,9 +275,17 @@ impl GuiWidgetEguiRenderer {
                     }
                 },
             );
-            if let Some(room_control_node) = room_control_node {
+            if nodes.room_control.is_some() || nodes.playback_state.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.render_room_control_icon(ui, room_control_node);
+                    if let Some(room_control_node) = nodes.room_control {
+                        self.render_room_control_icon(ui, room_control_node);
+                    }
+                    if let Some(playback_state_node) = nodes.playback_state {
+                        if nodes.room_control.is_some() {
+                            ui.add_space(8.0);
+                        }
+                        Self::render_playback_state_icon(ui, playback_state_node, 34.0);
+                    }
                 });
             }
         });
@@ -677,137 +691,105 @@ impl GuiWidgetEguiRenderer {
             .children
             .iter()
             .find(|child| child.id == "main-window:browser:hide-empty");
-        let frame = egui::Frame::group(ui.style())
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(0))
-            .fill(ui.visuals().extreme_bg_color.gamma_multiply(0.18));
         let panel_width = Self::visible_available_width(ui);
 
-        ui.allocate_ui_with_layout(
-            egui::vec2(panel_width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(panel_width);
-                ui.set_max_width(panel_width);
-                let panel_response = frame.show(ui, |ui| {
-                    ui.set_width(panel_width);
-                    ui.set_max_width(panel_width);
-                    if let Some(min_content_height) = self.node_min_content_height(node) {
-                        ui.set_min_height(min_content_height);
-                    }
-
-                    let header_response = egui::Frame::new()
-                        .fill(Self::panel_header_fill(ui))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(Self::panel_header_corner_radius())
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            let header_width = Self::visible_available_width(ui);
-                            ui.set_width(header_width);
-                            ui.set_max_width(header_width);
-                            let right_width = if hide_empty_node.is_some() {
-                                178.0
-                            } else {
-                                0.0
-                            };
-                            let left_width = (header_width - right_width - 8.0).max(0.0);
-                            ui.horizontal(|ui| {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(left_width, 0.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.strong(
-                                                egui::RichText::new(&node.label)
-                                                    .color(Self::palette_for_ui(ui).neutral_text),
-                                            );
-                                            ui.add_space(16.0);
-                                            ui.label(
-                                                egui::RichText::new(if room_nodes.len() == 1 {
-                                                    "1 room".to_owned()
-                                                } else {
-                                                    format!("{} rooms", room_nodes.len())
-                                                })
-                                                .small()
-                                                .weak(),
-                                            );
-                                            ui.add_space(16.0);
-                                            ui.label(
-                                                egui::RichText::new(if user_count == 1 {
-                                                    "1 user".to_owned()
-                                                } else {
-                                                    format!("{user_count} users")
-                                                })
-                                                .small()
-                                                .weak(),
-                                            );
-                                            if state.main_window.hide_empty_rooms {
-                                                let palette = Self::palette_for_ui(ui);
-                                                Self::render_room_browser_chip(
-                                                    ui,
-                                                    "Empty Hidden",
-                                                    palette.info_bg,
-                                                    palette.info_text,
-                                                    palette.info_border,
-                                                );
-                                            }
-                                        });
-                                    },
+        self.render_panel_shell_with_header(
+            ui,
+            GuiPanelShellOptions::new(panel_width)
+                .min_content_height(self.node_min_content_height(node)),
+            |renderer, ui, header_width| {
+                let right_width = if hide_empty_node.is_some() {
+                    178.0
+                } else {
+                    0.0
+                };
+                let left_width = (header_width - right_width - 8.0).max(0.0);
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, 0.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.strong(
+                                    egui::RichText::new(&node.label)
+                                        .color(Self::palette_for_ui(ui).neutral_text),
                                 );
-                                if let Some(hide_empty_node) = hide_empty_node {
-                                    ui.add_space(8.0);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(right_width, 0.0),
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            self.render_leaf(ui, hide_empty_node, state);
-                                        },
+                                ui.add_space(16.0);
+                                ui.label(
+                                    egui::RichText::new(if room_nodes.len() == 1 {
+                                        "1 room".to_owned()
+                                    } else {
+                                        format!("{} rooms", room_nodes.len())
+                                    })
+                                    .small()
+                                    .weak(),
+                                );
+                                ui.add_space(16.0);
+                                ui.label(
+                                    egui::RichText::new(if user_count == 1 {
+                                        "1 user".to_owned()
+                                    } else {
+                                        format!("{user_count} users")
+                                    })
+                                    .small()
+                                    .weak(),
+                                );
+                                if state.main_window.hide_empty_rooms {
+                                    let palette = Self::palette_for_ui(ui);
+                                    Self::render_room_browser_chip(
+                                        ui,
+                                        "Empty Hidden",
+                                        palette.info_bg,
+                                        palette.info_text,
+                                        palette.info_border,
                                     );
                                 }
                             });
-                        });
-                    Self::paint_panel_header_separator(ui, header_response.response.rect);
-
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .show(ui, |ui| {
-                            let body_width = Self::visible_available_width(ui);
-                            ui.set_width(body_width);
-                            ui.set_max_width(body_width);
-                            if room_nodes.is_empty() {
-                                let empty_text = empty_node
-                                    .and_then(|child| child.value.as_deref())
-                                    .unwrap_or("No visible rooms.");
-                                ui.label(egui::RichText::new(empty_text).small().weak());
-                            } else {
-                                let (current_rooms, other_rooms): (
-                                    Vec<&GuiWidgetNode>,
-                                    Vec<&GuiWidgetNode>,
-                                ) = room_nodes
-                                    .iter()
-                                    .copied()
-                                    .partition(|room_node| room_node.selected);
-                                if !current_rooms.is_empty() {
-                                    self.render_room_browser_room_list(ui, &current_rooms, state);
-                                }
-                                if !other_rooms.is_empty() {
-                                    if !current_rooms.is_empty() {
-                                        ui.add_space(8.0);
-                                    }
-                                    ui.strong(
-                                        egui::RichText::new("Other Rooms")
-                                            .small()
-                                            .strong()
-                                            .color(Self::palette_for_ui(ui).neutral_text),
-                                    );
-                                    ui.add_space(4.0);
-                                    self.render_room_browser_room_list(ui, &other_rooms, state);
-                                }
-                            }
-                        });
+                        },
+                    );
+                    if let Some(hide_empty_node) = hide_empty_node {
+                        ui.add_space(8.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, 0.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                renderer.render_leaf(ui, hide_empty_node, state);
+                            },
+                        );
+                    }
                 });
-                Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+            },
+            |renderer, ui, body_width| {
+                ui.set_width(body_width);
+                ui.set_max_width(body_width);
+                if room_nodes.is_empty() {
+                    let empty_text = empty_node
+                        .and_then(|child| child.value.as_deref())
+                        .unwrap_or("No visible rooms.");
+                    ui.label(egui::RichText::new(empty_text).small().weak());
+                } else {
+                    let (current_rooms, other_rooms): (Vec<&GuiWidgetNode>, Vec<&GuiWidgetNode>) =
+                        room_nodes
+                            .iter()
+                            .copied()
+                            .partition(|room_node| room_node.selected);
+                    if !current_rooms.is_empty() {
+                        renderer.render_room_browser_room_list(ui, &current_rooms, state);
+                    }
+                    if !other_rooms.is_empty() {
+                        if !current_rooms.is_empty() {
+                            ui.add_space(8.0);
+                        }
+                        ui.strong(
+                            egui::RichText::new("Other Rooms")
+                                .small()
+                                .strong()
+                                .color(Self::palette_for_ui(ui).neutral_text),
+                        );
+                        ui.add_space(4.0);
+                        renderer.render_room_browser_room_list(ui, &other_rooms, state);
+                    }
+                }
             },
         );
     }

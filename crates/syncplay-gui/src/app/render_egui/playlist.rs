@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::super::shell_state::{GuiShellAction, SyncplayGuiShellAppState};
 use super::super::widget_tree::GuiWidgetNode;
-use super::GuiWidgetEguiRenderer;
+use super::{GuiPanelShellOptions, GuiWidgetEguiRenderer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GuiDraggedPlaylistRow {
@@ -36,67 +36,42 @@ impl GuiWidgetEguiRenderer {
         let panel_width = Self::panel_available_width(ui);
         let min_height = self.node_min_content_height(node).unwrap_or(0.0);
         let footer_height = 76.0;
-        ui.allocate_ui_with_layout(
-            egui::vec2(panel_width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(panel_width);
-                ui.set_max_width(panel_width);
-                let panel_response =
-                    egui::Frame::group(ui.style())
-                        .fill(Self::palette_for_ui(ui).surface)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(6)
-                        .inner_margin(egui::Margin::same(0))
-                        .show(ui, |ui| {
-                            ui.set_width(panel_width);
-                            ui.set_max_width(panel_width);
-                            ui.set_min_height(min_height);
-                            self.render_panel_header(ui, node, None, state, panel_width);
-                            let body_response =
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(10, 8))
-                                    .show(ui, |ui| {
-                                        let body_width =
-                                            Self::width_inside_horizontal_margin(panel_width, 20.0);
-                                        ui.set_width(body_width);
-                                        ui.set_max_width(body_width);
-                                        let body_top = ui.cursor().top();
-                                        let editor_active = node.children.iter().any(|child| {
-                                            child.id == "main-window:playlist-edit"
-                                                || child.id == "main-window:playlist-url-edit"
-                                        });
-                                        for child in node.children.iter().filter(|child| {
-                                            child.id != "main-window:playlist-playback"
-                                        }) {
-                                            self.render_node(ui, child, state);
-                                        }
-                                        let used_height = ui.cursor().top() - body_top;
-                                        let target_body_height =
-                                            (min_height - 43.0 - 16.0).max(footer_height);
-                                        let spacer = if editor_active {
-                                            8.0
-                                        } else {
-                                            (target_body_height - used_height - footer_height)
-                                                .max(0.0)
-                                        };
-                                        if spacer > 0.0 {
-                                            ui.add_space(spacer);
-                                        }
-                                        if let Some(footer) = node.children.iter().find(|child| {
-                                            child.id == "main-window:playlist-playback"
-                                        }) {
-                                            self.render_playlist_playback_footer(
-                                                ui,
-                                                footer,
-                                                state,
-                                                footer_height,
-                                            );
-                                        }
-                                    });
-                            let _ = body_response;
-                        });
-                Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width).min_content_height(Some(min_height)),
+            |renderer, ui, _body_width| {
+                let body_top = ui.cursor().top();
+                let editor_active = node.children.iter().any(|child| {
+                    child.id == "main-window:playlist-edit"
+                        || child.id == "main-window:playlist-url-edit"
+                });
+                for child in node
+                    .children
+                    .iter()
+                    .filter(|child| child.id != "main-window:playlist-playback")
+                {
+                    renderer.render_node(ui, child, state);
+                }
+                let used_height = ui.cursor().top() - body_top;
+                let target_body_height =
+                    (min_height - Self::PANEL_HEADER_HEIGHT - 16.0).max(footer_height);
+                let spacer = if editor_active {
+                    8.0
+                } else {
+                    (target_body_height - used_height - footer_height).max(0.0)
+                };
+                if spacer > 0.0 {
+                    ui.add_space(spacer);
+                }
+                if let Some(footer) = node
+                    .children
+                    .iter()
+                    .find(|child| child.id == "main-window:playlist-playback")
+                {
+                    renderer.render_playlist_playback_footer(ui, footer, state, footer_height);
+                }
             },
         );
     }
@@ -111,10 +86,6 @@ impl GuiWidgetEguiRenderer {
         let width = Self::visible_available_width(ui);
         let content_width = Self::width_inside_horizontal_margin(width, 24.0);
         let palette = Self::palette_for_ui(ui);
-        let status_node = node
-            .children
-            .iter()
-            .find(|child| child.id == "main-window:playback-paused");
         let actions_node = node
             .children
             .iter()
@@ -135,34 +106,13 @@ impl GuiWidgetEguiRenderer {
                 ui.set_width(content_width);
                 ui.set_max_width(content_width);
                 ui.horizontal(|ui| {
-                    let controls_width = actions_node.map_or(0.0, |actions| {
-                        let button_count = actions.children.len() as f32;
-                        if button_count <= 0.0 {
-                            0.0
-                        } else {
-                            (button_count * 40.0) + ((button_count - 1.0) * 8.0)
-                        }
-                    });
-                    let state_width = 132.0;
-                    let label_width = (Self::visible_available_width(ui) - controls_width - 12.0)
-                        .clamp(state_width, 184.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(label_width, content_height),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.label(
-                                egui::RichText::new("Room state")
-                                    .small()
-                                    .color(palette.muted_text),
-                            );
-                            if let Some(status_node) = status_node {
-                                ui.add_space(8.0);
-                                Self::render_playback_state_icon(ui, status_node);
-                            }
-                        },
-                    );
                     if let Some(actions_node) = actions_node {
-                        ui.add_space(12.0);
+                        let controls_width = Self::playback_controls_width(actions_node);
+                        let side_space =
+                            ((Self::visible_available_width(ui) - controls_width) * 0.5).max(0.0);
+                        if side_space > 0.0 {
+                            ui.add_space(side_space);
+                        }
                         ui.allocate_ui_with_layout(
                             egui::vec2(controls_width, 40.0),
                             egui::Layout::left_to_right(egui::Align::Center),
@@ -177,7 +127,16 @@ impl GuiWidgetEguiRenderer {
             });
     }
 
-    fn render_playback_state_icon(ui: &mut egui::Ui, node: &GuiWidgetNode) {
+    fn playback_controls_width(actions: &GuiWidgetNode) -> f32 {
+        let button_count = actions.children.len() as f32;
+        if button_count <= 0.0 {
+            0.0
+        } else {
+            (button_count * 40.0) + ((button_count - 1.0) * 8.0)
+        }
+    }
+
+    pub(super) fn render_playback_state_icon(ui: &mut egui::Ui, node: &GuiWidgetNode, size: f32) {
         let paused = matches!(node.value.as_deref(), Some("yes" | "true"));
         let palette = Self::palette_for_ui(ui);
         let label = if paused {
@@ -198,7 +157,8 @@ impl GuiWidgetEguiRenderer {
                 palette.success_text,
             )
         };
-        let (_, response) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+        let size = size.max(24.0);
+        let (_, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Label, response.enabled(), label)
         });
@@ -206,12 +166,12 @@ impl GuiWidgetEguiRenderer {
         let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
         ui.painter().rect(
             rect,
-            20,
+            (size * 0.5) as u8,
             fill,
             egui::Stroke::new(1.0, stroke),
             egui::StrokeKind::Inside,
         );
-        let icon_rect = rect.shrink2(egui::vec2(12.0, 10.0));
+        let icon_rect = rect.shrink2(egui::vec2(size * 0.3, size * 0.25));
         if paused {
             let bar_width = icon_rect.width() * 0.26;
             let gap = icon_rect.width() * 0.18;

@@ -124,6 +124,11 @@ impl SyncplayGuiShellAppState {
             _ => "No server is configured.".to_owned(),
         };
         let room_control_tooltip = self.main_window.room_control_status.clone();
+        let room_playback_state_tooltip = if self.main_window.playback_paused {
+            "Room state: paused"
+        } else {
+            "Room state: playing"
+        };
         let mut participant_indices: Vec<usize> = self
             .main_window
             .users
@@ -275,6 +280,15 @@ impl SyncplayGuiShellAppState {
                 false,
             )
             .with_tooltip(room_control_tooltip),
+            GuiWidgetNode::leaf(
+                "main-window:room-playback-state",
+                "Room State",
+                GuiWidgetKind::Status,
+                Some(bool_label(self.main_window.playback_paused).to_owned()),
+                true,
+                false,
+            )
+            .with_tooltip(room_playback_state_tooltip),
             GuiWidgetNode::layout(
                 "main-window:room-header:actions",
                 "Room Header Actions",

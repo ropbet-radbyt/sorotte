@@ -123,7 +123,7 @@ impl GuiWidgetEguiRenderer {
 
     fn playback_button_size(ui: &egui::Ui) -> egui::Vec2 {
         let available_height = ui.available_height();
-        let min_height = ui.spacing().interact_size.y.min(36.0).max(1.0);
+        let min_height = ui.spacing().interact_size.y.clamp(1.0, 36.0);
         let height = if available_height.is_finite() && available_height > 0.0 {
             available_height.clamp(min_height, 40.0)
         } else {

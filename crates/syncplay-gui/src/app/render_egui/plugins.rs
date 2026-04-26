@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::super::shell_state::SyncplayGuiShellAppState;
 use super::super::widget_tree::GuiWidgetNode;
-use super::GuiWidgetEguiRenderer;
+use super::{GuiPanelShellOptions, GuiWidgetEguiRenderer};
 
 impl GuiWidgetEguiRenderer {
     const PLUGINS_GAP: f32 = 12.0;
@@ -24,7 +24,7 @@ impl GuiWidgetEguiRenderer {
         };
 
         let available_width = Self::visible_available_width(ui);
-        let content_width = available_width.min(1320.0).max(0.0);
+        let content_width = available_width.clamp(0.0, 1320.0);
         let side_space = ((available_width - content_width) * 0.5).max(0.0);
 
         ui.horizontal_top(|ui| {
@@ -103,28 +103,17 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
         panel_width: f32,
     ) {
-        let panel_response = egui::Frame::new()
-            .fill(Self::palette_for_ui(ui).surface)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(0))
-            .show(ui, |ui| {
-                ui.set_width(panel_width);
-                ui.set_max_width(panel_width);
-                let header_width = panel_width + 24.0;
-                self.render_panel_header(ui, node, None, state, header_width);
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(10, 10))
-                    .show(ui, |ui| {
-                        let body_width = Self::width_inside_horizontal_margin(panel_width, 20.0);
-                        ui.set_width(body_width);
-                        ui.set_max_width(body_width);
-                        for child in &node.children {
-                            self.render_plugin_list_item(ui, child, state, body_width);
-                        }
-                    });
-            });
-        Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width).body_margin(egui::Margin::symmetric(10, 10)),
+            |renderer, ui, body_width| {
+                for child in &node.children {
+                    renderer.render_plugin_list_item(ui, child, state, body_width);
+                }
+            },
+        );
     }
 
     fn render_plugin_list_item(
@@ -220,39 +209,29 @@ impl GuiWidgetEguiRenderer {
         let actions_node = node.find("plugins:stream-support:actions");
         let alert_node = node.find("plugins:stream-support:alert");
 
-        let panel_response = egui::Frame::new()
-            .fill(Self::palette_for_ui(ui).surface)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(0))
-            .show(ui, |ui| {
-                ui.set_width(panel_width);
-                ui.set_max_width(panel_width);
-                let header_width = panel_width + 24.0;
-                self.render_panel_header(ui, node, None, state, header_width);
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(12, 12))
-                    .show(ui, |ui| {
-                        let body_width = Self::width_inside_horizontal_margin(panel_width, 24.0);
-                        ui.set_width(body_width);
-                        ui.set_max_width(body_width);
-
-                        if let Some(alert_node) = alert_node {
-                            self.render_action_alert_panel(ui, alert_node, state);
-                            ui.add_space(12.0);
-                        }
-                        if let Some(status_node) = status_node {
-                            self.render_stream_support_overview(ui, status_node);
-                            ui.add_space(10.0);
-                            self.render_stream_support_status_cards(ui, status_node);
-                        }
-                        if let Some(actions_node) = actions_node {
-                            ui.add_space(12.0);
-                            self.render_stream_support_plugin_actions(ui, actions_node, state);
-                        }
-                    });
-            });
-        Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width)
+                .body_margin(egui::Margin::symmetric(12, 12))
+                .body_horizontal_margin(24.0),
+            |renderer, ui, _body_width| {
+                if let Some(alert_node) = alert_node {
+                    renderer.render_action_alert_panel(ui, alert_node, state);
+                    ui.add_space(12.0);
+                }
+                if let Some(status_node) = status_node {
+                    renderer.render_stream_support_overview(ui, status_node);
+                    ui.add_space(10.0);
+                    renderer.render_stream_support_status_cards(ui, status_node);
+                }
+                if let Some(actions_node) = actions_node {
+                    ui.add_space(12.0);
+                    renderer.render_stream_support_plugin_actions(ui, actions_node, state);
+                }
+            },
+        );
     }
 
     fn render_stream_support_overview(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {

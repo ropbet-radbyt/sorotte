@@ -37,7 +37,7 @@ impl GuiWidgetEguiRenderer {
                 .is_some();
         match Self::room_dashboard_layout_for_width(available_width) {
             GuiRoomDashboardLayout::Narrow => {
-                let column_width = available_width.min(720.0).max(0.0);
+                let column_width = available_width.clamp(0.0, 720.0);
                 Self::allocate_centered_row(ui, column_width, |ui| {
                     Self::allocate_fixed_width(ui, column_width, |ui| {
                         self.render_node(ui, session_panel, state);
@@ -79,7 +79,7 @@ impl GuiWidgetEguiRenderer {
                 });
             }
             GuiRoomDashboardLayout::Wide => {
-                let row_width = available_width.min(1600.0).max(0.0);
+                let row_width = available_width.clamp(0.0, 1600.0);
                 let room_panel_width = (row_width * 0.46)
                     .clamp(420.0, 720.0)
                     .min((row_width - gap - 360.0).max(0.0));

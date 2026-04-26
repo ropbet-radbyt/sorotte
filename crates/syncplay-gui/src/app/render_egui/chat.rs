@@ -8,7 +8,11 @@ impl GuiWidgetEguiRenderer {
     pub(super) fn render_chat_history(&mut self, ui: &mut egui::Ui, node: &GuiWidgetNode) {
         let outer_width = Self::visible_available_width(ui);
         let content_width = Self::width_inside_horizontal_margin(outer_width, 2.0);
-        egui::Frame::group(ui.style())
+        let palette = Self::palette_for_ui(ui);
+        egui::Frame::new()
+            .fill(palette.surface)
+            .stroke(egui::Stroke::new(1.0, palette.border))
+            .corner_radius(egui::CornerRadius::same(Self::PANEL_RADIUS))
             .inner_margin(egui::Margin::same(0))
             .show(ui, |ui| {
                 let history_height = node.min_content_height.unwrap_or(180.0).clamp(120.0, 260.0);

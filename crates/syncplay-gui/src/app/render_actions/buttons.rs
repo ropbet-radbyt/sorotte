@@ -60,14 +60,14 @@ impl GuiWidgetEguiRenderer {
                 .unwrap_or_default();
         }
         if let Some(index) = Self::main_window_playlist_row_action_index(&node.id, "remove") {
-            return (index < state.main_window.playlist.len())
-                .then(|| {
-                    vec![
-                        GuiShellAction::SelectMainWindowPlaylist(index),
-                        GuiShellAction::RemoveSelectedMainWindowPlaylist,
-                    ]
-                })
-                .unwrap_or_default();
+            return if index < state.main_window.playlist.len() {
+                vec![
+                    GuiShellAction::SelectMainWindowPlaylist(index),
+                    GuiShellAction::RemoveSelectedMainWindowPlaylist,
+                ]
+            } else {
+                Vec::new()
+            };
         }
         if node.id == "main-window:playlist:add-files" {
             return Self::pick_media_files(state)

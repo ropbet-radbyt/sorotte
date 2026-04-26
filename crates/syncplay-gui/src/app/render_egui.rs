@@ -62,6 +62,54 @@ pub(super) enum GuiRoomDashboardLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct GuiPanelShellOptions {
+    panel_width: f32,
+    min_content_height: Option<f32>,
+    header_height: f32,
+    header_content_margin: egui::Vec2,
+    body_margin: egui::Margin,
+    body_horizontal_margin: f32,
+}
+
+impl GuiPanelShellOptions {
+    pub(super) fn new(panel_width: f32) -> Self {
+        Self {
+            panel_width,
+            min_content_height: None,
+            header_height: GuiWidgetEguiRenderer::PANEL_HEADER_HEIGHT,
+            header_content_margin: egui::vec2(10.0, 6.0),
+            body_margin: egui::Margin::symmetric(10, 8),
+            body_horizontal_margin: 20.0,
+        }
+    }
+
+    pub(super) fn min_content_height(mut self, min_content_height: Option<f32>) -> Self {
+        self.min_content_height = min_content_height;
+        self
+    }
+
+    pub(super) fn header_height(mut self, header_height: f32) -> Self {
+        self.header_height = header_height;
+        self
+    }
+
+    pub(super) fn header_content_margin(mut self, header_content_margin: egui::Vec2) -> Self {
+        self.header_content_margin = header_content_margin;
+        self
+    }
+
+    pub(super) fn body_margin(mut self, body_margin: egui::Margin) -> Self {
+        self.body_margin = body_margin;
+        self
+    }
+
+    pub(super) fn body_horizontal_margin(mut self, body_horizontal_margin: f32) -> Self {
+        self.body_horizontal_margin = body_horizontal_margin;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct GuiSemanticPalette {
     background: egui::Color32,
     surface: egui::Color32,
@@ -92,6 +140,9 @@ struct GuiSemanticPalette {
 }
 
 impl GuiWidgetEguiRenderer {
+    const PANEL_RADIUS: u8 = 6;
+    const PANEL_HEADER_HEIGHT: f32 = 42.0;
+
     fn palette_for_ui(ui: &egui::Ui) -> GuiSemanticPalette {
         Self::palette_for_dark_mode(ui.visuals().dark_mode)
     }
@@ -759,25 +810,31 @@ impl GuiWidgetEguiRenderer {
                     return;
                 }
                 let list_width = Self::visible_available_width(ui);
-                let response = egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(list_width);
-                    ui.set_max_width(list_width);
-                    if let Some(min_content_height) = self.node_min_content_height(node) {
-                        ui.set_min_height(min_content_height);
-                    }
-                    ui.label(
-                        egui::RichText::new(&node.label)
-                            .strong()
-                            .color(Self::palette_for_ui(ui).neutral_text),
-                    );
-                    if node.children.is_empty() {
-                        ui.label("No items.");
-                    } else {
-                        for child in &node.children {
-                            self.render_node(ui, child, state);
+                let response = egui::Frame::new()
+                    .fill(Self::palette_for_ui(ui).surface)
+                    .stroke(egui::Stroke::new(1.0, Self::palette_for_ui(ui).border))
+                    .corner_radius(egui::CornerRadius::same(Self::PANEL_RADIUS))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        let content_width = Self::width_inside_horizontal_margin(list_width, 20.0);
+                        ui.set_width(content_width);
+                        ui.set_max_width(content_width);
+                        if let Some(min_content_height) = self.node_min_content_height(node) {
+                            ui.set_min_height(min_content_height);
                         }
-                    }
-                });
+                        ui.label(
+                            egui::RichText::new(&node.label)
+                                .strong()
+                                .color(Self::palette_for_ui(ui).neutral_text),
+                        );
+                        if node.children.is_empty() {
+                            ui.label("No items.");
+                        } else {
+                            for child in &node.children {
+                                self.render_node(ui, child, state);
+                            }
+                        }
+                    });
                 if node.id == "main-window:playlist" {
                     self.playlist_drop_target_rect = Some(response.response.rect);
                     self.playlist_drop_target_hovered = response.response.hovered();
@@ -794,43 +851,114 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         let panel_width = Self::panel_available_width(ui);
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width)
+                .min_content_height(self.node_min_content_height(node)),
+            |renderer, ui, _body_width| {
+                for child in node.children.iter().filter(|child| {
+                    !(child.kind == GuiWidgetKind::Button && child.id.ends_with(":close"))
+                }) {
+                    renderer.render_node(ui, child, state);
+                }
+            },
+        );
+    }
+
+    pub(super) fn render_panel_shell(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        options: GuiPanelShellOptions,
+        add_body: impl FnOnce(&mut Self, &mut egui::Ui, f32),
+    ) {
+        let close_button = node
+            .children
+            .iter()
+            .find(|child| child.kind == GuiWidgetKind::Button && child.id.ends_with(":close"));
+        self.render_panel_shell_with_header(
+            ui,
+            options,
+            |renderer, ui, header_width| {
+                renderer.render_panel_header_content(ui, node, close_button, state, header_width);
+            },
+            add_body,
+        );
+    }
+
+    pub(super) fn render_panel_shell_with_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        options: GuiPanelShellOptions,
+        add_header: impl FnOnce(&mut Self, &mut egui::Ui, f32),
+        add_body: impl FnOnce(&mut Self, &mut egui::Ui, f32),
+    ) {
+        let panel_width = options.panel_width.max(0.0);
         ui.allocate_ui_with_layout(
             egui::vec2(panel_width, 0.0),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(panel_width);
                 ui.set_max_width(panel_width);
-                let panel_response = egui::Frame::group(ui.style())
+                let panel_left = ui.cursor().left();
+                let panel_clip_rect = egui::Rect::from_min_max(
+                    egui::pos2(panel_left, ui.clip_rect().top()),
+                    egui::pos2(panel_left + panel_width, ui.clip_rect().bottom()),
+                );
+                ui.shrink_clip_rect(panel_clip_rect);
+                let panel_response = egui::Frame::new()
                     .fill(Self::palette_for_ui(ui).surface)
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(6)
+                    .corner_radius(egui::CornerRadius::same(Self::PANEL_RADIUS))
                     .inner_margin(egui::Margin::same(0))
                     .show(ui, |ui| {
                         ui.set_width(panel_width);
                         ui.set_max_width(panel_width);
-                        if let Some(min_content_height) = self.node_min_content_height(node) {
+                        if let Some(min_content_height) = options.min_content_height {
                             ui.set_min_height(min_content_height);
                         }
-                        let close_button = node.children.iter().find(|child| {
-                            child.kind == GuiWidgetKind::Button && child.id.ends_with(":close")
-                        });
-                        self.render_panel_header(ui, node, close_button, state, panel_width);
+
+                        let (header_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(panel_width, options.header_height),
+                            egui::Sense::hover(),
+                        );
+                        Self::paint_panel_header_background(ui, header_rect);
+                        let content_rect = header_rect.shrink2(options.header_content_margin);
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(content_rect)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
+                            |ui| {
+                                ui.set_width(content_rect.width());
+                                ui.set_max_width(content_rect.width());
+                                add_header(self, ui, content_rect.width());
+                            },
+                        );
+                        Self::paint_panel_header_separator(ui, header_rect);
+
                         egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(10, 8))
+                            .inner_margin(options.body_margin)
                             .show(ui, |ui| {
-                                let body_width =
-                                    Self::width_inside_horizontal_margin(panel_width, 20.0);
+                                let body_width = Self::width_inside_horizontal_margin(
+                                    panel_width,
+                                    options.body_horizontal_margin,
+                                );
                                 ui.set_width(body_width);
                                 ui.set_max_width(body_width);
-                                for child in node.children.iter().filter(|child| {
-                                    !(child.kind == GuiWidgetKind::Button
-                                        && child.id.ends_with(":close"))
-                                }) {
-                                    self.render_node(ui, child, state);
-                                }
+                                add_body(self, ui, body_width);
                             });
                     });
-                Self::paint_visible_panel_outline(ui, panel_response.response.rect, 6);
+                let visual_rect = egui::Rect::from_min_max(
+                    egui::pos2(panel_left, panel_response.response.rect.top()),
+                    egui::pos2(
+                        panel_left + panel_width,
+                        panel_response.response.rect.bottom(),
+                    ),
+                );
+                Self::paint_visible_panel_outline(ui, visual_rect, Self::PANEL_RADIUS);
             },
         );
     }
@@ -1093,51 +1221,38 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn render_panel_header(
+    fn render_panel_header_content(
         &mut self,
         ui: &mut egui::Ui,
         node: &GuiWidgetNode,
         close_button: Option<&GuiWidgetNode>,
         state: &SyncplayGuiShellAppState,
-        header_width: f32,
+        content_width: f32,
     ) {
         let palette = Self::palette_for_ui(ui);
-        let header_height = 42.0;
-        let (header_rect, _) = ui.allocate_exact_size(
-            egui::vec2(header_width, header_height),
-            egui::Sense::hover(),
-        );
+        ui.horizontal(|ui| {
+            ui.set_width(content_width);
+            ui.strong(egui::RichText::new(&node.label).color(palette.neutral_text));
+            if node.selected {
+                ui.label(egui::RichText::new("active").small().strong());
+            }
+            if !node.enabled {
+                ui.label(egui::RichText::new("disabled").small());
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(close_button) = close_button {
+                    self.render_panel_close_button(ui, close_button, state);
+                }
+            });
+        });
+    }
+
+    fn paint_panel_header_background(ui: &egui::Ui, rect: egui::Rect) {
         ui.painter().rect_filled(
-            header_rect,
+            rect,
             Self::panel_header_corner_radius(),
             Self::panel_header_fill(ui),
         );
-        let content_rect = header_rect.shrink2(egui::vec2(10.0, 6.0));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(content_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                ui.set_width(content_rect.width());
-                ui.set_max_width(content_rect.width());
-                ui.horizontal(|ui| {
-                    ui.set_width(content_rect.width());
-                    ui.strong(egui::RichText::new(&node.label).color(palette.neutral_text));
-                    if node.selected {
-                        ui.label(egui::RichText::new("active").small().strong());
-                    }
-                    if !node.enabled {
-                        ui.label(egui::RichText::new("disabled").small());
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(close_button) = close_button {
-                            self.render_panel_close_button(ui, close_button, state);
-                        }
-                    });
-                });
-            },
-        );
-        Self::paint_panel_header_separator(ui, header_rect);
     }
 
     fn panel_header_fill(ui: &egui::Ui) -> egui::Color32 {
@@ -1150,8 +1265,8 @@ impl GuiWidgetEguiRenderer {
 
     pub(super) fn panel_header_corner_radius() -> egui::CornerRadius {
         egui::CornerRadius {
-            nw: 6,
-            ne: 6,
+            nw: Self::PANEL_RADIUS,
+            ne: Self::PANEL_RADIUS,
             sw: 0,
             se: 0,
         }
@@ -1163,7 +1278,7 @@ impl GuiWidgetEguiRenderer {
             return;
         }
         let y = visible_rect.bottom();
-        let edge_inset = 12.0;
+        let edge_inset = 0.5;
         let left = visible_rect.left() + edge_inset;
         let right = visible_rect.right() - edge_inset;
         if right <= left {
