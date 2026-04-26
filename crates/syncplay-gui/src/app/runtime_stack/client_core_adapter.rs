@@ -671,18 +671,16 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 .apply_protocol_message(other)
                 .map_err(|error| format!("Inbound client-session message apply failed: {error}")),
         };
-        if result.is_ok()
-            && inbound_is_server_hello
-            && self.pending_ready_at_start_on_server_hello
-            && self
+        if result.is_ok() && inbound_is_server_hello && self.pending_ready_at_start_on_server_hello
+        {
+            let ready_at_start = self
                 .runtime_settings
                 .settings
                 .ready_at_start
-                .unwrap_or(false)
-        {
+                .unwrap_or(false);
             let _ = self
                 .runtime
-                .run_set_ready_for_user("", true, false)
+                .run_set_ready_for_user("", ready_at_start, false)
                 .map_err(|error| {
                     format!(
                         "Client-core ready-at-start dispatch failed after server Hello: {error}"

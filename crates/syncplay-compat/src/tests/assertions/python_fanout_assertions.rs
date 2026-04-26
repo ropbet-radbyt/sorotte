@@ -84,7 +84,9 @@ pub(in crate::tests) fn assert_python_fanout_matches_server_runtime_for_scenario
         assert_eq!(
             python_event.outbound_lines.len(),
             rust_event.outbound_lines.len(),
-            "outbound count mismatch at step {index}"
+            "outbound count mismatch at step {index}\npython: {:#?}\nrust: {:#?}",
+            python_event.outbound_lines,
+            rust_event.outbound_lines
         );
 
         for (output_index, (python_output, rust_output)) in python_event

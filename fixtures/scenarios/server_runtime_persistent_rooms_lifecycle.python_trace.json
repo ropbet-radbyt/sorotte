@@ -7,6 +7,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -163,6 +175,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -221,6 +245,18 @@
                     "name": "persistent-room"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "bob"
               }
             }
           }

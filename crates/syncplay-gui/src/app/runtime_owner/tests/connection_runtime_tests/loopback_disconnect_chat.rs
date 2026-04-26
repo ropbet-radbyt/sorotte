@@ -194,7 +194,8 @@ fn gui_persisted_config_runtime_owner_discards_attached_player_chat_without_a_se
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(
-        session_transport.drain_outbound_protocol_lines().is_empty(),
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
+            .is_empty(),
         "rejected player chat must not be sent after the later session handshake"
     );
 }

@@ -161,7 +161,7 @@ impl ServerRuntime {
         {
             self.room_playback_state_mut(&session.room).set_by = Some(set_by_username);
         }
-        let room_state = self.room_playback_state_at(&session.room, ticked_at);
+        let room_state = self.refresh_room_playback_state_from_clients_at(&session.room, ticked_at);
 
         let mut outbound = Vec::new();
         if let Some(state_message) = self.periodic_state_sync_message_for_client(
@@ -266,6 +266,7 @@ impl ServerRuntime {
         let _ = self.domain.leave_room(&session.username, &session.room);
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
+        self.client_playback_states.remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         Some(session)
@@ -414,6 +415,109 @@ impl ServerRuntime {
         now_seconds: f64,
     ) -> RoomPlaybackState {
         self.room_playback_state(room_name).aged_at(now_seconds)
+    }
+
+    pub(crate) fn seed_client_playback_state(
+        &mut self,
+        client_id: &str,
+        position: Option<f64>,
+        now_seconds: f64,
+    ) {
+        let position = position.filter(|position| position.is_finite());
+        self.client_playback_states.insert(
+            client_id.to_owned(),
+            ClientPlaybackState::new(position, now_seconds),
+        );
+    }
+
+    pub(crate) fn record_client_playback_state_sample(
+        &mut self,
+        client_id: &str,
+        position: Option<f64>,
+        now_seconds: f64,
+    ) {
+        let position = position.filter(|position| position.is_finite());
+        let playback_state = self
+            .client_playback_states
+            .entry(client_id.to_owned())
+            .or_insert_with(|| ClientPlaybackState::new(None, now_seconds));
+        if let Some(position) = position {
+            playback_state.position = Some(position);
+        }
+        playback_state.updated_at_seconds = now_seconds;
+    }
+
+    pub(crate) fn seed_room_client_playback_states(
+        &mut self,
+        room_name: &str,
+        position: f64,
+        now_seconds: f64,
+    ) {
+        if !position.is_finite() {
+            return;
+        }
+        for client_id in self.clients_in_room(room_name) {
+            self.seed_client_playback_state(&client_id, Some(position), now_seconds);
+        }
+    }
+
+    pub(crate) fn slowest_room_playback_client_at(
+        &self,
+        room_name: &str,
+        room_paused: bool,
+        now_seconds: f64,
+    ) -> Option<(String, f64)> {
+        let controlled_room = self
+            .room_password_provider
+            .is_controlled_room_name(room_name);
+        let mut slowest: Option<(String, f64)> = None;
+        for (client_id, session) in &self.sessions {
+            if session.room != room_name {
+                continue;
+            }
+            if controlled_room && !self.user_is_room_controller(&session.username, room_name) {
+                continue;
+            }
+            if !session.file.as_ref().is_some_and(legacy_json_value_truthy) {
+                continue;
+            }
+            let Some(position) = self
+                .client_playback_states
+                .get(client_id)
+                .and_then(|state| state.position_at(room_paused, now_seconds))
+            else {
+                continue;
+            };
+            if slowest
+                .as_ref()
+                .is_none_or(|(_, slowest_position)| position < *slowest_position)
+            {
+                slowest = Some((session.username.clone(), position));
+            }
+        }
+        slowest
+    }
+
+    pub(crate) fn refresh_room_playback_state_from_clients_at(
+        &mut self,
+        room_name: &str,
+        now_seconds: f64,
+    ) -> RoomPlaybackState {
+        let current = self.room_playback_state(room_name);
+        let age_seconds = now_seconds - current.updated_at_seconds;
+        if !age_seconds.is_finite() || age_seconds <= SERVER_STATE_INTERVAL_SECONDS {
+            return current.aged_at(now_seconds);
+        }
+        let Some((set_by, position)) =
+            self.slowest_room_playback_client_at(room_name, current.paused, now_seconds)
+        else {
+            return current.aged_at(now_seconds);
+        };
+        let room_playback = self.room_playback_state_mut(room_name);
+        room_playback.position = position;
+        room_playback.updated_at_seconds = now_seconds;
+        room_playback.set_by = Some(set_by);
+        room_playback.clone()
     }
 
     pub(crate) fn acknowledge_server_ignoring_counter(

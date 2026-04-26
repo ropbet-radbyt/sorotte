@@ -7,6 +7,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -49,7 +61,15 @@
               "user": {
                 "alice_": {
                   "event": {
-                    "features": null,
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
                     "joined": true,
                     "version": "1.2.255"
                   },
@@ -57,6 +77,30 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice_"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice_"
               }
             }
           }
@@ -141,7 +185,15 @@
               "user": {
                 "alice__": {
                   "event": {
-                    "features": null,
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
                     "joined": true,
                     "version": "1.2.255"
                   },
@@ -160,7 +212,15 @@
               "user": {
                 "alice__": {
                   "event": {
-                    "features": null,
+                    "features": {
+                      "chat": false,
+                      "featureList": false,
+                      "managedRooms": false,
+                      "persistentRooms": false,
+                      "readiness": false,
+                      "sharedPlaylists": false,
+                      "uiMode": "Unknown"
+                    },
                     "joined": true,
                     "version": "1.2.255"
                   },
@@ -168,6 +228,42 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice__"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice__"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice__"
               }
             }
           }
@@ -269,18 +365,45 @@
               "room1": {
                 "alice": {
                   "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0
                 },
                 "alice_": {
                   "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0
                 },
                 "alice__": {
                   "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": false,
+                    "persistentRooms": false,
+                    "readiness": false,
+                    "sharedPlaylists": false,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0

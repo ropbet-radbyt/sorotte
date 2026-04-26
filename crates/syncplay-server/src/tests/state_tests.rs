@@ -15,6 +15,8 @@ fn state_playstate_updates_are_broadcast_to_room_members_with_metadata() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -50,6 +52,8 @@ fn state_playstate_without_seek_or_pause_change_produces_no_immediate_outbound_m
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let first_update = runtime
         .handle_line_fanout(
@@ -91,6 +95,8 @@ fn state_forced_update_forwards_sender_client_metadata_once() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let first_forced_lines = runtime
         .handle_line_fanout(
@@ -188,6 +194,8 @@ fn state_ping_only_client_metadata_is_forwarded_on_next_forced_update() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let ping_only_lines = runtime
         .handle_line_fanout(
@@ -252,6 +260,8 @@ fn state_ping_metrics_apply_forward_delay_and_non_zero_server_rtt_for_sender() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -317,6 +327,8 @@ fn controlled_room_non_controller_state_update_gets_forced_corrections() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
     runtime
         .handle_line_fanout(
             "client-1",
@@ -414,6 +426,7 @@ fn state_ping_only_update_produces_no_immediate_outbound_messages() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("alice hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
 
     let directed_lines = runtime
         .handle_line_fanout(
@@ -456,6 +469,8 @@ fn periodic_state_updates_emit_after_time_advance() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let periodic_lines = runtime
         .advance_time_and_collect_fanout(super::SERVER_STATE_INTERVAL_SECONDS)
@@ -507,6 +522,7 @@ fn periodic_state_updates_age_playing_room_position() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("alice hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
     runtime
         .handle_line_fanout(
             "client-1",
@@ -550,6 +566,87 @@ fn periodic_state_updates_age_playing_room_position() {
 }
 
 #[test]
+fn periodic_playing_room_state_uses_slowest_watcher_position() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(0.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.0}}}"#,
+        )
+        .expect("alice file update should succeed");
+    runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.0}}}"#,
+        )
+        .expect("bob file update should succeed");
+
+    let sample_time = -0.25;
+    runtime.set_time_now_override_seconds(Some(sample_time));
+    let start_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("alice should start playback");
+    let start_messages = decode_directed_lines(&start_lines);
+    acknowledge_directed_state_counters(&mut runtime, &start_messages);
+
+    let bob_sample_lines = runtime
+        .handle_line_fanout(
+            "client-2",
+            r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false}}}"#,
+        )
+        .expect("bob playback sample should be accepted");
+    assert!(
+        bob_sample_lines.is_empty(),
+        "non-seek playing samples should not force immediate room fanout"
+    );
+
+    let elapsed_seconds = super::SERVER_STATE_INTERVAL_SECONDS - sample_time;
+    let periodic_lines = runtime
+        .advance_time_and_collect_fanout(elapsed_seconds)
+        .expect("periodic state tick should encode outbound fanout lines");
+    let periodic_messages = decode_directed_lines(&periodic_lines);
+    assert_eq!(periodic_messages.len(), 2);
+    for (_, message) in periodic_messages {
+        let ProtocolMessage::State(payload) = message else {
+            panic!("periodic output should be state message");
+        };
+        let playstate = payload
+            .state
+            .playstate
+            .as_ref()
+            .expect("periodic state update should include playstate");
+        let position = playstate
+            .position
+            .expect("periodic state update should include position");
+        let expected_position = 5.0 + elapsed_seconds;
+        assert!(
+            (position - expected_position).abs() <= 0.000_001,
+            "playing room position should follow the slowest watcher: expected {expected_position}, got {position}"
+        );
+        assert_eq!(playstate.paused, Some(false));
+        assert_eq!(playstate.set_by.as_deref(), Some("bob"));
+    }
+}
+
+#[test]
 fn room_switch_sends_destination_room_playstate() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(100.0));
@@ -565,6 +662,8 @@ fn room_switch_sends_destination_room_playstate() {
             r#"{"Hello":{"username":"bob","room":{"name":"room2"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
     runtime
         .handle_line_fanout(
             "client-1",
@@ -600,6 +699,8 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
     let _ = runtime
         .advance_time_and_collect_fanout(10.0)

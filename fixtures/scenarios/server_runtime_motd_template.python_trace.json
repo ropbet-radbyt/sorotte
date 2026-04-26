@@ -7,6 +7,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "motd-user"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }

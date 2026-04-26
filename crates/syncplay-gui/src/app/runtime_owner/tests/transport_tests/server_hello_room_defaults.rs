@@ -217,7 +217,10 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert!(
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
+            .is_empty()
+    );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         section: "Connection",
@@ -247,7 +250,7 @@ fn gui_persisted_config_runtime_owner_updates_default_room_fallback_after_detach
 #[test]
 fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_transport() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::{Duration, Instant},
@@ -288,10 +291,8 @@ fn gui_persisted_config_runtime_owner_emits_periodic_state_heartbeat_over_tcp_tr
             .write_all(b"\n")
             .expect("test session transport server should terminate the inbound hello line");
 
-        let mut heartbeat_line = String::new();
-        reader
-            .read_line(&mut heartbeat_line)
-            .expect("test session transport server should read one outbound heartbeat line");
+        let heartbeat_line =
+            read_next_non_default_ready_line(&mut reader, "test session transport heartbeat line");
         heartbeat_tx
             .send(heartbeat_line)
             .expect("test session transport server should report the heartbeat line");
@@ -386,10 +387,10 @@ fn gui_persisted_config_runtime_owner_returns_to_default_room_over_tcp_transport
             .send(())
             .expect("test session transport server should signal hello readiness");
 
-        let mut join_line = String::new();
-        reader
-            .read_line(&mut join_line)
-            .expect("test session transport server should read one outbound room-change line");
+        let join_line = read_next_non_default_ready_line(
+            &mut reader,
+            "test session transport room-change line",
+        );
         let mut join_list_line = String::new();
         reader
             .read_line(&mut join_list_line)

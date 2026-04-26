@@ -7,6 +7,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -188,6 +200,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -246,6 +270,30 @@
                     "name": "lobby"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "gui-user"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "gui-user"
               }
             }
           }
@@ -513,6 +561,18 @@
                     "name": "permanent-room"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "bob"
               }
             }
           }

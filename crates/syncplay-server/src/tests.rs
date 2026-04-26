@@ -49,6 +49,53 @@ fn decode_directed_lines(lines: &[DirectedOutboundLine]) -> Vec<(String, Protoco
         .collect()
 }
 
+fn acknowledge_server_state_counter(
+    runtime: &mut ServerRuntime,
+    client_id: &str,
+    server_counter: u32,
+) {
+    let ack = format!(r#"{{"State":{{"ignoringOnTheFly":{{"server":{server_counter}}}}}}}"#);
+    runtime
+        .handle_line_fanout(client_id, &ack)
+        .expect("server state counter ack should be accepted");
+}
+
+fn acknowledge_directed_state_counters(
+    runtime: &mut ServerRuntime,
+    directed_messages: &[(String, ProtocolMessage)],
+) {
+    let counters: Vec<_> = directed_messages
+        .iter()
+        .filter_map(|(client_id, message)| {
+            let ProtocolMessage::State(payload) = message else {
+                return None;
+            };
+            let server_counter = payload
+                .state
+                .ignoring_on_the_fly
+                .as_ref()
+                .and_then(|ignore| ignore.server)?;
+            Some((client_id.clone(), server_counter))
+        })
+        .collect();
+    for (client_id, server_counter) in counters {
+        acknowledge_server_state_counter(runtime, &client_id, server_counter);
+    }
+}
+
+fn acknowledge_outbound_state_counters(
+    runtime: &mut ServerRuntime,
+    client_id: &str,
+    outbound_lines: &[String],
+) {
+    let directed_messages: Vec<_> = outbound_lines
+        .iter()
+        .filter_map(|line| decode_message_line(line).ok())
+        .map(|message| (client_id.to_owned(), message))
+        .collect();
+    acknowledge_directed_state_counters(runtime, &directed_messages);
+}
+
 fn has_user_event(
     directed_messages: &[(String, ProtocolMessage)],
     recipient: &str,
@@ -172,7 +219,7 @@ fn has_state_update(
                     .state
                     .ignoring_on_the_fly
                     .as_ref()
-                    .is_some_and(|ignore| ignore.server == Some(1))
+                    .is_some_and(|ignore| ignore.server.is_some())
             }
             _ => false,
         }
@@ -202,7 +249,7 @@ fn has_room_sync_state_update(
                         .state
                         .ignoring_on_the_fly
                         .as_ref()
-                        .is_some_and(|ignore| ignore.server == Some(1))
+                        .is_some_and(|ignore| ignore.server.is_some())
                 } else {
                     payload.state.ignoring_on_the_fly.is_none()
                 }

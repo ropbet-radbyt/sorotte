@@ -45,6 +45,9 @@ const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
 const LEGACY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
 const LEGACY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
 const LEGACY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
+const LEGACY_CONTROLLED_ROOMS_MIN_VERSION: &str = "1.3.0";
+const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
+const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
 const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
 const LEGACY_UI_MODE_GRAPHICAL: &str = "GUI";
 const LEGACY_UI_MODE_UNKNOWN: &str = "Unknown";
@@ -193,6 +196,7 @@ pub struct ServerRuntime {
     room_controllers: BTreeMap<String, BTreeSet<String>>,
     room_playlists: BTreeMap<String, RoomPlaylistState>,
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
+    client_playback_states: BTreeMap<String, ClientPlaybackState>,
     client_state_counters: BTreeMap<String, ClientStateCounters>,
     client_last_state_update_at: BTreeMap<String, f64>,
     client_next_periodic_state_at: BTreeMap<String, f64>,
@@ -268,6 +272,34 @@ impl RoomPlaybackState {
         aged.position = self.position_at(now_seconds);
         aged.updated_at_seconds = now_seconds;
         aged
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ClientPlaybackState {
+    position: Option<f64>,
+    updated_at_seconds: f64,
+}
+
+impl ClientPlaybackState {
+    fn new(position: Option<f64>, updated_at_seconds: f64) -> Self {
+        Self {
+            position,
+            updated_at_seconds,
+        }
+    }
+
+    fn position_at(&self, room_paused: bool, now_seconds: f64) -> Option<f64> {
+        let position = self.position?;
+        if room_paused {
+            return Some(position);
+        }
+        let elapsed_seconds = now_seconds - self.updated_at_seconds;
+        if elapsed_seconds.is_finite() && elapsed_seconds > 0.0 {
+            Some(position + elapsed_seconds)
+        } else {
+            Some(position)
+        }
     }
 }
 

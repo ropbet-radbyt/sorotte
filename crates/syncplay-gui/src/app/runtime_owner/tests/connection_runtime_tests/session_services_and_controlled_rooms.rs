@@ -430,7 +430,8 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines =
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines());
     assert_eq!(outbound_protocol_lines.len(), 1);
     assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
     assert!(outbound_protocol_lines[0].contains(canonical_room));
@@ -440,7 +441,7 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
 #[test]
 fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled_room_auth() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         thread,
@@ -490,10 +491,8 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
             .send(hello_line)
             .expect("startup auth test should report the hello after the server hello is flushed");
 
-        let mut controller_auth_line = String::new();
-        reader
-            .read_line(&mut controller_auth_line)
-            .expect("startup auth test should read controller auth");
+        let controller_auth_line =
+            read_next_non_default_ready_line(&mut reader, "startup auth test controller auth");
         controller_auth_tx
             .send(controller_auth_line)
             .expect("startup auth test should report controller auth");

@@ -198,12 +198,22 @@ async fn connected_client_session_invalid_seek_offset_commands_show_help_without
                 "invalid seek/offset commands should not fall back to chat messages"
             );
             if let ProtocolMessage::Set(ref payload) = message {
+                let is_startup_default_ready = payload.set.room.is_none()
+                    && payload.set.playlist_change.is_none()
+                    && payload.set.playlist_index.is_none()
+                    && payload.set.controller_auth.is_none()
+                    && payload.set.ready.as_ref().is_some_and(|ready| {
+                        !ready.is_ready
+                            && ready.manually_initiated == Some(false)
+                            && ready.username.is_none()
+                    });
                 assert!(
-                    payload.set.room.is_none()
-                        && payload.set.ready.is_none()
-                        && payload.set.playlist_change.is_none()
-                        && payload.set.playlist_index.is_none()
-                        && payload.set.controller_auth.is_none(),
+                    is_startup_default_ready
+                        || (payload.set.room.is_none()
+                            && payload.set.ready.is_none()
+                            && payload.set.playlist_change.is_none()
+                            && payload.set.playlist_index.is_none()
+                            && payload.set.controller_auth.is_none()),
                     "invalid seek/offset commands should not emit local-command set messages: {payload:?}"
                 );
             }

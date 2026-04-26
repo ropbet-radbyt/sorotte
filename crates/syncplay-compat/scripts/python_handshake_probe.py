@@ -101,6 +101,36 @@ def _is_client_version_outdated(client_version, server_version):
     return client_components < server_components
 
 
+def _client_version_meets_minimum(client_version, minimum_version):
+    client_components = _parse_numeric_version_components(client_version)
+    minimum_components = _parse_numeric_version_components(minimum_version)
+    if client_components is None or minimum_components is None:
+        return False
+
+    width = max(len(client_components), len(minimum_components))
+    client_components.extend([0] * (width - len(client_components)))
+    minimum_components.extend([0] * (width - len(minimum_components)))
+    return client_components >= minimum_components
+
+
+def _legacy_client_feature_defaults(version):
+    return {
+        "sharedPlaylists": _client_version_meets_minimum(version, "1.4.0"),
+        "chat": _client_version_meets_minimum(version, "1.5.0"),
+        "featureList": False,
+        "readiness": _client_version_meets_minimum(version, "1.3.0"),
+        "managedRooms": _client_version_meets_minimum(version, "1.3.0"),
+        "persistentRooms": False,
+        "uiMode": "Unknown",
+    }
+
+
+def _legacy_client_features_for_version(version, advertised_features):
+    if isinstance(advertised_features, dict) and advertised_features:
+        return advertised_features
+    return _legacy_client_feature_defaults(version)
+
+
 def _render_motd_template(template, client_version, server_version):
     return (
         template.replace("{client_version}", str(client_version))
@@ -248,6 +278,7 @@ class ProbeSession:
         username, room_name, version, features = _extract_hello_arguments(hello)
         if not username or not room_name or not version:
             return self._error("hello-server-error")
+        features = _legacy_client_features_for_version(version, features)
 
         self.logged = True
         self.username = username
@@ -934,6 +965,7 @@ class FanoutBatchProbe:
         username, room_name, version, features = _extract_hello_arguments(hello)
         if not username or not room_name or not version:
             return self._error(client_id, "hello-server-error")
+        features = _legacy_client_features_for_version(version, features)
 
         if client_id in self.sessions:
             self._remove_client_tracking(client_id)
@@ -959,6 +991,9 @@ class FanoutBatchProbe:
         joined = self._joined_message(username, room_name, version, features)
         for peer_id in self._all_client_ids(exclude=client_id):
             outputs.append({"client": peer_id, "message": joined})
+        ready_message = self._ready_message(username, False, False)
+        for peer_id in self._room_client_ids(room_name):
+            outputs.append({"client": peer_id, "message": ready_message})
 
         room_playlist = self.room_playlists[room_name]
         playlist_snapshot = self._playlist_snapshot_message(
@@ -1033,6 +1068,9 @@ class FanoutBatchProbe:
                     room_update = self._room_update_message(session["username"], room_name)
                     for peer_id in self._all_client_ids():
                         outputs.append({"client": peer_id, "message": room_update})
+                    ready_message = self._ready_message(session["username"], session["ready"], False)
+                    for peer_id in self._room_client_ids(room_name):
+                        outputs.append({"client": peer_id, "message": ready_message})
 
                     room_playlist = self.room_playlists[room_name]
                     playlist_snapshot = self._playlist_snapshot_message(

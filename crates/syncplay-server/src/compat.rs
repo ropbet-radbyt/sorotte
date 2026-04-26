@@ -149,6 +149,27 @@ pub(crate) fn client_supports_feature(
         .unwrap_or(false)
 }
 
+pub(crate) fn legacy_client_feature_defaults(version: &str) -> Value {
+    json!({
+        "sharedPlaylists": client_version_meets_minimum(version, LEGACY_SHARED_PLAYLIST_MIN_VERSION),
+        "chat": client_version_meets_minimum(version, LEGACY_CHAT_MIN_VERSION),
+        "featureList": false,
+        "readiness": client_version_meets_minimum(version, LEGACY_USER_READY_MIN_VERSION),
+        "managedRooms": client_version_meets_minimum(version, LEGACY_CONTROLLED_ROOMS_MIN_VERSION),
+        "persistentRooms": false,
+        "uiMode": LEGACY_UI_MODE_UNKNOWN,
+    })
+}
+
+pub(crate) fn legacy_client_features_for_version(
+    version: &str,
+    advertised_features: Option<Value>,
+) -> Value {
+    advertised_features
+        .filter(legacy_json_value_truthy)
+        .unwrap_or_else(|| legacy_client_feature_defaults(version))
+}
+
 pub(crate) fn persistent_rooms_notice_motd(
     base_motd: String,
     persistent_rooms_enabled: bool,

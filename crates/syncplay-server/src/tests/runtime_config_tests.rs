@@ -92,7 +92,7 @@ fn hello_line_registers_session_and_returns_server_hello() {
         )
         .expect("hello line should be accepted");
 
-    assert_eq!(outbound_lines.len(), 2);
+    assert_eq!(outbound_lines.len(), 3);
     let response_message = outbound_lines
         .iter()
         .filter_map(|line| decode_message_line(line).ok())

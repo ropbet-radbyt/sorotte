@@ -272,7 +272,7 @@ fn set_room_moves_session_between_rooms() {
     let outbound_lines = runtime
         .handle_line("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
         .expect("set room should succeed");
-    assert_eq!(outbound_lines.len(), 3);
+    assert_eq!(outbound_lines.len(), 4);
     assert!(!runtime.room_is_present("room1"));
     assert!(runtime.room_is_present("room2"));
     let outbound_messages: Vec<_> = outbound_lines
@@ -317,12 +317,13 @@ fn set_room_moves_session_between_rooms() {
 #[test]
 fn batched_top_level_commands_are_processed_in_wire_order() {
     let mut runtime = ServerRuntime::default();
-    runtime
+    let hello_lines = runtime
         .handle_line(
             "client-1",
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should establish session");
+    acknowledge_outbound_state_counters(&mut runtime, "client-1", &hello_lines);
 
     let outbound_lines = runtime
         .handle_line(
@@ -358,12 +359,13 @@ fn batched_top_level_commands_are_processed_in_wire_order() {
 #[test]
 fn set_room_seek_sync_state_counter_increments_without_ack() {
     let mut runtime = ServerRuntime::default();
-    runtime
+    let hello_lines = runtime
         .handle_line(
             "client-1",
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("hello should establish session");
+    acknowledge_outbound_state_counters(&mut runtime, "client-1", &hello_lines);
 
     let first_switch = runtime
         .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
@@ -413,7 +415,7 @@ fn hello_fanout_notifies_existing_room_members() {
         .expect("second hello should fan out user events");
     let directed_messages = decode_directed_lines(&directed_lines);
 
-    assert_eq!(directed_messages.len(), 5);
+    assert_eq!(directed_messages.len(), 7);
 
     assert!(
         directed_messages.iter().any(|(recipient, message)| {
@@ -424,6 +426,14 @@ fn hello_fanout_notifies_existing_room_members() {
     assert!(
         has_user_event(&directed_messages, "client-1", "bob", "joined"),
         "existing room member should receive joined event for bob"
+    );
+    assert!(
+        has_ready_update(&directed_messages, "client-1", "bob", false),
+        "existing room member should receive bob's default readiness"
+    );
+    assert!(
+        has_ready_update(&directed_messages, "client-2", "bob", false),
+        "joining room member should receive its default readiness"
     );
     assert!(
         has_playlist_snapshot(&directed_messages, "client-2", &[]),
@@ -1027,9 +1037,9 @@ fn room_switch_preserves_and_republishes_readiness() {
 
     assert_eq!(runtime.user_ready("alice", "room2"), Some(true));
     assert!(
-        !has_ready_update(&directed_messages, "client-1", "alice", true)
-            && !has_ready_update(&directed_messages, "client-2", "alice", true),
-        "room switch should preserve readiness without an immediate ready fanout"
+        has_ready_update(&directed_messages, "client-1", "alice", true)
+            && has_ready_update(&directed_messages, "client-2", "alice", true),
+        "room switch should preserve and immediately republish readiness in the destination room"
     );
 
     let outbound_lines = runtime

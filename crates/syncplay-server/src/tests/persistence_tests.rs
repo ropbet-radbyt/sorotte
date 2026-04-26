@@ -10,6 +10,7 @@ fn persistent_room_retains_playlist_index_and_position_after_empty_transition() 
             r#"{"Hello":{"username":"alice","room":{"name":"persistent-room"},"version":"9.9.9"}}"#,
         )
         .expect("initial hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
     runtime
         .handle_line_fanout(
             "client-1",
@@ -36,6 +37,7 @@ fn persistent_room_retains_playlist_index_and_position_after_empty_transition() 
         )
         .expect("rejoin to persistent room should succeed");
     let directed_messages = decode_directed_lines(&directed_lines);
+    acknowledge_directed_state_counters(&mut runtime, &directed_messages);
     assert!(
         has_playlist_snapshot_with_user(
             &directed_messages,
@@ -83,6 +85,7 @@ fn temporary_room_does_not_retain_playlist_or_position_when_empty() {
             r#"{"Hello":{"username":"alice","room":{"name":"session-temp"},"version":"9.9.9"}}"#,
         )
         .expect("initial hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
     runtime
         .handle_line_fanout(
             "client-1",
@@ -109,6 +112,7 @@ fn temporary_room_does_not_retain_playlist_or_position_when_empty() {
         )
         .expect("rejoin to temporary room should succeed");
     let directed_messages = decode_directed_lines(&directed_lines);
+    acknowledge_directed_state_counters(&mut runtime, &directed_messages);
     assert!(
         has_playlist_snapshot(&directed_messages, "client-2", &[]),
         "temporary room should reset playlist state when emptied"
@@ -157,6 +161,7 @@ fn persistent_room_sqlite_reload_restores_playlist_index_and_position() {
                 r#"{"Hello":{"username":"alice","room":{"name":"persistent-room"},"version":"9.9.9"}}"#,
             )
             .expect("initial hello should establish session");
+        acknowledge_server_state_counter(&mut runtime, "client-1", 1);
         runtime
             .handle_line_fanout(
                 "client-1",
@@ -189,6 +194,7 @@ fn persistent_room_sqlite_reload_restores_playlist_index_and_position() {
         )
         .expect("hello should restore persisted room snapshot");
     let directed_messages = decode_directed_lines(&directed_lines);
+    acknowledge_directed_state_counters(&mut runtime, &directed_messages);
     assert!(
         has_playlist_snapshot(
             &directed_messages,
@@ -372,7 +378,7 @@ fn gui_list_shows_dummy_entry_for_empty_permanent_room() {
 }
 
 #[test]
-fn persistent_list_updates_skip_clients_missing_ui_mode_feature() {
+fn persistent_list_updates_include_legacy_default_ui_mode_clients() {
     let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
     runtime
         .handle_line(
@@ -403,8 +409,8 @@ fn persistent_list_updates_skip_clients_missing_ui_mode_feature() {
         "persistent list updates should include clients that advertise uiMode"
     );
     assert!(
-        !list_recipients.contains("client-2"),
-        "persistent list updates should skip clients that omit uiMode"
+        list_recipients.contains("client-2"),
+        "legacy clients that omit features should receive Python-synthesized uiMode defaults"
     );
 }
 
@@ -430,6 +436,8 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
             r#"{"Hello":{"username":"charlie","room":{"name":"room1"},"version":"9.9.9"}}"#,
         )
         .expect("client-3 hello should establish session");
+    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    acknowledge_server_state_counter(&mut runtime, "client-3", 1);
 
     runtime
         .advance_time_and_collect_fanout(10.0)
@@ -466,7 +474,7 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
         "timeout list update should target connected clients that advertise uiMode"
     );
     assert!(
-        !list_recipients.contains("client-3"),
-        "timeout list update should skip connected clients that omit uiMode"
+        list_recipients.contains("client-3"),
+        "timeout list update should include legacy clients with Python-synthesized uiMode defaults"
     );
 }

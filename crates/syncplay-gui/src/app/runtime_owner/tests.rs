@@ -67,6 +67,42 @@ where
     }
 }
 
+fn is_default_ready_publish_line(line: &str) -> bool {
+    let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(ready) = message.get("Set").and_then(|set| set.get("ready")) else {
+        return false;
+    };
+    ready.get("isReady").and_then(serde_json::Value::as_bool) == Some(false)
+        && ready
+            .get("manuallyInitiated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+}
+
+fn without_default_ready_publish_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .filter(|line| !is_default_ready_publish_line(line))
+        .collect()
+}
+
+fn read_next_non_default_ready_line<R>(reader: &mut R, context: &str) -> String
+where
+    R: BufRead,
+{
+    loop {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .unwrap_or_else(|error| panic!("{context} should read a protocol line: {error}"));
+        if !is_default_ready_publish_line(&line) {
+            return line;
+        }
+    }
+}
+
 fn recv_from_channel_while_pumping_runtime<T>(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,

@@ -171,7 +171,8 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         assert!(state.apply(action));
     }
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines =
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines());
     assert!(outbound_protocol_lines.is_empty());
     assert!(
         state
@@ -232,7 +233,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
 #[test]
 fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::Duration,
@@ -269,10 +270,8 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         hello_ready_tx
             .send(())
             .expect("test session transport server should signal hello readiness");
-        let mut chat_line = String::new();
-        reader
-            .read_line(&mut chat_line)
-            .expect("test session transport server should read one outbound chat line");
+        let chat_line =
+            read_next_non_default_ready_line(&mut reader, "test session transport chat line");
         stream
             .write_all(br#"{"Chat":{"username":"alice","message":"hello room"}}"#)
             .expect("test session transport server should write one inbound line");
@@ -387,7 +386,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
 #[test]
 fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport() {
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::Duration,
@@ -424,10 +423,8 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         hello_ready_tx
             .send(())
             .expect("test session transport server should signal hello readiness");
-        let mut ready_line = String::new();
-        reader
-            .read_line(&mut ready_line)
-            .expect("test session transport server should read one outbound ready line");
+        let ready_line =
+            read_next_non_default_ready_line(&mut reader, "test session transport ready line");
         ready_line_tx
             .send(ready_line)
             .expect("test session transport server should report the outbound ready line");

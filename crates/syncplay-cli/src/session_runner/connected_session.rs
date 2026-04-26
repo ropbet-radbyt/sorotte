@@ -144,7 +144,7 @@ where
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut local_user_offset_seconds = 0.0f64;
     let mut pending_ready_at_start_on_server_hello =
-        config.ready_at_start_override.unwrap_or(false);
+        Some(config.ready_at_start_override.unwrap_or(false));
     let mut outbound_state_sync_enabled = false;
     let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
         log_player_telemetry: diagnostics_config.log_player_telemetry,
@@ -165,7 +165,7 @@ where
                 match line? {
                     Some(line) => {
                         let decoded_inbound_message = decode_message_line(&line).ok();
-                        let inbound_is_server_hello = pending_ready_at_start_on_server_hello
+                        let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
                             && matches!(
                                 decoded_inbound_message.as_ref(),
                                 Some(ProtocolMessage::Hello(_))

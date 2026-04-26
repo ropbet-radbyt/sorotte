@@ -7,6 +7,18 @@
           "client": "client-1",
           "message": {
             "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
               "playlistChange": {
                 "files": []
               }
@@ -89,6 +101,30 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "bob"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "bob"
               }
             }
           }
@@ -251,7 +287,15 @@
               "user": {
                 "charlie": {
                   "event": {
-                    "features": null,
+                    "features": {
+                      "chat": true,
+                      "featureList": false,
+                      "managedRooms": true,
+                      "persistentRooms": false,
+                      "readiness": true,
+                      "sharedPlaylists": true,
+                      "uiMode": "Unknown"
+                    },
                     "joined": true,
                     "version": "9.9.9"
                   },
@@ -270,7 +314,15 @@
               "user": {
                 "charlie": {
                   "event": {
-                    "features": null,
+                    "features": {
+                      "chat": true,
+                      "featureList": false,
+                      "managedRooms": true,
+                      "persistentRooms": false,
+                      "readiness": true,
+                      "sharedPlaylists": true,
+                      "uiMode": "Unknown"
+                    },
                     "joined": true,
                     "version": "9.9.9"
                   },
@@ -278,6 +330,42 @@
                     "name": "room1"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "charlie"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "charlie"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "Set": {
+              "ready": {
+                "isReady": false,
+                "manuallyInitiated": false,
+                "username": "charlie"
               }
             }
           }
@@ -353,6 +441,15 @@
                 },
                 "charlie": {
                   "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0
@@ -398,6 +495,69 @@
                 },
                 "charlie": {
                   "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                },
+                "bob": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0
@@ -1156,6 +1316,54 @@
                 },
                 "charlie": {
                   "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                }
+              }
+            }
+          }
+        },
+        {
+          "client": "client-3",
+          "message": {
+            "List": {
+              "room1": {
+                "alice": {
+                  "controller": false,
+                  "features": {
+                    "chat": false,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "CLI"
+                  },
+                  "file": {},
+                  "isReady": false,
+                  "position": 0.0
+                },
+                "charlie": {
+                  "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0
@@ -1242,6 +1450,15 @@
                 },
                 "charlie": {
                   "controller": false,
+                  "features": {
+                    "chat": true,
+                    "featureList": false,
+                    "managedRooms": true,
+                    "persistentRooms": false,
+                    "readiness": true,
+                    "sharedPlaylists": true,
+                    "uiMode": "Unknown"
+                  },
                   "file": {},
                   "isReady": false,
                   "position": 0.0

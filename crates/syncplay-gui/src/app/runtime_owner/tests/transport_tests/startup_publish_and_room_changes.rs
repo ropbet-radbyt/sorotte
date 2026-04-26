@@ -133,7 +133,10 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
     for action in hello_actions {
         assert!(state.apply(action));
     }
-    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert!(
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
+            .is_empty()
+    );
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
         paths: vec![
@@ -272,7 +275,10 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert!(
+        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
+            .is_empty()
+    );
 
     owner.player_local_file = Some(
         GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path("C:/Media/episode1.mkv"),
@@ -358,10 +364,10 @@ fn gui_persisted_config_runtime_owner_routes_room_changes_over_tcp_transport() {
         hello_ready_tx
             .send(())
             .expect("test session transport server should signal hello readiness");
-        let mut room_line = String::new();
-        reader
-            .read_line(&mut room_line)
-            .expect("test session transport server should read one outbound room-change line");
+        let room_line = read_next_non_default_ready_line(
+            &mut reader,
+            "test session transport room-change line",
+        );
         let mut list_line = String::new();
         reader
             .read_line(&mut list_line)

@@ -61,15 +61,16 @@ where
 
 fn run_connected_session_inbound_post_apply_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
-    pending_ready_at_start_on_server_hello: &mut bool,
+    pending_ready_at_start_on_server_hello: &mut Option<bool>,
     pending_chat_message_on_connect: &mut Option<String>,
     plan: ConnectedSessionInboundPostApplyPlan,
 ) -> anyhow::Result<()> {
     for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
         match action {
             ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
-                let _ = runtime.run_set_ready_for_user("", true, false)?;
-                *pending_ready_at_start_on_server_hello = false;
+                if let Some(ready_at_start) = pending_ready_at_start_on_server_hello.take() {
+                    let _ = runtime.run_set_ready_for_user("", ready_at_start, false)?;
+                }
             }
             ConnectedSessionInboundPostApplyAction::ConsumePendingChatMessageOnConnect => {
                 if let Some(message) = pending_chat_message_on_connect.take() {
@@ -303,7 +304,7 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    pub(super) pending_ready_at_start_on_server_hello: &'a mut bool,
+    pub(super) pending_ready_at_start_on_server_hello: &'a mut Option<bool>,
     pub(super) pending_chat_message_on_connect: &'a mut Option<String>,
     pub(super) outbound_state_sync_enabled: &'a mut bool,
     pub(super) branch: ConnectedSessionBranchExecutionContext<'a, F, G>,

@@ -369,8 +369,8 @@ fn scripted_server_runtime_persistent_rooms_timeout_list_updates_scenario_is_ui_
         "step 6 should include persistent list update for client that advertises uiMode"
     );
     assert!(
-        !list_to_client_3,
-        "step 6 should skip persistent list update for client that omits uiMode"
+        list_to_client_3,
+        "step 6 should include persistent list update for legacy clients with synthesized uiMode defaults"
     );
 
     let final_list_event = events
