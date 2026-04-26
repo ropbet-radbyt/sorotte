@@ -352,18 +352,20 @@ impl ClientSession {
         }
 
         if let Some(playlist_index) = set_payload.playlist_index {
-            if playlist_index.user.is_some() {
+            let playlist_index_user = playlist_index.user.clone();
+            let playlist_index_value = playlist_index.index_value();
+
+            if playlist_index_user.is_some() {
                 self.reconnect_playlist_restore_snapshot = None;
             }
 
-            let room_name = self.resolve_room_for_playlist_update(playlist_index.user.as_deref());
+            let room_name = self.resolve_room_for_playlist_update(playlist_index_user.as_deref());
             let preserved_active_target = room_name.as_deref().and_then(|room_name| {
                 self.playlist_active_targets_before_index_update
                     .get(room_name)
                     .cloned()
             });
-            let set_by_local = playlist_index
-                .user
+            let set_by_local = playlist_index_user
                 .as_deref()
                 .zip(self.username.as_deref())
                 .is_some_and(|(set_by, local_username)| set_by == local_username);
@@ -373,8 +375,10 @@ impl ClientSession {
             let preserves_active_target_after_playlist_change = room_name
                 .as_deref()
                 .and_then(|room_name| {
-                    self.playlist_target_for_room_index(room_name, playlist_index.index)
-                        .map(str::to_owned)
+                    playlist_index_value.and_then(|index| {
+                        self.playlist_target_for_room_index(room_name, index)
+                            .map(str::to_owned)
+                    })
                 })
                 .zip(preserved_active_target.as_deref())
                 .is_some_and(|(next_target, previous_target)| next_target == previous_target);
@@ -400,15 +404,15 @@ impl ClientSession {
 
             if let Some(room_name) = room_name.as_deref() {
                 let playlist = self.room_playlists.entry(room_name.to_owned()).or_default();
-                playlist.index = Some(playlist_index.index);
-                if playlist_index.user.is_some() {
-                    playlist.set_by = playlist_index.user;
+                playlist.index = playlist_index_value;
+                if playlist_index_user.is_some() {
+                    playlist.set_by = playlist_index_user;
                 }
             } else {
                 let pending_playlist = self.pending_playlist.get_or_insert_with(Default::default);
-                pending_playlist.index = Some(playlist_index.index);
-                if playlist_index.user.is_some() {
-                    pending_playlist.set_by = playlist_index.user;
+                pending_playlist.index = playlist_index_value;
+                if playlist_index_user.is_some() {
+                    pending_playlist.set_by = playlist_index_user;
                 }
             }
             if let Some(room_name) = room_name.as_deref() {

@@ -63,6 +63,72 @@ async fn server_network_loop_routes_hello_response_to_connected_client() {
 }
 
 #[tokio::test]
+async fn server_network_loop_ignores_whitespace_only_lines() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime,
+        None,
+        shutdown_rx,
+    ));
+
+    let stream = TcpStream::connect(address)
+        .await
+        .expect("client should connect");
+    let (reader, mut writer) = stream.into_split();
+    writer
+        .write_all(b"   \t\r\n")
+        .await
+        .expect("whitespace line should write");
+    writer
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#)
+        .await
+        .expect("hello line should write");
+    writer
+        .write_all(b"\n")
+        .await
+        .expect("hello newline should write");
+    writer.flush().await.expect("client writes should flush");
+
+    let mut buffered_reader = BufReader::new(reader);
+    let mut saw_hello = false;
+    for _ in 0..5 {
+        let mut line = String::new();
+        let read_bytes = timeout(Duration::from_secs(2), buffered_reader.read_line(&mut line))
+            .await
+            .expect("server response should arrive before timeout")
+            .expect("server response read should succeed");
+        if read_bytes == 0 {
+            break;
+        }
+        let message = decode_message_line(line.trim_end()).expect("response line should decode");
+        if matches!(message, ProtocolMessage::Hello(_)) {
+            saw_hello = true;
+            break;
+        }
+    }
+    assert!(
+        saw_hello,
+        "whitespace-only protocol lines should be ignored before the next command"
+    );
+
+    shutdown_tx
+        .send(true)
+        .expect("shutdown signal should send successfully");
+    server_task
+        .await
+        .expect("server task should join cleanly")
+        .expect("server loop should exit without error");
+}
+
+#[tokio::test]
 async fn server_network_loop_sends_error_for_invalid_utf8_line() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

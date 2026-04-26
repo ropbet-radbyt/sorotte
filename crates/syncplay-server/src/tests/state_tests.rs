@@ -712,10 +712,10 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
         )
         .expect("ping-only update should refresh client timeout timestamp");
 
-    let timeout_lines = runtime
-        .advance_time_and_collect_fanout(3.0)
+    let timeout_dispatch = runtime
+        .advance_time_and_collect_dispatch(3.0)
         .expect("timeout tick should encode outbound fanout lines");
-    let timeout_messages = decode_directed_lines(&timeout_lines);
+    let timeout_messages = decode_directed_lines(&timeout_dispatch.outbound_lines);
 
     assert!(
         runtime.session("client-1").is_none(),
@@ -728,5 +728,9 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     assert!(
         has_user_event(&timeout_messages, "client-2", "alice", "left"),
         "peer should receive left event when stale client is dropped"
+    );
+    assert!(
+        has_close_transport_action(&timeout_dispatch.transport_actions, "client-1"),
+        "stale network clients should be closed after timeout"
     );
 }

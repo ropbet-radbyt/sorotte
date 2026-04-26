@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SetPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<RoomRef>,
@@ -36,8 +36,25 @@ pub struct SetPayload {
     pub playlist_index: Option<PlaylistIndexPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Value>,
+    #[serde(skip)]
+    pub command_order: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl PartialEq for SetPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.room == other.room
+            && self.file == other.file
+            && self.user == other.user
+            && self.controller_auth == other.controller_auth
+            && self.new_controlled_room == other.new_controlled_room
+            && self.ready == other.ready
+            && self.playlist_change == other.playlist_change
+            && self.playlist_index == other.playlist_index
+            && self.features == other.features
+            && self.extra == other.extra
+    }
 }
 
 impl SetPayload {
@@ -90,6 +107,11 @@ impl SetPayload {
 
     pub fn with_features(mut self, features: Value) -> Self {
         self.features = Some(features);
+        self
+    }
+
+    pub fn with_command_order(mut self, command_order: Vec<String>) -> Self {
+        self.command_order = command_order;
         self
     }
 }
@@ -323,12 +345,11 @@ impl PlaylistChangePayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistIndexPayload {
     pub index: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_is_null: bool,
     pub user: Option<String>,
-    #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
@@ -336,13 +357,76 @@ impl PlaylistIndexPayload {
     pub fn new(index: i64) -> Self {
         Self {
             index,
+            index_is_null: false,
             user: None,
             extra: BTreeMap::new(),
         }
     }
 
+    pub fn null() -> Self {
+        Self {
+            index: 0,
+            index_is_null: true,
+            user: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    pub fn from_optional(index: Option<i64>) -> Self {
+        index.map_or_else(Self::null, Self::new)
+    }
+
+    pub fn index_value(&self) -> Option<i64> {
+        (!self.index_is_null).then_some(self.index)
+    }
+
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
         self
+    }
+}
+
+impl Serialize for PlaylistIndexPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(2 + self.extra.len()))?;
+        map.serialize_entry("index", &self.index_value())?;
+        if let Some(user) = &self.user {
+            map.serialize_entry("user", user)?;
+        }
+        for (key, value) in &self.extra {
+            if key == "index" || key == "user" {
+                continue;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PlaylistIndexPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WirePlaylistIndexPayload {
+            #[serde(default)]
+            index: Option<i64>,
+            #[serde(default)]
+            user: Option<String>,
+            #[serde(flatten)]
+            extra: BTreeMap<String, Value>,
+        }
+
+        let wire = WirePlaylistIndexPayload::deserialize(deserializer)?;
+        let mut payload = PlaylistIndexPayload::from_optional(wire.index);
+        payload.user = wire.user;
+        payload.extra = wire.extra;
+        Ok(payload)
     }
 }

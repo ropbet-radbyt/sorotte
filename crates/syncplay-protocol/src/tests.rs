@@ -133,15 +133,26 @@ fn ready_message_with_null_is_ready_decodes_as_false() {
 }
 
 #[test]
-fn playlist_index_message_with_null_index_decodes_as_noop_set() {
+fn playlist_index_message_with_null_index_decodes_as_null_snapshot() {
     let message = decode_message_line(r#"{"Set":{"playlistIndex":{"user":null,"index":null}}}"#)
         .expect("legacy nullable playlistIndex payload should decode");
     let ProtocolMessage::Set(set_message) = message else {
         panic!("expected Set message");
     };
-    assert!(
-        set_message.set.playlist_index.is_none(),
-        "nullable legacy playlistIndex payload should be treated as absent"
+    let playlist_index = set_message
+        .set
+        .playlist_index
+        .expect("nullable playlistIndex payload should be retained");
+    assert_eq!(playlist_index.index_value(), None);
+
+    let encoded = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_index(playlist_index),
+    ))
+    .expect("nullable playlistIndex payload should encode");
+    let encoded_value = decode_line(&encoded).expect("encoded playlistIndex should decode");
+    assert_eq!(
+        encoded_value,
+        json!({"Set":{"playlistIndex":{"index":null}}})
     );
 }
 
@@ -153,6 +164,20 @@ fn decode_message_lines_preserves_top_level_command_order() {
     assert_eq!(messages.len(), 2);
     assert!(matches!(messages[0], ProtocolMessage::Set(_)));
     assert!(matches!(messages[1], ProtocolMessage::List(_)));
+}
+
+#[test]
+fn set_payload_preserves_nested_command_order() {
+    let message =
+        decode_message_line(r#"{"Set":{"file":{"name":"movie.mkv"},"room":{"name":"room2"}}}"#)
+            .expect("set payload should decode");
+    let ProtocolMessage::Set(set_message) = message else {
+        panic!("expected Set message");
+    };
+    assert_eq!(
+        set_message.set.command_order,
+        vec!["file".to_owned(), "room".to_owned()]
+    );
 }
 
 #[test]
@@ -246,6 +271,7 @@ fn set_fixtures_decode_controller_playlist_and_file_variants() {
                 .set
                 .playlist_index
                 .expect("playlistIndex payload should be present");
+            assert_eq!(playlist_index.index_value(), Some(1));
             assert_eq!(playlist_index.index, 1);
             assert_eq!(playlist_index.user.as_deref(), Some("alice"));
         }

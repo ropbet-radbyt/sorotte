@@ -165,8 +165,11 @@ pub(crate) fn playlist_snapshot_change_message(
     ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change))
 }
 
-pub(crate) fn playlist_snapshot_index_message(index: i64, set_by: Option<&str>) -> ProtocolMessage {
-    let mut playlist_index = PlaylistIndexPayload::new(index);
+pub(crate) fn playlist_snapshot_index_message(
+    index: Option<i64>,
+    set_by: Option<&str>,
+) -> ProtocolMessage {
+    let mut playlist_index = PlaylistIndexPayload::from_optional(index);
     if let Some(set_by) = set_by {
         playlist_index = playlist_index.with_user(set_by);
     }

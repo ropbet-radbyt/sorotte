@@ -260,6 +260,15 @@ impl ServerRuntime {
         &mut self,
         delta_seconds: f64,
     ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
+        Ok(self
+            .advance_time_and_collect_dispatch(delta_seconds)?
+            .outbound_lines)
+    }
+
+    pub fn advance_time_and_collect_dispatch(
+        &mut self,
+        delta_seconds: f64,
+    ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
         let base_now = self.current_time_seconds();
         let advanced_now = if delta_seconds.is_finite() && delta_seconds > 0.0 {
             base_now + delta_seconds
@@ -269,7 +278,7 @@ impl ServerRuntime {
         self.time_now_override_seconds = Some(advanced_now);
         let outbound_messages = self.collect_due_periodic_updates()?;
         self.collect_due_stats_snapshots()?;
-        outbound_messages
+        let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
                 Ok(DirectedOutboundLine {
@@ -277,6 +286,11 @@ impl ServerRuntime {
                     line: encode_message_line(&message.message)?,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, ServerRuntimeError>>()?;
+        let transport_actions = self.drain_transport_actions();
+        Ok(ServerRuntimeDispatch {
+            outbound_lines,
+            transport_actions,
+        })
     }
 }

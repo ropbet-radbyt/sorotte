@@ -174,6 +174,11 @@ impl ServerRuntime {
         }
 
         if self.client_timed_out(client_id, ticked_at) {
+            self.pending_transport_actions
+                .push(DirectedTransportAction::new(
+                    client_id,
+                    ServerTransportAction::Close,
+                ));
             outbound.extend(self.timeout_disconnect_messages(client_id)?);
         }
 

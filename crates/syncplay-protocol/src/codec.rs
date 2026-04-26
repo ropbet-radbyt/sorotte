@@ -30,14 +30,6 @@ fn normalize_legacy_message_variants(value: &mut Value) {
     {
         *is_ready = Value::Bool(false);
     }
-
-    if value
-        .pointer("/Set/playlistIndex/index")
-        .is_some_and(Value::is_null)
-        && let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut)
-    {
-        set_payload.remove("playlistIndex");
-    }
 }
 
 fn top_level_key_order(json_line: &str) -> Vec<String> {
@@ -100,11 +92,136 @@ fn top_level_key_order(json_line: &str) -> Vec<String> {
     keys
 }
 
+fn matching_object_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, byte) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match *byte {
+            b'"' => {
+                in_string = true;
+                escaped = false;
+            }
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn top_level_object_value_span(json_line: &str, wanted_key: &str) -> Option<(usize, usize)> {
+    let bytes = json_line.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut expect_key = false;
+    let mut string_start = 0usize;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+                if depth == 1 && expect_key {
+                    let mut after_string = index + 1;
+                    while bytes.get(after_string).is_some_and(u8::is_ascii_whitespace) {
+                        after_string += 1;
+                    }
+                    if bytes.get(after_string) == Some(&b':') {
+                        let raw_key = &json_line[string_start..index];
+                        let quoted_key = format!("\"{raw_key}\"");
+                        if let Ok(key) = serde_json::from_str::<String>(&quoted_key)
+                            && key == wanted_key
+                        {
+                            let mut value_start = after_string + 1;
+                            while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                                value_start += 1;
+                            }
+                            let value_end = matching_object_end(bytes, value_start)?;
+                            return Some((value_start, value_end));
+                        }
+                        expect_key = false;
+                    }
+                }
+            }
+            continue;
+        }
+
+        match *byte {
+            b'"' => {
+                in_string = true;
+                escaped = false;
+                string_start = index + 1;
+            }
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                if *byte == b'{' && depth == 1 {
+                    expect_key = true;
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+            }
+            b',' if depth == 1 => {
+                expect_key = true;
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn set_command_order(json_line: &str) -> Vec<String> {
+    let Some((start, end)) = top_level_object_value_span(json_line, "Set") else {
+        return Vec::new();
+    };
+    top_level_key_order(&json_line[start..end])
+}
+
+fn decode_protocol_message_with_command_order(
+    value: Value,
+    original_line: &str,
+) -> Result<ProtocolMessage, ProtocolError> {
+    let mut message: ProtocolMessage =
+        serde_json::from_value(value).map_err(ProtocolError::from)?;
+    if let ProtocolMessage::Set(set_message) = &mut message {
+        set_message.set.command_order = set_command_order(original_line);
+    }
+    Ok(message)
+}
+
 pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, ProtocolError> {
     let mut value = decode_line(line)?;
     normalize_legacy_message_variants(&mut value);
     let Some(object) = value.as_object() else {
-        let message = serde_json::from_value(value).map_err(ProtocolError::from)?;
+        let message = decode_protocol_message_with_command_order(value, line)?;
         return Ok(vec![message]);
     };
 
@@ -122,7 +239,7 @@ pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, Protocol
     }
 
     if command_keys.len() <= 1 {
-        let message = serde_json::from_value(value).map_err(ProtocolError::from)?;
+        let message = decode_protocol_message_with_command_order(value, line)?;
         return Ok(vec![message]);
     }
 
@@ -133,9 +250,10 @@ pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, Protocol
         };
         let mut command_object = serde_json::Map::new();
         command_object.insert(command_key, payload);
-        messages.push(
-            serde_json::from_value(Value::Object(command_object)).map_err(ProtocolError::from)?,
-        );
+        messages.push(decode_protocol_message_with_command_order(
+            Value::Object(command_object),
+            line,
+        )?);
     }
     Ok(messages)
 }

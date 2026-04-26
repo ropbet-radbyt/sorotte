@@ -368,6 +368,25 @@ fn has_playlist_index_snapshot(
     })
 }
 
+fn has_null_playlist_index_snapshot(
+    directed_messages: &[(String, ProtocolMessage)],
+    recipient: &str,
+) -> bool {
+    directed_messages.iter().any(|(client_id, message)| {
+        if client_id != recipient {
+            return false;
+        }
+        match message {
+            ProtocolMessage::Set(payload) => payload
+                .set
+                .playlist_index
+                .as_ref()
+                .is_some_and(|playlist_index| playlist_index.index_value().is_none()),
+            _ => false,
+        }
+    })
+}
+
 fn controlled_room_name_for_test(base_room: &str, password: &str) -> String {
     super::controlled_room_name_for(base_room, password)
 }

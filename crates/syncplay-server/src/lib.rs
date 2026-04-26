@@ -186,8 +186,14 @@ impl DirectedTransportAction {
     }
 }
 
-type ClientLineSender = UnboundedSender<String>;
-type SharedClientLineSenders = Arc<Mutex<BTreeMap<String, ClientLineSender>>>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClientOutboundEvent {
+    Line(String),
+    TransportAction(ServerTransportAction),
+}
+
+type ClientEventSender = UnboundedSender<ClientOutboundEvent>;
+type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
 
 #[derive(Debug)]
 pub struct ServerRuntime {

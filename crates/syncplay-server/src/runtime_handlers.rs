@@ -326,7 +326,7 @@ impl ServerRuntime {
         if let Some(index) = room_playlist.index {
             outbound.push(DirectedProtocolMessage::new(
                 client_id,
-                playlist_snapshot_index_message(index, join_room_playback.set_by.as_deref()),
+                playlist_snapshot_index_message(Some(index), join_room_playback.set_by.as_deref()),
             ));
         }
 
@@ -407,7 +407,7 @@ impl ServerRuntime {
     pub(crate) fn handle_set(
         &mut self,
         client_id: &str,
-        set: SetPayload,
+        mut set: SetPayload,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let mut session = self
             .sessions
@@ -417,90 +417,175 @@ impl ServerRuntime {
 
         let mut outbound_messages = Vec::new();
 
-        if let Some(room_ref) = set.room {
-            let new_room_name =
-                truncate_text_to_max_chars(&room_ref.name, DEFAULT_MAX_ROOM_NAME_LENGTH);
-            if session.room != new_room_name {
-                let previous_room = session.room.clone();
-                let previous_ready = self
-                    .stored_user_ready(&session.username, &previous_room)
-                    .unwrap_or(false);
-                let new_room_had_clients_before_join =
-                    !self.clients_in_room(&new_room_name).is_empty();
-                let new_room_should_seed_position = new_room_had_clients_before_join
-                    || self.room_is_persistent(&new_room_name)
-                    || self.room_is_permanent(&new_room_name);
-                self.domain.leave_room(&session.username, &previous_room)?;
-                self.remove_room_controller(&session.username, &previous_room);
-                self.ensure_room_state(&new_room_name);
-                let now_seconds = self.current_time_seconds();
-                let room_playback =
-                    self.refresh_room_playback_state_from_clients_at(&new_room_name, now_seconds);
-                self.domain
-                    .join_room_with_ready(&session.username, &new_room_name, previous_ready);
-                self.seed_client_playback_state(
-                    client_id,
-                    new_room_should_seed_position.then_some(room_playback.position),
-                    now_seconds,
-                );
-                session.room = new_room_name;
-                self.sessions.insert(client_id.to_owned(), session.clone());
-                self.client_next_periodic_state_at.insert(
-                    client_id.to_owned(),
-                    now_seconds + SERVER_STATE_INTERVAL_SECONDS,
-                );
-                self.cleanup_room_if_empty(&previous_room)?;
+        let mut commands = if set.command_order.is_empty() {
+            Vec::new()
+        } else {
+            set.command_order.clone()
+        };
+        for fallback_command in [
+            "room",
+            "file",
+            "controllerAuth",
+            "ready",
+            "playlistChange",
+            "playlistIndex",
+            "features",
+        ] {
+            if !commands.iter().any(|command| command == fallback_command) {
+                commands.push(fallback_command.to_owned());
+            }
+        }
 
-                let room_set_by = room_playback.set_by.clone();
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    self.forced_state_sync_message_for_client(
-                        client_id,
-                        room_playback.position,
-                        room_playback.paused,
-                        true,
-                        room_set_by.as_deref(),
-                    ),
-                ));
-
-                let room_update_message =
-                    user_room_update_message(&session.username, &session.room);
-                for peer_client in
-                    self.room_switch_visibility_recipients(client_id, &previous_room, &session.room)
-                {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        peer_client,
-                        room_update_message.clone(),
-                    ));
-                }
-                if self.readiness_enabled {
-                    let ready_message =
-                        ready_update_message(&session.username, previous_ready, false, None);
-                    for peer_client in self.clients_in_room(&session.room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            ready_message.clone(),
-                        ));
+        for command in commands {
+            match command.as_str() {
+                "room" => {
+                    let Some(room_ref) = set.room.take() else {
+                        continue;
+                    };
+                    let new_room_name =
+                        truncate_text_to_max_chars(&room_ref.name, DEFAULT_MAX_ROOM_NAME_LENGTH);
+                    if session.room == new_room_name {
+                        continue;
                     }
-                }
-                if self.isolate_rooms {
-                    let left_message = user_event_message(
+
+                    let previous_room = session.room.clone();
+                    let previous_ready = self
+                        .stored_user_ready(&session.username, &previous_room)
+                        .unwrap_or(false);
+                    let new_room_had_clients_before_join =
+                        !self.clients_in_room(&new_room_name).is_empty();
+                    let new_room_should_seed_position = new_room_had_clients_before_join
+                        || self.room_is_persistent(&new_room_name)
+                        || self.room_is_permanent(&new_room_name);
+                    self.domain.leave_room(&session.username, &previous_room)?;
+                    self.remove_room_controller(&session.username, &previous_room);
+                    self.ensure_room_state(&new_room_name);
+                    let now_seconds = self.current_time_seconds();
+                    let room_playback = self
+                        .refresh_room_playback_state_from_clients_at(&new_room_name, now_seconds);
+                    self.domain.join_room_with_ready(
                         &session.username,
-                        &previous_room,
-                        json!({
-                            "left": true,
-                        }),
+                        &new_room_name,
+                        previous_ready,
                     );
-                    for peer_client in self.clients_in_room(&previous_room) {
+                    self.seed_client_playback_state(
+                        client_id,
+                        new_room_should_seed_position.then_some(room_playback.position),
+                        now_seconds,
+                    );
+                    session.room = new_room_name;
+                    self.sessions.insert(client_id.to_owned(), session.clone());
+                    self.client_next_periodic_state_at.insert(
+                        client_id.to_owned(),
+                        now_seconds + SERVER_STATE_INTERVAL_SECONDS,
+                    );
+                    self.cleanup_room_if_empty(&previous_room)?;
+
+                    let room_set_by = room_playback.set_by.clone();
+                    outbound_messages.push(DirectedProtocolMessage::new(
+                        client_id,
+                        self.forced_state_sync_message_for_client(
+                            client_id,
+                            room_playback.position,
+                            room_playback.paused,
+                            true,
+                            room_set_by.as_deref(),
+                        ),
+                    ));
+
+                    let room_update_message =
+                        user_room_update_message(&session.username, &session.room);
+                    for peer_client in self.room_switch_visibility_recipients(
+                        client_id,
+                        &previous_room,
+                        &session.room,
+                    ) {
                         outbound_messages.push(DirectedProtocolMessage::new(
                             peer_client,
-                            left_message.clone(),
+                            room_update_message.clone(),
                         ));
                     }
-                    if let Some(file) = session.file.clone().filter(legacy_json_value_truthy) {
+                    if self.readiness_enabled {
+                        let ready_message =
+                            ready_update_message(&session.username, previous_ready, false, None);
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                ready_message.clone(),
+                            ));
+                        }
+                    }
+                    if self.isolate_rooms {
+                        let left_message = user_event_message(
+                            &session.username,
+                            &previous_room,
+                            json!({
+                                "left": true,
+                            }),
+                        );
+                        for peer_client in self.clients_in_room(&previous_room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                left_message.clone(),
+                            ));
+                        }
+                        if let Some(file) = session.file.clone().filter(legacy_json_value_truthy) {
+                            let file_message =
+                                user_file_update_message(&session.username, &session.room, file);
+                            for peer_client in self.clients_in_room(&session.room) {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    file_message.clone(),
+                                ));
+                            }
+                        }
+                    }
+
+                    let room_playlist = self.room_playlist_state(&session.room);
+                    let playlist_snapshot_message = playlist_snapshot_change_message(
+                        room_playlist.files.clone(),
+                        room_playback.set_by.as_deref(),
+                    );
+                    outbound_messages.push(DirectedProtocolMessage::new(
+                        client_id,
+                        playlist_snapshot_message,
+                    ));
+                    if let Some(index) = room_playlist.index {
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            client_id,
+                            playlist_snapshot_index_message(
+                                Some(index),
+                                room_playback.set_by.as_deref(),
+                            ),
+                        ));
+                    }
+
+                    if self.persistent_rooms_enabled {
+                        self.enqueue_list_snapshots_for_clients(
+                            &mut outbound_messages,
+                            self.clients_receiving_to_gui_only_list_updates(),
+                        );
+                    }
+                }
+                "file" => {
+                    let Some(file_payload) = set.file.take() else {
+                        continue;
+                    };
+                    let mut file =
+                        serde_json::to_value(file_payload).map_err(ProtocolError::from)?;
+                    truncate_file_payload_name(&mut file, DEFAULT_MAX_FILENAME_LENGTH);
+                    session.file = Some(file.clone());
+                    self.sessions.insert(client_id.to_owned(), session.clone());
+
+                    if legacy_json_value_truthy(&file) {
                         let file_message =
                             user_file_update_message(&session.username, &session.room, file);
-                        for peer_client in self.clients_in_room(&session.room) {
+                        let recipients = if self.isolate_rooms {
+                            self.clients_in_room(&session.room)
+                        } else {
+                            self.clients_all()
+                        };
+                        for peer_client in recipients {
                             outbound_messages.push(DirectedProtocolMessage::new(
                                 peer_client,
                                 file_message.clone(),
@@ -508,214 +593,196 @@ impl ServerRuntime {
                         }
                     }
                 }
-
-                let room_playlist = self.room_playlist_state(&session.room);
-                let playlist_snapshot_message = playlist_snapshot_change_message(
-                    room_playlist.files.clone(),
-                    room_playback.set_by.as_deref(),
-                );
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    playlist_snapshot_message,
-                ));
-                if let Some(index) = room_playlist.index {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        client_id,
-                        playlist_snapshot_index_message(index, room_playback.set_by.as_deref()),
-                    ));
-                }
-
-                if self.persistent_rooms_enabled {
-                    self.enqueue_list_snapshots_for_clients(
-                        &mut outbound_messages,
-                        self.clients_receiving_to_gui_only_list_updates(),
-                    );
-                }
-            }
-        }
-
-        if let Some(mut playlist_change) = set.playlist_change {
-            self.ensure_room_state(&session.room);
-            if self.user_can_control_playlist(&session.username, &session.room)
-                && playlist_is_valid(&playlist_change.files)
-            {
-                let new_files = playlist_change.files.clone();
-                self.room_playlist_state_mut(&session.room).files = new_files;
-                self.persist_room_if_needed(&session.room)?;
-                playlist_change.user = Some(session.username.clone());
-                let playlist_message =
-                    ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change));
-                for peer_client in self.clients_in_room(&session.room) {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        peer_client,
-                        playlist_message.clone(),
-                    ));
-                }
-            } else {
-                let room_state = self.room_playlist_state(&session.room);
-                outbound_messages.push(DirectedProtocolMessage::new(
-                    client_id,
-                    playlist_snapshot_change_message(room_state.files.clone(), Some(&session.room)),
-                ));
-                if let Some(index) = room_state.index {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        client_id,
-                        playlist_snapshot_index_message(index, Some(&session.room)),
-                    ));
-                }
-            }
-        }
-
-        if let Some(mut playlist_index) = set.playlist_index {
-            self.ensure_room_state(&session.room);
-            if self.user_can_control_playlist(&session.username, &session.room) {
-                self.room_playlist_state_mut(&session.room).index = Some(playlist_index.index);
-                self.persist_room_if_needed(&session.room)?;
-                playlist_index.user = Some(session.username.clone());
-                let playlist_message =
-                    ProtocolMessage::set(SetPayload::new().with_playlist_index(playlist_index));
-                for peer_client in self.clients_in_room(&session.room) {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        peer_client,
-                        playlist_message.clone(),
-                    ));
-                }
-            } else {
-                let room_state = self.room_playlist_state(&session.room);
-                if let Some(index) = room_state.index {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        client_id,
-                        playlist_snapshot_index_message(index, Some(&session.room)),
-                    ));
-                }
-            }
-        }
-
-        if let Some(file_payload) = set.file {
-            let mut file = serde_json::to_value(file_payload).map_err(ProtocolError::from)?;
-            truncate_file_payload_name(&mut file, DEFAULT_MAX_FILENAME_LENGTH);
-            session.file = Some(file.clone());
-            self.sessions.insert(client_id.to_owned(), session.clone());
-
-            if legacy_json_value_truthy(&file) {
-                let file_message = user_file_update_message(&session.username, &session.room, file);
-                let recipients = if self.isolate_rooms {
-                    self.clients_in_room(&session.room)
-                } else {
-                    self.clients_all()
-                };
-                for peer_client in recipients {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        peer_client,
-                        file_message.clone(),
-                    ));
-                }
-            }
-        }
-
-        if let Some(features) = set.features {
-            session.features = Some(features);
-            self.sessions.insert(client_id.to_owned(), session.clone());
-        }
-
-        if let Some(controller_auth) = set.controller_auth {
-            let room_to_check = controller_auth.room.unwrap_or_else(|| session.room.clone());
-            let auth_password = controller_auth.password.unwrap_or_default();
-            match self
-                .room_password_provider
-                .check(&room_to_check, &auth_password)
-            {
-                Ok(success) => {
-                    if success {
-                        self.add_room_controller(&session.username, &session.room);
-                    }
-                    let auth_message =
-                        controller_auth_status_message(&session.username, &session.room, success);
-                    let recipients = if self.isolate_rooms {
-                        self.clients_in_room(&session.room)
-                    } else {
-                        self.clients_all()
+                "controllerAuth" => {
+                    let Some(controller_auth) = set.controller_auth.take() else {
+                        continue;
                     };
-                    for peer_client in recipients {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            auth_message.clone(),
-                        ));
-                    }
-                }
-                Err(RoomPasswordCheckError::NotControlledRoom) => {
-                    let new_room_name = self
+                    let room_to_check =
+                        controller_auth.room.unwrap_or_else(|| session.room.clone());
+                    let auth_password = controller_auth.password.unwrap_or_default();
+                    match self
                         .room_password_provider
-                        .controlled_room_name_for(&room_to_check, &auth_password);
-                    let new_room_message =
-                        new_controlled_room_message(&new_room_name, &auth_password);
-                    outbound_messages
-                        .push(DirectedProtocolMessage::new(client_id, new_room_message));
-                }
-                Err(RoomPasswordCheckError::InvalidPassword) => {
-                    let auth_message =
-                        controller_auth_status_message(&session.username, &session.room, false);
-                    for peer_client in self.clients_in_room(&session.room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            auth_message.clone(),
-                        ));
+                        .check(&room_to_check, &auth_password)
+                    {
+                        Ok(success) => {
+                            if success {
+                                self.add_room_controller(&session.username, &session.room);
+                            }
+                            let auth_message = controller_auth_status_message(
+                                &session.username,
+                                &session.room,
+                                success,
+                            );
+                            let recipients = if self.isolate_rooms {
+                                self.clients_in_room(&session.room)
+                            } else {
+                                self.clients_all()
+                            };
+                            for peer_client in recipients {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    auth_message.clone(),
+                                ));
+                            }
+                        }
+                        Err(RoomPasswordCheckError::NotControlledRoom) => {
+                            let new_room_name = self
+                                .room_password_provider
+                                .controlled_room_name_for(&room_to_check, &auth_password);
+                            let new_room_message =
+                                new_controlled_room_message(&new_room_name, &auth_password);
+                            outbound_messages
+                                .push(DirectedProtocolMessage::new(client_id, new_room_message));
+                        }
+                        Err(RoomPasswordCheckError::InvalidPassword) => {
+                            let auth_message = controller_auth_status_message(
+                                &session.username,
+                                &session.room,
+                                false,
+                            );
+                            for peer_client in self.clients_in_room(&session.room) {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    auth_message.clone(),
+                                ));
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        if self.readiness_enabled
-            && let Some(ready) = set.ready
-        {
-            let manually_initiated = ready.manually_initiated.unwrap_or(false);
-            let requested_username = ready.username.as_deref().unwrap_or(&session.username);
-            if requested_username != session.username {
-                if self.user_can_control_playlist(&session.username, &session.room)
-                    && self
-                        .domain
-                        .set_ready(requested_username, &session.room, ready.is_ready)
-                        .is_ok()
-                {
-                    let ready_message = ready_update_message(
-                        requested_username,
-                        ready.is_ready,
-                        manually_initiated,
-                        Some(&session.username),
-                    );
-                    for peer_client in self.clients_in_room(&session.room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            ready_message.clone(),
-                        ));
+                "ready" => {
+                    let Some(ready) = set.ready.take() else {
+                        continue;
+                    };
+                    if !self.readiness_enabled {
+                        continue;
                     }
-                    let chat_message = readiness_legacy_chat_message(
-                        &session.username,
-                        requested_username,
-                        ready.is_ready,
-                    );
-                    for peer_client in self.legacy_readiness_chat_clients_in_room(&session.room) {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            peer_client,
-                            chat_message.clone(),
-                        ));
+                    let manually_initiated = ready.manually_initiated.unwrap_or(false);
+                    let requested_username = ready.username.as_deref().unwrap_or(&session.username);
+                    if requested_username != session.username {
+                        if self.user_can_control_playlist(&session.username, &session.room)
+                            && self
+                                .domain
+                                .set_ready(requested_username, &session.room, ready.is_ready)
+                                .is_ok()
+                        {
+                            let ready_message = ready_update_message(
+                                requested_username,
+                                ready.is_ready,
+                                manually_initiated,
+                                Some(&session.username),
+                            );
+                            for peer_client in self.clients_in_room(&session.room) {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    ready_message.clone(),
+                                ));
+                            }
+                            let chat_message = readiness_legacy_chat_message(
+                                &session.username,
+                                requested_username,
+                                ready.is_ready,
+                            );
+                            for peer_client in
+                                self.legacy_readiness_chat_clients_in_room(&session.room)
+                            {
+                                outbound_messages.push(DirectedProtocolMessage::new(
+                                    peer_client,
+                                    chat_message.clone(),
+                                ));
+                            }
+                        }
+                    } else {
+                        self.domain
+                            .set_ready(&session.username, &session.room, ready.is_ready)?;
+                        let ready_message = ready_update_message(
+                            &session.username,
+                            ready.is_ready,
+                            manually_initiated,
+                            ready.set_by.as_deref(),
+                        );
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                ready_message.clone(),
+                            ));
+                        }
                     }
                 }
-            } else {
-                self.domain
-                    .set_ready(&session.username, &session.room, ready.is_ready)?;
-                let ready_message = ready_update_message(
-                    &session.username,
-                    ready.is_ready,
-                    manually_initiated,
-                    ready.set_by.as_deref(),
-                );
-                for peer_client in self.clients_in_room(&session.room) {
-                    outbound_messages.push(DirectedProtocolMessage::new(
-                        peer_client,
-                        ready_message.clone(),
-                    ));
+                "playlistChange" => {
+                    let Some(mut playlist_change) = set.playlist_change.take() else {
+                        continue;
+                    };
+                    self.ensure_room_state(&session.room);
+                    if self.user_can_control_playlist(&session.username, &session.room)
+                        && playlist_is_valid(&playlist_change.files)
+                    {
+                        let new_files = playlist_change.files.clone();
+                        self.room_playlist_state_mut(&session.room).files = new_files;
+                        self.persist_room_if_needed(&session.room)?;
+                        playlist_change.user = Some(session.username.clone());
+                        let playlist_message = ProtocolMessage::set(
+                            SetPayload::new().with_playlist_change(playlist_change),
+                        );
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                playlist_message.clone(),
+                            ));
+                        }
+                    } else {
+                        let room_state = self.room_playlist_state(&session.room);
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            client_id,
+                            playlist_snapshot_change_message(
+                                room_state.files.clone(),
+                                Some(&session.room),
+                            ),
+                        ));
+                        if let Some(index) = room_state.index {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                client_id,
+                                playlist_snapshot_index_message(Some(index), Some(&session.room)),
+                            ));
+                        }
+                    }
                 }
+                "playlistIndex" => {
+                    let Some(mut playlist_index) = set.playlist_index.take() else {
+                        continue;
+                    };
+                    self.ensure_room_state(&session.room);
+                    if self.user_can_control_playlist(&session.username, &session.room) {
+                        self.room_playlist_state_mut(&session.room).index =
+                            playlist_index.index_value();
+                        self.persist_room_if_needed(&session.room)?;
+                        playlist_index.user = Some(session.username.clone());
+                        let playlist_message = ProtocolMessage::set(
+                            SetPayload::new().with_playlist_index(playlist_index),
+                        );
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                playlist_message.clone(),
+                            ));
+                        }
+                    } else {
+                        let room_state = self.room_playlist_state(&session.room);
+                        if let Some(index) = room_state.index {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                client_id,
+                                playlist_snapshot_index_message(Some(index), Some(&session.room)),
+                            ));
+                        }
+                    }
+                }
+                "features" => {
+                    let Some(features) = set.features.take() else {
+                        continue;
+                    };
+                    session.features = Some(features);
+                    self.sessions.insert(client_id.to_owned(), session.clone());
+                }
+                _ => {}
             }
         }
 

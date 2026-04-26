@@ -1,16 +1,31 @@
 use super::*;
 
 async fn dispatch_outbound_lines_to_clients(
-    client_line_senders: &SharedClientLineSenders,
+    client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
 ) {
     for line in outbound_lines {
-        let line_sender = {
-            let senders = client_line_senders.lock().await;
+        let event_sender = {
+            let senders = client_event_senders.lock().await;
             senders.get(&line.client_id).cloned()
         };
-        if let Some(line_sender) = line_sender {
-            let _ = line_sender.send(line.line);
+        if let Some(event_sender) = event_sender {
+            let _ = event_sender.send(ClientOutboundEvent::Line(line.line));
+        }
+    }
+}
+
+async fn dispatch_transport_actions_to_clients(
+    client_event_senders: &SharedClientEventSenders,
+    transport_actions: &[DirectedTransportAction],
+) {
+    for action in transport_actions {
+        let event_sender = {
+            let senders = client_event_senders.lock().await;
+            senders.get(&action.client_id).cloned()
+        };
+        if let Some(event_sender) = event_sender {
+            let _ = event_sender.send(ClientOutboundEvent::TransportAction(action.action.clone()));
         }
     }
 }
@@ -137,7 +152,7 @@ impl ServerNetworkTransport {
 async fn route_outbound_lines_for_client_session(
     transport: &mut ServerNetworkTransport,
     client_id: &str,
-    client_line_senders: &SharedClientLineSenders,
+    client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
 ) -> io::Result<()> {
     let mut peer_outbound_lines = Vec::new();
@@ -148,7 +163,7 @@ async fn route_outbound_lines_for_client_session(
             peer_outbound_lines.push(line);
         }
     }
-    dispatch_outbound_lines_to_clients(client_line_senders, peer_outbound_lines).await;
+    dispatch_outbound_lines_to_clients(client_event_senders, peer_outbound_lines).await;
     Ok(())
 }
 
@@ -188,14 +203,16 @@ async fn run_server_network_client_session(
     stream: TcpStream,
     client_id: String,
     runtime: Arc<Mutex<ServerRuntime>>,
-    client_line_senders: SharedClientLineSenders,
+    client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
 ) -> Result<(), ServerNetworkError> {
-    let (line_tx, mut line_rx): (UnboundedSender<String>, UnboundedReceiver<String>) =
-        unbounded_channel();
+    let (event_tx, mut event_rx): (
+        UnboundedSender<ClientOutboundEvent>,
+        UnboundedReceiver<ClientOutboundEvent>,
+    ) = unbounded_channel();
     {
-        let mut senders = client_line_senders.lock().await;
-        senders.insert(client_id.clone(), line_tx);
+        let mut senders = client_event_senders.lock().await;
+        senders.insert(client_id.clone(), event_tx);
     }
 
     let mut transport = ServerNetworkTransport::Plain(stream);
@@ -218,12 +235,13 @@ async fn run_server_network_client_session(
                         break;
                     }
                 };
+                let inbound_line = inbound_line.trim();
                 if inbound_line.is_empty() {
                     continue;
                 }
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.handle_line_fanout_with_transport_actions(&client_id, &inbound_line)
+                    runtime_guard.handle_line_fanout_with_transport_actions(&client_id, inbound_line)
                 };
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,
@@ -237,7 +255,7 @@ async fn run_server_network_client_session(
                 if let Err(source) = route_outbound_lines_for_client_session(
                     &mut transport,
                     &client_id,
-                    &client_line_senders,
+                    &client_event_senders,
                     dispatch.outbound_lines,
                 )
                 .await
@@ -264,20 +282,44 @@ async fn run_server_network_client_session(
                     break;
                 }
             }
-            outbound_line = line_rx.recv() => {
-                let Some(outbound_line) = outbound_line else {
+            outbound_event = event_rx.recv() => {
+                let Some(outbound_event) = outbound_event else {
                     break;
                 };
-                if let Err(source) = transport.write_line(&outbound_line).await {
-                    session_error = Some(ServerNetworkError::Io(source));
-                    break;
+                match outbound_event {
+                    ClientOutboundEvent::Line(outbound_line) => {
+                        if let Err(source) = transport.write_line(&outbound_line).await {
+                            session_error = Some(ServerNetworkError::Io(source));
+                            break;
+                        }
+                    }
+                    ClientOutboundEvent::TransportAction(ServerTransportAction::Close) => {
+                        break;
+                    }
+                    ClientOutboundEvent::TransportAction(ServerTransportAction::StartTls) => {
+                        let action = DirectedTransportAction::new(
+                            &client_id,
+                            ServerTransportAction::StartTls,
+                        );
+                        if let Err(source) = apply_local_transport_actions(
+                            &mut transport,
+                            &client_id,
+                            &runtime,
+                            &[action],
+                        )
+                        .await
+                        {
+                            session_error = Some(ServerNetworkError::Io(source));
+                            break;
+                        }
+                    }
                 }
             }
         }
     }
 
     {
-        let mut senders = client_line_senders.lock().await;
+        let mut senders = client_event_senders.lock().await;
         senders.remove(&client_id);
     }
     if let Err(source) = transport.shutdown().await
@@ -292,7 +334,7 @@ async fn run_server_network_client_session(
     };
     match disconnect_fanout {
         Ok(outbound_lines) => {
-            dispatch_outbound_lines_to_clients(&client_line_senders, outbound_lines).await;
+            dispatch_outbound_lines_to_clients(&client_event_senders, outbound_lines).await;
         }
         Err(source) => {
             if session_error.is_none() {
@@ -313,7 +355,7 @@ pub async fn run_server_network_loop_until_shutdown(
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
-    let client_line_senders: SharedClientLineSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
     let mut session_tasks: Vec<JoinHandle<()>> = Vec::new();
     let mut next_client_number: u64 = 1;
     let mut tick = time::interval(std::time::Duration::from_secs_f64(
@@ -323,11 +365,24 @@ pub async fn run_server_network_loop_until_shutdown(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                let outbound_lines = {
+                let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.advance_time_and_collect_fanout(SERVER_NETWORK_TICK_INTERVAL_SECONDS)?
+                    runtime_guard.advance_time_and_collect_dispatch(SERVER_NETWORK_TICK_INTERVAL_SECONDS)?
                 };
-                dispatch_outbound_lines_to_clients(&client_line_senders, outbound_lines).await;
+                dispatch_outbound_lines_to_clients(
+                    &client_event_senders,
+                    dispatch.outbound_lines,
+                )
+                .await;
+                dispatch_transport_actions_to_sink(
+                    transport_action_sink.as_ref(),
+                    &dispatch.transport_actions,
+                );
+                dispatch_transport_actions_to_clients(
+                    &client_event_senders,
+                    &dispatch.transport_actions,
+                )
+                .await;
             }
             changed = shutdown_rx.changed() => {
                 if changed.is_err() || *shutdown_rx.borrow() {
@@ -339,14 +394,14 @@ pub async fn run_server_network_loop_until_shutdown(
                 let client_id = format!("client-{next_client_number}");
                 next_client_number = next_client_number.saturating_add(1);
                 let runtime = runtime.clone();
-                let client_line_senders = client_line_senders.clone();
+                let client_event_senders = client_event_senders.clone();
                 let transport_action_sink = transport_action_sink.clone();
                 session_tasks.push(tokio::spawn(async move {
                     let _ = run_server_network_client_session(
                         stream,
                         client_id,
                         runtime,
-                        client_line_senders,
+                        client_event_senders,
                         transport_action_sink,
                     )
                     .await;

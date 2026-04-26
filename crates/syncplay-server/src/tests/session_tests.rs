@@ -315,6 +315,93 @@ fn set_room_moves_session_between_rooms() {
 }
 
 #[test]
+fn hello_and_room_switch_omit_absent_playlist_index_snapshot() {
+    let mut runtime = ServerRuntime::default();
+    let hello_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should establish session");
+    let hello_messages = decode_directed_lines(&hello_lines);
+    assert!(
+        !has_null_playlist_index_snapshot(&hello_messages, "client-1"),
+        "Python omits playlistIndex snapshots when the room has no selected index"
+    );
+    acknowledge_directed_state_counters(&mut runtime, &hello_messages);
+
+    let room_switch_lines = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("set room should succeed");
+    let room_switch_messages = decode_directed_lines(&room_switch_lines);
+    assert!(
+        !has_null_playlist_index_snapshot(&room_switch_messages, "client-1"),
+        "Python omits room-switch playlistIndex snapshots when the destination has no selected index"
+    );
+}
+
+#[test]
+fn batched_set_subcommands_are_processed_in_wire_order() {
+    fn first_file_room_for_bob(messages: &[(String, ProtocolMessage)]) -> Option<String> {
+        messages.iter().find_map(|(client_id, message)| {
+            if client_id != "client-2" {
+                return None;
+            }
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            let alice = payload.set.user.as_ref()?.get("alice")?;
+            alice.file.as_ref()?;
+            Some(alice.room.as_ref()?.name.clone())
+        })
+    }
+
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = format!(
+            r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.2.255"}}}}"#
+        );
+        runtime
+            .handle_line(client_id, &hello)
+            .expect("hello should establish session");
+    }
+    let file_then_room = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"file":{"name":"movie.mkv"},"room":{"name":"room2"}}}"#,
+        )
+        .expect("batched Set should succeed");
+    let file_then_room_messages = decode_directed_lines(&file_then_room);
+    assert_eq!(
+        first_file_room_for_bob(&file_then_room_messages).as_deref(),
+        Some("room1"),
+        "file before room should publish the file in the source room"
+    );
+
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = format!(
+            r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.2.255"}}}}"#
+        );
+        runtime
+            .handle_line(client_id, &hello)
+            .expect("hello should establish session");
+    }
+    let room_then_file = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"room":{"name":"room2"},"file":{"name":"movie.mkv"}}}"#,
+        )
+        .expect("batched Set should succeed");
+    let room_then_file_messages = decode_directed_lines(&room_then_file);
+    assert_eq!(
+        first_file_room_for_bob(&room_then_file_messages).as_deref(),
+        Some("room2"),
+        "room before file should publish the file in the destination room"
+    );
+}
+
+#[test]
 fn batched_top_level_commands_are_processed_in_wire_order() {
     let mut runtime = ServerRuntime::default();
     let hello_lines = runtime
