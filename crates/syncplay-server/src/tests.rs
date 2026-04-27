@@ -179,6 +179,15 @@ fn has_ready_update(
     username: &str,
     is_ready: bool,
 ) -> bool {
+    has_ready_update_state(directed_messages, recipient, username, Some(is_ready))
+}
+
+fn has_ready_update_state(
+    directed_messages: &[(String, ProtocolMessage)],
+    recipient: &str,
+    username: &str,
+    is_ready: Option<bool>,
+) -> bool {
     directed_messages.iter().any(|(client_id, message)| {
         if client_id != recipient {
             return false;

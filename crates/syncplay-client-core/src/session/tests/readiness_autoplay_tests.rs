@@ -682,7 +682,7 @@ fn client_runtime_readiness_unpause_attempt_dispatches_ready_protocol_message() 
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(false));
 }
 

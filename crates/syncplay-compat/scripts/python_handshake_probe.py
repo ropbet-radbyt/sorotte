@@ -573,9 +573,10 @@ class FanoutBatchProbe:
         )
 
     def _ready_message(self, username, is_ready, manually_initiated=False, set_by=None):
+        ready_value = None if is_ready is None else bool(is_ready)
         ready = {
             "username": username,
-            "isReady": bool(is_ready),
+            "isReady": ready_value,
             "manuallyInitiated": bool(manually_initiated),
         }
         if isinstance(set_by, str) and set_by:
@@ -941,7 +942,7 @@ class FanoutBatchProbe:
                 "position": 0.0,
                 "file": {},
                 "controller": self._is_controller(room, session["username"]),
-                "isReady": bool(session["ready"]),
+                "isReady": session["ready"],
             }
             if session["features"] is not None:
                 entry["features"] = session["features"]
@@ -977,7 +978,7 @@ class FanoutBatchProbe:
             "room": room_name,
             "version": version,
             "features": features,
-            "ready": False,
+            "ready": None,
         }
         self.client_state_counters[client_id] = 0
         self.pending_client_ignoring.pop(client_id, None)
@@ -991,7 +992,7 @@ class FanoutBatchProbe:
         joined = self._joined_message(username, room_name, version, features)
         for peer_id in self._all_client_ids(exclude=client_id):
             outputs.append({"client": peer_id, "message": joined})
-        ready_message = self._ready_message(username, False, False)
+        ready_message = self._ready_message(username, None, False)
         for peer_id in self._room_client_ids(room_name):
             outputs.append({"client": peer_id, "message": ready_message})
 
@@ -1022,10 +1023,6 @@ class FanoutBatchProbe:
         if self.persistent_rooms_enabled:
             for peer_id in self._to_gui_only_list_recipient_ids():
                 outputs.extend(self._list_response(peer_id))
-        if len(self._room_client_ids(room_name)) > 1:
-            room_idle_state = self._room_sync_state_message(False, False)
-            for peer_id in self._room_client_ids(room_name):
-                outputs.append({"client": peer_id, "message": room_idle_state})
         return outputs
 
     def _handle_set(self, client_id, settings):
@@ -1190,7 +1187,9 @@ class FanoutBatchProbe:
 
         if "ready" in settings and isinstance(settings["ready"], dict):
             ready = settings["ready"]
-            is_ready = bool(ready.get("isReady", False))
+            is_ready = ready.get("isReady", False)
+            if is_ready is not None:
+                is_ready = bool(is_ready)
             manually_initiated = bool(ready.get("manuallyInitiated", True))
             username = ready.get("username")
             if not isinstance(username, str) or not username:

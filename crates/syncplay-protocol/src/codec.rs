@@ -24,14 +24,6 @@ pub fn encode_line(value: &Value) -> Result<String, ProtocolError> {
     serde_json::to_string(value).map_err(ProtocolError::from)
 }
 
-fn normalize_legacy_message_variants(value: &mut Value) {
-    if let Some(is_ready) = value.pointer_mut("/Set/ready/isReady")
-        && is_ready.is_null()
-    {
-        *is_ready = Value::Bool(false);
-    }
-}
-
 fn top_level_key_order(json_line: &str) -> Vec<String> {
     let bytes = json_line.as_bytes();
     let mut keys = Vec::new();
@@ -218,8 +210,7 @@ fn decode_protocol_message_with_command_order(
 }
 
 pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, ProtocolError> {
-    let mut value = decode_line(line)?;
-    normalize_legacy_message_variants(&mut value);
+    let value = decode_line(line)?;
     let Some(object) = value.as_object() else {
         let message = decode_protocol_message_with_command_order(value, line)?;
         return Ok(vec![message]);

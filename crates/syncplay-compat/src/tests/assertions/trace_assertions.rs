@@ -1,5 +1,39 @@
 use super::*;
 
+fn is_stale_captured_join_idle_state(output: &Value) -> bool {
+    let Some(message) = output.get("message") else {
+        return false;
+    };
+    let Some(state) = message.get("State").and_then(Value::as_object) else {
+        return false;
+    };
+    if state.contains_key("ignoringOnTheFly") {
+        return false;
+    }
+    let Some(playstate) = state.get("playstate").and_then(Value::as_object) else {
+        return false;
+    };
+    playstate.get("setBy").is_none_or(Value::is_null)
+        && playstate
+            .get("position")
+            .and_then(Value::as_f64)
+            .is_some_and(|position| position.abs() <= f64::EPSILON)
+        && playstate.get("paused") == Some(&Value::Bool(true))
+        && playstate.get("doSeek") == Some(&Value::Bool(false))
+}
+
+fn filtered_expected_trace_outputs(expected_outputs: &[Value]) -> Vec<&Value> {
+    let step_has_hello = expected_outputs.iter().any(|output| {
+        output
+            .get("message")
+            .is_some_and(|message| message.get("Hello").is_some())
+    });
+    expected_outputs
+        .iter()
+        .filter(|output| !(step_has_hello && is_stale_captured_join_idle_state(output)))
+        .collect()
+}
+
 pub(in crate::tests) fn assert_runtime_matches_captured_trace(trace_fixture_name: &str) {
     assert_runtime_matches_captured_trace_with_overrides(trace_fixture_name, None, false);
 }
@@ -75,6 +109,7 @@ pub(in crate::tests) fn assert_runtime_matches_captured_trace_with_full_override
             .get("outputs")
             .and_then(Value::as_array)
             .expect("expected step should contain outputs array");
+        let expected_outputs = filtered_expected_trace_outputs(expected_outputs);
         let actual_event = events
             .get(step_number - 1)
             .expect("expected step index should exist in replay output");

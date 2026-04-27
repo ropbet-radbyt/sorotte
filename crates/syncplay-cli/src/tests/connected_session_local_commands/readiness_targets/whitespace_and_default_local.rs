@@ -55,7 +55,7 @@ async fn connected_client_session_sets_whitespace_username_ready_from_local_inpu
                 "client should emit Set.ready with whitespace username from local setready command"
             );
         };
-        assert!(ready_payload.is_ready);
+        assert_eq!(ready_payload.is_ready, Some(true));
         assert_eq!(ready_payload.manually_initiated, Some(true));
         assert_eq!(ready_payload.username.as_deref(), Some(" "));
         writer
@@ -191,11 +191,11 @@ async fn connected_client_session_sets_local_ready_without_username_from_local_i
         }
 
         assert!(
-            local_ready_updates.contains(&(true, Some(true))),
+            local_ready_updates.contains(&(Some(true), Some(true))),
             "local setready command should emit a manually-initiated local ready update"
         );
         assert!(
-            local_ready_updates.contains(&(false, Some(true))),
+            local_ready_updates.contains(&(Some(false), Some(true))),
             "local setnotready command should emit a manually-initiated local not-ready update"
         );
 

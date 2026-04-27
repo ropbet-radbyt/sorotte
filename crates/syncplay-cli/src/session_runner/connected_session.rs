@@ -254,21 +254,20 @@ where
             line = reader.next_line() => {
                 match line? {
                     Some(line) => {
-                        let decoded_inbound_message = decode_message_line(&line).ok();
+                        let decoded_inbound_messages =
+                            decode_message_lines(&line).unwrap_or_default();
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
-                            && matches!(
-                                decoded_inbound_message.as_ref(),
-                                Some(ProtocolMessage::Hello(_))
-                            );
+                            && decoded_inbound_messages
+                                .iter()
+                                .any(|message| matches!(message, ProtocolMessage::Hello(_)));
                         let now_seconds = connected_start.elapsed().as_secs_f64();
                         let event_execution_plan =
                             connected_session_inbound_message_event_execution_plan_legacy_compatible(
                                 inbound_is_server_hello,
                                 pending_chat_message_on_connect.is_some(),
-                                matches!(
-                                    decoded_inbound_message.as_ref(),
-                                    Some(ProtocolMessage::State(_))
-                                ),
+                                decoded_inbound_messages
+                                    .iter()
+                                    .any(|message| matches!(message, ProtocolMessage::State(_))),
                                 ConnectedSessionSharedExecutionInputs {
                                     shared_playlists_enabled,
                                     diagnostics: branch_diagnostics_plan,
@@ -278,7 +277,7 @@ where
                         run_connected_session_event_plan_legacy_compatible(
                             runtime,
                             Some(&line),
-                            decoded_inbound_message.as_ref(),
+                            &decoded_inbound_messages,
                             now_seconds,
                             dont_slow_down_with_me,
                             event_execution_plan,
@@ -316,7 +315,7 @@ where
                 run_connected_session_event_plan_legacy_compatible(
                     runtime,
                     None,
-                    None,
+                    &[],
                     now_seconds,
                     dont_slow_down_with_me,
                     event_execution_plan,
@@ -398,7 +397,7 @@ where
                     run_connected_session_event_plan_legacy_compatible(
                         runtime,
                         None,
-                        None,
+                        &[],
                         connected_start.elapsed().as_secs_f64(),
                         dont_slow_down_with_me,
                         event_execution_plan,

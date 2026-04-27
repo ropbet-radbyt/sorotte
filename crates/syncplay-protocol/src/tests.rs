@@ -115,7 +115,7 @@ fn chat_fixture_supports_text_and_object_variants() {
 }
 
 #[test]
-fn ready_message_with_null_is_ready_decodes_as_false() {
+fn ready_message_with_null_is_ready_decodes_as_unknown() {
     let message = decode_message_line(
         r#"{"Set":{"ready":{"username":"alice","isReady":null,"manuallyInitiated":false}}}"#,
     )
@@ -127,7 +127,7 @@ fn ready_message_with_null_is_ready_decodes_as_false() {
         .set
         .ready
         .expect("set message should include a ready payload");
-    assert!(!ready.is_ready);
+    assert_eq!(ready.is_ready, None);
     assert_eq!(ready.username.as_deref(), Some("alice"));
     assert_eq!(ready.manually_initiated, Some(false));
 }

@@ -145,7 +145,7 @@ fn queued_runtime_control_set_ready_emits_protocol_set_ready_message() {
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(false));
 }
 

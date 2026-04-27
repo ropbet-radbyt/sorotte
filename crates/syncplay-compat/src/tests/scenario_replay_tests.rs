@@ -40,7 +40,7 @@ fn scripted_server_runtime_scenario_replays_and_fanout_decodes() {
                     if let Some(ready) = payload.set.ready.as_ref()
                         && outbound.client_id == "client-2"
                         && ready.username.as_deref() == Some("alice")
-                        && ready.is_ready
+                        && ready.is_ready == Some(true)
                     {
                         saw_ready_broadcast_to_bob = true;
                     }

@@ -25,7 +25,7 @@ pub struct ListUserEntry {
     pub file: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "isReady")]
+    #[serde(default, rename = "isReady")]
     pub is_ready: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Value>,

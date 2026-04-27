@@ -53,7 +53,7 @@ async fn connected_client_session_sets_other_user_ready_from_local_input_channel
         let Some(ready_payload) = target_ready_payload else {
             panic!("client should emit Set.ready with username from local setready command");
         };
-        assert!(ready_payload.is_ready);
+        assert_eq!(ready_payload.is_ready, Some(true));
         assert_eq!(ready_payload.manually_initiated, Some(true));
         assert_eq!(ready_payload.username.as_deref(), Some("other-user"));
         writer
@@ -193,7 +193,7 @@ async fn connected_client_session_sets_explicit_local_username_ready_from_local_
                 "client should emit Set.ready with username from explicit local username command"
             );
         };
-        assert!(ready_payload.is_ready);
+        assert_eq!(ready_payload.is_ready, Some(true));
         assert_eq!(ready_payload.manually_initiated, Some(true));
         assert_eq!(ready_payload.username.as_deref(), Some("cli-user"));
         writer

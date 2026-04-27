@@ -192,7 +192,7 @@ impl ClientSession {
                 {
                     self.set_user_room(&target_username, Some(room_name));
                 }
-                self.set_user_ready(&target_username, ready.is_ready);
+                self.set_user_ready_state(&target_username, ready.is_ready);
             }
         }
 

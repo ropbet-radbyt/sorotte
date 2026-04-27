@@ -21,7 +21,7 @@ fn list_request_returns_room_snapshot_for_session() {
             ListPayload::Rooms(rooms) => {
                 let room = rooms.get("room1").expect("room1 should be present");
                 let alice = room.get("alice").expect("alice should be listed");
-                assert_eq!(alice.is_ready, Some(false));
+                assert_eq!(alice.is_ready, None);
             }
             other => panic!("expected list room snapshot, got {other:?}"),
         },
@@ -502,7 +502,7 @@ fn hello_fanout_notifies_existing_room_members() {
         .expect("second hello should fan out user events");
     let directed_messages = decode_directed_lines(&directed_lines);
 
-    assert_eq!(directed_messages.len(), 7);
+    assert_eq!(directed_messages.len(), 5);
 
     assert!(
         directed_messages.iter().any(|(recipient, message)| {
@@ -515,12 +515,12 @@ fn hello_fanout_notifies_existing_room_members() {
         "existing room member should receive joined event for bob"
     );
     assert!(
-        has_ready_update(&directed_messages, "client-1", "bob", false),
-        "existing room member should receive bob's default readiness"
+        has_ready_update_state(&directed_messages, "client-1", "bob", None),
+        "existing room member should receive bob's unknown readiness"
     );
     assert!(
-        has_ready_update(&directed_messages, "client-2", "bob", false),
-        "joining room member should receive its default readiness"
+        has_ready_update_state(&directed_messages, "client-2", "bob", None),
+        "joining room member should receive its unknown readiness"
     );
     assert!(
         has_playlist_snapshot(&directed_messages, "client-2", &[]),
@@ -531,12 +531,34 @@ fn hello_fanout_notifies_existing_room_members() {
         "new client should not receive synthetic joined snapshot for existing users"
     );
     assert!(
-        has_room_sync_state_update(&directed_messages, "client-1", false),
-        "existing room member should receive current room sync state update on peer join"
+        !has_room_sync_state_update(&directed_messages, "client-1", true),
+        "existing room member should not receive a join-time room sync state update"
     );
     assert!(
-        has_room_sync_state_update(&directed_messages, "client-2", false),
-        "new room member should receive current room sync state update on join"
+        !has_room_sync_state_update(&directed_messages, "client-2", true),
+        "new room member should not receive a join-time room sync state update"
+    );
+}
+
+#[test]
+fn first_hello_receives_unknown_readiness_without_join_time_state() {
+    let mut runtime = ServerRuntime::default();
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("first hello should fan out initial messages");
+    let directed_messages = decode_directed_lines(&directed_lines);
+
+    assert!(
+        has_ready_update_state(&directed_messages, "client-1", "alice", None),
+        "joining user should receive unknown readiness before publishing Set.ready"
+    );
+    assert!(
+        !has_room_sync_state_update(&directed_messages, "client-1", true),
+        "first room member should not receive a join-time room sync state update"
     );
 }
 
@@ -1211,7 +1233,7 @@ fn controller_can_set_other_user_readiness_in_current_room() {
                     ProtocolMessage::Set(payload)
                         if payload.set.ready.as_ref().is_some_and(|ready| {
                             ready.username.as_deref() == Some("bob")
-                                && ready.is_ready
+                                && ready.is_ready == Some(true)
                                 && ready.set_by.as_deref() == Some("alice")
                         })
                 )
@@ -1295,5 +1317,5 @@ fn non_controller_cannot_set_other_user_readiness_in_controlled_room() {
         directed_lines.is_empty(),
         "non-controller should not be allowed to change another user's readiness"
     );
-    assert_eq!(runtime.user_ready("bob", &controlled_room), Some(false));
+    assert_eq!(runtime.user_ready("bob", &controlled_room), None);
 }

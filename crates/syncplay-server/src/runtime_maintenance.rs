@@ -806,7 +806,7 @@ impl ServerRuntime {
             users
                 .into_iter()
                 .find(|user| user.username == username)
-                .map(|user| user.ready)
+                .and_then(|user| user.ready)
         })
     }
 

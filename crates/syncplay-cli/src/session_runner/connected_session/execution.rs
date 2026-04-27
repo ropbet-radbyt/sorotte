@@ -107,23 +107,32 @@ fn run_connected_session_inbound_post_apply_legacy_compatible(
 fn apply_connected_session_inbound_message_legacy_compatible(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     line: &str,
-    decoded_inbound_message: Option<&ProtocolMessage>,
+    decoded_inbound_messages: &[ProtocolMessage],
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     plan: ConnectedSessionInboundApplyPlan,
 ) -> anyhow::Result<bool> {
-    if plan.reconcile_inbound_state
-        && let Some(ProtocolMessage::State(state_message)) = decoded_inbound_message
-    {
-        let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
-            state_message.state.clone(),
-            dont_slow_down_with_me,
-        );
+    if decoded_inbound_messages.is_empty() {
+        if plan.apply_message_json_at {
+            runtime
+                .session_mut()
+                .apply_message_json_at(line, now_seconds)?;
+        }
+        return Ok(plan.outbound_state_sync_enabled);
     }
-    if plan.apply_message_json_at {
-        runtime
-            .session_mut()
-            .apply_message_json_at(line, now_seconds)?;
+
+    for message in decoded_inbound_messages {
+        match message {
+            ProtocolMessage::State(state_message) if plan.reconcile_inbound_state => {
+                let _ = runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+                    state_message.state.clone(),
+                    dont_slow_down_with_me,
+                );
+            }
+            other => runtime
+                .session_mut()
+                .apply_protocol_message_at(other.clone(), now_seconds)?,
+        }
     }
 
     Ok(plan.outbound_state_sync_enabled)
@@ -313,7 +322,7 @@ where
 pub(super) async fn run_connected_session_event_plan_legacy_compatible<F, G>(
     runtime: &mut ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
     inbound_message_line: Option<&str>,
-    decoded_inbound_message: Option<&ProtocolMessage>,
+    decoded_inbound_messages: &[ProtocolMessage],
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     event_execution_plan: ConnectedSessionEventExecutionPlan,
@@ -336,7 +345,7 @@ where
         *outbound_state_sync_enabled = apply_connected_session_inbound_message_legacy_compatible(
             runtime,
             inbound_message_line,
-            decoded_inbound_message,
+            decoded_inbound_messages,
             now_seconds,
             dont_slow_down_with_me,
             inbound_apply,

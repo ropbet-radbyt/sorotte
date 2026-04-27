@@ -53,7 +53,7 @@ async fn connected_client_session_restores_ready_and_file_after_reconnect_hello(
                                 .set
                                 .ready
                                 .as_ref()
-                                .is_some_and(|ready| ready.is_ready && ready.manually_initiated == Some(false))
+                                .is_some_and(|ready| ready.is_ready == Some(true) && ready.manually_initiated == Some(false))
                     )
                 }),
                 "reconnect restore should emit Set.ready with restored value"

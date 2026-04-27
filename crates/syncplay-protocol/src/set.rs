@@ -278,8 +278,8 @@ impl NewControlledRoomPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {
-    #[serde(rename = "isReady")]
-    pub is_ready: bool,
+    #[serde(default, rename = "isReady")]
+    pub is_ready: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -295,9 +295,9 @@ pub struct ReadyPayload {
 }
 
 impl ReadyPayload {
-    pub fn new(is_ready: bool) -> Self {
+    pub fn new(is_ready: impl Into<Option<bool>>) -> Self {
         Self {
-            is_ready,
+            is_ready: is_ready.into(),
             manually_initiated: None,
             username: None,
             set_by: None,

@@ -306,7 +306,7 @@ impl ServerRuntime {
             ));
         }
         if self.readiness_enabled {
-            let ready_message = ready_update_message(&username, false, false, None);
+            let ready_message = ready_update_message(&username, None, false, None);
             for room_client in self.clients_in_room(&room_name) {
                 outbound.push(DirectedProtocolMessage::new(
                     room_client,
@@ -359,26 +359,6 @@ impl ServerRuntime {
                 &mut outbound,
                 self.clients_receiving_to_gui_only_list_updates(),
             );
-        }
-
-        if room_had_clients_before_join {
-            let state_message = state_sync_message(
-                join_room_playback.position,
-                join_room_playback.paused,
-                false,
-                StateSyncOptions {
-                    set_by: join_room_playback.set_by.as_deref(),
-                    server_rtt_seconds: 0.0,
-                    latency_calculation_seconds: Some(now),
-                    ..StateSyncOptions::default()
-                },
-            );
-            for room_client in self.clients_in_room(&room_name) {
-                outbound.push(DirectedProtocolMessage::new(
-                    room_client,
-                    state_message.clone(),
-                ));
-            }
         }
 
         Ok(outbound)
@@ -449,9 +429,7 @@ impl ServerRuntime {
                     }
 
                     let previous_room = session.room.clone();
-                    let previous_ready = self
-                        .stored_user_ready(&session.username, &previous_room)
-                        .unwrap_or(false);
+                    let previous_ready = self.stored_user_ready(&session.username, &previous_room);
                     let new_room_had_clients_before_join =
                         !self.clients_in_room(&new_room_name).is_empty();
                     let new_room_should_seed_position = new_room_had_clients_before_join
@@ -657,17 +635,20 @@ impl ServerRuntime {
                         continue;
                     }
                     let manually_initiated = ready.manually_initiated.unwrap_or(false);
+                    let Some(is_ready) = ready.is_ready else {
+                        continue;
+                    };
                     let requested_username = ready.username.as_deref().unwrap_or(&session.username);
                     if requested_username != session.username {
                         if self.user_can_control_playlist(&session.username, &session.room)
                             && self
                                 .domain
-                                .set_ready(requested_username, &session.room, ready.is_ready)
+                                .set_ready(requested_username, &session.room, is_ready)
                                 .is_ok()
                         {
                             let ready_message = ready_update_message(
                                 requested_username,
-                                ready.is_ready,
+                                is_ready,
                                 manually_initiated,
                                 Some(&session.username),
                             );
@@ -680,7 +661,7 @@ impl ServerRuntime {
                             let chat_message = readiness_legacy_chat_message(
                                 &session.username,
                                 requested_username,
-                                ready.is_ready,
+                                is_ready,
                             );
                             for peer_client in
                                 self.legacy_readiness_chat_clients_in_room(&session.room)
@@ -693,10 +674,10 @@ impl ServerRuntime {
                         }
                     } else {
                         self.domain
-                            .set_ready(&session.username, &session.room, ready.is_ready)?;
+                            .set_ready(&session.username, &session.room, is_ready)?;
                         let ready_message = ready_update_message(
                             &session.username,
-                            ready.is_ready,
+                            is_ready,
                             manually_initiated,
                             ready.set_by.as_deref(),
                         );

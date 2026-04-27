@@ -127,7 +127,7 @@ fn python_interop_sequence_supports_list_set_and_state() {
                 .as_ref()
                 .expect("ready payload should be present");
             assert_eq!(ready.username.as_deref(), Some("interop-client"));
-            assert!(ready.is_ready);
+            assert_eq!(ready.is_ready, Some(true));
         }
         other => panic!("expected set response, got {}", other.kind()),
     }

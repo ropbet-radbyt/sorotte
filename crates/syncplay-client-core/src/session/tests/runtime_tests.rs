@@ -29,7 +29,7 @@ fn client_runtime_local_media_open_dispatches_not_ready_protocol_message() {
         .ready
         .as_ref()
         .expect("Set message should include ready payload");
-    assert!(!ready.is_ready);
+    assert_eq!(ready.is_ready, Some(false));
     assert_eq!(ready.manually_initiated, Some(false));
 }
 
@@ -91,7 +91,7 @@ fn client_runtime_toggle_ready_dispatches_protocol_message() {
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(true));
 }
 
@@ -138,7 +138,7 @@ fn client_runtime_set_ready_for_user_dispatches_protocol_message_with_username()
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(true));
     assert_eq!(ready.username.as_deref(), Some("bob"));
 }
@@ -171,7 +171,7 @@ fn client_runtime_set_ready_for_user_without_username_dispatches_local_ready_mes
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(true));
     assert!(
         ready.username.is_none(),
@@ -207,7 +207,7 @@ fn client_runtime_set_ready_for_explicit_local_username_dispatches_username_payl
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(!ready.is_ready);
+    assert_eq!(ready.is_ready, Some(false));
     assert_eq!(ready.manually_initiated, Some(true));
     assert_eq!(ready.username.as_deref(), Some("alice"));
 }
@@ -240,7 +240,7 @@ fn client_runtime_set_ready_for_whitespace_username_preserves_payload() {
         .ready
         .as_ref()
         .expect("Set message should contain ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(true));
     assert_eq!(ready.username.as_deref(), Some(" "));
 }

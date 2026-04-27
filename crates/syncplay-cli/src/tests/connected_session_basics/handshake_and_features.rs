@@ -148,7 +148,7 @@ async fn connected_client_session_sends_ready_on_server_hello_when_ready_at_star
         let Some(ready_payload) = ready_payload else {
             panic!("client should emit Set.ready when readyAtStart is enabled");
         };
-        assert!(ready_payload.is_ready);
+        assert_eq!(ready_payload.is_ready, Some(true));
         assert_eq!(ready_payload.manually_initiated, Some(false));
         assert!(
             ready_payload.username.is_none(),
@@ -201,6 +201,186 @@ async fn connected_client_session_sends_ready_on_server_hello_when_ready_at_star
         show_different_room_osd_override: None,
         controlled_room_password_override: None,
     };
+    let mut runtime = create_client_runtime(&config);
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("client should connect to test listener");
+    let mut notification_sink = ignore_autoplay_notification;
+    let mut file_difference_sink = ignore_file_difference_notification;
+
+    let exit = run_connected_client_session(
+        stream,
+        &mut runtime,
+        &config,
+        None,
+        None,
+        &mut notification_sink,
+        &mut file_difference_sink,
+    )
+    .await
+    .expect("connected session should run");
+    assert!(
+        matches!(
+            exit,
+            ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+        ),
+        "connected session should either observe peer close or exit on runtime window"
+    );
+    server_task.await.expect("server task join should succeed");
+}
+
+#[tokio::test]
+async fn connected_client_session_sends_ready_when_server_hello_is_not_first_batched_command() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener should have local addr");
+
+    let server_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("server should accept");
+        let (reader, mut writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        let hello_line = lines
+            .next_line()
+            .await
+            .expect("hello line read should succeed")
+            .expect("hello line should be present");
+        assert!(hello_line.contains("\"Hello\""));
+        writer
+            .write_all(
+                br#"{"Set":{"features":{"chat":true}},"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"readiness":true}}}
+"#,
+            )
+            .await
+            .expect("batched server line write should succeed");
+
+        let mut ready_payload = None;
+        for _ in 0..4 {
+            let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("ready line read should not timeout")
+                .expect("ready line read should succeed")
+            else {
+                break;
+            };
+            let message = decode_message_line(&line).expect("line should decode");
+            let ProtocolMessage::Set(payload) = message else {
+                continue;
+            };
+            if let Some(ready) = payload.set.ready {
+                ready_payload = Some(ready);
+                break;
+            }
+        }
+
+        let Some(ready_payload) = ready_payload else {
+            panic!("client should emit Set.ready when batched Hello enables ready-at-start");
+        };
+        assert_eq!(ready_payload.is_ready, Some(true));
+        assert_eq!(ready_payload.manually_initiated, Some(false));
+        writer
+            .shutdown()
+            .await
+            .expect("server shutdown should succeed");
+    });
+
+    let mut config = test_client_loop_config_with_addr(addr);
+    config.ready_at_start_override = Some(true);
+    config.max_connected_runtime_seconds = 0.5;
+
+    let mut runtime = create_client_runtime(&config);
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("client should connect to test listener");
+    let mut notification_sink = ignore_autoplay_notification;
+    let mut file_difference_sink = ignore_file_difference_notification;
+
+    let exit = run_connected_client_session(
+        stream,
+        &mut runtime,
+        &config,
+        None,
+        None,
+        &mut notification_sink,
+        &mut file_difference_sink,
+    )
+    .await
+    .expect("connected session should run");
+    assert!(
+        matches!(
+            exit,
+            ConnectedSessionExit::TransportClosed | ConnectedSessionExit::RuntimeWindowElapsed
+        ),
+        "connected session should either observe peer close or exit on runtime window"
+    );
+    server_task.await.expect("server task join should succeed");
+}
+
+#[tokio::test]
+async fn connected_client_session_replies_when_state_is_not_first_batched_command() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener should have local addr");
+
+    let server_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("server should accept");
+        let (reader, mut writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        let hello_line = lines
+            .next_line()
+            .await
+            .expect("hello line read should succeed")
+            .expect("hello line should be present");
+        assert!(hello_line.contains("\"Hello\""));
+        writer
+            .write_all(
+                br#"{"Set":{"features":{"chat":true}},"State":{"ping":{"latencyCalculation":1.25},"playstate":{"position":5.0,"paused":true,"doSeek":true}}}
+"#,
+            )
+            .await
+            .expect("batched server line write should succeed");
+
+        let mut state_response = None;
+        for _ in 0..4 {
+            let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("state response read should not timeout")
+                .expect("state response read should succeed")
+            else {
+                break;
+            };
+            let message = decode_message_line(&line).expect("line should decode");
+            if let ProtocolMessage::State(payload) = message {
+                state_response = Some(payload);
+                break;
+            }
+        }
+
+        let Some(state_response) = state_response else {
+            panic!("client should emit State response for non-first batched State");
+        };
+        assert!(
+            state_response
+                .state
+                .ping
+                .as_ref()
+                .and_then(|ping| ping.client_latency_calculation)
+                .is_some(),
+            "State response should carry client latency telemetry"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+
+    let mut config = test_client_loop_config_with_addr(addr);
+    config.max_connected_runtime_seconds = 0.1;
+
     let mut runtime = create_client_runtime(&config);
     let stream = TcpStream::connect(addr)
         .await

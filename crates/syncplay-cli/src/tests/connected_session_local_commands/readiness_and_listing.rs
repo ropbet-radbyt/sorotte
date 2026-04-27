@@ -53,7 +53,7 @@ async fn connected_client_session_toggles_ready_from_local_input_channel() {
         let Some(ready_payload) = ready_payload else {
             panic!("client should emit Set.ready from local toggle command");
         };
-        assert!(ready_payload.is_ready);
+        assert_eq!(ready_payload.is_ready, Some(true));
         assert_eq!(ready_payload.manually_initiated, Some(true));
         writer
             .shutdown()

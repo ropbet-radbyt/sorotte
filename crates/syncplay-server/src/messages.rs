@@ -53,7 +53,7 @@ pub(crate) fn user_setting_message(
 
 pub(crate) fn ready_update_message(
     username: &str,
-    is_ready: bool,
+    is_ready: impl Into<Option<bool>>,
     manually_initiated: bool,
     set_by_username: Option<&str>,
 ) -> ProtocolMessage {

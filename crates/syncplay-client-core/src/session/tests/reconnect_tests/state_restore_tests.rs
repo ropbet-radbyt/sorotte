@@ -173,7 +173,7 @@ fn client_runtime_reconnect_state_restore_dispatches_ready_and_file_messages() {
         .ready
         .as_ref()
         .expect("first reconnect restore message should include ready payload");
-    assert!(ready.is_ready);
+    assert_eq!(ready.is_ready, Some(true));
     assert_eq!(ready.manually_initiated, Some(false));
 
     let ProtocolMessage::Set(file_message) = &control.outbound_messages()[1] else {

@@ -451,10 +451,8 @@ impl ClientSession {
 
         if let Some(new_room_name) = room_name.as_deref() {
             self.known_rooms.insert(new_room_name.to_owned());
-            self.domain.join_room(username, new_room_name);
-            let _ = self
-                .domain
-                .set_ready(username, new_room_name, ready.unwrap_or(false));
+            self.domain
+                .join_room_with_ready(username, new_room_name, ready);
         }
     }
 
@@ -470,10 +468,8 @@ impl ClientSession {
         };
 
         if let Some(room_name) = room_name {
-            self.domain.join_room(username, &room_name);
-            let _ = self
-                .domain
-                .set_ready(username, &room_name, ready.unwrap_or(false));
+            self.domain
+                .join_room_with_ready(username, &room_name, ready);
         }
     }
 

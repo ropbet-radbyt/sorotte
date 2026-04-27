@@ -6,7 +6,7 @@ pub type RoomName = String;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserState {
     pub username: Username,
-    pub ready: bool,
+    pub ready: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,10 +30,10 @@ pub enum DomainError {
 
 impl SyncDomain {
     pub fn join_room(&mut self, username: &str, room_name: &str) {
-        self.join_room_with_ready(username, room_name, false);
+        self.join_room_with_ready(username, room_name, None);
     }
 
-    pub fn join_room_with_ready(&mut self, username: &str, room_name: &str, ready: bool) {
+    pub fn join_room_with_ready(&mut self, username: &str, room_name: &str, ready: Option<bool>) {
         let room = self
             .rooms
             .entry(room_name.to_owned())
@@ -80,7 +80,7 @@ impl SyncDomain {
             .users
             .get_mut(username)
             .ok_or_else(|| DomainError::UserMissing(username.to_owned()))?;
-        user.ready = ready;
+        user.ready = Some(ready);
         Ok(())
     }
 
@@ -108,7 +108,7 @@ mod tests {
         let users = domain
             .users_in_room("room1")
             .expect("room should exist after joins");
-        let ready_count = users.iter().filter(|user| user.ready).count();
+        let ready_count = users.iter().filter(|user| user.ready == Some(true)).count();
         assert_eq!(ready_count, 1);
         assert_eq!(users.len(), 2);
     }

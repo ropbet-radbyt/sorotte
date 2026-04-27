@@ -203,7 +203,7 @@ async fn connected_client_session_invalid_seek_offset_commands_show_help_without
                     && payload.set.playlist_index.is_none()
                     && payload.set.controller_auth.is_none()
                     && payload.set.ready.as_ref().is_some_and(|ready| {
-                        !ready.is_ready
+                        ready.is_ready == Some(false)
                             && ready.manually_initiated == Some(false)
                             && ready.username.is_none()
                     });

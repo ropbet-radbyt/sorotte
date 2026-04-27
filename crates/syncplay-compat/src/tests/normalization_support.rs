@@ -10,6 +10,7 @@ pub(super) struct MessageNormalizationOptions {
     pub(super) normalize_list_position: bool,
     pub(super) normalize_list_file: bool,
     pub(super) normalize_list_is_ready_when_false_or_null: bool,
+    pub(super) normalize_set_ready_not_ready_when_false_or_null: bool,
     pub(super) normalize_ping_latency_calculation: bool,
     pub(super) normalize_ping_client_latency_calculation: bool,
     pub(super) normalize_ping_client_rtt: bool,
@@ -27,6 +28,7 @@ impl Default for MessageNormalizationOptions {
             normalize_list_position: true,
             normalize_list_file: true,
             normalize_list_is_ready_when_false_or_null: true,
+            normalize_set_ready_not_ready_when_false_or_null: false,
             normalize_ping_latency_calculation: true,
             normalize_ping_client_latency_calculation: true,
             normalize_ping_client_rtt: true,
@@ -46,7 +48,8 @@ pub(super) fn normalization_options_for_runtime_trace_scenario(
         normalize_list_features: true,
         normalize_list_position: false,
         normalize_list_file: false,
-        normalize_list_is_ready_when_false_or_null: false,
+        normalize_list_is_ready_when_false_or_null: true,
+        normalize_set_ready_not_ready_when_false_or_null: true,
         normalize_ping_latency_calculation: false,
         normalize_ping_client_latency_calculation: false,
         normalize_ping_client_rtt: false,
@@ -66,6 +69,7 @@ pub(super) fn normalization_options_for_runtime_python_scenario(
         normalize_list_position: false,
         normalize_list_file: false,
         normalize_list_is_ready_when_false_or_null: false,
+        normalize_set_ready_not_ready_when_false_or_null: false,
         normalize_ping_latency_calculation: false,
         normalize_ping_client_latency_calculation: false,
         normalize_ping_client_rtt: false,
@@ -85,6 +89,7 @@ pub(super) fn normalization_options_for_legacy_scenario(
         normalize_list_position: false,
         normalize_list_file: false,
         normalize_list_is_ready_when_false_or_null: false,
+        normalize_set_ready_not_ready_when_false_or_null: false,
         normalize_ping_latency_calculation: false,
         normalize_ping_client_latency_calculation: false,
         normalize_ping_client_rtt: false,
@@ -325,6 +330,25 @@ pub(super) fn normalize_cross_impl_message_with_options(
                 user_object.remove("features");
             }
         }
+    }
+    if options.normalize_set_ready_not_ready_when_false_or_null
+        && let Some(ready) = value
+            .get_mut("Set")
+            .and_then(Value::as_object_mut)
+            .and_then(|set_payload| set_payload.get_mut("ready"))
+            .and_then(Value::as_object_mut)
+        && ready
+            .get("manuallyInitiated")
+            .is_some_and(|manual| manual == &Value::Bool(false))
+        && matches!(
+            ready.get("isReady"),
+            None | Some(Value::Null) | Some(Value::Bool(false))
+        )
+    {
+        ready.insert(
+            "isReady".to_owned(),
+            Value::String("__not_ready__".to_owned()),
+        );
     }
     if let Some(list_payload) = value.get_mut("List").and_then(Value::as_object_mut) {
         for room_users in list_payload.values_mut() {

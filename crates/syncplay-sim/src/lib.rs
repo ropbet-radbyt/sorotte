@@ -29,7 +29,7 @@ pub fn run_ready_scenario() -> bool {
 
     domain
         .users_in_room("room1")
-        .map(|users| users.iter().all(|user| user.ready))
+        .map(|users| users.iter().all(|user| user.ready == Some(true)))
         .unwrap_or(false)
 }
 

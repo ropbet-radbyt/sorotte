@@ -44,7 +44,8 @@ use syncplay_client_core::{
 };
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_protocol::{
-    HelloPayload, ProtocolMessage, StatePayload, decode_message_line, encode_message_line,
+    HelloPayload, ProtocolMessage, StatePayload, decode_message_line, decode_message_lines,
+    encode_message_line,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;

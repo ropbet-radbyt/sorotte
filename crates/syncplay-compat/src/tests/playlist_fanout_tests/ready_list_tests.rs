@@ -42,11 +42,10 @@ fn scripted_server_runtime_cross_room_ready_list_scenario_validates_list_snapsho
                     Some(&json!({})),
                     "legacy list snapshots keep empty file objects for no-file users"
                 );
-                assert!(
-                    !room2
-                        .get("bob")
-                        .and_then(|entry| entry.is_ready)
-                        .expect("bob should be in room2 with ready state")
+                assert_eq!(
+                    room2.get("bob").and_then(|entry| entry.is_ready),
+                    None,
+                    "bob should be in room2 with unknown ready state"
                 );
                 assert_eq!(
                     room2.get("bob").and_then(|entry| entry.file.as_ref()),
@@ -86,11 +85,10 @@ fn scripted_server_runtime_cross_room_ready_list_scenario_validates_list_snapsho
                     Some(&json!({})),
                     "legacy list snapshots keep empty file objects for no-file users"
                 );
-                assert!(
-                    !room1
-                        .get("bob")
-                        .and_then(|entry| entry.is_ready)
-                        .expect("bob should be in room1 with ready state")
+                assert_eq!(
+                    room1.get("bob").and_then(|entry| entry.is_ready),
+                    None,
+                    "bob should be in room1 with unknown ready state"
                 );
                 assert_eq!(
                     room1.get("bob").and_then(|entry| entry.file.as_ref()),
