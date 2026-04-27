@@ -100,6 +100,50 @@ impl ClientSession {
         )
     }
 
+    pub(crate) fn reconcile_ping_only_state_response(
+        &mut self,
+        inbound_state: StatePayload,
+        client_latency_calculation: f64,
+        client_rtt: f64,
+    ) -> StatePayload {
+        self.apply_inbound_ignore_counters(&inbound_state);
+
+        let has_playstate_update = inbound_state
+            .playstate
+            .as_ref()
+            .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
+        if has_playstate_update && self.client_ignoring_on_the_fly == 0 {
+            self.apply_state(inbound_state.clone());
+        }
+
+        let mut ping = PingPayload::new()
+            .with_client_latency_calculation(client_latency_calculation)
+            .with_client_rtt(client_rtt);
+        if let Some(latency_calculation) = inbound_state
+            .ping
+            .as_ref()
+            .and_then(|ping| ping.latency_calculation)
+            && latency_calculation != 0.0
+        {
+            ping = ping.with_latency_calculation(latency_calculation);
+        }
+
+        let mut response = StatePayload::new().with_ping(ping);
+        if self.server_ignoring_on_the_fly != 0 || self.client_ignoring_on_the_fly != 0 {
+            let mut ignore = IgnoringOnTheFlyPayload::new();
+            if self.server_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_server(self.server_ignoring_on_the_fly);
+                self.server_ignoring_on_the_fly = 0;
+            }
+            if self.client_ignoring_on_the_fly != 0 {
+                ignore = ignore.with_client(self.client_ignoring_on_the_fly);
+            }
+            response.ignoring_on_the_fly = Some(ignore);
+        }
+
+        response
+    }
+
     pub(crate) fn reconcile_state_and_build_response_with_local_state_change_override(
         &mut self,
         inbound_state: StatePayload,

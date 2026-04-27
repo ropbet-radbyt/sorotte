@@ -72,21 +72,14 @@ where
             self.outbound_state_sync_position_seconds(now_seconds, dont_slow_down_with_me),
             self.session.local_paused,
         ) else {
-            let mut ping = PingPayload::new()
-                .with_client_latency_calculation(client_latency_calculation)
-                .with_client_rtt(client_rtt);
-            if let Some(latency_calculation) = inbound_state
-                .ping
-                .as_ref()
-                .and_then(|ping| ping.latency_calculation)
-                && latency_calculation != 0.0
-            {
-                ping = ping.with_latency_calculation(latency_calculation);
-            }
-            self.session.apply_state(inbound_state);
+            let outbound_state = self.session.reconcile_ping_only_state_response(
+                inbound_state,
+                client_latency_calculation,
+                client_rtt,
+            );
             self.control
                 .outbound_messages
-                .push(ProtocolMessage::state(StatePayload::new().with_ping(ping)));
+                .push(ProtocolMessage::state(outbound_state));
             return true;
         };
 

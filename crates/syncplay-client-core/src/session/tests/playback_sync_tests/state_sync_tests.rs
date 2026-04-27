@@ -156,6 +156,65 @@ fn client_runtime_state_sync_reconcile_emits_ping_only_without_local_playback_st
 }
 
 #[test]
+fn ping_only_state_response_echoes_forced_state_ack_without_local_telemetry() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+
+    let player = RecordingPlayer::default();
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    let sent = runtime.run_state_sync_reconcile_with_inbound_state(
+        StatePayload::new()
+            .with_playstate(
+                PlaystatePayload::new()
+                    .with_position(10.0)
+                    .with_paused(false)
+                    .with_set_by("bob"),
+            )
+            .with_ping(PingPayload::new().with_latency_calculation(42.0))
+            .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_server(7)),
+        100.0,
+        0.25,
+        false,
+    );
+
+    assert!(sent, "forced state should still get a ping-only response");
+    let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
+        panic!("queued message should be State");
+    };
+    assert_eq!(
+        state_message.state.playstate, None,
+        "ping-only response should omit playstate without local telemetry"
+    );
+    let ignoring = state_message
+        .state
+        .ignoring_on_the_fly
+        .as_ref()
+        .expect("ping-only response should acknowledge forced state");
+    assert_eq!(
+        ignoring.server,
+        Some(7),
+        "ping-only response should echo the inbound server ignore counter"
+    );
+    assert_eq!(
+        runtime.session().server_ignoring_on_the_fly(),
+        0,
+        "server ignore counter should be cleared after it is echoed"
+    );
+    let room_playstate = runtime
+        .session()
+        .current_room_playstate()
+        .expect("inbound playstate should still update the room state");
+    assert_eq!(room_playstate.position, Some(10.0));
+    assert_eq!(room_playstate.paused, Some(false));
+}
+
+#[test]
 fn client_runtime_state_sync_heartbeat_emits_ping_only_without_local_playback_state() {
     let mut session = ClientSession::default();
     session
