@@ -8,7 +8,9 @@ use std::{
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
-use syncplay_protocol::{ProtocolMessage, decode_message_line, encode_message_line};
+use syncplay_protocol::{
+    ProtocolMessage, decode_message_line, decode_message_line_items, encode_message_line,
+};
 
 use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
 
@@ -358,9 +360,22 @@ impl GuiTcpSessionTransportDriver {
             if line.is_empty() {
                 continue;
             }
-            decode_message_line(line).map_err(|error| {
+            let items = decode_message_line_items(line).map_err(|error| {
                 format!("Session transport TCP received an invalid protocol line: {error}")
             })?;
+            match items.first().map(|item| &item.message) {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    return Err(format!(
+                        "Session transport TCP received an invalid protocol line: {error}"
+                    ));
+                }
+                None => {
+                    return Err(
+                        "Session transport TCP received an invalid empty protocol line".to_owned(),
+                    );
+                }
+            }
             return Ok(Some(line.to_owned()));
         }
         Ok(None)
@@ -533,5 +548,24 @@ impl GuiSessionTransportDriver for GuiTcpSessionTransportDriver {
 
     fn reconnect(&mut self) -> Result<(), String> {
         self.reconnect_stream()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_complete_inbound_line_accepts_valid_prefix_before_unknown_command() {
+        let mut inbound_buffer = br#"{"Set":{"features":{"chat":true}},"Bogus":{"x":1}}"#.to_vec();
+        inbound_buffer.push(b'\n');
+
+        let line = GuiTcpSessionTransportDriver::next_complete_inbound_line(&mut inbound_buffer)
+            .expect("mixed batched line should not fail transport pre-validation")
+            .expect("mixed batched line should be returned");
+
+        assert!(line.contains("\"Set\""));
+        assert!(line.contains("\"Bogus\""));
+        assert!(inbound_buffer.is_empty());
     }
 }

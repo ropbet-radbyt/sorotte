@@ -699,9 +699,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(in crate::app) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
-        let messages = decode_message_lines(json_line)
+        let items = decode_message_line_items(json_line)
             .map_err(|error| format!("Inbound client-session message decode failed: {error}"))?;
-        for message in messages {
+        for item in items {
+            let message = item.message.map_err(|error| {
+                format!("Inbound client-session message decode failed: {error}")
+            })?;
             self.apply_protocol_message(message)?;
         }
         Ok(())

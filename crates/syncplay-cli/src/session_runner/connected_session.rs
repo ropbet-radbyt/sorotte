@@ -56,6 +56,23 @@ fn start_tls_negotiation_enabled_legacy_compatible() -> bool {
     env_flag_override("SYNCPLAY_CLIENT_STARTTLS").unwrap_or(DEFAULT_START_TLS_NEGOTIATION_ENABLED)
 }
 
+fn decode_inbound_message_prefix_legacy_compatible(
+    line: &str,
+) -> (Vec<ProtocolMessage>, Option<ProtocolError>) {
+    let items = match decode_message_line_items(line) {
+        Ok(items) => items,
+        Err(error) => return (Vec::new(), Some(error)),
+    };
+    let mut messages = Vec::new();
+    for item in items {
+        match item.message {
+            Ok(message) => messages.push(message),
+            Err(error) => return (messages, Some(error)),
+        }
+    }
+    (messages, None)
+}
+
 async fn negotiate_start_tls_legacy_compatible(
     mut stream: TcpStream,
     host: &str,
@@ -254,8 +271,8 @@ where
             line = reader.next_line() => {
                 match line? {
                     Some(line) => {
-                        let decoded_inbound_messages =
-                            decode_message_lines(&line).unwrap_or_default();
+                        let (decoded_inbound_messages, trailing_decode_error) =
+                            decode_inbound_message_prefix_legacy_compatible(&line);
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
                             && decoded_inbound_messages
                                 .iter()
@@ -298,6 +315,9 @@ where
                             },
                         )
                         .await?;
+                        if let Some(error) = trailing_decode_error {
+                            return Err(error.into());
+                        }
                     }
                     None => return Ok(ConnectedSessionExit::TransportClosed),
                 }

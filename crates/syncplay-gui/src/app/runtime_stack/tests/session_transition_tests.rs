@@ -185,6 +185,26 @@ fn gui_client_core_chat_session_runtime_adapter_applies_batched_top_level_comman
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_applies_valid_prefix_before_batched_unknown() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let result = adapter.apply_message_json(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}},"Bogus":{"x":1}}"#,
+    );
+
+    assert!(
+        result.is_err(),
+        "batched unknown command should still surface a protocol error"
+    );
+    assert_eq!(
+        adapter.runtime.session().username.as_deref(),
+        Some("alice"),
+        "valid Hello before the unknown command should be applied"
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_state_without_media() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

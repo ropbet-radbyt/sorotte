@@ -410,6 +410,112 @@ async fn connected_client_session_replies_when_state_is_not_first_batched_comman
 }
 
 #[tokio::test]
+async fn connected_client_session_processes_valid_batched_prefix_before_unknown_command() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener should have local addr");
+
+    let server_task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("server should accept");
+        let (reader, mut writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        let hello_line = lines
+            .next_line()
+            .await
+            .expect("hello line read should succeed")
+            .expect("hello line should be present");
+        assert!(hello_line.contains("\"Hello\""));
+        writer
+            .write_all(
+                br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.7.5","features":{"readiness":true}},"State":{"ping":{"latencyCalculation":1.25},"playstate":{"position":5.0,"paused":true,"doSeek":true}},"Bogus":{"x":1}}
+"#,
+            )
+            .await
+            .expect("mixed batched server line write should succeed");
+
+        let mut ready_payload = None;
+        let mut state_response = None;
+        for _ in 0..6 {
+            let Some(line) = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+                .await
+                .expect("response line read should not timeout")
+                .expect("response line read should succeed")
+            else {
+                break;
+            };
+            let message = decode_message_line(&line).expect("line should decode");
+            match message {
+                ProtocolMessage::Set(payload) => {
+                    if let Some(ready) = payload.set.ready {
+                        ready_payload = Some(ready);
+                    }
+                }
+                ProtocolMessage::State(payload) => {
+                    state_response = Some(payload);
+                }
+                _ => {}
+            }
+            if ready_payload.is_some() && state_response.is_some() {
+                break;
+            }
+        }
+
+        let Some(ready_payload) = ready_payload else {
+            panic!("client should emit Set.ready before dropping the mixed batched line");
+        };
+        assert_eq!(ready_payload.is_ready, Some(true));
+        assert_eq!(ready_payload.manually_initiated, Some(false));
+        let Some(state_response) = state_response else {
+            panic!("client should emit State response before dropping the mixed batched line");
+        };
+        assert!(
+            state_response
+                .state
+                .ping
+                .as_ref()
+                .and_then(|ping| ping.client_latency_calculation)
+                .is_some(),
+            "State response should carry client latency telemetry"
+        );
+        writer
+            .shutdown()
+            .await
+            .expect("server shutdown should succeed");
+    });
+
+    let mut config = test_client_loop_config_with_addr(addr);
+    config.ready_at_start_override = Some(true);
+    config.max_connected_runtime_seconds = 0.5;
+
+    let mut runtime = create_client_runtime(&config);
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("client should connect to test listener");
+    let mut notification_sink = ignore_autoplay_notification;
+    let mut file_difference_sink = ignore_file_difference_notification;
+
+    let result = run_connected_client_session(
+        stream,
+        &mut runtime,
+        &config,
+        None,
+        None,
+        &mut notification_sink,
+        &mut file_difference_sink,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "client should drop after reaching the trailing unknown command"
+    );
+    server_task.await.expect("server task join should succeed");
+}
+
+#[tokio::test]
 async fn connected_client_session_includes_shared_playlists_feature_in_hello_when_configured() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
