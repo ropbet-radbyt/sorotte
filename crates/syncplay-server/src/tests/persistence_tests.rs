@@ -1,4 +1,20 @@
 use super::*;
+use std::collections::BTreeMap;
+use syncplay_protocol::ListUserEntry;
+
+fn decode_single_list_rooms(
+    lines: Vec<String>,
+) -> BTreeMap<String, BTreeMap<String, ListUserEntry>> {
+    assert_eq!(lines.len(), 1);
+    let message = decode_message_line(&lines[0]).expect("list line should decode");
+    match message {
+        ProtocolMessage::List(payload) => match payload.list {
+            ListPayload::Rooms(rooms) => rooms,
+            other => panic!("expected room snapshot, got {other:?}"),
+        },
+        other => panic!("expected list message, got {}", other.kind()),
+    }
+}
 
 #[test]
 fn persistent_room_retains_playlist_index_and_position_after_empty_transition() {
@@ -378,6 +394,80 @@ fn gui_list_shows_dummy_entry_for_empty_permanent_room() {
 }
 
 #[test]
+fn isolated_gui_list_shows_dummy_entry_for_empty_permanent_room() {
+    let db_path = temporary_sqlite_path("isolated-gui-dummy-room-list");
+    let permanent_rooms_file = temporary_text_path("isolated-gui-dummy-room-list");
+    let _ = fs::remove_file(&db_path);
+    let _ = fs::remove_file(&permanent_rooms_file);
+    fs::write(&permanent_rooms_file, "permanent-room\n")
+        .expect("permanent rooms file should be writable");
+
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_isolate_rooms(true);
+    runtime
+        .set_persistent_rooms_db_path(Some(db_path.clone()))
+        .expect("runtime should initialize sqlite persistence");
+    runtime
+        .set_permanent_rooms_file_path(Some(permanent_rooms_file.clone()))
+        .expect("runtime should load permanent rooms file");
+    runtime
+        .handle_line(
+            "gui-client",
+            r#"{"Hello":{"username":"gui-user","room":{"name":"lobby"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("gui user hello should establish session");
+    runtime
+        .handle_line(
+            "other-client",
+            r#"{"Hello":{"username":"other-user","room":{"name":"occupied-room"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("other room user hello should establish session");
+    runtime
+        .handle_line(
+            "cli-client",
+            r#"{"Hello":{"username":"cli-user","room":{"name":"lobby"},"version":"9.9.9","features":{"uiMode":"CLI"}}}"#,
+        )
+        .expect("cli user hello should establish session");
+
+    let gui_rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("gui-client", r#"{"List":null}"#)
+            .expect("gui list request should succeed"),
+    );
+    assert!(
+        gui_rooms.contains_key("lobby"),
+        "isolated gui list should include the user's current room"
+    );
+    assert!(
+        !gui_rooms.contains_key("occupied-room"),
+        "isolated gui list should not include occupied rooms outside the user's room"
+    );
+    let permanent_room = gui_rooms
+        .get("permanent-room")
+        .expect("isolated gui list should include empty permanent room dummy entry");
+    assert_eq!(permanent_room.len(), 1);
+    assert_eq!(
+        permanent_room
+            .get(" ")
+            .and_then(|entry| entry.file.as_ref()),
+        Some(&json!({}))
+    );
+
+    let cli_rooms = decode_single_list_rooms(
+        runtime
+            .handle_line("cli-client", r#"{"List":null}"#)
+            .expect("cli list request should succeed"),
+    );
+    assert!(
+        !cli_rooms.contains_key("permanent-room"),
+        "isolated cli list should not include dummy empty permanent room"
+    );
+
+    fs::remove_file(&permanent_rooms_file).expect("temporary permanent rooms file cleanup");
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
 fn persistent_list_updates_include_legacy_default_ui_mode_clients() {
     let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
     runtime
@@ -411,6 +501,88 @@ fn persistent_list_updates_include_legacy_default_ui_mode_clients() {
     assert!(
         list_recipients.contains("client-2"),
         "legacy clients that omit features should receive Python-synthesized uiMode defaults"
+    );
+}
+
+#[test]
+fn isolated_persistent_list_updates_are_room_scoped() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_isolate_rooms(true);
+    runtime
+        .handle_line(
+            "room1-client",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("room1 client hello should establish session");
+    runtime
+        .handle_line(
+            "room2-client",
+            r#"{"Hello":{"username":"bob","room":{"name":"room2"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("room2 client hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "joining-client",
+            r#"{"Hello":{"username":"carol","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("joining client hello should establish session");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    let list_recipients: BTreeSet<_> = directed_messages
+        .iter()
+        .filter_map(|(recipient, message)| {
+            if matches!(message, ProtocolMessage::List(_)) {
+                Some(recipient.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        list_recipients.contains("room1-client"),
+        "isolated persistent list update should include existing clients in the join room"
+    );
+    assert!(
+        list_recipients.contains("joining-client"),
+        "isolated persistent list update should include the joining client"
+    );
+    assert!(
+        !list_recipients.contains("room2-client"),
+        "isolated persistent list update should not reach unrelated rooms"
+    );
+}
+
+#[test]
+fn isolated_persistent_disconnect_does_not_emit_list_update() {
+    let mut runtime = ServerRuntime::with_persistent_rooms_enabled(true);
+    runtime.set_isolate_rooms(true);
+    runtime
+        .handle_line(
+            "leaving-client",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("leaving client hello should establish session");
+    runtime
+        .handle_line(
+            "remaining-client",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"GUI"}}}"#,
+        )
+        .expect("remaining client hello should establish session");
+
+    let directed_lines = runtime
+        .handle_transport_disconnect_fanout("leaving-client")
+        .expect("transport disconnect should generate fanout");
+    let directed_messages = decode_directed_lines(&directed_lines);
+    assert!(
+        has_user_event(&directed_messages, "remaining-client", "alice", "left"),
+        "remaining room peer should receive the left event"
+    );
+    assert!(
+        directed_messages
+            .iter()
+            .all(|(_, message)| !matches!(message, ProtocolMessage::List(_))),
+        "isolated persistent disconnect should not emit GUI-only List refreshes"
     );
 }
 

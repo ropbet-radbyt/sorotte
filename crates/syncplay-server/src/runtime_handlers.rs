@@ -456,7 +456,7 @@ impl ServerRuntime {
         if self.persistent_rooms_enabled {
             self.enqueue_list_snapshots_for_clients(
                 &mut outbound,
-                self.clients_receiving_to_gui_only_list_updates(),
+                self.clients_receiving_to_gui_only_list_updates(Some(&room_name)),
             );
         }
 
@@ -638,7 +638,7 @@ impl ServerRuntime {
                     if self.persistent_rooms_enabled {
                         self.enqueue_list_snapshots_for_clients(
                             &mut outbound_messages,
-                            self.clients_receiving_to_gui_only_list_updates(),
+                            self.clients_receiving_to_gui_only_list_updates(Some(&session.room)),
                         );
                     }
                 }

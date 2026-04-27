@@ -260,7 +260,7 @@ impl ServerRuntime {
         if self.persistent_rooms_enabled {
             self.enqueue_list_snapshots_for_clients(
                 &mut outbound_messages,
-                self.clients_receiving_to_gui_only_list_updates(),
+                self.clients_receiving_to_gui_only_list_updates(None),
             );
         }
         Ok(outbound_messages)
@@ -746,10 +746,17 @@ impl ServerRuntime {
         self.sessions.keys().cloned().collect()
     }
 
-    pub(crate) fn clients_receiving_to_gui_only_list_updates(&self) -> Vec<String> {
+    pub(crate) fn clients_receiving_to_gui_only_list_updates(
+        &self,
+        room_name: Option<&str>,
+    ) -> Vec<String> {
         self.sessions
             .iter()
-            .filter(|(_, session)| features_include_ui_mode(session.features.as_ref()))
+            .filter(|(_, session)| {
+                features_include_ui_mode(session.features.as_ref())
+                    && (!self.isolate_rooms
+                        || room_name.is_some_and(|room_name| session.room == room_name))
+            })
             .map(|(client_id, _)| client_id.clone())
             .collect()
     }
@@ -814,7 +821,7 @@ impl ServerRuntime {
         &self,
         client_id: &str,
     ) -> BTreeMap<String, BTreeMap<String, ListUserEntry>> {
-        if self.isolate_rooms {
+        let mut rooms = if self.isolate_rooms {
             let Some(session) = self.sessions.get(client_id) else {
                 return BTreeMap::new();
             };
@@ -823,9 +830,10 @@ impl ServerRuntime {
             if let Some(room_entries) = all_rooms.remove(&session.room) {
                 rooms.insert(session.room.clone(), room_entries);
             }
-            return rooms;
-        }
-        let mut rooms = self.list_rooms_snapshot();
+            rooms
+        } else {
+            self.list_rooms_snapshot()
+        };
         if client_is_gui_user(
             self.sessions
                 .get(client_id)
