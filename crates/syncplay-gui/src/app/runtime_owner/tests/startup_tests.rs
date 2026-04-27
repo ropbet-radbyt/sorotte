@@ -120,6 +120,56 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_applies_deferred_startup_remote_actions_once() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let action = GuiShellAction::ApplyStartupPublicServerCache(vec![(
+        "Deferred Primary".to_owned(),
+        "deferred.example:8999".to_owned(),
+    )]);
+
+    owner.apply_deferred_startup_remote_actions_for_test(&handle, &mut state, vec![action.clone()]);
+    owner.apply_deferred_startup_remote_actions_for_test(&handle, &mut state, vec![action]);
+
+    let actions = handle.drain_actions();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        state.public_servers.servers[0].address,
+        "deferred.example:8999"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_applies_deferred_stream_helper_snapshot_once() {
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let snapshot = crate::app::GuiStreamHelperRuntimeSnapshot {
+        downloader_status: Some("yt-dlp checked after startup".to_owned()),
+        js_runtime_status: Some("Deno checked after startup".to_owned()),
+        integration_supported: true,
+        ..Default::default()
+    };
+
+    owner.apply_deferred_startup_stream_helper_snapshot_for_test(
+        &handle,
+        &mut state,
+        snapshot.clone(),
+    );
+    owner.apply_deferred_startup_stream_helper_snapshot_for_test(&handle, &mut state, snapshot);
+
+    let actions = handle.drain_actions();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        state.stream_helper.downloader_status.as_deref(),
+        Some("yt-dlp checked after startup")
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_retry_without_player_path_keeps_setup_guidance() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
         Some(PathBuf::from("C:/Config/syncplay.ini")),

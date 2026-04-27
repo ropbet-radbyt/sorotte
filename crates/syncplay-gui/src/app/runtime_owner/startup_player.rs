@@ -14,6 +14,10 @@ impl GuiPersistedConfigRuntimeOwner {
             session_default_room: None,
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
+            startup_remote_actions_attempted: false,
+            startup_remote_actions_rx: None,
+            startup_stream_helper_probe_completed: false,
+            startup_stream_helper_probe_rx: None,
             player: None,
             player_launch_state: GuiPlayerLaunchRuntimeState::None,
             managed_mpv_process: None,
@@ -65,7 +69,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut owner = Self::with_config_path(config_path);
         let startup_settings = owner.load_startup_player_settings_from_config_path();
         owner.configure_startup_player_from_lookup_and_settings(lookup, startup_settings.as_ref());
-        owner.refresh_stream_helper_runtime_snapshot_for_target(None);
+        owner.refresh_startup_stream_helper_snapshot();
         owner
     }
 
@@ -433,6 +437,14 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         self.stream_helper_runtime_snapshot = snapshot.clone();
         snapshot
+    }
+
+    pub(super) fn refresh_startup_stream_helper_snapshot(&mut self) {
+        let snapshot = probe_stream_helper_startup_snapshot(
+            self.legacy_gui_qsettings_root().as_deref(),
+            self.player_stream_helper_attach_mode(),
+        );
+        self.stream_helper_runtime_snapshot = snapshot;
     }
 
     pub(super) fn queue_stream_feedback_actions(&mut self, actions: Vec<GuiShellAction>) {

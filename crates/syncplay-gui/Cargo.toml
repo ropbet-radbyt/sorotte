@@ -57,3 +57,7 @@ name = "syncplay-gui-native-smoke"
 path = "src/bin/syncplay-gui-native-smoke.rs"
 test = false
 required-features = ["gui-native-smoke"]
+
+[[bin]]
+name = "syncplay-gui-startup-bench"
+path = "src/bin/syncplay-gui-startup-bench.rs"

@@ -175,6 +175,101 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
     status_snapshot(GuiStreamHelperHealth::Healthy, None, Some(target), true)
 }
 
+pub(in crate::app) fn probe_stream_helper_startup_snapshot(
+    root: Option<&Path>,
+    attach_mode: StreamHelperAttachMode,
+) -> GuiStreamHelperRuntimeSnapshot {
+    let install_supported = cfg!(windows) && root.is_some();
+    let integration_supported = root.is_some();
+    let discovery = discover_stream_helpers(root);
+    let metadata = root.and_then(load_managed_stream_helper_metadata);
+    let install_location = root.map(|root| {
+        discovered_managed_stream_helper_bin_dir(root)
+            .unwrap_or_else(|| managed_stream_helper_bin_dir(root))
+            .display()
+            .to_string()
+    });
+    let details = StreamHelperRuntimeSnapshotDetails {
+        install_location,
+        downloader_status: Some(startup_component_status(
+            ManagedStreamHelperComponent::Downloader,
+            attach_mode,
+            discovery.managed_downloader,
+            discovery.environment_downloader,
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.downloader_version.as_deref()),
+        )),
+        js_runtime_status: Some(startup_component_status(
+            ManagedStreamHelperComponent::JsRuntime,
+            attach_mode,
+            discovery.managed_js_runtime,
+            discovery.environment_js_runtime,
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.js_runtime_version.as_deref()),
+        )),
+        open_install_location_available: root.is_some(),
+    };
+    runtime_snapshot_with_details(
+        GuiStreamHelperHealth::Healthy,
+        None,
+        None,
+        install_supported,
+        integration_supported,
+        false,
+        details,
+    )
+}
+
+fn startup_component_status(
+    component: ManagedStreamHelperComponent,
+    attach_mode: StreamHelperAttachMode,
+    managed: Option<std::path::PathBuf>,
+    environment: Option<std::path::PathBuf>,
+    managed_version: Option<&str>,
+) -> String {
+    match attach_mode {
+        StreamHelperAttachMode::ManagedPlayer => managed
+            .map(|path| startup_present_status("Managed install", path, managed_version))
+            .or_else(|| environment.map(|path| startup_present_status("PATH", path, None)))
+            .unwrap_or_else(|| {
+                format!(
+                    "Missing from Syncplay's managed install and PATH for {}.",
+                    component.display_name()
+                )
+            }),
+        StreamHelperAttachMode::ExternalPlayer => environment
+            .map(|path| startup_present_status("PATH", path, None))
+            .unwrap_or_else(|| {
+                if let Some(path) = managed {
+                    return format!(
+                        "Managed install present at '{}', but an external mpv process can only use PATH-visible helpers.",
+                        path.display()
+                    );
+                }
+                format!(
+                    "Missing from PATH for the external player: {}.",
+                    component.display_name()
+                )
+            }),
+    }
+}
+
+fn startup_present_status(
+    source_label: &str,
+    path: std::path::PathBuf,
+    version: Option<&str>,
+) -> String {
+    match version {
+        Some(version) => format!("{source_label}: {version} ({})", path.display()),
+        None => format!(
+            "{source_label} present at '{}'; version check pending.",
+            path.display()
+        ),
+    }
+}
+
 fn runtime_snapshot_with_details(
     health: GuiStreamHelperHealth,
     message: Option<String>,

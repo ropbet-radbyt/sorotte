@@ -95,6 +95,28 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_defaults() {
 }
 
 #[test]
+fn gui_startup_actions_from_lookup_keeps_remote_work_out_of_pre_window_actions() {
+    let actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
+        |_name| None,
+        &StoredClientSettingsMvp {
+            check_for_updates_automatically: Some(true),
+            last_checked_for_updates: None,
+            public_servers: None,
+            ..StoredClientSettingsMvp::default()
+        },
+        None,
+    );
+
+    assert!(actions.iter().all(|action| {
+        !matches!(
+            action,
+            GuiShellAction::ApplyUpdateCheckResult(_)
+                | GuiShellAction::ApplyStartupPublicServerCache(_)
+        )
+    }));
+}
+
+#[test]
 fn run_gui_host_with_startup_actions_surfaces_public_server_refresh_source() {
     let settings = StoredClientSettingsMvp {
         public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),

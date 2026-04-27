@@ -42,6 +42,10 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         session_default_room: None,
         pending_room_change_request: None,
         startup_saved_connect_attempted: false,
+        startup_remote_actions_attempted: false,
+        startup_remote_actions_rx: None,
+        startup_stream_helper_probe_completed: false,
+        startup_stream_helper_probe_rx: None,
         player: Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
             state: player_state.clone(),
         }))),

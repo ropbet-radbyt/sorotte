@@ -11,7 +11,7 @@ use super::metadata::{
 };
 use super::paths::{managed_stream_helper_bin_dir, managed_stream_helper_path_prefixes};
 use super::process::find_executable_on_path;
-use super::snapshot::probe_stream_helper_runtime_snapshot;
+use super::snapshot::{probe_stream_helper_runtime_snapshot, probe_stream_helper_startup_snapshot};
 use super::{
     ManagedStreamHelperComponent, ManagedStreamHelperMetadata, STREAM_HELPER_STALE_AFTER,
     StreamHelperAttachMode,
@@ -67,6 +67,54 @@ fn probe_stream_helper_runtime_snapshot_ignores_direct_media_urls() {
     );
     assert_eq!(snapshot.message, None);
     assert_eq!(snapshot.target, None);
+}
+
+#[test]
+fn probe_stream_helper_startup_snapshot_does_not_execute_helper_binaries() {
+    let root = std::env::temp_dir().join(format!(
+        "syncplay-stream-helper-startup-snapshot-{}-{}",
+        std::process::id(),
+        current_unix_seconds()
+    ));
+    let bin_dir = managed_stream_helper_bin_dir(&root);
+    std::fs::create_dir_all(&bin_dir).expect("managed helper bin dir should be created");
+    std::fs::write(
+        bin_dir.join(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        }),
+        b"not an executable",
+    )
+    .expect("fake downloader should be written");
+    std::fs::write(
+        bin_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
+        b"not an executable",
+    )
+    .expect("fake runtime should be written");
+
+    let snapshot =
+        probe_stream_helper_startup_snapshot(Some(&root), StreamHelperAttachMode::ManagedPlayer);
+
+    assert_eq!(snapshot.health, GuiStreamHelperHealth::Healthy);
+    assert!(
+        snapshot
+            .downloader_status
+            .as_deref()
+            .is_some_and(|status| status.contains("version check pending")),
+        "startup snapshot should use metadata/discovery only, got {:?}",
+        snapshot.downloader_status
+    );
+    assert!(
+        snapshot
+            .js_runtime_status
+            .as_deref()
+            .is_some_and(|status| status.contains("version check pending")),
+        "startup snapshot should use metadata/discovery only, got {:?}",
+        snapshot.js_runtime_status
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

@@ -111,10 +111,8 @@ pub(super) fn gui_startup_host_and_settings()
         return Ok((host, settings));
     }
     let Some(bootstrap) = gui_client_core_chat_tcp_bootstrap_from_lookup(env_trimmed)? else {
-        return Ok((
-            GuiEframeNativeHost::with_queued_preview_runtime_for_config_path(config_path),
-            settings,
-        ));
+        let host = GuiEframeNativeHost::with_queued_preview_runtime_for_config_path(config_path);
+        return Ok((host, settings));
     };
 
     let host = GuiEframeNativeHost::with_client_core_chat_tcp_session_for_config_path(
@@ -268,11 +266,7 @@ where
     if GuiStartupPlayerIpcSource::from_lookup(&lookup).is_none() {
         messages.push(GuiStartupPlayerIpcSource::missing_startup_message());
     }
-    let mut actions = gui_startup_actions_from_messages(messages);
-    if !cfg!(test) {
-        actions.extend(gui_startup_remote_actions(settings));
-    }
-    actions
+    gui_startup_actions_from_messages(messages)
 }
 
 #[cfg(test)]
@@ -330,7 +324,9 @@ fn gui_startup_actions_from_messages(messages: Vec<String>) -> Vec<GuiShellActio
         .collect()
 }
 
-fn gui_startup_remote_actions(settings: &StoredClientSettingsMvp) -> Vec<GuiShellAction> {
+pub(super) fn gui_startup_remote_actions(
+    settings: &StoredClientSettingsMvp,
+) -> Vec<GuiShellAction> {
     gui_startup_remote_actions_with_fetchers(
         settings,
         SystemTime::now(),
@@ -360,16 +356,17 @@ where
         .unwrap_or("en");
 
     if remote_services::should_run_automatic_update_check(Some(settings), now) {
-        return vec![GuiShellAction::ApplyUpdateCheckResult(fetch_update_check(
-            language,
-        ))];
+        let result = fetch_update_check(language);
+        return vec![GuiShellAction::ApplyUpdateCheckResult(result)];
     }
 
-    if settings.public_servers.as_ref().is_none_or(Vec::is_empty)
-        && let Ok(servers) = fetch_public_servers(language)
-        && !servers.is_empty()
-    {
-        return vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
+    if settings.public_servers.as_ref().is_none_or(Vec::is_empty) {
+        let servers = fetch_public_servers(language);
+        if let Ok(servers) = servers
+            && !servers.is_empty()
+        {
+            return vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
+        }
     }
 
     Vec::new()

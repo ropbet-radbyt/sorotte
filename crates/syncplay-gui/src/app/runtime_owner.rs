@@ -18,6 +18,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -51,12 +52,14 @@ use super::shell_state::{
     GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
 };
 use super::startup::{
-    explicit_mpv_ipc_path_from_lookup, resolve_syncplay_gui_config_path_legacy_compatible,
+    explicit_mpv_ipc_path_from_lookup, gui_startup_remote_actions,
+    resolve_syncplay_gui_config_path_legacy_compatible,
 };
 use super::startup_support::{env_flag_enabled_lookup, env_trimmed};
 use super::stream_support::{
     StreamHelperAttachMode, managed_stream_helper_downloader_path,
     managed_stream_helper_path_prefixes, probe_stream_helper_runtime_snapshot,
+    probe_stream_helper_startup_snapshot,
 };
 use super::support::system_time_seconds;
 use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
@@ -73,6 +76,11 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) session_default_room: Option<String>,
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     pub(super) startup_saved_connect_attempted: bool,
+    pub(super) startup_remote_actions_attempted: bool,
+    pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<Vec<GuiShellAction>>>,
+    pub(super) startup_stream_helper_probe_completed: bool,
+    pub(super) startup_stream_helper_probe_rx:
+        Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,
     pub(super) player: Option<GuiOwnedPlayer>,
     pub(super) player_launch_state: GuiPlayerLaunchRuntimeState,
     pub(super) managed_mpv_process: Option<ManagedMpvProcessGuard>,

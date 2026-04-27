@@ -71,6 +71,149 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         self.ensure_configured_player_attached_for_active_session();
         self.sync_player_runtime_state(handle, &projected_state);
+        self.run_deferred_startup_remote_actions(handle, &mut projected_state);
+        self.run_deferred_startup_stream_helper_probe(handle, &mut projected_state);
+    }
+
+    fn run_deferred_startup_remote_actions(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if !self.startup_remote_actions_attempted {
+            self.startup_remote_actions_attempted = true;
+            let settings = projected_state.configuration.to_stored_settings();
+            let (tx, rx) = mpsc::channel();
+            match std::thread::Builder::new()
+                .name("syncplay-gui-startup-remote".to_owned())
+                .spawn(move || {
+                    let actions = gui_startup_remote_actions(&settings);
+                    let _ = tx.send(actions);
+                }) {
+                Ok(_thread) => {
+                    self.startup_remote_actions_rx = Some(rx);
+                }
+                Err(_error) => {
+                    let actions = gui_startup_remote_actions(
+                        &projected_state.configuration.to_stored_settings(),
+                    );
+                    Self::push_actions_and_project(handle, projected_state, actions);
+                    return;
+                }
+            }
+        }
+
+        let Some(rx) = self.startup_remote_actions_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(actions) => {
+                Self::push_actions_and_project(handle, projected_state, actions);
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.startup_remote_actions_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
+    fn run_deferred_startup_stream_helper_probe(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        if self.startup_stream_helper_probe_completed {
+            return;
+        }
+        if self.startup_stream_helper_probe_rx.is_none() {
+            if cfg!(test) {
+                self.startup_stream_helper_probe_completed = true;
+                return;
+            }
+            let root = self.legacy_gui_qsettings_root();
+            let attach_mode = self.player_stream_helper_attach_mode();
+            let (tx, rx) = mpsc::channel();
+            match std::thread::Builder::new()
+                .name("syncplay-gui-startup-stream-helper".to_owned())
+                .spawn(move || {
+                    let snapshot =
+                        probe_stream_helper_runtime_snapshot(root.as_deref(), attach_mode, None);
+                    let _ = tx.send(snapshot);
+                }) {
+                Ok(_thread) => {
+                    self.startup_stream_helper_probe_rx = Some(rx);
+                }
+                Err(_error) => {
+                    let snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(None);
+                    self.startup_stream_helper_probe_completed = true;
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                            snapshot,
+                        )],
+                    );
+                    return;
+                }
+            }
+        }
+
+        let Some(rx) = self.startup_stream_helper_probe_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(snapshot) => {
+                self.startup_stream_helper_probe_completed = true;
+                self.stream_helper_runtime_snapshot = snapshot.clone();
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                        snapshot,
+                    )],
+                );
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.startup_stream_helper_probe_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.startup_stream_helper_probe_completed = true;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn apply_deferred_startup_remote_actions_for_test(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        actions: Vec<GuiShellAction>,
+    ) {
+        if self.startup_remote_actions_attempted {
+            return;
+        }
+        self.startup_remote_actions_attempted = true;
+        Self::push_actions_and_project(handle, projected_state, actions);
+    }
+
+    #[cfg(test)]
+    pub(super) fn apply_deferred_startup_stream_helper_snapshot_for_test(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        snapshot: GuiStreamHelperRuntimeSnapshot,
+    ) {
+        if self.startup_stream_helper_probe_completed {
+            return;
+        }
+        self.startup_stream_helper_probe_completed = true;
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                snapshot,
+            )],
+        );
     }
 
     fn sync_detached_session_runtime_state_or_notify(

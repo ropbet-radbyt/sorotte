@@ -22,7 +22,9 @@ pub(super) use paths::{
     managed_stream_helper_bin_dir, managed_stream_helper_downloader_path,
     managed_stream_helper_path_prefixes,
 };
-pub(super) use snapshot::probe_stream_helper_runtime_snapshot;
+pub(super) use snapshot::{
+    probe_stream_helper_runtime_snapshot, probe_stream_helper_startup_snapshot,
+};
 
 const STREAM_HELPER_STALE_AFTER: Duration = Duration::from_secs(30 * 86_400);
 const STREAM_HELPER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
