@@ -91,13 +91,17 @@ pub(crate) struct StateSyncOptions<'a> {
 pub(crate) fn state_sync_message(
     position: f64,
     paused: bool,
-    do_seek: bool,
+    do_seek: impl Into<Option<bool>>,
     options: StateSyncOptions<'_>,
 ) -> ProtocolMessage {
     let mut playstate = PlaystatePayload::new()
         .with_position(position)
-        .with_paused(paused)
-        .with_do_seek(do_seek);
+        .with_paused(paused);
+    if let Some(do_seek) = do_seek.into() {
+        playstate = playstate.with_do_seek(do_seek);
+    } else {
+        playstate.extra.insert("doSeek".to_owned(), Value::Null);
+    }
     if let Some(set_by) = options.set_by {
         playstate = playstate.with_set_by(set_by);
     }

@@ -679,7 +679,7 @@ impl ServerRuntime {
         client_id: &str,
         position: f64,
         paused: bool,
-        do_seek: bool,
+        do_seek: impl Into<Option<bool>>,
         set_by: Option<&str>,
     ) -> ProtocolMessage {
         let server_ignoring_counter = self.next_server_ignoring_counter(client_id);

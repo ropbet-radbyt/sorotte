@@ -38,6 +38,54 @@ fn state_playstate_updates_are_broadcast_to_room_members_with_metadata() {
 }
 
 #[test]
+fn pause_only_forced_state_preserves_null_do_seek() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":12.5,"paused":false}}}"#,
+        )
+        .expect("pause-only state update should fan out");
+
+    assert_eq!(
+        directed_lines.len(),
+        2,
+        "pause transition should force state propagation to room members"
+    );
+    for line in &directed_lines {
+        let value: Value =
+            serde_json::from_str(&line.line).expect("state update should be valid json");
+        let playstate = value
+            .get("State")
+            .and_then(|state| state.get("playstate"))
+            .expect("state update should include playstate");
+        assert!(
+            playstate
+                .as_object()
+                .is_some_and(|playstate| playstate.contains_key("doSeek")),
+            "forced pause-only updates should include doSeek"
+        );
+        assert!(
+            playstate.get("doSeek").is_some_and(Value::is_null),
+            "missing inbound doSeek should be preserved as null"
+        );
+    }
+}
+
+#[test]
 fn state_playstate_without_seek_or_pause_change_produces_no_immediate_outbound_messages() {
     let mut runtime = ServerRuntime::default();
     runtime

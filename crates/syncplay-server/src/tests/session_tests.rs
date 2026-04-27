@@ -879,11 +879,33 @@ fn chat_and_ready_updates_obey_runtime_disable_flags_and_chat_limit() {
             "client-1",
             r#"{"Set":{"ready":{"isReady":true,"manuallyInitiated":true}}}"#,
         )
-        .expect("ready while disabled should be ignored");
-    assert!(
-        ready_disabled.is_empty(),
-        "ready update should be ignored when readiness is disabled"
+        .expect("ready while disabled should emit null readiness");
+    let ready_disabled_messages = decode_directed_lines(&ready_disabled);
+    assert_eq!(
+        ready_disabled_messages.len(),
+        2,
+        "disabled readiness should still fan out the null readiness state"
     );
+    assert!(
+        has_ready_update_state(&ready_disabled_messages, "client-1", "alice", None),
+        "sender should receive null readiness while readiness is disabled"
+    );
+    assert!(
+        has_ready_update_state(&ready_disabled_messages, "client-2", "alice", None),
+        "peer should receive null readiness while readiness is disabled"
+    );
+    for line in &ready_disabled {
+        let value: Value =
+            serde_json::from_str(&line.line).expect("ready update should be valid json");
+        let ready = value
+            .get("Set")
+            .and_then(|set| set.get("ready"))
+            .expect("ready update should be present");
+        assert!(
+            ready.get("isReady").is_some_and(Value::is_null),
+            "disabled readiness should serialize isReady as null"
+        );
+    }
 
     runtime.set_chat_enabled(true);
     let chat_enabled = runtime
@@ -903,6 +925,24 @@ fn chat_and_ready_updates_obey_runtime_disable_flags_and_chat_limit() {
                 )
         }),
         "chat message should be truncated to runtime max length"
+    );
+
+    let room_switch_disabled = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("room switch while readiness is disabled should succeed");
+    assert!(
+        room_switch_disabled.iter().any(|line| {
+            let value: Value =
+                serde_json::from_str(&line.line).expect("room switch output should be valid json");
+            value
+                .get("Set")
+                .and_then(|set| set.get("ready"))
+                .is_some_and(|ready| {
+                    ready.get("username").and_then(Value::as_str) == Some("alice")
+                        && ready.get("isReady").is_some_and(Value::is_null)
+                })
+        }),
+        "room switch should republish disabled readiness as null"
     );
 }
 

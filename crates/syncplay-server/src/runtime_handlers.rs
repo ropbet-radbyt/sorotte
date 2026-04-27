@@ -404,14 +404,12 @@ impl ServerRuntime {
                 joined_message.clone(),
             ));
         }
-        if self.readiness_enabled {
-            let ready_message = ready_update_message(&username, None, false, None);
-            for room_client in self.clients_in_room(&room_name) {
-                outbound.push(DirectedProtocolMessage::new(
-                    room_client,
-                    ready_message.clone(),
-                ));
-            }
+        let ready_message = ready_update_message(&username, None, false, None);
+        for room_client in self.clients_in_room(&room_name) {
+            outbound.push(DirectedProtocolMessage::new(
+                room_client,
+                ready_message.clone(),
+            ));
         }
         let room_playlist = self.room_playlist_state(&room_name);
         let playlist_snapshot_message = playlist_snapshot_change_message(
@@ -612,15 +610,21 @@ impl ServerRuntime {
                             room_update_message.clone(),
                         ));
                     }
-                    if self.readiness_enabled {
-                        let ready_message =
-                            ready_update_message(&session.username, previous_ready, false, None);
-                        for peer_client in self.clients_in_room(&session.room) {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                peer_client,
-                                ready_message.clone(),
-                            ));
-                        }
+                    let ready_message = ready_update_message(
+                        &session.username,
+                        if self.readiness_enabled {
+                            previous_ready
+                        } else {
+                            None
+                        },
+                        false,
+                        None,
+                    );
+                    for peer_client in self.clients_in_room(&session.room) {
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            peer_client,
+                            ready_message.clone(),
+                        ));
                     }
 
                     let room_playlist = self.room_playlist_state(&session.room);
@@ -733,12 +737,14 @@ impl ServerRuntime {
                     let Some(ready) = set.ready.take() else {
                         continue;
                     };
-                    if !self.readiness_enabled {
-                        continue;
-                    }
                     let manually_initiated = ready.manually_initiated.unwrap_or(false);
                     let Some(is_ready) = ready.is_ready else {
                         continue;
+                    };
+                    let outbound_ready = if self.readiness_enabled {
+                        Some(is_ready)
+                    } else {
+                        None
                     };
                     let requested_username = ready.username.as_deref().unwrap_or(&session.username);
                     if requested_username != session.username {
@@ -750,7 +756,7 @@ impl ServerRuntime {
                         {
                             let ready_message = ready_update_message(
                                 requested_username,
-                                is_ready,
+                                outbound_ready,
                                 manually_initiated,
                                 Some(&session.username),
                             );
@@ -779,7 +785,7 @@ impl ServerRuntime {
                             .set_ready(&session.username, &session.room, is_ready)?;
                         let ready_message = ready_update_message(
                             &session.username,
-                            is_ready,
+                            outbound_ready,
                             manually_initiated,
                             ready.set_by.as_deref(),
                         );
@@ -906,7 +912,7 @@ impl ServerRuntime {
         let now_seconds = self.current_time_seconds();
         let room_state_before = self.room_playback_state_at(&session.room, now_seconds);
         let can_control_room = self.user_can_control_playlist(&session.username, &session.room);
-        let do_seek = playstate.do_seek.unwrap_or(false);
+        let do_seek = playstate.do_seek;
         let forward_delay_seconds = self.forward_delay_seconds(client_id);
         let pause_changed = playstate
             .paused
@@ -920,7 +926,7 @@ impl ServerRuntime {
         });
         self.record_client_playback_state_sample(client_id, playback_sample_position, now_seconds);
 
-        if !do_seek && !pause_changed {
+        if !do_seek.unwrap_or(false) && !pause_changed {
             return Ok(Vec::new());
         }
 
