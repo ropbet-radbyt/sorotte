@@ -273,6 +273,29 @@ fn client_session_apply_message_json_returns_server_error_payload() {
 }
 
 #[test]
+fn client_session_applies_valid_batched_commands_before_unknown_command_error() {
+    let mut session = ClientSession::default();
+    session
+        .apply_hello_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+
+    let error = session
+        .apply_message_json(
+            r#"{"Set":{"ready":{"isReady":true,"username":"alice"}},"Bogus":{"x":1}}"#,
+        )
+        .expect_err("unknown batched command should still surface a protocol error");
+
+    assert!(matches!(error, ProtocolError::InvalidJson(_)));
+    assert_eq!(
+        session.user_ready("alice"),
+        Some(true),
+        "valid commands before an unknown batched command should be applied"
+    );
+}
+
+#[test]
 fn client_session_apply_message_json_rejects_unexpected_tls_frames() {
     let mut session = ClientSession::default();
 

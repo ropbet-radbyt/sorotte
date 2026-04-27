@@ -186,14 +186,24 @@ impl ServerRuntime {
     }
 
     pub(crate) fn fallback_room_set_by_username(&self, room_name: &str) -> Option<String> {
-        let mut usernames: Vec<String> = self
-            .sessions
-            .values()
-            .filter(|session| session.room == room_name)
-            .map(|session| session.username.clone())
-            .collect();
-        usernames.sort();
-        usernames.into_iter().next()
+        self.sessions
+            .iter()
+            .filter(|(_, session)| session.room == room_name)
+            .min_by_key(|(client_id, _)| self.client_room_join_order(client_id))
+            .map(|(_, session)| session.username.clone())
+    }
+
+    pub(crate) fn assign_room_join_order(&mut self, client_id: &str) {
+        self.client_room_join_sequence
+            .insert(client_id.to_owned(), self.next_room_join_sequence);
+        self.next_room_join_sequence = self.next_room_join_sequence.saturating_add(1);
+    }
+
+    pub(crate) fn client_room_join_order(&self, client_id: &str) -> u64 {
+        self.client_room_join_sequence
+            .get(client_id)
+            .copied()
+            .unwrap_or(u64::MAX)
     }
 
     pub(crate) fn periodic_state_sync_message_for_client(
@@ -272,6 +282,7 @@ impl ServerRuntime {
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
+        self.client_room_join_sequence.remove(client_id);
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         Some(session)
@@ -475,7 +486,7 @@ impl ServerRuntime {
         let controlled_room = self
             .room_password_provider
             .is_controlled_room_name(room_name);
-        let mut slowest: Option<(String, f64)> = None;
+        let mut slowest: Option<(String, f64, u64)> = None;
         for (client_id, session) in &self.sessions {
             if session.room != room_name {
                 continue;
@@ -493,14 +504,19 @@ impl ServerRuntime {
             else {
                 continue;
             };
+            let room_join_order = self.client_room_join_order(client_id);
             if slowest
                 .as_ref()
-                .is_none_or(|(_, slowest_position)| position < *slowest_position)
+                .is_none_or(|(_, slowest_position, slowest_room_join_order)| {
+                    position < *slowest_position
+                        || (position == *slowest_position
+                            && room_join_order < *slowest_room_join_order)
+                })
             {
-                slowest = Some((session.username.clone(), position));
+                slowest = Some((session.username.clone(), position, room_join_order));
             }
         }
-        slowest
+        slowest.map(|(username, position, _)| (username, position))
     }
 
     pub(crate) fn refresh_room_playback_state_from_clients_at(

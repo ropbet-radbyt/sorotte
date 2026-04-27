@@ -1040,12 +1040,46 @@ fn isolate_rooms_room_switch_sends_left_to_old_room_without_destination_leak() {
         "old-room peer should receive left event"
     );
     assert!(
+        has_user_event(&directed_messages, "client-1", "alice", "left"),
+        "moving client should receive the old-room left event before destination updates"
+    );
+    assert!(
         !has_user_room_update(&directed_messages, "client-2", "alice", "room2"),
         "old-room peer should not receive destination room update in isolateRooms mode"
     );
     assert!(
         has_user_room_update(&directed_messages, "client-3", "alice", "room2"),
         "new-room peer should receive room update for moved user"
+    );
+    let mover_left_index = directed_messages
+        .iter()
+        .position(|(client_id, message)| {
+            client_id == "client-1"
+                && matches!(message, ProtocolMessage::Set(_))
+                && has_user_event(
+                    &[(client_id.clone(), message.clone())],
+                    "client-1",
+                    "alice",
+                    "left",
+                )
+        })
+        .expect("moving client should receive left event");
+    let mover_room_update_index = directed_messages
+        .iter()
+        .position(|(client_id, message)| {
+            client_id == "client-1"
+                && matches!(message, ProtocolMessage::Set(_))
+                && has_user_room_update(
+                    &[(client_id.clone(), message.clone())],
+                    "client-1",
+                    "alice",
+                    "room2",
+                )
+        })
+        .expect("moving client should receive destination room update");
+    assert!(
+        mover_left_index < mover_room_update_index,
+        "isolated room switch should report the old-room leave before destination-room updates"
     );
 }
 
@@ -1080,6 +1114,45 @@ fn isolate_rooms_room_switch_republishes_file_to_destination_room() {
     assert!(
         has_user_file_update(&directed_messages, "client-2", "alice", "movie.mkv"),
         "destination room peer should receive the mover's current file metadata"
+    );
+    let file_index = directed_messages
+        .iter()
+        .position(|(client_id, message)| {
+            client_id == "client-2"
+                && has_user_file_update(
+                    &[(client_id.clone(), message.clone())],
+                    "client-2",
+                    "alice",
+                    "movie.mkv",
+                )
+        })
+        .expect("destination room peer should receive file metadata");
+    let room_update_index = directed_messages
+        .iter()
+        .position(|(client_id, message)| {
+            if client_id != "client-2" {
+                return false;
+            }
+            let ProtocolMessage::Set(payload) = message else {
+                return false;
+            };
+            payload
+                .set
+                .user
+                .as_ref()
+                .and_then(|users| users.get("alice"))
+                .is_some_and(|user| {
+                    user.room
+                        .as_ref()
+                        .is_some_and(|room_ref| room_ref.name == "room2")
+                        && user.file.is_none()
+                        && user.event.is_none()
+                })
+        })
+        .expect("destination room peer should receive standalone room update");
+    assert!(
+        file_index < room_update_index,
+        "isolated room switch should republish file metadata before destination room updates"
     );
 }
 

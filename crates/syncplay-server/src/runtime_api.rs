@@ -19,6 +19,8 @@ impl ServerRuntime {
             room_playlists: BTreeMap::new(),
             room_playback_states: BTreeMap::new(),
             client_playback_states: BTreeMap::new(),
+            client_room_join_sequence: BTreeMap::new(),
+            next_room_join_sequence: 0,
             client_state_counters: BTreeMap::new(),
             client_last_state_update_at: BTreeMap::new(),
             client_next_periodic_state_at: BTreeMap::new(),

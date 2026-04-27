@@ -376,6 +376,7 @@ impl ServerRuntime {
                 file: None,
             },
         );
+        self.assign_room_join_order(client_id);
         self.seed_client_playback_state(
             client_id,
             room_should_seed_joiner_position.then_some(join_room_playback.position),
@@ -529,6 +530,21 @@ impl ServerRuntime {
 
                     let previous_room = session.room.clone();
                     let previous_ready = self.stored_user_ready(&session.username, &previous_room);
+                    if self.isolate_rooms {
+                        let left_message = user_event_message(
+                            &session.username,
+                            &previous_room,
+                            json!({
+                                "left": true,
+                            }),
+                        );
+                        for peer_client in self.clients_in_room(&previous_room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                left_message.clone(),
+                            ));
+                        }
+                    }
                     let new_room_had_clients_before_join =
                         !self.clients_in_room(&new_room_name).is_empty();
                     let new_room_should_seed_position = new_room_had_clients_before_join
@@ -545,6 +561,7 @@ impl ServerRuntime {
                         &new_room_name,
                         previous_ready,
                     );
+                    self.assign_room_join_order(client_id);
                     self.seed_client_playback_state(
                         client_id,
                         new_room_should_seed_position.then_some(room_playback.position),
@@ -570,6 +587,19 @@ impl ServerRuntime {
                         ),
                     ));
 
+                    if self.isolate_rooms
+                        && let Some(file) = session.file.clone().filter(legacy_json_value_truthy)
+                    {
+                        let file_message =
+                            user_file_update_message(&session.username, &session.room, file);
+                        for peer_client in self.clients_in_room(&session.room) {
+                            outbound_messages.push(DirectedProtocolMessage::new(
+                                peer_client,
+                                file_message.clone(),
+                            ));
+                        }
+                    }
+
                     let room_update_message =
                         user_room_update_message(&session.username, &session.room);
                     for peer_client in self.room_switch_visibility_recipients(
@@ -590,31 +620,6 @@ impl ServerRuntime {
                                 peer_client,
                                 ready_message.clone(),
                             ));
-                        }
-                    }
-                    if self.isolate_rooms {
-                        let left_message = user_event_message(
-                            &session.username,
-                            &previous_room,
-                            json!({
-                                "left": true,
-                            }),
-                        );
-                        for peer_client in self.clients_in_room(&previous_room) {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                peer_client,
-                                left_message.clone(),
-                            ));
-                        }
-                        if let Some(file) = session.file.clone().filter(legacy_json_value_truthy) {
-                            let file_message =
-                                user_file_update_message(&session.username, &session.room, file);
-                            for peer_client in self.clients_in_room(&session.room) {
-                                outbound_messages.push(DirectedProtocolMessage::new(
-                                    peer_client,
-                                    file_message.clone(),
-                                ));
-                            }
                         }
                     }
 

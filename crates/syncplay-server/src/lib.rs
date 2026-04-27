@@ -206,6 +206,8 @@ pub struct ServerRuntime {
     room_playlists: BTreeMap<String, RoomPlaylistState>,
     room_playback_states: BTreeMap<String, RoomPlaybackState>,
     client_playback_states: BTreeMap<String, ClientPlaybackState>,
+    client_room_join_sequence: BTreeMap<String, u64>,
+    next_room_join_sequence: u64,
     client_state_counters: BTreeMap<String, ClientStateCounters>,
     client_last_state_update_at: BTreeMap<String, f64>,
     client_next_periodic_state_at: BTreeMap<String, f64>,

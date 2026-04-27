@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 
 const DEFAULT_SERVER_PORT: u16 = 8999;
 
@@ -414,11 +414,6 @@ pub(crate) fn resolve_run_config(
     let persistent_rooms_enabled = env_flag_enabled("SYNCPLAY_SERVER_PERSISTENT_ROOMS")
         || rooms_db_file.is_some()
         || permanent_rooms_file.is_some();
-    if overrides.isolate_rooms && persistent_rooms_enabled {
-        bail!(
-            "--isolate-rooms is not compatible with persistent rooms options in the current Rust alpha (--rooms-db-file/--permanent-rooms-file/SYNCPLAY_SERVER_PERSISTENT_ROOMS)"
-        );
-    }
 
     Ok(ServerRunConfig {
         bind_host,
@@ -566,18 +561,16 @@ mod tests {
     }
 
     #[test]
-    fn isolate_mode_rejects_persistent_room_configuration() {
+    fn isolate_mode_accepts_persistent_room_configuration() {
         let overrides = ServerCliOverrides {
             isolate_rooms: true,
             rooms_db_file: Some(PathBuf::from("rooms.sqlite3")),
             ..ServerCliOverrides::default()
         };
-        let error = resolve_run_config(overrides).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("--isolate-rooms is not compatible with persistent rooms options")
-        );
+        let config = resolve_run_config(overrides).unwrap();
+        assert!(config.isolate_rooms);
+        assert!(config.persistent_rooms_enabled);
+        assert_eq!(config.rooms_db_file, Some(PathBuf::from("rooms.sqlite3")));
     }
 
     #[test]

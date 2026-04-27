@@ -727,6 +727,42 @@ fn room_switch_sends_destination_room_playstate() {
 }
 
 #[test]
+fn idle_set_by_tie_break_uses_room_join_order() {
+    let mut runtime = ServerRuntime::default();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("bob hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    assert_eq!(
+        runtime.fallback_room_set_by_username("room1").as_deref(),
+        Some("bob"),
+        "idle setBy fallback should use room insertion order instead of lexicographic username order"
+    );
+
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
+        .expect("bob room switch should succeed");
+    runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"room":{"name":"room1"}}}"#)
+        .expect("bob room switch back should succeed");
+
+    assert_eq!(
+        runtime.fallback_room_set_by_username("room1").as_deref(),
+        Some("alice"),
+        "room switches should reinsert the watcher after existing destination-room peers"
+    );
+}
+
+#[test]
 fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(0.0));

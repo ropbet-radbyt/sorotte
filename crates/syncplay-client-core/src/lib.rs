@@ -12,7 +12,7 @@ use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, FilePayload, IgnoringOnTheFlyPayload, ListPayload,
     PingPayload, PlaylistChangePayload, PlaylistIndexPayload, PlaystatePayload, ProtocolError,
     ProtocolMessage, ReadyPayload, RoomRef, SetPayload, StatePayload, decode_message_line,
-    decode_message_lines, encode_message_line, extract_hello_from_message,
+    decode_message_line_items, encode_message_line, extract_hello_from_message,
 };
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
