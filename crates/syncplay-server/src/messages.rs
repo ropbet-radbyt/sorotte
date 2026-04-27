@@ -159,9 +159,11 @@ pub(crate) fn playlist_snapshot_change_message(
     set_by: Option<&str>,
 ) -> ProtocolMessage {
     let mut playlist_change = PlaylistChangePayload::new(files);
-    if let Some(set_by) = set_by {
-        playlist_change = playlist_change.with_user(set_by);
-    }
+    playlist_change = if let Some(set_by) = set_by {
+        playlist_change.with_user(set_by)
+    } else {
+        playlist_change.with_null_user()
+    };
     ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change))
 }
 
@@ -170,9 +172,11 @@ pub(crate) fn playlist_snapshot_index_message(
     set_by: Option<&str>,
 ) -> ProtocolMessage {
     let mut playlist_index = PlaylistIndexPayload::from_optional(index);
-    if let Some(set_by) = set_by {
-        playlist_index = playlist_index.with_user(set_by);
-    }
+    playlist_index = if let Some(set_by) = set_by {
+        playlist_index.with_user(set_by)
+    } else {
+        playlist_index.with_null_user()
+    };
     ProtocolMessage::set(SetPayload::new().with_playlist_index(playlist_index))
 }
 

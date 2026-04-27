@@ -152,7 +152,30 @@ fn playlist_index_message_with_null_index_decodes_as_null_snapshot() {
     let encoded_value = decode_line(&encoded).expect("encoded playlistIndex should decode");
     assert_eq!(
         encoded_value,
-        json!({"Set":{"playlistIndex":{"index":null}}})
+        json!({"Set":{"playlistIndex":{"index":null,"user":null}}})
+    );
+}
+
+#[test]
+fn playlist_change_message_with_null_user_roundtrips() {
+    let message = decode_message_line(r#"{"Set":{"playlistChange":{"files":[],"user":null}}}"#)
+        .expect("legacy nullable playlistChange payload should decode");
+    let ProtocolMessage::Set(set_message) = message else {
+        panic!("expected Set message");
+    };
+    let playlist_change = set_message
+        .set
+        .playlist_change
+        .expect("nullable playlistChange payload should be retained");
+
+    let encoded = encode_message_line(&ProtocolMessage::set(
+        SetPayload::new().with_playlist_change(playlist_change),
+    ))
+    .expect("nullable playlistChange payload should encode");
+    let encoded_value = decode_line(&encoded).expect("encoded playlistChange should decode");
+    assert_eq!(
+        encoded_value,
+        json!({"Set":{"playlistChange":{"files":[],"user":null}}})
     );
 }
 

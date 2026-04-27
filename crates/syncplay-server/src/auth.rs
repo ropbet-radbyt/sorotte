@@ -4,6 +4,7 @@ static CONTROLLED_ROOM_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\+(.*):(\w{12})$").expect("controlled room regex is valid"));
 static PASSWORD_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Z]{2}-\d{3}-\d{3}").expect("password regex is valid"));
+const GENERATED_SERVER_SALT_LENGTH: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RoomPasswordCheckError {
@@ -76,4 +77,13 @@ impl RoomPasswordProvider {
         let room_hash = format!("{:x}", Sha1::digest(room_hash_input.as_bytes()));
         room_hash[..12].to_ascii_uppercase()
     }
+}
+
+pub(crate) fn generate_server_salt_legacy_compatible() -> String {
+    let mut bytes = [0_u8; GENERATED_SERVER_SALT_LENGTH];
+    getrandom::getrandom(&mut bytes).expect("operating system random source should be available");
+    bytes
+        .iter()
+        .map(|byte| char::from(b'A' + (byte % 26)))
+        .collect()
 }

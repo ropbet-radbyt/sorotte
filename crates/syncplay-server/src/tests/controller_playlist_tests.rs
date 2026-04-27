@@ -55,7 +55,7 @@ fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
 
 #[test]
 fn controller_auth_on_uncontrolled_room_returns_new_controlled_room_to_sender() {
-    let mut runtime = ServerRuntime::default();
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
     runtime
         .handle_line(
             "client-1",
@@ -139,7 +139,7 @@ fn controller_auth_respects_runtime_configured_room_password_salt() {
 #[test]
 fn controlled_room_playlist_updates_require_controller_auth() {
     let controlled_room_name = controlled_room_name_for_test("room1", "AB-123-456");
-    let mut runtime = ServerRuntime::default();
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
     runtime
         .handle_line(
             "client-1",
@@ -295,7 +295,7 @@ fn invalid_playlist_change_is_rejected_with_current_room_playlist_correction() {
 #[test]
 fn non_controller_playlist_index_update_receives_current_index_correction() {
     let controlled_room_name = controlled_room_name_for_test("room1", "AB-123-456");
-    let mut runtime = ServerRuntime::default();
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
     for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
         let hello = format!(
             r#"{{"Hello":{{"username":"{username}","room":{{"name":"{controlled_room_name}"}},"version":"1.2.255"}}}}"#

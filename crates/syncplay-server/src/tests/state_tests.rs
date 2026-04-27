@@ -314,7 +314,7 @@ fn state_ping_metrics_apply_forward_delay_and_non_zero_server_rtt_for_sender() {
 #[test]
 fn controlled_room_non_controller_state_update_gets_forced_corrections() {
     let controlled_room_name = controlled_room_name_for_test("room1", "AB-123-456");
-    let mut runtime = ServerRuntime::default();
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
     runtime
         .handle_line(
             "client-1",

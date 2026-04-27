@@ -46,6 +46,14 @@ fn room_password_provider_salt_changes_controlled_room_hashes() {
 }
 
 #[test]
+fn generated_server_salt_matches_legacy_shape() {
+    let salt = generate_server_salt_legacy_compatible();
+
+    assert_eq!(salt.len(), 10);
+    assert!(salt.chars().all(|character| character.is_ascii_uppercase()));
+}
+
+#[test]
 fn bootstrapped_room_exists() {
     let mut server = ServerApp::new();
     server.bootstrap_room("phase0");

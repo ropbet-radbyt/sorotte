@@ -321,12 +321,11 @@ impl ReadyPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistChangePayload {
     pub files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    #[serde(flatten)]
+    pub user_is_null: bool,
     pub extra: BTreeMap<String, Value>,
 }
 
@@ -335,13 +334,80 @@ impl PlaylistChangePayload {
         Self {
             files: files.into_iter().map(Into::into).collect(),
             user: None,
+            user_is_null: false,
             extra: BTreeMap::new(),
         }
     }
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
+        self.user_is_null = false;
         self
+    }
+
+    pub fn with_null_user(mut self) -> Self {
+        self.user = None;
+        self.user_is_null = true;
+        self
+    }
+}
+
+impl Serialize for PlaylistChangePayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let extra_len = self
+            .extra
+            .keys()
+            .filter(|key| key.as_str() != "files" && key.as_str() != "user")
+            .count();
+        let mut map = serializer.serialize_map(Some(
+            1 + usize::from(self.user.is_some() || self.user_is_null) + extra_len,
+        ))?;
+        map.serialize_entry("files", &self.files)?;
+        if let Some(user) = &self.user {
+            map.serialize_entry("user", user)?;
+        } else if self.user_is_null {
+            map.serialize_entry("user", &Value::Null)?;
+        }
+        for (key, value) in &self.extra {
+            if key == "files" || key == "user" {
+                continue;
+            }
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PlaylistChangePayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut entries = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        let files_value = entries
+            .remove("files")
+            .ok_or_else(|| serde::de::Error::missing_field("files"))?;
+        let files: Vec<String> =
+            serde_json::from_value(files_value).map_err(serde::de::Error::custom)?;
+        let mut payload = PlaylistChangePayload::new(files);
+        if let Some(user_value) = entries.remove("user") {
+            match user_value {
+                Value::String(user) => payload.user = Some(user),
+                Value::Null => payload.user_is_null = true,
+                other => {
+                    return Err(serde::de::Error::custom(format!(
+                        "playlistChange.user must be a string or null, got {other}"
+                    )));
+                }
+            }
+        }
+        payload.extra.extend(entries);
+        Ok(payload)
     }
 }
 
@@ -350,6 +416,7 @@ pub struct PlaylistIndexPayload {
     pub index: i64,
     pub index_is_null: bool,
     pub user: Option<String>,
+    pub user_is_null: bool,
     pub extra: BTreeMap<String, Value>,
 }
 
@@ -359,6 +426,7 @@ impl PlaylistIndexPayload {
             index,
             index_is_null: false,
             user: None,
+            user_is_null: false,
             extra: BTreeMap::new(),
         }
     }
@@ -368,6 +436,7 @@ impl PlaylistIndexPayload {
             index: 0,
             index_is_null: true,
             user: None,
+            user_is_null: false,
             extra: BTreeMap::new(),
         }
     }
@@ -382,6 +451,13 @@ impl PlaylistIndexPayload {
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
+        self.user_is_null = false;
+        self
+    }
+
+    pub fn with_null_user(mut self) -> Self {
+        self.user = None;
+        self.user_is_null = true;
         self
     }
 }
@@ -393,10 +469,19 @@ impl Serialize for PlaylistIndexPayload {
     {
         use serde::ser::SerializeMap;
 
-        let mut map = serializer.serialize_map(Some(2 + self.extra.len()))?;
+        let extra_len = self
+            .extra
+            .keys()
+            .filter(|key| key.as_str() != "index" && key.as_str() != "user")
+            .count();
+        let mut map = serializer.serialize_map(Some(
+            1 + usize::from(self.user.is_some() || self.user_is_null) + extra_len,
+        ))?;
         map.serialize_entry("index", &self.index_value())?;
         if let Some(user) = &self.user {
             map.serialize_entry("user", user)?;
+        } else if self.user_is_null {
+            map.serialize_entry("user", &Value::Null)?;
         }
         for (key, value) in &self.extra {
             if key == "index" || key == "user" {
@@ -413,20 +498,24 @@ impl<'de> Deserialize<'de> for PlaylistIndexPayload {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct WirePlaylistIndexPayload {
-            #[serde(default)]
-            index: Option<i64>,
-            #[serde(default)]
-            user: Option<String>,
-            #[serde(flatten)]
-            extra: BTreeMap<String, Value>,
+        let mut entries = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        let index: Option<i64> = match entries.remove("index") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?),
+        };
+        let mut payload = PlaylistIndexPayload::from_optional(index);
+        if let Some(user_value) = entries.remove("user") {
+            match user_value {
+                Value::String(user) => payload.user = Some(user),
+                Value::Null => payload.user_is_null = true,
+                other => {
+                    return Err(serde::de::Error::custom(format!(
+                        "playlistIndex.user must be a string or null, got {other}"
+                    )));
+                }
+            }
         }
-
-        let wire = WirePlaylistIndexPayload::deserialize(deserializer)?;
-        let mut payload = PlaylistIndexPayload::from_optional(wire.index);
-        payload.user = wire.user;
-        payload.extra = wire.extra;
+        payload.extra.extend(entries);
         Ok(payload)
     }
 }

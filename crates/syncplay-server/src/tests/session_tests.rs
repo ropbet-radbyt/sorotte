@@ -1291,7 +1291,7 @@ fn controller_ready_update_sends_legacy_chat_only_to_clients_without_set_others_
 
 #[test]
 fn non_controller_cannot_set_other_user_readiness_in_controlled_room() {
-    let mut runtime = ServerRuntime::default();
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
     let controlled_room = controlled_room_name_for_test("room1", "ABC-123-456");
     let alice_hello = format!(
         r#"{{"Hello":{{"username":"alice","room":{{"name":"{controlled_room}"}},"version":"1.2.255"}}}}"#

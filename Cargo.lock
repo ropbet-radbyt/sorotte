@@ -3438,6 +3438,7 @@ name = "syncplay-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "getrandom 0.2.17",
  "md-5",
  "regex",
  "rusqlite",

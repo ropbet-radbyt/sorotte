@@ -8,7 +8,7 @@ impl Default for ServerRuntime {
 
 impl ServerRuntime {
     pub fn new() -> Self {
-        Self::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT)
+        Self::with_room_password_salt(generate_server_salt_legacy_compatible())
     }
 
     pub fn with_room_password_salt(salt: impl Into<String>) -> Self {

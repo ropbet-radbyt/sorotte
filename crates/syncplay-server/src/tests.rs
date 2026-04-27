@@ -20,14 +20,15 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 use super::{
-    DEFAULT_MAX_FILENAME_LENGTH, DEFAULT_MAX_ROOM_NAME_LENGTH, DEFAULT_PLAYLIST_MAX_ITEMS,
-    DirectedOutboundLine, DirectedTransportAction, INITIAL_SERVER_STATE_DELAY_SECONDS,
-    LEGACY_PERSISTENT_ROOMS_NOTICE, LEGACY_SERVER_LINE_DECODE_ERROR,
-    LEGACY_SERVER_PASSWORD_REQUIRED_ERROR, LEGACY_SERVER_WRONG_PASSWORD_ERROR,
-    LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError, RoomPasswordProvider, SERVER_REAL_VERSION,
-    SERVER_STATE_INTERVAL_SECONDS, ServerApp, ServerRuntime, ServerRuntimeDispatch,
-    ServerRuntimeError, ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES,
-    default_motd_for_client_version, motd_for_client_version, read_network_line_from_stream,
+    DEFAULT_CONTROLLED_ROOM_HASH_SALT, DEFAULT_MAX_FILENAME_LENGTH, DEFAULT_MAX_ROOM_NAME_LENGTH,
+    DEFAULT_PLAYLIST_MAX_ITEMS, DirectedOutboundLine, DirectedTransportAction,
+    INITIAL_SERVER_STATE_DELAY_SECONDS, LEGACY_PERSISTENT_ROOMS_NOTICE,
+    LEGACY_SERVER_LINE_DECODE_ERROR, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
+    LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError,
+    RoomPasswordProvider, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS, ServerApp,
+    ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError, ServerTransportAction,
+    TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
+    generate_server_salt_legacy_compatible, motd_for_client_version, read_network_line_from_stream,
     run_server_network_loop_until_shutdown,
 };
 use syncplay_protocol::{
@@ -321,6 +322,7 @@ fn has_playlist_snapshot(
                             .map(String::as_str)
                             .eq(files.iter().copied())
                             && playlist.user.is_none()
+                            && playlist.user_is_null
                     })
             }
             _ => false,
@@ -387,11 +389,17 @@ fn has_null_playlist_index_snapshot(
             return false;
         }
         match message {
-            ProtocolMessage::Set(payload) => payload
-                .set
-                .playlist_index
-                .as_ref()
-                .is_some_and(|playlist_index| playlist_index.index_value().is_none()),
+            ProtocolMessage::Set(payload) => {
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .is_some_and(|playlist_index| {
+                        playlist_index.index_value().is_none()
+                            && playlist_index.user.is_none()
+                            && playlist_index.user_is_null
+                    })
+            }
             _ => false,
         }
     })
@@ -403,6 +411,10 @@ fn controlled_room_name_for_test(base_room: &str, password: &str) -> String {
 
 fn controlled_room_name_for_salt_test(base_room: &str, password: &str, salt: &str) -> String {
     RoomPasswordProvider::new(salt).controlled_room_name_for(base_room, password)
+}
+
+fn server_runtime_with_default_controlled_room_salt_for_test() -> ServerRuntime {
+    ServerRuntime::with_room_password_salt(DEFAULT_CONTROLLED_ROOM_HASH_SALT)
 }
 
 fn temporary_sqlite_path(label: &str) -> PathBuf {

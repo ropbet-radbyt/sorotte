@@ -90,7 +90,9 @@ pub use app::ServerApp;
 pub use network::run_server_network_loop_until_shutdown;
 pub use persistence::{RoomPersistenceError, StatsPersistenceError};
 
-pub(crate) use auth::{RoomPasswordCheckError, RoomPasswordProvider};
+pub(crate) use auth::{
+    RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt_legacy_compatible,
+};
 pub(crate) use compat::*;
 pub(crate) use messages::*;
 #[cfg(test)]
