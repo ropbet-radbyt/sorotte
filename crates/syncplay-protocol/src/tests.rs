@@ -6,8 +6,8 @@ use serde_json::json;
 use super::{
     ChatPayload, HelloPayload, ListPayload, PingPayload, PlaystatePayload, ProtocolMessage,
     ReadyPayload, RoomRef, SetPayload, StatePayload, decode_line, decode_message_line,
-    decode_message_lines, encode_line, encode_message_line, extract_hello,
-    extract_hello_from_message,
+    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
+    extract_hello, extract_hello_from_message,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -164,6 +164,19 @@ fn decode_message_lines_preserves_top_level_command_order() {
     assert_eq!(messages.len(), 2);
     assert!(matches!(messages[0], ProtocolMessage::Set(_)));
     assert!(matches!(messages[1], ProtocolMessage::List(_)));
+}
+
+#[test]
+fn decode_message_line_items_preserves_errors_after_valid_commands() {
+    let items = decode_message_line_items(r#"{"Set":{"room":{"name":"room2"}},"Bogus":{"x":1}}"#)
+        .expect("mixed multi-command protocol line should parse as JSON");
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].command.as_deref(), Some("Set"));
+    assert!(items[0].message.is_ok());
+    assert_eq!(items[1].command.as_deref(), Some("Bogus"));
+    assert_eq!(items[1].payload, json!({"x": 1}));
+    assert!(items[1].message.is_err());
 }
 
 #[test]

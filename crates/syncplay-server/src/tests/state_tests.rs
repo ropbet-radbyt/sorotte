@@ -454,6 +454,44 @@ fn state_requires_existing_session() {
 }
 
 #[test]
+fn first_join_state_emits_after_initial_delay() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(0.0));
+    let hello_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    let hello_messages = decode_directed_lines(&hello_lines);
+    assert!(
+        hello_messages
+            .iter()
+            .all(|(_, message)| !matches!(message, ProtocolMessage::State(_))),
+        "initial state is emitted by the scheduled watcher tick, not the Hello response"
+    );
+
+    let first_state_lines = runtime
+        .advance_time_and_collect_fanout(super::INITIAL_SERVER_STATE_DELAY_SECONDS)
+        .expect("initial state tick should encode outbound fanout lines");
+    let first_state_messages = decode_directed_lines(&first_state_lines);
+    assert_eq!(first_state_messages.len(), 1);
+    let (recipient, message) = &first_state_messages[0];
+    assert_eq!(recipient, "client-1");
+    let ProtocolMessage::State(payload) = message else {
+        panic!("initial scheduled update should be a state message");
+    };
+    let playstate = payload
+        .state
+        .playstate
+        .as_ref()
+        .expect("initial scheduled state should include playstate");
+    assert_eq!(playstate.position, Some(0.0));
+    assert_eq!(playstate.paused, Some(true));
+    assert_eq!(playstate.do_seek, Some(false));
+}
+
+#[test]
 fn periodic_state_updates_emit_after_time_advance() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(0.0));
@@ -522,7 +560,9 @@ fn periodic_state_updates_age_playing_room_position() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("alice hello should establish session");
-    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
+    runtime
+        .advance_time_and_collect_fanout(super::INITIAL_SERVER_STATE_DELAY_SECONDS)
+        .expect("initial scheduled state should encode");
     runtime
         .handle_line_fanout(
             "client-1",
@@ -581,8 +621,9 @@ fn periodic_playing_room_state_uses_slowest_watcher_position() {
             r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#,
         )
         .expect("bob hello should establish session");
-    acknowledge_server_state_counter(&mut runtime, "client-1", 1);
-    acknowledge_server_state_counter(&mut runtime, "client-2", 1);
+    runtime
+        .advance_time_and_collect_fanout(super::INITIAL_SERVER_STATE_DELAY_SECONDS)
+        .expect("initial scheduled states should encode");
     runtime
         .handle_line_fanout(
             "client-1",
@@ -618,7 +659,9 @@ fn periodic_playing_room_state_uses_slowest_watcher_position() {
         "non-seek playing samples should not force immediate room fanout"
     );
 
-    let elapsed_seconds = super::SERVER_STATE_INTERVAL_SECONDS - sample_time;
+    let elapsed_seconds = super::SERVER_STATE_INTERVAL_SECONDS
+        + super::INITIAL_SERVER_STATE_DELAY_SECONDS
+        - sample_time;
     let periodic_lines = runtime
         .advance_time_and_collect_fanout(elapsed_seconds)
         .expect("periodic state tick should encode outbound fanout lines");
@@ -713,7 +756,7 @@ fn periodic_timeout_disconnects_stale_client_and_broadcasts_left_event() {
         .expect("ping-only update should refresh client timeout timestamp");
 
     let timeout_dispatch = runtime
-        .advance_time_and_collect_dispatch(3.0)
+        .advance_time_and_collect_dispatch(4.0)
         .expect("timeout tick should encode outbound fanout lines");
     let timeout_messages = decode_directed_lines(&timeout_dispatch.outbound_lines);
 

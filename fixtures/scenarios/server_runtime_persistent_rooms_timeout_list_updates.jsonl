@@ -3,5 +3,5 @@
 {"client":"client-3","message":{"Hello":{"username":"charlie","room":{"name":"room1"},"version":"9.9.9"}}}
 {"client":"client-1","advanceSeconds":10.0,"message":{"State":{"ping":{"latencyCalculation":10.0}}}}
 {"client":"client-3","message":{"State":{"ping":{"latencyCalculation":10.0}}}}
-{"client":"client-1","advanceSeconds":3.0,"message":{"State":{"ping":{"latencyCalculation":13.0}}}}
+{"client":"client-1","advanceSeconds":4.0,"message":{"State":{"ping":{"latencyCalculation":14.0}}}}
 {"client":"client-1","message":{"List":null}}

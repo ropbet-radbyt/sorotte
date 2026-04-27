@@ -456,7 +456,7 @@ fn persistent_timeout_disconnect_emits_ui_mode_scoped_list_update() {
         .expect("client-3 heartbeat state should succeed");
 
     let timeout_lines = runtime
-        .advance_time_and_collect_fanout(3.0)
+        .advance_time_and_collect_fanout(4.0)
         .expect("timeout-producing time advance should succeed");
     let timeout_messages = decode_directed_lines(&timeout_lines);
     let list_recipients: BTreeSet<_> = timeout_messages

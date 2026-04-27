@@ -1,5 +1,16 @@
 use super::*;
 
+fn is_null_playlist_index_protocol_message(message: &ProtocolMessage) -> bool {
+    match message {
+        ProtocolMessage::Set(payload) => payload
+            .set
+            .playlist_index
+            .as_ref()
+            .is_some_and(|playlist_index| playlist_index.index_value().is_none()),
+        _ => false,
+    }
+}
+
 mod legacy_client_assertions;
 mod legacy_fanout_assertions;
 mod legacy_process_assertions;

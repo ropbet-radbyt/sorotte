@@ -37,7 +37,7 @@ fn scripted_server_runtime_controlled_room_permissions_scenario_validates_auth_a
     let bob_playlist_attempt_event = events
         .get(5)
         .expect("step 6 bob playlist attempt event should be present");
-    assert_eq!(bob_playlist_attempt_event.outbound_lines.len(), 1);
+    assert_eq!(bob_playlist_attempt_event.outbound_lines.len(), 2);
     assert!(
         bob_playlist_attempt_event
             .outbound_lines
@@ -64,6 +64,21 @@ fn scripted_server_runtime_controlled_room_permissions_scenario_validates_auth_a
             _ => false,
         }),
         "step 6 should include playlistChange correction for controlled room state"
+    );
+    assert!(
+        bob_correction_messages.iter().any(|message| match message {
+            ProtocolMessage::Set(payload) =>
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .is_some_and(|playlist_index| {
+                        playlist_index.index_value().is_none()
+                            && playlist_index.user.as_deref() == Some("+room1:CB39A19549E8")
+                    }),
+            _ => false,
+        }),
+        "step 6 should include playlistIndex correction for controlled room state"
     );
     let controller_auth_success_event = events
         .get(6)

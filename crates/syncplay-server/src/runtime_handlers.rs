@@ -35,11 +35,8 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
                         .as_object()
                         .and_then(|object| object.values().next().cloned())
                 })
-                .map(|value| value.to_string())
-                .unwrap_or_default();
-            Some(format!(
-                "{LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX} {command_payload}"
-            ))
+                .unwrap_or(Value::Null);
+            Some(unknown_command_error_message(&command_payload))
         }
         ServerRuntimeError::MissingSession(_) => Some(LEGACY_SERVER_NOT_KNOWN_ERROR.to_owned()),
         ServerRuntimeError::InvalidHello => Some(LEGACY_SERVER_HELLO_ERROR.to_owned()),
@@ -47,7 +44,102 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
     }
 }
 
+fn unknown_command_error_message(payload: &Value) -> String {
+    format!("{LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX} {payload}")
+}
+
+struct LineFanoutFailure {
+    outbound_messages: Vec<DirectedProtocolMessage>,
+    error: ServerRuntimeError,
+    protocol_error_message: Option<String>,
+}
+
+impl LineFanoutFailure {
+    fn new(outbound_messages: Vec<DirectedProtocolMessage>, error: ServerRuntimeError) -> Self {
+        Self {
+            outbound_messages,
+            error,
+            protocol_error_message: None,
+        }
+    }
+
+    fn with_protocol_error_message(
+        outbound_messages: Vec<DirectedProtocolMessage>,
+        error: ServerRuntimeError,
+        protocol_error_message: String,
+    ) -> Self {
+        Self {
+            outbound_messages,
+            error,
+            protocol_error_message: Some(protocol_error_message),
+        }
+    }
+}
+
 impl ServerRuntime {
+    fn encode_directed_protocol_messages(
+        messages: Vec<DirectedProtocolMessage>,
+    ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
+        messages
+            .into_iter()
+            .map(|message| {
+                Ok(DirectedOutboundLine {
+                    client_id: message.client_id,
+                    line: encode_message_line(&message.message)?,
+                })
+            })
+            .collect()
+    }
+
+    fn handle_line_fanout_messages(
+        &mut self,
+        client_id: &str,
+        json_line: &str,
+    ) -> Result<Vec<DirectedProtocolMessage>, Box<LineFanoutFailure>> {
+        let items = decode_message_line_items(json_line)
+            .map_err(|error| Box::new(LineFanoutFailure::new(Vec::new(), error.into())))?;
+        let mut outbound_messages = Vec::new();
+
+        for item in items {
+            if item
+                .command
+                .as_deref()
+                .is_some_and(|command| !known_protocol_command(command))
+            {
+                let protocol_error_message = unknown_command_error_message(&item.payload);
+                let error = match item.message {
+                    Ok(_) => ServerRuntimeError::Protocol(ProtocolError::ServerError {
+                        message: protocol_error_message.clone(),
+                    }),
+                    Err(error) => error.into(),
+                };
+                return Err(Box::new(LineFanoutFailure::with_protocol_error_message(
+                    outbound_messages,
+                    error,
+                    protocol_error_message,
+                )));
+            }
+
+            let message = match item.message {
+                Ok(message) => message,
+                Err(error) => {
+                    return Err(Box::new(LineFanoutFailure::new(
+                        outbound_messages,
+                        error.into(),
+                    )));
+                }
+            };
+            match self.handle_protocol_message_fanout(client_id, message) {
+                Ok(messages) => outbound_messages.extend(messages),
+                Err(error) => {
+                    return Err(Box::new(LineFanoutFailure::new(outbound_messages, error)));
+                }
+            }
+        }
+
+        Ok(outbound_messages)
+    }
+
     pub fn handle_line(
         &mut self,
         client_id: &str,
@@ -66,19 +158,13 @@ impl ServerRuntime {
         client_id: &str,
         json_line: &str,
     ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
-        let mut outbound_messages = Vec::new();
-        for message in decode_message_lines(json_line)? {
-            outbound_messages.extend(self.handle_protocol_message_fanout(client_id, message)?);
-        }
-        outbound_messages
-            .into_iter()
-            .map(|message| {
-                Ok(DirectedOutboundLine {
-                    client_id: message.client_id,
-                    line: encode_message_line(&message.message)?,
-                })
-            })
-            .collect()
+        let outbound_messages = self
+            .handle_line_fanout_messages(client_id, json_line)
+            .map_err(|failure| {
+                let LineFanoutFailure { error, .. } = *failure;
+                error
+            })?;
+        Self::encode_directed_protocol_messages(outbound_messages)
     }
 
     pub fn handle_transport_disconnect_fanout(
@@ -102,19 +188,29 @@ impl ServerRuntime {
         client_id: &str,
         json_line: &str,
     ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
-        let outbound_lines = match self.handle_line_fanout(client_id, json_line) {
-            Ok(outbound_lines) => outbound_lines,
-            Err(error) => {
-                let Some(error_message) = protocol_drop_error_message(&error, json_line) else {
+        let outbound_lines = match self.handle_line_fanout_messages(client_id, json_line) {
+            Ok(outbound_messages) => Self::encode_directed_protocol_messages(outbound_messages)?,
+            Err(failure) => {
+                let LineFanoutFailure {
+                    outbound_messages,
+                    error,
+                    protocol_error_message,
+                } = *failure;
+                let mut outbound_lines =
+                    Self::encode_directed_protocol_messages(outbound_messages)?;
+                let Some(error_message) = protocol_error_message
+                    .or_else(|| protocol_drop_error_message(&error, json_line))
+                else {
                     return Err(error);
                 };
                 let error_line =
                     encode_message_line(&ProtocolMessage::error_message(error_message))?;
+                outbound_lines.push(DirectedOutboundLine {
+                    client_id: client_id.to_owned(),
+                    line: error_line,
+                });
                 return Ok(ServerRuntimeDispatch {
-                    outbound_lines: vec![DirectedOutboundLine {
-                        client_id: client_id.to_owned(),
-                        line: error_line,
-                    }],
+                    outbound_lines,
                     transport_actions: vec![DirectedTransportAction::new(
                         client_id,
                         ServerTransportAction::Close,
@@ -289,8 +385,10 @@ impl ServerRuntime {
             .insert(client_id.to_owned(), ClientStateCounters::default());
         self.client_last_state_update_at
             .insert(client_id.to_owned(), now);
-        self.client_next_periodic_state_at
-            .insert(client_id.to_owned(), now + SERVER_STATE_INTERVAL_SECONDS);
+        self.client_next_periodic_state_at.insert(
+            client_id.to_owned(),
+            now + INITIAL_SERVER_STATE_DELAY_SECONDS,
+        );
 
         let mut outbound = Vec::new();
         let joined_message = user_joined_message_with_metadata(
@@ -323,12 +421,13 @@ impl ServerRuntime {
             client_id,
             playlist_snapshot_message,
         ));
-        if let Some(index) = room_playlist.index {
-            outbound.push(DirectedProtocolMessage::new(
-                client_id,
-                playlist_snapshot_index_message(Some(index), join_room_playback.set_by.as_deref()),
-            ));
-        }
+        outbound.push(DirectedProtocolMessage::new(
+            client_id,
+            playlist_snapshot_index_message(
+                room_playlist.index,
+                join_room_playback.set_by.as_deref(),
+            ),
+        ));
 
         let base_motd = motd_for_client_version(version, self.motd_template.as_deref());
         let motd = persistent_rooms_notice_motd(
@@ -528,15 +627,13 @@ impl ServerRuntime {
                         client_id,
                         playlist_snapshot_message,
                     ));
-                    if let Some(index) = room_playlist.index {
-                        outbound_messages.push(DirectedProtocolMessage::new(
-                            client_id,
-                            playlist_snapshot_index_message(
-                                Some(index),
-                                room_playback.set_by.as_deref(),
-                            ),
-                        ));
-                    }
+                    outbound_messages.push(DirectedProtocolMessage::new(
+                        client_id,
+                        playlist_snapshot_index_message(
+                            room_playlist.index,
+                            room_playback.set_by.as_deref(),
+                        ),
+                    ));
 
                     if self.persistent_rooms_enabled {
                         self.enqueue_list_snapshots_for_clients(
@@ -719,12 +816,10 @@ impl ServerRuntime {
                                 Some(&session.room),
                             ),
                         ));
-                        if let Some(index) = room_state.index {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                client_id,
-                                playlist_snapshot_index_message(Some(index), Some(&session.room)),
-                            ));
-                        }
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            client_id,
+                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                        ));
                     }
                 }
                 "playlistIndex" => {
@@ -748,12 +843,10 @@ impl ServerRuntime {
                         }
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
-                        if let Some(index) = room_state.index {
-                            outbound_messages.push(DirectedProtocolMessage::new(
-                                client_id,
-                                playlist_snapshot_index_message(Some(index), Some(&session.room)),
-                            ));
-                        }
+                        outbound_messages.push(DirectedProtocolMessage::new(
+                            client_id,
+                            playlist_snapshot_index_message(room_state.index, Some(&session.room)),
+                        ));
                     }
                 }
                 "features" => {

@@ -21,7 +21,7 @@ use syncplay_protocol::{
     ChatPayload, ControllerAuthPayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
     ListUserEntry, NewControlledRoomPayload, PingPayload, PlaylistChangePayload,
     PlaylistIndexPayload, PlaystatePayload, ProtocolError, ProtocolMessage, ReadyPayload, RoomRef,
-    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_lines,
+    SetPayload, StatePayload, TlsPayload, UserSetPayload, decode_line, decode_message_line_items,
     encode_message_line,
 };
 use tokio::{
@@ -59,6 +59,7 @@ const DEFAULT_MAX_FILENAME_LENGTH: usize = 250;
 const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
 const SERVER_STATE_INTERVAL_SECONDS: f64 = 1.0;
+const INITIAL_SERVER_STATE_DELAY_SECONDS: f64 = 0.1;
 const PROTOCOL_TIMEOUT_SECONDS: f64 = 12.5;
 const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;

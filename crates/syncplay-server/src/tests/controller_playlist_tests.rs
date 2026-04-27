@@ -171,7 +171,7 @@ fn controlled_room_playlist_updates_require_controller_auth() {
             r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
         )
         .expect("bob playlist change attempt should respond");
-    assert_eq!(bob_change_attempt.len(), 1);
+    assert_eq!(bob_change_attempt.len(), 2);
     assert!(
         bob_change_attempt
             .iter()
@@ -196,6 +196,21 @@ fn controlled_room_playlist_updates_require_controller_auth() {
             _ => false,
         }),
         "non-controller should receive playlistChange correction for room state"
+    );
+    assert!(
+        bob_messages.iter().any(|message| match message {
+            ProtocolMessage::Set(payload) =>
+                payload
+                    .set
+                    .playlist_index
+                    .as_ref()
+                    .is_some_and(|playlist_index| {
+                        playlist_index.index_value().is_none()
+                            && playlist_index.user.as_deref() == Some(controlled_room_name.as_str())
+                    }),
+            _ => false,
+        }),
+        "non-controller should receive playlistIndex correction for room state"
     );
     let alice_auth = runtime
         .handle_line_fanout(

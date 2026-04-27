@@ -78,7 +78,10 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
         for output in &legacy_event.outbound_lines {
             let include_output = decode_message_line(&output.line)
                 .ok()
-                .is_some_and(|message| !is_background_idle_state_message(&message));
+                .is_some_and(|message| {
+                    !is_background_idle_state_message(&message)
+                        && !is_null_playlist_index_protocol_message(&message)
+                });
             if !include_output {
                 continue;
             }
@@ -99,7 +102,10 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
         for output in &rust_event.outbound_lines {
             let include_output = decode_message_line(&output.line)
                 .ok()
-                .is_some_and(|message| !is_background_idle_state_message(&message));
+                .is_some_and(|message| {
+                    !is_background_idle_state_message(&message)
+                        && !is_null_playlist_index_protocol_message(&message)
+                });
             if !include_output {
                 continue;
             }

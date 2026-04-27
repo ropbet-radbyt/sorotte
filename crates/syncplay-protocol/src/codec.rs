@@ -1,6 +1,13 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[derive(Debug)]
+pub struct DecodedMessageLineItem {
+    pub command: Option<String>,
+    pub payload: Value,
+    pub message: Result<ProtocolMessage, ProtocolError>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
     #[error("invalid JSON payload: {0}")]
@@ -210,10 +217,21 @@ fn decode_protocol_message_with_command_order(
 }
 
 pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, ProtocolError> {
+    decode_message_line_items(line)?
+        .into_iter()
+        .map(|item| item.message)
+        .collect()
+}
+
+pub fn decode_message_line_items(line: &str) -> Result<Vec<DecodedMessageLineItem>, ProtocolError> {
     let value = decode_line(line)?;
     let Some(object) = value.as_object() else {
-        let message = decode_protocol_message_with_command_order(value, line)?;
-        return Ok(vec![message]);
+        let message = decode_protocol_message_with_command_order(value.clone(), line);
+        return Ok(vec![DecodedMessageLineItem {
+            command: None,
+            payload: value,
+            message,
+        }]);
     };
 
     let mut command_keys = Vec::new();
@@ -230,8 +248,18 @@ pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, Protocol
     }
 
     if command_keys.len() <= 1 {
-        let message = decode_protocol_message_with_command_order(value, line)?;
-        return Ok(vec![message]);
+        let command = command_keys.first().cloned();
+        let payload = command
+            .as_ref()
+            .and_then(|command| object.get(command))
+            .cloned()
+            .unwrap_or_else(|| value.clone());
+        let message = decode_protocol_message_with_command_order(value, line);
+        return Ok(vec![DecodedMessageLineItem {
+            command,
+            payload,
+            message,
+        }]);
     }
 
     let mut messages = Vec::with_capacity(command_keys.len());
@@ -240,11 +268,14 @@ pub fn decode_message_lines(line: &str) -> Result<Vec<ProtocolMessage>, Protocol
             continue;
         };
         let mut command_object = serde_json::Map::new();
-        command_object.insert(command_key, payload);
-        messages.push(decode_protocol_message_with_command_order(
-            Value::Object(command_object),
-            line,
-        )?);
+        command_object.insert(command_key.clone(), payload.clone());
+        let message =
+            decode_protocol_message_with_command_order(Value::Object(command_object), line);
+        messages.push(DecodedMessageLineItem {
+            command: Some(command_key),
+            payload,
+            message,
+        });
     }
     Ok(messages)
 }

@@ -92,7 +92,7 @@ fn hello_line_registers_session_and_returns_server_hello() {
         )
         .expect("hello line should be accepted");
 
-    assert_eq!(outbound_lines.len(), 3);
+    assert_eq!(outbound_lines.len(), 4);
     let response_message = outbound_lines
         .iter()
         .filter_map(|line| decode_message_line(line).ok())
@@ -535,6 +535,51 @@ fn protocol_error_dispatch_sends_unknown_command_error_and_close() {
             .as_deref()
             .is_some_and(|message| message.starts_with("Unknown command")),
         "unknown command should be serialized as protocol Error"
+    );
+    assert!(
+        has_close_transport_action(&dispatch.transport_actions, "client-1"),
+        "unknown command should schedule connection close after Error"
+    );
+}
+
+#[test]
+fn protocol_error_dispatch_flushes_valid_batched_commands_before_unknown_command() {
+    let mut runtime = ServerRuntime::new();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should establish session");
+
+    let dispatch = runtime
+        .handle_line_fanout_with_transport_actions(
+            "client-1",
+            r#"{"Set":{"room":{"name":"room2"}},"Bogus":{"x":1}}"#,
+        )
+        .expect("mixed batched line should produce protocol error dispatch");
+    let directed_messages = decode_directed_lines(&dispatch.outbound_lines);
+    let error_position = directed_messages
+        .iter()
+        .position(|(_, message)| matches!(message, ProtocolMessage::Error(_)))
+        .expect("unknown command should emit protocol Error");
+
+    assert!(
+        error_position > 0,
+        "valid commands before the unknown command should be flushed first"
+    );
+    assert_eq!(
+        runtime
+            .session("client-1")
+            .expect("session should remain inspectable until transport closes")
+            .room,
+        "room2"
+    );
+    assert!(
+        dispatch_error_message(&dispatch)
+            .as_deref()
+            .is_some_and(|message| message == r#"Unknown command {"x":1}"#),
+        "unknown command should use the offending command payload"
     );
     assert!(
         has_close_transport_action(&dispatch.transport_actions, "client-1"),

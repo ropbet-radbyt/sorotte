@@ -25,6 +25,7 @@ PERSISTENT_ROOMS_NOTICE = (
 CONTROLLED_ROOM_REGEX = re.compile(r"^\+(.*):(\w{12})$")
 PASSWORD_REGEX = re.compile(r"[A-Z]{2}-\d{3}-\d{3}")
 SERVER_STATE_INTERVAL_SECONDS = 1.0
+INITIAL_SERVER_STATE_DELAY_SECONDS = 0.1
 PROTOCOL_TIMEOUT_SECONDS = 12.5
 PING_MOVING_AVERAGE_WEIGHT = 0.85
 
@@ -646,7 +647,7 @@ class FanoutBatchProbe:
         return {"Set": {"playlistChange": playlist_change}}
 
     def _playlist_index_snapshot_message(self, index, set_by=None):
-        playlist_index = {"index": int(index)}
+        playlist_index = {"index": int(index) if isinstance(index, int) else None}
         if isinstance(set_by, str) and set_by:
             playlist_index["user"] = set_by
         return {"Set": {"playlistIndex": playlist_index}}
@@ -985,7 +986,7 @@ class FanoutBatchProbe:
         self.pending_client_latency.pop(client_id, None)
         self._record_client_state_update(client_id)
         self.client_next_periodic_state_at[client_id] = (
-            self.current_time_seconds + SERVER_STATE_INTERVAL_SECONDS
+            self.current_time_seconds + INITIAL_SERVER_STATE_DELAY_SECONDS
         )
 
         outputs = []
@@ -1002,15 +1003,14 @@ class FanoutBatchProbe:
         )
         outputs.append({"client": client_id, "message": playlist_snapshot})
         playlist_index = room_playlist.get("index")
-        if isinstance(playlist_index, int):
-            outputs.append(
-                {
-                    "client": client_id,
-                    "message": self._playlist_index_snapshot_message(
-                        playlist_index, self.room_playback[room_name]["setBy"]
-                    ),
-                }
-            )
+        outputs.append(
+            {
+                "client": client_id,
+                "message": self._playlist_index_snapshot_message(
+                    playlist_index, self.room_playback[room_name]["setBy"]
+                ),
+            }
+        )
 
         outputs.append(
             {
@@ -1075,15 +1075,14 @@ class FanoutBatchProbe:
                     )
                     outputs.append({"client": client_id, "message": playlist_snapshot})
                     playlist_index = room_playlist.get("index")
-                    if isinstance(playlist_index, int):
-                        outputs.append(
-                            {
-                                "client": client_id,
-                                "message": self._playlist_index_snapshot_message(
-                                    playlist_index, self.room_playback[room_name]["setBy"]
-                                ),
-                            }
-                        )
+                    outputs.append(
+                        {
+                            "client": client_id,
+                            "message": self._playlist_index_snapshot_message(
+                                playlist_index, self.room_playback[room_name]["setBy"]
+                            ),
+                        }
+                    )
                     if self.persistent_rooms_enabled:
                         for peer_id in self._to_gui_only_list_recipient_ids():
                             outputs.extend(self._list_response(peer_id))
@@ -1120,6 +1119,14 @@ class FanoutBatchProbe:
                             },
                         }
                     )
+                    outputs.append(
+                        {
+                            "client": client_id,
+                            "message": self._playlist_index_snapshot_message(
+                                room_state.get("index"), room_name
+                            ),
+                        }
+                    )
 
         if "playlistIndex" in settings and isinstance(settings["playlistIndex"], dict):
             index = settings["playlistIndex"].get("index")
@@ -1138,6 +1145,16 @@ class FanoutBatchProbe:
                     }
                     for peer_id in self._room_client_ids(room_name):
                         outputs.append({"client": peer_id, "message": playlist_message})
+                else:
+                    room_state = self.room_playlists[room_name]
+                    outputs.append(
+                        {
+                            "client": client_id,
+                            "message": self._playlist_index_snapshot_message(
+                                room_state.get("index"), room_name
+                            ),
+                        }
+                    )
 
         if "controllerAuth" in settings and isinstance(settings["controllerAuth"], dict):
             auth = settings["controllerAuth"]

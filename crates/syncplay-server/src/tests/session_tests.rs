@@ -272,7 +272,7 @@ fn set_room_moves_session_between_rooms() {
     let outbound_lines = runtime
         .handle_line("client-1", r#"{"Set":{"room":{"name":"room2"}}}"#)
         .expect("set room should succeed");
-    assert_eq!(outbound_lines.len(), 4);
+    assert_eq!(outbound_lines.len(), 5);
     assert!(!runtime.room_is_present("room1"));
     assert!(runtime.room_is_present("room2"));
     let outbound_messages: Vec<_> = outbound_lines
@@ -315,7 +315,7 @@ fn set_room_moves_session_between_rooms() {
 }
 
 #[test]
-fn hello_and_room_switch_omit_absent_playlist_index_snapshot() {
+fn hello_and_room_switch_send_null_playlist_index_snapshot() {
     let mut runtime = ServerRuntime::default();
     let hello_lines = runtime
         .handle_line_fanout(
@@ -325,8 +325,8 @@ fn hello_and_room_switch_omit_absent_playlist_index_snapshot() {
         .expect("hello should establish session");
     let hello_messages = decode_directed_lines(&hello_lines);
     assert!(
-        !has_null_playlist_index_snapshot(&hello_messages, "client-1"),
-        "Python omits playlistIndex snapshots when the room has no selected index"
+        has_null_playlist_index_snapshot(&hello_messages, "client-1"),
+        "Python sends a null playlistIndex snapshot when the room has no selected index"
     );
     acknowledge_directed_state_counters(&mut runtime, &hello_messages);
 
@@ -335,8 +335,8 @@ fn hello_and_room_switch_omit_absent_playlist_index_snapshot() {
         .expect("set room should succeed");
     let room_switch_messages = decode_directed_lines(&room_switch_lines);
     assert!(
-        !has_null_playlist_index_snapshot(&room_switch_messages, "client-1"),
-        "Python omits room-switch playlistIndex snapshots when the destination has no selected index"
+        has_null_playlist_index_snapshot(&room_switch_messages, "client-1"),
+        "Python sends a null room-switch playlistIndex snapshot when the destination has no selected index"
     );
 }
 
@@ -502,7 +502,7 @@ fn hello_fanout_notifies_existing_room_members() {
         .expect("second hello should fan out user events");
     let directed_messages = decode_directed_lines(&directed_lines);
 
-    assert_eq!(directed_messages.len(), 5);
+    assert_eq!(directed_messages.len(), 6);
 
     assert!(
         directed_messages.iter().any(|(recipient, message)| {
