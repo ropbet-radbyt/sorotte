@@ -293,7 +293,7 @@ impl SyncplayGuiShellAppState {
                 "main-window:room-header:actions",
                 "Room Header Actions",
                 GuiLayoutMode::ButtonWrap {
-                    min_button_width: 140.0,
+                    min_button_width: 104.0,
                 },
                 vec![
                     GuiWidgetNode::leaf(

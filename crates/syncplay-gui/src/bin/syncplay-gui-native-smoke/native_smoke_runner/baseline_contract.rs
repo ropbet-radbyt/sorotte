@@ -278,10 +278,16 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
             "expected at least 2 editable public-server edit-session fields, found {edit_count}"
         ));
     }
-    driver.set_edit_value_by_index(window, 0, CUSTOM_SERVER_LABEL)?;
-    driver.set_edit_value_by_index(window, 1, CUSTOM_SERVER_ADDRESS)?;
-    wait_for_edit_value_by_index(driver, window, 0, CUSTOM_SERVER_LABEL, step_timeout)?;
-    wait_for_edit_value_by_index(driver, window, 1, CUSTOM_SERVER_ADDRESS, step_timeout)?;
+    driver.set_named_edit_value(window, "Label", CUSTOM_SERVER_LABEL, false)?;
+    driver.set_named_edit_value(window, "Address", CUSTOM_SERVER_ADDRESS, false)?;
+    wait_for_named_edit_value(driver, window, "Label", CUSTOM_SERVER_LABEL, step_timeout)?;
+    wait_for_named_edit_value(
+        driver,
+        window,
+        "Address",
+        CUSTOM_SERVER_ADDRESS,
+        step_timeout,
+    )?;
     invoke_named_control_with_wait(
         driver,
         window,

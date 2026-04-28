@@ -81,7 +81,7 @@ impl SyncplayGuiShellAppState {
             )],
         );
 
-        let mut children = vec![server_list.with_min_content_height(150.0), commands];
+        let mut children = vec![server_list.with_min_content_height(80.0), commands];
         if let Some(session) = &self.public_server_edit_session {
             children.push(GuiWidgetNode::branch(
                 "public-servers:edit-session",

@@ -214,20 +214,20 @@ impl GuiWidgetEguiRenderer {
             node,
             state,
             GuiPanelShellOptions::new(panel_width)
-                .body_margin(egui::Margin::symmetric(12, 12))
+                .body_margin(egui::Margin::symmetric(12, 8))
                 .body_horizontal_margin(24.0),
             |renderer, ui, _body_width| {
                 if let Some(alert_node) = alert_node {
                     renderer.render_action_alert_panel(ui, alert_node, state);
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
                 }
                 if let Some(status_node) = status_node {
                     renderer.render_stream_support_overview(ui, status_node);
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     renderer.render_stream_support_status_cards(ui, status_node);
                 }
                 if let Some(actions_node) = actions_node {
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
                     renderer.render_stream_support_plugin_actions(ui, actions_node, state);
                 }
             },
@@ -254,7 +254,7 @@ impl GuiWidgetEguiRenderer {
             .fill(palette.surface_muted)
             .stroke(egui::Stroke::new(1.0, palette.border))
             .corner_radius(egui::CornerRadius::same(5))
-            .inner_margin(egui::Margin::symmetric(12, 10))
+            .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 let inner_width = Self::width_inside_horizontal_margin(available_width, 24.0);
                 ui.set_width(inner_width);
@@ -326,7 +326,7 @@ impl GuiWidgetEguiRenderer {
             return;
         }
 
-        let gap = 10.0;
+        let gap = 8.0;
         let available_width = Self::visible_available_width(ui);
         let columns: usize = if available_width >= 720.0 { 2 } else { 1 };
         let card_width = ((available_width - (gap * (columns.saturating_sub(1)) as f32))
@@ -360,12 +360,12 @@ impl GuiWidgetEguiRenderer {
             .fill(palette.surface_muted.gamma_multiply(0.84))
             .stroke(egui::Stroke::new(1.0, palette.border))
             .corner_radius(egui::CornerRadius::same(5))
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 let inner_width = Self::width_inside_horizontal_margin(card_width, 20.0);
                 ui.set_width(inner_width);
                 ui.set_max_width(inner_width);
-                ui.set_min_height(48.0);
+                ui.set_min_height(40.0);
                 ui.label(
                     egui::RichText::new(&node.label)
                         .small()
@@ -399,7 +399,7 @@ impl GuiWidgetEguiRenderer {
         state: &SyncplayGuiShellAppState,
     ) {
         let available_width = Self::visible_available_width(ui);
-        let gap = 10.0;
+        let gap = 8.0;
         let target_button_width = 176.0;
         let buttons_per_row = if available_width < 360.0 {
             1
@@ -428,7 +428,7 @@ impl GuiWidgetEguiRenderer {
                 }
             });
             if row_index + 1 < row_count {
-                ui.add_space(8.0);
+                ui.add_space(4.0);
             }
         }
     }

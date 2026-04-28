@@ -172,11 +172,11 @@ fn gui_semantic_driver_runs_playlist_workflow_scenario_without_platform_ui() {
             .iter()
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["episode3.mkv"]
+        vec!["episode1.mkv", "https://example.com/live"]
     );
     assert_eq!(
         driver.state().selection.selected_main_window_playlist,
-        Some(0)
+        Some(1)
     );
     assert!(driver.state().playlist_text_edit_session.is_none());
     assert!(driver.state().playlist_url_edit_session.is_none());

@@ -38,12 +38,13 @@ impl GuiWidgetEguiRenderer {
         match Self::room_dashboard_layout_for_width(available_width) {
             GuiRoomDashboardLayout::Narrow => {
                 let column_width = available_width.clamp(0.0, 720.0);
+                let stacked_gap = if available_width < 560.0 { 48.0 } else { gap };
                 Self::allocate_centered_row(ui, column_width, |ui| {
                     Self::allocate_fixed_width(ui, column_width, |ui| {
                         self.render_node(ui, session_panel, state);
-                        ui.add_space(gap);
+                        ui.add_space(stacked_gap);
                         self.render_node(ui, playlist_column, state);
-                        ui.add_space(gap);
+                        ui.add_space(stacked_gap);
                         self.render_node(ui, chat_panel, state);
                     });
                 });
@@ -169,14 +170,14 @@ impl GuiWidgetEguiRenderer {
             if available_height > 0.0 && available_height < 520.0 {
                 return 400.0;
             }
-            return 560.0;
+            return 520.0;
         }
         if available_height > 0.0 && available_height < 460.0 {
             360.0
         } else if available_height > 0.0 && available_height < 620.0 {
             440.0
         } else {
-            520.0
+            480.0
         }
     }
 
@@ -336,11 +337,43 @@ impl GuiWidgetEguiRenderer {
             GuiLayoutMode::TabStrip { min_tab_width } => {
                 let edge_padding = 8.0;
                 let gap = 8.0;
+                let tab_count = node.children.len().max(1);
+                let available_width =
+                    (Self::visible_available_width(ui) - (edge_padding * 2.0)).max(0.0);
+                let compact_row_width = ((available_width
+                    - (gap * tab_count.saturating_sub(1) as f32))
+                    / tab_count as f32)
+                    .max(0.0);
+                if node.children.len() > 1 && compact_row_width >= 72.0 {
+                    ui.horizontal_top(|ui| {
+                        let mut spacing = ui.spacing().item_spacing;
+                        spacing.x = 0.0;
+                        spacing.y = gap;
+                        ui.spacing_mut().item_spacing = spacing;
+                        ui.add_space(edge_padding);
+                        for (entry_index, child) in node.children.iter().enumerate() {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(compact_row_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(compact_row_width);
+                                    ui.set_max_width(compact_row_width);
+                                    self.render_tab_button(ui, child, state, compact_row_width);
+                                },
+                            );
+                            if entry_index + 1 < node.children.len() {
+                                ui.add_space(gap);
+                            }
+                        }
+                        ui.add_space(edge_padding);
+                    });
+                    return;
+                }
                 let plan = Self::plan_responsive_columns(
-                    (Self::visible_available_width(ui) - (edge_padding * 2.0)).max(0.0),
+                    available_width,
                     gap,
                     min_tab_width,
-                    node.children.len().max(1),
+                    tab_count,
                     node.children.iter().map(|_| 1usize),
                 );
                 for (row_index, row) in plan.rows.iter().enumerate() {
@@ -381,9 +414,48 @@ impl GuiWidgetEguiRenderer {
                 label_width,
                 min_field_width,
             } => {
-                for child in &node.children {
-                    self.render_form_row(ui, child, state, label_width, min_field_width);
+                let previous_spacing = ui.spacing().item_spacing;
+                let mut spacing = previous_spacing;
+                spacing.y = 0.0;
+                ui.spacing_mut().item_spacing = spacing;
+                let available_width = Self::visible_available_width(ui);
+                let gap = 12.0;
+                let use_two_columns = node.children.len() > 7 && available_width >= 400.0;
+                if use_two_columns {
+                    let column_width = ((available_width - gap) * 0.5).max(0.0);
+                    for row in node.children.chunks(2) {
+                        ui.horizontal_top(|ui| {
+                            let mut spacing = ui.spacing().item_spacing;
+                            spacing.x = 0.0;
+                            ui.spacing_mut().item_spacing = spacing;
+                            for (index, child) in row.iter().enumerate() {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(column_width, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(column_width);
+                                        ui.set_max_width(column_width);
+                                        self.render_form_row(
+                                            ui,
+                                            child,
+                                            state,
+                                            label_width,
+                                            min_field_width,
+                                        );
+                                    },
+                                );
+                                if index + 1 < row.len() {
+                                    ui.add_space(gap);
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    for child in &node.children {
+                        self.render_form_row(ui, child, state, label_width, min_field_width);
+                    }
                 }
+                ui.spacing_mut().item_spacing = previous_spacing;
             }
             GuiLayoutMode::KeyValueGrid { min_pair_width } => {
                 let plan = Self::plan_responsive_columns(
@@ -428,7 +500,8 @@ impl GuiWidgetEguiRenderer {
                 let buttons_per_row = ((available_width + 12.0) / (min_button_width + 12.0))
                     .floor()
                     .max(1.0) as usize;
-                for chunk in node.children.chunks(buttons_per_row) {
+                let row_count = node.children.len().div_ceil(buttons_per_row);
+                for (row_index, chunk) in node.children.chunks(buttons_per_row).enumerate() {
                     let row_button_width = ((available_width
                         - (12.0 * (chunk.len().saturating_sub(1)) as f32))
                         / chunk.len() as f32)
@@ -449,7 +522,9 @@ impl GuiWidgetEguiRenderer {
                             );
                         }
                     });
-                    ui.add_space(8.0);
+                    if row_index + 1 < row_count {
+                        ui.add_space(8.0);
+                    }
                 }
             }
             GuiLayoutMode::CompactButtonWrap {
@@ -554,11 +629,16 @@ impl GuiWidgetEguiRenderer {
         tab_width: f32,
     ) {
         let mut clicked = false;
+        let label = if tab_width < 104.0 {
+            egui::RichText::new(Self::display_text(node)).small()
+        } else {
+            egui::RichText::new(Self::display_text(node))
+        };
         ui.add_enabled_ui(node.enabled, |ui| {
             clicked = ui
                 .add_sized(
                     [tab_width.max(0.0), 0.0],
-                    egui::Button::new(Self::display_text(node)).selected(node.selected),
+                    egui::Button::new(label).selected(node.selected),
                 )
                 .clicked();
         });

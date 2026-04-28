@@ -55,7 +55,17 @@ impl GuiWidgetEguiRenderer {
         let panel_width = Self::panel_available_width(ui);
         let header_content_width = (panel_width - 24.0).max(0.0);
         let compact = header_content_width < 720.0;
-        let header_height = if compact { 118.0 } else { 64.0 };
+        let header_height = if compact {
+            if room_actions.is_some() && header_content_width < 360.0 {
+                238.0
+            } else if room_actions.is_some() {
+                138.0
+            } else {
+                118.0
+            }
+        } else {
+            64.0
+        };
 
         self.render_panel_shell_with_header(
             ui,
@@ -85,7 +95,6 @@ impl GuiWidgetEguiRenderer {
                             header_actions,
                             state,
                             header_content_width,
-                            true,
                         );
                     }
                 } else {
@@ -142,7 +151,6 @@ impl GuiWidgetEguiRenderer {
                                         header_actions,
                                         state,
                                         action_width,
-                                        false,
                                     );
                                 },
                             );
@@ -374,92 +382,19 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
         available_width: f32,
-        wrap: bool,
     ) {
         if node.children.is_empty() {
             return;
         }
-        let gap = 8.0;
-        let button_height = 34.0;
-        if !wrap {
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = gap;
-                ui.spacing_mut().item_spacing = spacing;
-                for child in &node.children {
-                    let width = match child.id.as_str() {
-                        "main-window:room-actions:toggle" => 132.0,
-                        "main-window:connection:disconnect" => 116.0,
-                        _ => 118.0,
-                    };
-                    self.render_centered_room_header_button(ui, child, state, width, button_height);
-                }
-            });
-            return;
-        }
-
-        let min_width = 118.0;
-        let buttons_per_row = ((available_width + gap) / (min_width + gap))
-            .floor()
-            .max(1.0) as usize;
-        for (row_index, chunk) in node.children.chunks(buttons_per_row).enumerate() {
-            ui.horizontal_top(|ui| {
-                let mut spacing = ui.spacing().item_spacing;
-                spacing.x = gap;
-                ui.spacing_mut().item_spacing = spacing;
-                let row_button_width = ((available_width
-                    - (gap * chunk.len().saturating_sub(1) as f32))
-                    / chunk.len() as f32)
-                    .max(0.0);
-                for child in chunk {
-                    self.render_centered_room_header_button(
-                        ui,
-                        child,
-                        state,
-                        row_button_width,
-                        button_height,
-                    );
-                }
-            });
-            if row_index + 1 < node.children.len().div_ceil(buttons_per_row) {
-                ui.add_space(gap);
-            }
-        }
-    }
-
-    fn render_centered_room_header_button(
-        &mut self,
-        ui: &mut egui::Ui,
-        node: &GuiWidgetNode,
-        state: &SyncplayGuiShellAppState,
-        width: f32,
-        height: f32,
-    ) {
-        let mut label = egui::RichText::new(Self::display_text(node));
-        if node.enabled
-            && let Some((_, _, text_color)) = Self::button_colors_for_node(ui, node)
-        {
-            label = label.color(text_color).strong();
-        }
-        let mut button = egui::Button::new(label)
-            .selected(node.selected)
-            .min_size(egui::vec2(width.max(0.0), height));
-        if node.enabled
-            && let Some((fill, hover_fill, _)) = Self::button_colors_for_node(ui, node)
-        {
-            button = button.fill(
-                if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
-                    hover_fill
-                } else {
-                    fill
-                },
-            );
-        }
-        let response = ui.add_enabled(node.enabled, button);
-        let response = Self::attach_node_tooltip(response, node);
-        if response.clicked() {
-            self.handle_button_node_click(state, node);
-        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(available_width.max(0.0), 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(available_width.max(0.0));
+                ui.set_max_width(available_width.max(0.0));
+                self.render_layout(ui, node, state);
+            },
+        );
     }
 
     fn render_room_change_section(

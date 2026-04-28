@@ -1,5 +1,7 @@
 # Configuration save and follow-on cross-surface workflow
 setting	public-server	Primary	syncplay.pl:8999
+setting	chat-input-enabled	false
+setting	chat-output-enabled	false
 assert-selected	configuration-root	true
 enter-text	config:Connection:Host	false	syncplay.example
 enter-text	config:Connection:Port	false	8999

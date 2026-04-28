@@ -57,8 +57,8 @@ impl SyncplayGuiShellAppState {
                             format!("config-section:{}:form", section.title),
                             format!("{} Form", section.title),
                             GuiLayoutMode::FormGrid {
-                                label_width: 160.0,
-                                min_field_width: 220.0,
+                                label_width: 132.0,
+                                min_field_width: 160.0,
                             },
                             controls,
                         )],
@@ -314,12 +314,12 @@ impl SyncplayGuiShellAppState {
             "configuration:content:connection",
             "Connection Content",
             GuiLayoutMode::ResponsiveColumns {
-                min_column_width: 320.0,
+                min_column_width: 260.0,
                 max_columns: 3,
             },
             [
-                Some(public_servers_panel.clone()),
                 connection_card,
+                Some(public_servers_panel.clone()),
                 Some(connection_tools),
                 room_history_panel.clone(),
             ]

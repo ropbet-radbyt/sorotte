@@ -69,7 +69,7 @@ impl GuiWidgetEguiRenderer {
         let gap = 10.0;
         let label_width = Self::form_label_width(available_width, label_width);
         let field_width = (available_width - label_width - gap).max(0.0);
-        let stacked = field_width < min_field_width || available_width < 360.0;
+        let stacked = field_width < min_field_width || available_width < 280.0;
 
         if stacked {
             self.render_form_label(ui, node, available_width, false);
@@ -394,6 +394,8 @@ impl GuiWidgetEguiRenderer {
             "main-window:playlist-url-edit:text" | "main-window:media-url-edit:text"
         ) {
             3
+        } else if node.id == "config:Connection:Room History" {
+            1
         } else {
             6
         }
