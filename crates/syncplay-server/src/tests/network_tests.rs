@@ -42,6 +42,10 @@ async fn server_network_loop_routes_hello_response_to_connected_client() {
         if read_bytes == 0 {
             break;
         }
+        assert!(
+            line.ends_with("\r\n"),
+            "server protocol responses should use CRLF framing"
+        );
         let message = decode_message_line(line.trim_end()).expect("response line should decode");
         if matches!(message, ProtocolMessage::Hello(_)) {
             saw_hello = true;

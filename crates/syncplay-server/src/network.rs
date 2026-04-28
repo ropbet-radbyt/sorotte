@@ -55,7 +55,7 @@ where
     S: AsyncWrite + Unpin,
 {
     stream.write_all(line.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
+    stream.write_all(b"\r\n").await?;
     stream.flush().await?;
     Ok(())
 }
