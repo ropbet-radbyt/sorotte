@@ -91,6 +91,37 @@ fn motd_for_client_version_prepends_upgrade_warning_for_outdated_client_with_cus
 }
 
 #[test]
+fn motd_for_client_context_supports_python_template_variables() {
+    assert_eq!(
+        super::motd_for_client_context(
+            "1.7.5",
+            Some("Server=$version IP=$userIp User=$username Room=$room Cost=$$5"),
+            "203.0.113.9",
+            "alice",
+            "room1",
+        ),
+        "Server=1.7.5 IP=203.0.113.9 User=alice Room=room1 Cost=$5"
+    );
+}
+
+#[test]
+fn motd_for_client_context_reports_python_template_errors() {
+    assert_eq!(
+        super::motd_for_client_context("1.7.5", Some("Bad $ placeholder"), "", "alice", "room1"),
+        "Message of the Day has unescaped placeholders. All $ signs should be doubled ($$)."
+    );
+}
+
+#[test]
+fn motd_for_client_context_reports_overlong_rendered_template() {
+    let template = "x".repeat(10_000);
+    assert_eq!(
+        super::motd_for_client_context("1.7.5", Some(&template), "", "alice", "room1"),
+        "Message of the Day is too long - maximum of 10000 chars, 10000 given."
+    );
+}
+
+#[test]
 fn hello_line_registers_session_and_returns_server_hello() {
     let mut runtime = ServerRuntime::default();
     let outbound_lines = runtime

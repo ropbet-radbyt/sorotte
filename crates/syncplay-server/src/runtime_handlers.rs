@@ -96,6 +96,15 @@ impl ServerRuntime {
         client_id: &str,
         json_line: &str,
     ) -> Result<Vec<DirectedProtocolMessage>, Box<LineFanoutFailure>> {
+        self.handle_line_fanout_messages_for_peer(client_id, json_line, None)
+    }
+
+    fn handle_line_fanout_messages_for_peer(
+        &mut self,
+        client_id: &str,
+        json_line: &str,
+        peer_ip: Option<&str>,
+    ) -> Result<Vec<DirectedProtocolMessage>, Box<LineFanoutFailure>> {
         let items = decode_message_line_items(json_line)
             .map_err(|error| Box::new(LineFanoutFailure::new(Vec::new(), error.into())))?;
         let mut outbound_messages = Vec::new();
@@ -129,7 +138,7 @@ impl ServerRuntime {
                     )));
                 }
             };
-            match self.handle_protocol_message_fanout(client_id, message) {
+            match self.handle_protocol_message_fanout_for_peer(client_id, message, peer_ip) {
                 Ok(messages) => outbound_messages.extend(messages),
                 Err(error) => {
                     return Err(Box::new(LineFanoutFailure::new(outbound_messages, error)));
@@ -188,7 +197,18 @@ impl ServerRuntime {
         client_id: &str,
         json_line: &str,
     ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
-        let outbound_lines = match self.handle_line_fanout_messages(client_id, json_line) {
+        self.handle_line_fanout_with_transport_actions_for_peer(client_id, json_line, None)
+    }
+
+    pub fn handle_line_fanout_with_transport_actions_for_peer(
+        &mut self,
+        client_id: &str,
+        json_line: &str,
+        peer_ip: Option<&str>,
+    ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
+        let outbound_lines = match self
+            .handle_line_fanout_messages_for_peer(client_id, json_line, peer_ip)
+        {
             Ok(outbound_messages) => Self::encode_directed_protocol_messages(outbound_messages)?,
             Err(failure) => {
                 let LineFanoutFailure {
@@ -243,8 +263,19 @@ impl ServerRuntime {
         client_id: &str,
         message: ProtocolMessage,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        self.handle_protocol_message_fanout_for_peer(client_id, message, None)
+    }
+
+    pub fn handle_protocol_message_fanout_for_peer(
+        &mut self,
+        client_id: &str,
+        message: ProtocolMessage,
+        peer_ip: Option<&str>,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         match message {
-            ProtocolMessage::Hello(payload) => self.handle_hello(client_id, payload.hello),
+            ProtocolMessage::Hello(payload) => {
+                self.handle_hello_for_peer(client_id, payload.hello, peer_ip)
+            }
             ProtocolMessage::Set(payload) => self.handle_set(client_id, payload.set),
             ProtocolMessage::List(payload) => self.handle_list(client_id, payload.list),
             ProtocolMessage::State(payload) => self.handle_state(client_id, payload.state),
@@ -311,10 +342,11 @@ impl ServerRuntime {
         )])
     }
 
-    pub(crate) fn handle_hello(
+    pub(crate) fn handle_hello_for_peer(
         &mut self,
         client_id: &str,
         hello: HelloPayload,
+        peer_ip: Option<&str>,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let requested_username =
             truncate_text_to_max_chars(hello.username.trim(), self.max_username_length);
@@ -428,7 +460,13 @@ impl ServerRuntime {
             ),
         ));
 
-        let base_motd = motd_for_client_version(version, self.motd_template.as_deref());
+        let base_motd = motd_for_client_context(
+            version,
+            self.motd_template.as_deref(),
+            peer_ip.unwrap_or_default(),
+            &username,
+            &room_name,
+        );
         let motd = persistent_rooms_notice_motd(
             base_motd,
             self.persistent_rooms_enabled,

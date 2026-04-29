@@ -105,6 +105,12 @@ For Python-interop-sensitive changes:
 
 - prefer the live Python GUI scenarios or targeted `syncplay-compat` coverage, not just local mock tests
 
+For server release-readiness changes:
+
+- run `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
+- this strict gate requires Python/TLS/IPv6 prerequisites and runs the ignored `syncplay-server` binary release matrix against direct TCP clients and real Python Syncplay clients
+- run `powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1` when packaging or release artifacts change
+
 ## Test Expectations By Feature Type
 
 ### Detached GUI Connect Or Search Work

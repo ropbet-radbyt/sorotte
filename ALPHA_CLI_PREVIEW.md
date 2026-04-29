@@ -7,7 +7,7 @@ Use `PROJECT_STATUS.md` for the current repo audit/checklist. This file is the p
 ## Scope
 
 - `syncplay-cli.exe` (headless CLI client, `mpv` integration)
-- `syncplay-server.exe` is now a usable alpha server executable (real `--help` + listener startup), but Python server CLI parity is still partial
+- `syncplay-server.exe` is a Python-compatible Rust server executable with a separate release verification and packaging flow in `docs/SERVER_RELEASE.md`
 
 This is a developer-preview / CLI-alpha workflow, not a GUI release.
 
@@ -48,7 +48,7 @@ Recommended alpha zip contents (Windows):
 - `ALPHA_CLI_PREVIEW.md`
 
 Do not package `target/release/deps/`.
-Present `syncplay-server.exe` as an alpha/developer server binary only (core startup works; several Python server flags are still unimplemented).
+Package release-ready server artifacts with `scripts/package-server-release.ps1`; this CLI alpha zip remains focused on the headless client workflow.
 
 ## Prerequisites
 
@@ -188,18 +188,17 @@ Supported explicit-IPC `_args` subset:
 
 Unsupported `_args` are ignored in explicit-IPC mode (with startup summary/warning diagnostics).
 
-## Optional: Local Server for Manual Testing (Rust alpha server or Python reference server)
+## Optional: Local Server for Manual Testing (Rust server or Python reference server)
 
 Default local server port is `8999`.
 
-Rust alpha server (core startup path):
+Rust server:
 
 ```powershell
 .\target\release\syncplay-server.exe --port 8999
 ```
 
-Current Rust server CLI parity note: the executable supports core startup/bind/persistence/TLS plus `--disable-chat`, `--disable-ready`, max-length flags, and `--isolate-rooms`, and now accepts Python-style MD5 `Hello.password` tokens for `--password` compatibility; not all Python `syncplay-server` options/behaviors are implemented yet (notably dual-interface binding parity).
-`--isolate-rooms` currently rejects persistent-room options in the Rust alpha (`--rooms-db-file`, `--permanent-rooms-file`, `SYNCPLAY_SERVER_PERSISTENT_ROOMS`), matching the Python docs' incompatibility guidance.
+Current Rust server parity note: the executable supports the Python-compatible server CLI/listener/MOTD/password/persistence/TLS path and is covered by the strict release gate in `scripts/server-release-verify.ps1`.
 
 Python reference server fallback:
 
@@ -216,8 +215,7 @@ Then point the client to `127.0.0.1:8999` as shown above.
 - Full Qt `QSettings` GUI behavior parity is out of scope; `--clear-gui-data` is best-effort for known legacy stores.
 - Explicit-IPC `_args` support is intentionally limited to the subset above.
 - Non-managed external-player startup is best-effort launch compatibility only (no non-`mpv` adapter integration).
-- `syncplay-server.exe` is a usable alpha/local-test server binary for core startup flows, but Python server CLI parity is incomplete (notably dual-interface binding parity and binary-level operational smoke coverage). For `--password`, the Rust server now accepts both raw tokens and Python-style MD5 `Hello.password` tokens as a compatibility superset.
-- `--isolate-rooms` is supported, but currently incompatible with persistent-room options in the Rust alpha (`--rooms-db-file`, `--permanent-rooms-file`, `SYNCPLAY_SERVER_PERSISTENT_ROOMS`).
+- Server release artifacts are produced separately from this CLI alpha guide and are checksumed but unsigned in the current milestone.
 - Real-`mpv` smokes are Windows-oriented and rely on local `mpv` + media availability.
 
 ## Diagnostics / Troubleshooting

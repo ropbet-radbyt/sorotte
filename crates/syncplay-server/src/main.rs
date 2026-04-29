@@ -5,14 +5,59 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use cli::{
-    CliAction, ServerRunConfig, parse_server_cli_args, print_help, print_version,
-    resolve_run_config,
+    CliAction, ServerBindEndpoint, ServerBindFamily, ServerRunConfig, parse_server_cli_args,
+    print_help, print_version, resolve_run_config,
 };
-use syncplay_server::{ServerApp, run_server_network_loop_until_shutdown};
+use syncplay_server::{ServerApp, run_server_network_loops_until_shutdown};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, watch};
 
+fn endpoint_label(endpoint: &ServerBindEndpoint) -> &'static str {
+    match endpoint.family {
+        ServerBindFamily::Ipv4 => "IPv4",
+        ServerBindFamily::Ipv6 => "IPv6",
+    }
+}
+
+async fn bind_server_listeners(config: &ServerRunConfig) -> anyhow::Result<Vec<TcpListener>> {
+    let mut listeners = Vec::new();
+    let mut failures = Vec::new();
+    for endpoint in &config.bind_endpoints {
+        match TcpListener::bind((endpoint.host.as_str(), config.port)).await {
+            Ok(listener) => {
+                let local_addr = listener
+                    .local_addr()
+                    .with_context(|| "failed to inspect listener local address")?;
+                eprintln!("syncplay-server listening on {local_addr}");
+                listeners.push(listener);
+            }
+            Err(source) => {
+                failures.push(format!(
+                    "{} {}:{} ({source})",
+                    endpoint_label(endpoint),
+                    endpoint.host,
+                    config.port
+                ));
+            }
+        }
+    }
+
+    if listeners.is_empty() {
+        bail!(
+            "unable to listen using configured IPv4/IPv6 endpoints: {}",
+            failures.join("; ")
+        );
+    }
+    for failure in failures {
+        eprintln!("syncplay-server: listener bind failed: {failure}");
+    }
+
+    Ok(listeners)
+}
+
 async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
+    let listeners = bind_server_listeners(&config).await?;
+
     let mut app = match config.room_password_salt {
         Some(salt) => ServerApp::with_room_password_salt(salt),
         None => ServerApp::new(),
@@ -46,18 +91,9 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
     app.runtime_mut().set_tls_cert_path(config.tls_cert_path);
     app.runtime_mut().set_stats_db_path(config.stats_db_file)?;
 
-    let listener = TcpListener::bind((config.bind_host.as_str(), config.port))
-        .await
-        .with_context(|| format!("failed to bind {}:{}", config.bind_host, config.port))?;
-    let local_addr = listener
-        .local_addr()
-        .with_context(|| "failed to inspect listener local address")?;
-
-    eprintln!("syncplay-server listening on {local_addr}");
-
     let runtime = Arc::new(Mutex::new(std::mem::take(app.runtime_mut())));
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    run_server_network_loop_until_shutdown(listener, runtime, None, shutdown_rx).await?;
+    run_server_network_loops_until_shutdown(listeners, runtime, None, shutdown_rx).await?;
     Ok(())
 }
 

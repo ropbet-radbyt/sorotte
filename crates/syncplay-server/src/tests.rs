@@ -28,8 +28,8 @@ use super::{
     RoomPasswordProvider, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS, ServerApp,
     ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError, ServerTransportAction,
     TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
-    generate_server_salt_legacy_compatible, motd_for_client_version, read_network_line_from_stream,
-    run_server_network_loop_until_shutdown,
+    generate_server_salt_legacy_compatible, motd_for_client_context, motd_for_client_version,
+    read_network_line_from_stream, run_server_network_loop_until_shutdown,
 };
 use syncplay_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, ProtocolMessage, SetPayload,

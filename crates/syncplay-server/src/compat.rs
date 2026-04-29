@@ -56,6 +56,98 @@ pub(crate) fn render_motd_template(template: &str, client_version: &str) -> Stri
         .replace("{upgrade_url}", LEGACY_COMPAT_UPGRADE_URL)
 }
 
+fn render_python_dollar_motd_template(
+    template: &str,
+    user_ip: &str,
+    username: &str,
+    room_name: &str,
+) -> Result<String, ()> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            rendered.push(ch);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('$') => {
+                chars.next();
+                rendered.push('$');
+            }
+            Some('{') => {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(next);
+                }
+                if !closed {
+                    return Err(());
+                }
+                rendered.push_str(motd_template_variable(&name, user_ip, username, room_name)?);
+            }
+            Some(next) if next == '_' || next.is_ascii_alphabetic() => {
+                let mut name = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next == '_' || next.is_ascii_alphanumeric() {
+                        name.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                rendered.push_str(motd_template_variable(&name, user_ip, username, room_name)?);
+            }
+            _ => return Err(()),
+        }
+    }
+    Ok(rendered)
+}
+
+fn motd_template_variable<'a>(
+    name: &str,
+    user_ip: &'a str,
+    username: &'a str,
+    room_name: &'a str,
+) -> Result<&'a str, ()> {
+    match name {
+        "version" => Ok(LEGACY_COMPAT_SERVER_VERSION),
+        "userIp" => Ok(user_ip),
+        "username" => Ok(username),
+        "room" => Ok(room_name),
+        _ => Err(()),
+    }
+}
+
+fn render_custom_motd_template(
+    template: &str,
+    client_version: &str,
+    user_ip: &str,
+    username: &str,
+    room_name: &str,
+) -> Result<String, ()> {
+    let rendered = render_python_dollar_motd_template(template, user_ip, username, room_name)?;
+    Ok(rendered
+        .replace("{client_version}", client_version)
+        .replace("{latest_version}", LEGACY_COMPAT_SERVER_VERSION)
+        .replace("{upgrade_url}", LEGACY_COMPAT_UPGRADE_URL)
+        .replace("{version}", LEGACY_COMPAT_SERVER_VERSION)
+        .replace("{userIp}", user_ip)
+        .replace("{username}", username)
+        .replace("{room}", room_name))
+}
+
+fn motd_too_long_message(actual_chars: usize) -> String {
+    format!(
+        "{LEGACY_SERVER_MOTD_TOO_LONG_PREFIX} {LEGACY_SERVER_MAX_TEMPLATE_LENGTH} chars, {actual_chars} given."
+    )
+}
+
 pub(crate) fn default_motd_for_client_version(client_version: &str) -> String {
     if is_client_version_outdated(client_version, LEGACY_COMPAT_SERVER_VERSION) {
         return render_motd_template(DEFAULT_OUTDATED_MOTD_TEMPLATE, client_version);
@@ -63,21 +155,46 @@ pub(crate) fn default_motd_for_client_version(client_version: &str) -> String {
     String::new()
 }
 
+#[cfg(test)]
 pub(crate) fn motd_for_client_version(
     client_version: &str,
     motd_template_override: Option<&str>,
 ) -> String {
+    motd_for_client_context(client_version, motd_template_override, "", "", "")
+}
+
+pub(crate) fn motd_for_client_context(
+    client_version: &str,
+    motd_template_override: Option<&str>,
+    user_ip: &str,
+    username: &str,
+    room_name: &str,
+) -> String {
     let is_outdated = is_client_version_outdated(client_version, LEGACY_COMPAT_SERVER_VERSION);
-    if let Some(template) = motd_template_override.map(str::trim) {
-        if template.is_empty() {
+    if let Some(template) = motd_template_override {
+        if template.trim().is_empty() {
             return String::new();
         }
-        let custom_motd = render_motd_template(template, client_version);
-        if is_outdated {
+        let custom_motd = match render_custom_motd_template(
+            template,
+            client_version,
+            user_ip,
+            username,
+            room_name,
+        ) {
+            Ok(custom_motd) => custom_motd,
+            Err(()) => return LEGACY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS.to_owned(),
+        };
+        let motd = if is_outdated {
             let warning_motd = render_motd_template(DEFAULT_OUTDATED_MOTD_TEMPLATE, client_version);
-            return format!("{warning_motd}\n{custom_motd}");
+            format!("{warning_motd}\n{custom_motd}")
+        } else {
+            custom_motd
+        };
+        if motd.chars().count() < LEGACY_SERVER_MAX_TEMPLATE_LENGTH {
+            return motd;
         }
-        return custom_motd;
+        return motd_too_long_message(motd.chars().count());
     }
     default_motd_for_client_version(client_version)
 }

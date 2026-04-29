@@ -11,13 +11,15 @@ Audit snapshot for the Rust Syncplay rewrite.
 - `cargo fmt --all` passed.
 - `cargo test --workspace` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1` passed, including the strict ignored Rust server binary release matrix and JSON/Markdown report generation.
+- `powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1` passed, producing `syncplay-server-0.1.0-windows-x86_64.zip` and `.sha256`.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json` passed (`12/12` scenarios).
 - `cargo build -p syncplay-gui --bin syncplay-gui` passed.
 - `powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000` passed.
 - `cargo test -p syncplay-gui gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config -- --ignored` passed with local `SYNCPLAY_MPV_SMOKE_BIN`.
 - The native smoke interaction trace now intentionally records menu-driven `Open Media File` as disabled until runtime-backed media support is available, while still validating runtime-backed drag/drop ingest.
 - `cargo run --quiet -p syncplay-cli -- --help` matches the upstream Python client flag surface.
-- `cargo run --quiet -p syncplay-server -- --help` prints a real Rust alpha CLI help surface.
+- `cargo run --quiet -p syncplay-server -- --help` prints a Python-compatible Rust server CLI help surface.
 - Local real-`mpv` smoke tests remain `ignored` by default outside environment-dependent manual validation.
 
 ## Summary
@@ -31,11 +33,23 @@ These are the Markdown files that should remain in this repo:
 - `README.md` (overview + commands)
 - `PROJECT_STATUS.md` (this audit + priorities)
 - `docs/CLIENT_PARITY_AUDIT.md` (detailed remaining-work list)
+- `docs/SERVER_RELEASE.md` (Rust server release verification and packaging guide)
 - `docs/PORT_MAINTAINABILITY_PLAN.md` (working maintainability and extraction plan)
 - `docs/AGENT_IMPLEMENTATION_GUIDE.md` (required implementation/test workflow)
 - `ALPHA_CLI_PREVIEW.md` (developer/alpha run and packaging guide)
 
 Older planning/handoff docs have been archived outside this repo (workspace `old-docs/`) and are not canonical project status.
+
+## Server release evidence
+
+- Latest local server gate: `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`.
+- Evidence files: `target/server-release-verify/server-release-report.json` and `target/server-release-verify/server-release-report.md`.
+- Local environment for the current server release track: Windows x86_64, Rust `1.95.0`, Cargo `1.95.0`, Python `3.13.5`, Syncplay oracle `v1.7.5`.
+- Package command: `powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1`.
+- Expected local Windows artifact: `target/server-release/artifacts/syncplay-server-0.1.0-windows-x86_64.zip` plus `.sha256`.
+- Container build command: `docker build -f Dockerfile.server -t syncplay-rs-server:local .`.
+- GHCR publish workflow target: `ghcr.io/ropbet-radbyt/syncplay-rs-server:latest`; first publish requires changing package visibility to public in GitHub package settings.
+- Server artifacts are checksumed but unsigned in this milestone.
 
 ## Completed (checked)
 
@@ -68,7 +82,8 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [x] GUI app/library production modules split below the 900-line working target, including render actions, native host, runtime bridge, renderer, runtime-owner, runtime-stack, localization, shell-state/projection, semantic, stream, and update surfaces.
 - [x] Client-app legacy local-command/session-loop/`syncplay.ini`/notification roots, client-core playlist/runtime/reconnect-reset handling, `syncplay-protocol`, `syncplay-player-mpv`, `syncplay-server`, GUI reducer/localization, and GUI native-smoke tooling split into behavior-owned module trees with stable public entry surfaces.
 - [x] Server features with test coverage for room/state fanout, controlled rooms, playlist scoping, TLS upgrade paths, and persistent/permanent room behavior.
-- [x] Rust server executable alpha entrypoint with `--help`, core startup flags, and listener/network-loop startup wiring over the server runtime.
+- [x] Rust server executable entrypoint with Python-compatible optional-value CLI parsing, legacy password/salt environment handling, dual IPv4/IPv6 listener startup, BOM-tolerant MOTD files, peer-aware MOTD templates, and binary-level operational smoke coverage.
+- [x] Strict Rust server release verification gate covering listener modes, direct TCP protocol flows, password/MOTD/errors, persistence/permanent rooms, isolate-room behavior, TLS upgrade/denial, idle timeout, and real Python client interop against the Rust binary.
 - [x] CI/automation basics (`rust-ci.yml`) and coverage workflow (`rust-coverage.yml`), plus local cargo aliases in `.cargo/config.toml`.
 
 ## Remaining work (priority checklist)
@@ -84,7 +99,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 - [ ] End-to-end release packaging process (artifacts, versioning, changelog, signing strategy if needed).
 - [ ] Automated real-`mpv` smoke coverage in CI (or documented repeatable manual gate with scripts + fixtures).
 - [ ] Cross-platform validation beyond the current Windows-oriented GUI workflow.
-- [ ] Expand `syncplay-server` CLI/runtime parity beyond the current alpha slice (remaining gaps include dual-interface binding parity and binary-level operational smoke coverage).
+- [x] Expand `syncplay-server` CLI/runtime parity beyond the previous alpha slice, including dual-interface binding parity and binary-level operational smoke coverage.
 - [ ] Continue local maintainability trims on the remaining 700-900 line behavior leaves and tests; the previously named native-smoke, GUI reducer/localization, protocol, client-app notification, and client-core runtime/reset monoliths are now split below the 900-line working target.
 
 ## Optional/next improvements
@@ -100,6 +115,7 @@ Older planning/handoff docs have been archived outside this repo (workspace `old
 
 - Current evidence supports "substantially implemented client/server rewrite with a verified GUI shell," not "full replacement" parity.
 - The GUI is real and test-covered, and saved-config connection plus the Python-style room/user/file browser plus Python-style playlist workflows are now runtime-backed; the major room/media/playback affordances no longer advertise config-only projections as working paths.
-- The server runtime library remains further along than the user-facing `syncplay-server` CLI parity surface, even though a real alpha executable entrypoint now exists.
+- The server runtime library and user-facing `syncplay-server` binary now share the same parity path, with Python-style CLI/listener/MOTD behavior backed by runtime, network, compat, and binary smoke tests.
+- Server release readiness now has a single strict local gate at `scripts/server-release-verify.ps1` and a manual/scheduled CI job that installs Python prerequisites and runs the same verification on Linux and Windows runners.
 - Real `mpv` integration exists, including saved-config GUI-owned startup, but some validation remains environment-specific and intentionally excluded from default test runs.
 - Non-`mpv` player integration is not represented as a first-class implemented runtime adapter in this workspace today, and that work is intentionally deferred behind `mpv` parity.

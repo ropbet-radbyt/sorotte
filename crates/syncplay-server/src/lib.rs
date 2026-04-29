@@ -42,6 +42,10 @@ const SERVER_REAL_VERSION: &str = LEGACY_COMPAT_SERVER_VERSION;
 const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
     "You are using Syncplay {client_version} but a newer version is available from {upgrade_url}";
+const LEGACY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS: &str =
+    "Message of the Day has unescaped placeholders. All $ signs should be doubled ($$).";
+const LEGACY_SERVER_MOTD_TOO_LONG_PREFIX: &str = "Message of the Day is too long - maximum of";
+const LEGACY_SERVER_MAX_TEMPLATE_LENGTH: usize = 10_000;
 const LEGACY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
 const LEGACY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
 const LEGACY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
@@ -87,7 +91,9 @@ mod runtime_maintenance;
 mod tls;
 
 pub use app::ServerApp;
-pub use network::run_server_network_loop_until_shutdown;
+pub use network::{
+    run_server_network_loop_until_shutdown, run_server_network_loops_until_shutdown,
+};
 pub use persistence::{RoomPersistenceError, StatsPersistenceError};
 
 pub(crate) use auth::{

@@ -107,3 +107,37 @@ jobs:
           SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
         run: cargo test -p syncplay-compat legacy_server_live_tls_ -- --nocapture
+
+  server-release-verify:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install server release prerequisites
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install twisted pyopenssl service_identity
+
+      - name: Strict server release verification
+        shell: pwsh
+        run: ./scripts/server-release-verify.ps1

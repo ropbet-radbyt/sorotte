@@ -1,0 +1,14 @@
+.git
+.github
+.interop-cache
+target
+tmp
+old-docs
+
+*.log
+*.tmp
+*.bak
+
+target/
+**/target/
+**/__pycache__/

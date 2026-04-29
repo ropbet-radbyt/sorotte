@@ -66,11 +66,10 @@ impl ServerRuntime {
 
     pub fn set_motd_template(&mut self, template: Option<String>) {
         self.motd_template = template.and_then(|template| {
-            let trimmed = template.trim();
-            if trimmed.is_empty() {
+            if template.trim().is_empty() {
                 None
             } else {
-                Some(trimmed.to_owned())
+                Some(template)
             }
         });
     }

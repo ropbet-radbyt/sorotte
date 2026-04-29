@@ -1,4 +1,7 @@
 use super::*;
+use std::net::SocketAddr;
+
+type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
 
 async fn dispatch_outbound_lines_to_clients(
     client_event_senders: &SharedClientEventSenders,
@@ -201,6 +204,7 @@ async fn apply_local_transport_actions(
 
 async fn run_server_network_client_session(
     stream: TcpStream,
+    peer_ip: Option<String>,
     client_id: String,
     runtime: Arc<Mutex<ServerRuntime>>,
     client_event_senders: SharedClientEventSenders,
@@ -241,7 +245,11 @@ async fn run_server_network_client_session(
                 }
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.handle_line_fanout_with_transport_actions(&client_id, inbound_line)
+                    runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
+                        &client_id,
+                        inbound_line,
+                        peer_ip.as_deref(),
+                    )
                 };
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,
@@ -349,25 +357,89 @@ async fn run_server_network_client_session(
     Ok(())
 }
 
-pub async fn run_server_network_loop_until_shutdown(
+async fn accept_server_network_clients_until_shutdown(
     listener: TcpListener,
+    accepted_clients: UnboundedSender<AcceptedClient>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> io::Result<()> {
+    loop {
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, address)) => {
+                        if accepted_clients.send(Ok((stream, address))).is_err() {
+                            break;
+                        }
+                    }
+                    Err(source) => {
+                        let _ = accepted_clients.send(Err(source));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_server_network_loops_until_shutdown(
+    listeners: Vec<TcpListener>,
     runtime: Arc<Mutex<ServerRuntime>>,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
+    if listeners.is_empty() {
+        return Err(ServerNetworkError::Io(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "no server listeners are available",
+        )));
+    }
+
     let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    let (accepted_tx, mut accepted_rx): (
+        UnboundedSender<AcceptedClient>,
+        UnboundedReceiver<AcceptedClient>,
+    ) = unbounded_channel();
+    let mut accept_tasks: Vec<JoinHandle<()>> = Vec::new();
+    for listener in listeners {
+        let accepted_tx = accepted_tx.clone();
+        let listener_shutdown_rx = shutdown_rx.clone();
+        accept_tasks.push(tokio::spawn(async move {
+            let _ = accept_server_network_clients_until_shutdown(
+                listener,
+                accepted_tx,
+                listener_shutdown_rx,
+            )
+            .await;
+        }));
+    }
+    drop(accepted_tx);
+
     let mut session_tasks: Vec<JoinHandle<()>> = Vec::new();
     let mut next_client_number: u64 = 1;
     let mut tick = time::interval(std::time::Duration::from_secs_f64(
         SERVER_NETWORK_TICK_INTERVAL_SECONDS,
     ));
+    let mut loop_error: Option<ServerNetworkError> = None;
 
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.advance_time_and_collect_dispatch(SERVER_NETWORK_TICK_INTERVAL_SECONDS)?
+                    runtime_guard.advance_time_and_collect_dispatch(SERVER_NETWORK_TICK_INTERVAL_SECONDS)
+                };
+                let dispatch = match dispatch {
+                    Ok(dispatch) => dispatch,
+                    Err(source) => {
+                        loop_error = Some(ServerNetworkError::Runtime(source));
+                        break;
+                    }
                 };
                 dispatch_outbound_lines_to_clients(
                     &client_event_senders,
@@ -389,16 +461,27 @@ pub async fn run_server_network_loop_until_shutdown(
                     break;
                 }
             }
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+            accepted = accepted_rx.recv() => {
+                let Some(accepted) = accepted else {
+                    break;
+                };
+                let (stream, address) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(source) => {
+                        loop_error = Some(ServerNetworkError::Io(source));
+                        break;
+                    }
+                };
                 let client_id = format!("client-{next_client_number}");
                 next_client_number = next_client_number.saturating_add(1);
                 let runtime = runtime.clone();
                 let client_event_senders = client_event_senders.clone();
                 let transport_action_sink = transport_action_sink.clone();
+                let peer_ip = Some(address.ip().to_string());
                 session_tasks.push(tokio::spawn(async move {
                     let _ = run_server_network_client_session(
                         stream,
+                        peer_ip,
                         client_id,
                         runtime,
                         client_event_senders,
@@ -410,9 +493,31 @@ pub async fn run_server_network_loop_until_shutdown(
         }
     }
 
+    for task in accept_tasks {
+        task.abort();
+    }
     for task in session_tasks {
         task.abort();
     }
 
+    if let Some(loop_error) = loop_error {
+        return Err(loop_error);
+    }
+
     Ok(())
+}
+
+pub async fn run_server_network_loop_until_shutdown(
+    listener: TcpListener,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), ServerNetworkError> {
+    run_server_network_loops_until_shutdown(
+        vec![listener],
+        runtime,
+        transport_action_sink,
+        shutdown_rx,
+    )
+    .await
 }
