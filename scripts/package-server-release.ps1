@@ -42,16 +42,16 @@ function Get-SyncplayServerVersion {
 }
 
 function Get-ReleasePlatform {
-    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-    $isLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+    $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $runningOnLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
     if ($arch -ne "X64") {
         throw "Server release packaging currently supports x86_64 only; current architecture is $arch"
     }
-    if ($isWindows) {
+    if ($runningOnWindows) {
         return "windows-x86_64"
     }
-    if ($isLinux) {
+    if ($runningOnLinux) {
         return "linux-x86_64"
     }
     throw "Server release packaging currently supports Windows and Linux only"
@@ -79,8 +79,8 @@ if (-not $SkipBuild) {
 
 $version = Get-SyncplayServerVersion
 $platform = Get-ReleasePlatform
-$isWindows = $platform.StartsWith("windows")
-$binaryName = if ($isWindows) { "syncplay-server.exe" } else { "syncplay-server" }
+$packageForWindows = $platform.StartsWith("windows")
+$binaryName = if ($packageForWindows) { "syncplay-server.exe" } else { "syncplay-server" }
 $packageName = "syncplay-server-$version-$platform"
 $outputRoot = Resolve-PackagePath $OutputDir
 $stagingRoot = Join-Path $outputRoot "staging"
@@ -101,14 +101,14 @@ Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "READ
 Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $packageRoot "SERVER_RELEASE.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
-if ($isWindows) {
+if ($packageForWindows) {
     $pdbPath = Join-Path $RepoRoot "target/release/syncplay_server.pdb"
     if (Test-Path -LiteralPath $pdbPath -PathType Leaf) {
         Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot "syncplay_server.pdb") -Force
     }
 }
 
-$archivePath = if ($isWindows) {
+$archivePath = if ($packageForWindows) {
     Join-Path $artifactsRoot "$packageName.zip"
 } else {
     Join-Path $artifactsRoot "$packageName.tar.gz"
@@ -118,7 +118,7 @@ if (Test-Path -LiteralPath $archivePath) {
 }
 
 Write-Host "==> Creating $archivePath" -ForegroundColor Cyan
-if ($isWindows) {
+if ($packageForWindows) {
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archivePath -Force
 } else {
     & tar -czf $archivePath -C $stagingRoot $packageName

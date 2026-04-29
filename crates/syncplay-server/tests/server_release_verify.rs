@@ -299,10 +299,29 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
         ));
         let mut alice = server.wait_for_ipv4(port);
         alice.hello("alice", "persisted-room");
+        let mut watcher = ProtocolClient::connect_ipv4(port);
+        watcher.hello("watcher", "persisted-room");
+        alice.read_until(|message| {
+            message_pointer_eq(message, "/Set/user/watcher/event/joined", json!(true))
+        });
         alice.write_message(&set_playlist_message(&["persisted.mkv"]));
+        watcher.read_until(|message| {
+            message_pointer_eq(
+                message,
+                "/Set/playlistChange/files",
+                json!(["persisted.mkv"]),
+            )
+        });
         alice.write_message(&set_playlist_index_message(0));
+        watcher.read_until(|message| {
+            message_pointer_eq(message, "/Set/playlistIndex/index", json!(0))
+        });
         alice.write_message(&state_message(33.0, false));
+        watcher.read_until(|message| {
+            message_pointer_eq(message, "/State/playstate/position", json!(33.0))
+        });
         drop(alice);
+        drop(watcher);
         thread::sleep(Duration::from_millis(500));
     }
 

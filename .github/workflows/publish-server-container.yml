@@ -51,7 +51,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'push' || inputs.push_latest == 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' || github.event.inputs.push_latest == 'true' }}
             type=ref,event=tag
             type=sha,prefix=sha-
           labels: |
