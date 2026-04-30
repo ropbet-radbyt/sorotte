@@ -167,6 +167,24 @@ impl GuiPersistedConfigRuntimeOwner {
         self.playlist_auto_advance_eof_latched = false;
     }
 
+    fn clear_attached_media_search_runtime_cache(&mut self) {
+        if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
+            pending_resolution
+                .cancel_flag
+                .store(true, Ordering::Relaxed);
+        }
+        self.attached_media_search_index = None;
+        self.attached_media_search_next_retry_at = None;
+        self.attached_media_search_progress = None;
+        self.attached_media_search_progress_updated_at = None;
+        self.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Idle;
+        self.attached_media_search_build_roots.clear();
+        self.attached_media_search_index_revision =
+            self.attached_media_search_index_revision.wrapping_add(1);
+        self.unresolved_attached_media_target = None;
+        self.last_attached_media_resolution_trigger = None;
+    }
+
     pub(in crate::app) fn clear_session_attached_player_sync_state(&mut self) {
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
@@ -573,6 +591,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(super) fn clear_gui_data(&mut self) -> Result<(), String> {
+        self.clear_attached_media_search_runtime_cache();
         if let Some(path) = self.config_path.as_ref() {
             clear_syncplay_ini_stored_client_settings_mvp_at_path(path).map_err(|error| {
                 format!(

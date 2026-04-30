@@ -10,8 +10,8 @@ fn write_persisted_media_search_root_index(
     built_at_unix_ms: u64,
     candidates_by_name: &[(&str, &[&str])],
 ) {
-    let persisted = crate::app::media_search_cache::PersistedMediaSearchRootIndexV1 {
-        version: 1,
+    let persisted = crate::app::media_search_cache::PersistedMediaSearchRootIndexV2 {
+        version: 2,
         root_key: crate::app::media_search_cache::normalized_media_search_root_key(media_root),
         root_path: media_root.to_string_lossy().into_owned(),
         built_at_unix_ms,

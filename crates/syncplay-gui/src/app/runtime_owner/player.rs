@@ -15,8 +15,9 @@ use syncplay_player_api::{LocalFileUpdate, PlayerAdapter, PlayerMediaLoadOutcome
 use syncplay_player_mpv::LegacySyncplayOsdKind;
 
 use super::super::media_search_cache::{
-    current_unix_time_millis, load_persisted_media_search_root_index_at_root,
-    normalized_media_search_root_key, persist_media_search_root_index_borrowed_at_root,
+    current_media_search_cache_generation, current_unix_time_millis,
+    load_persisted_media_search_root_index_at_root, normalized_media_search_root_key,
+    persist_media_search_root_index_borrowed_at_root_if_cache_generation,
 };
 use super::super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;

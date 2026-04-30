@@ -107,7 +107,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self
             .current_shared_playlist_target(state)
             .as_deref()
-            .is_some_and(|target| !self.current_player_matches_media_target(target))
+            .is_some_and(|target| self.unresolved_attached_media_target.as_deref() == Some(target))
         {
             return;
         }

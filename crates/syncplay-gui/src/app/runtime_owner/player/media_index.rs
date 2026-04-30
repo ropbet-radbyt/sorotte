@@ -4,6 +4,9 @@ const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
 
+type CachedMissingMediaMatchRank = (usize, usize, usize, usize, String);
+type CachedMissingMediaMatch = (CachedMissingMediaMatchRank, String);
+
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn automatic_media_search_roots(
         &self,
@@ -310,20 +313,61 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn cached_missing_media_target_path(
+    fn cached_missing_media_relative_target_key(target: &str) -> Option<String> {
+        if browser_is_url(target) {
+            return None;
+        }
+        let target = target.trim();
+        if target.is_empty() {
+            return None;
+        }
+        let target_path = Path::new(target);
+        if target_path.is_absolute() {
+            return None;
+        }
+        if !(target.contains('/') || target.contains('\\') || target_path.components().count() > 1)
+        {
+            return None;
+        }
+        let mut saw_normal_component = false;
+        for component in target_path.components() {
+            match component {
+                std::path::Component::Normal(_) => saw_normal_component = true,
+                std::path::Component::CurDir
+                | std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_) => return None,
+            }
+        }
+        if !saw_normal_component {
+            return None;
+        }
+        let mut key = target.replace('\\', "/");
+        while key.ends_with('/') && key.len() > 1 {
+            key.pop();
+        }
+        Some(if cfg!(windows) {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        })
+    }
+
+    pub(in crate::app::runtime_owner) fn cached_missing_media_target_path(
         &self,
         index: &GuiAttachedMediaSearchIndex,
         target: &str,
     ) -> Option<String> {
         let target_key =
             GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(target)?;
+        let target_relative_key = Self::cached_missing_media_relative_target_key(target);
         let current_parent = self
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref())
             .map(PathBuf::from)
             .and_then(|path| path.parent().map(Path::to_path_buf));
-        let mut best_match: Option<((usize, usize, usize, String), String)> = None;
+        let mut best_match: Option<CachedMissingMediaMatch> = None;
 
         for (root_order, root_key) in index.roots.iter().enumerate() {
             let Some(root_index) = index.root_indexes_by_key.get(root_key) else {
@@ -333,6 +377,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 continue;
             };
             for relative_path in candidates {
+                let relative_path_key = Self::normalized_media_search_path_key(Path::new(
+                    &relative_path.replace('\\', "/"),
+                ));
+                let relative_path_rank = target_relative_key
+                    .as_ref()
+                    .map(|target_relative_key| {
+                        usize::from(relative_path_key != *target_relative_key)
+                    })
+                    .unwrap_or(0);
                 let candidate_path =
                     Self::cached_missing_media_candidate_path(&root_index.root_path, relative_path);
                 if !candidate_path.is_file() {
@@ -350,7 +403,13 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else {
                     relative_path.replace('\\', "/")
                 };
-                let rank = (locality_rank, root_order, depth, lexical);
+                let rank = (
+                    relative_path_rank,
+                    locality_rank,
+                    root_order,
+                    depth,
+                    lexical,
+                );
                 let candidate_path = candidate_path.to_string_lossy().into_owned();
                 if best_match
                     .as_ref()
@@ -410,6 +469,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn build_attached_media_search_roots_in_parallel(
         search_roots: Vec<PathBuf>,
         cache_root: Option<PathBuf>,
+        cache_generation: u64,
         cancel_flag: Arc<AtomicBool>,
         latest_progress: Arc<Mutex<Option<GuiAttachedMediaSearchBuildProgress>>>,
         deadline: Option<Instant>,
@@ -486,12 +546,14 @@ impl GuiPersistedConfigRuntimeOwner {
                                 candidates_by_name,
                             };
                             if let Some(cache_root) = cache_root.as_ref() {
-                                let _ = persist_media_search_root_index_borrowed_at_root(
+                                let _ =
+                                    persist_media_search_root_index_borrowed_at_root_if_cache_generation(
                                     cache_root,
                                     &root_index.root_key,
                                     &root_index.root_path,
                                     root_index.built_at_unix_ms,
                                     &root_index.candidates_by_name,
+                                    cache_generation,
                                 );
                             }
                             GuiAttachedMediaSearchRootRefreshResult {
@@ -648,6 +710,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let (result_tx, result_rx) = mpsc::channel();
         let cache_root = self.legacy_gui_qsettings_root();
+        let cache_generation = current_media_search_cache_generation();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let latest_progress = Arc::new(Mutex::new(None));
         if let Some(root) = search_roots.first() {
@@ -674,6 +737,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let results = Self::build_attached_media_search_roots_in_parallel(
                 search_roots,
                 cache_root,
+                cache_generation,
                 worker_cancel_flag,
                 worker_latest_progress,
                 deadline,

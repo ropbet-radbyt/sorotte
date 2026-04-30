@@ -100,8 +100,8 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     .expect("GUI state should be written");
     crate::app::media_search_cache::persist_media_search_root_index_at_root(
         &root,
-        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV1 {
-            version: 1,
+        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV2 {
+            version: 2,
             root_key: crate::app::media_search_cache::normalized_media_search_root_key(
                 std::path::Path::new("C:/Media"),
             ),
@@ -116,6 +116,45 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     .expect("media-search cache should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
+    let media_root_key = crate::app::media_search_cache::normalized_media_search_root_key(
+        std::path::Path::new("C:/Media"),
+    );
+    owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+        roots: vec![media_root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            media_root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key: media_root_key.clone(),
+                root_path: std::path::PathBuf::from("C:/Media"),
+                built_at_unix_ms: 1,
+                candidates_by_name: std::collections::HashMap::from([(
+                    "episode1.mkv".to_owned(),
+                    vec!["Season 1\\episode1.mkv".to_owned()],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: [media_root_key.clone()].into_iter().collect(),
+    });
+    owner.attached_media_search_next_retry_at = Some(std::time::Instant::now());
+    owner.attached_media_search_progress = Some(GuiAttachedMediaSearchBuildProgress {
+        total_roots: 1,
+        completed_roots: 0,
+        current_root_key: media_root_key.clone(),
+        current_root_path: std::path::PathBuf::from("C:/Media"),
+        scanned_directories: 1,
+        indexed_files: 1,
+    });
+    owner.attached_media_search_build_state = GuiAttachedMediaSearchBuildState::Building;
+    owner.attached_media_search_build_roots = vec![media_root_key.clone()];
+    owner.unresolved_attached_media_target = Some("episode1.mkv".to_owned());
+    let (_result_tx, result_rx) = std::sync::mpsc::channel();
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
+        roots: vec![media_root_key.clone()],
+        cancel_flag: cancel_flag.clone(),
+        latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        result_rx,
+    });
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SyncplayGuiShellAppState::from_stored_settings(&saved_settings);
 
@@ -139,7 +178,7 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
         );
     }
     assert!(
-        !crate::app::media_search_cache::persisted_media_search_cache_dir_at_root(&root).exists(),
+        !crate::app::media_search_cache::persisted_media_search_cache_root_at_root(&root).exists(),
         "clear-GUI-data should remove the persisted media-search cache"
     );
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
@@ -151,6 +190,17 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     assert_eq!(state.last_media_dialog_directory, None);
     assert!(state.public_servers.servers.is_empty());
     assert!(state.media_search.directories.is_empty());
+    assert!(cancel_flag.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(owner.attached_media_search_index.is_none());
+    assert!(owner.pending_attached_media_resolution.is_none());
+    assert!(owner.attached_media_search_next_retry_at.is_none());
+    assert!(owner.attached_media_search_progress.is_none());
+    assert_eq!(
+        owner.attached_media_search_build_state,
+        GuiAttachedMediaSearchBuildState::Idle
+    );
+    assert!(owner.attached_media_search_build_roots.is_empty());
+    assert!(owner.unresolved_attached_media_target.is_none());
 
     let _ = std::fs::remove_dir_all(&root);
 }

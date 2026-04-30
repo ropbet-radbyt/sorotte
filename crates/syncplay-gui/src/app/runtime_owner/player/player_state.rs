@@ -1,6 +1,29 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn normalized_current_player_match_key(path: &str) -> String {
+        let mut key = path.trim().replace('\\', "/");
+        while key.ends_with('/') && key.len() > 1 {
+            key.pop();
+        }
+        if cfg!(windows) {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        }
+    }
+
+    fn local_media_target_has_path_context(target: &str) -> bool {
+        if browser_is_url(target) {
+            return true;
+        }
+        let target = target.trim();
+        target.contains('/')
+            || target.contains('\\')
+            || Path::new(target).is_absolute()
+            || Path::new(target).components().count() > 1
+    }
+
     fn playlist_target_for_index(state: &SyncplayGuiShellAppState, index: usize) -> Option<String> {
         if !state.main_window.shared_playlist_enabled {
             return None;
@@ -36,10 +59,21 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         if let Some(path) = local_file.path.as_deref()
-            && ((cfg!(windows) && path.eq_ignore_ascii_case(target))
-                || (!cfg!(windows) && path == target))
+            && Self::normalized_current_player_match_key(path)
+                == Self::normalized_current_player_match_key(target)
         {
             return true;
+        }
+
+        if browser_is_url(target) {
+            return if cfg!(windows) {
+                local_file.name.eq_ignore_ascii_case(target)
+            } else {
+                local_file.name == target
+            };
+        }
+        if Self::local_media_target_has_path_context(target) {
+            return false;
         }
 
         let target_name = if browser_is_url(target) {

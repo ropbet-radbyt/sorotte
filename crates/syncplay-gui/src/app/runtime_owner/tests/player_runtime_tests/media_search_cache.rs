@@ -339,6 +339,96 @@ fn gui_persisted_config_runtime_owner_prefers_current_player_locality_for_duplic
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_does_not_match_path_bearing_targets_by_basename() {
+    let root = test_temp_root("path-bearing-current-player-match");
+    let current_path = root.join("season-1").join("episode2.mkv");
+    let target_path = root.join("season-2").join("episode2.mkv");
+    std::fs::create_dir_all(
+        current_path
+            .parent()
+            .expect("current path should have parent"),
+    )
+    .expect("current fixture directory should be created");
+    std::fs::create_dir_all(
+        target_path
+            .parent()
+            .expect("target path should have parent"),
+    )
+    .expect("target fixture directory should be created");
+    std::fs::write(&current_path, b"current").expect("current fixture should be written");
+    std::fs::write(&target_path, b"target").expect("target fixture should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_path(current_path.to_string_lossy().into_owned()),
+    );
+
+    assert!(
+        owner.current_player_matches_media_target("episode2.mkv"),
+        "bare filename targets can still match by basename"
+    );
+    assert!(
+        owner.current_player_matches_media_target(&current_path.to_string_lossy()),
+        "resolved absolute path targets should match by normalized path"
+    );
+    assert!(
+        !owner.current_player_matches_media_target("season-2/episode2.mkv"),
+        "path-bearing relative targets should not match a different file by basename"
+    );
+    assert!(
+        !owner.current_player_matches_media_target(&target_path.to_string_lossy()),
+        "path-bearing absolute targets should not match a different file by basename"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_prefers_exact_cached_relative_path_for_path_bearing_targets()
+{
+    let root = test_temp_root("path-bearing-cache-ranking");
+    let direct_path = root.join("episode2.mkv");
+    let exact_directory = root.join("season-1");
+    let exact_path = exact_directory.join("episode2.mkv");
+    std::fs::create_dir_all(&exact_directory).expect("exact fixture directory should be created");
+    std::fs::write(&direct_path, b"direct").expect("direct duplicate fixture should be written");
+    std::fs::write(&exact_path, b"exact").expect("exact duplicate fixture should be written");
+
+    let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
+    let owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let index = GuiAttachedMediaSearchIndex {
+        roots: vec![root_key.clone()],
+        root_indexes_by_key: std::collections::HashMap::from([(
+            root_key.clone(),
+            GuiAttachedMediaSearchRootIndex {
+                root_key,
+                root_path: root.clone(),
+                built_at_unix_ms: 1234,
+                candidates_by_name: std::collections::HashMap::from([(
+                    "episode2.mkv".to_owned(),
+                    vec![
+                        "episode2.mkv".to_owned(),
+                        "season-1/episode2.mkv".to_owned(),
+                    ],
+                )]),
+            },
+        )]),
+        roots_requiring_refresh: std::collections::BTreeSet::new(),
+    };
+
+    let resolved = owner
+        .cached_missing_media_target_path(&index, "season-1/episode2.mkv")
+        .map(|path| path.replace('\\', "/"));
+    assert_eq!(
+        resolved,
+        Some(exact_path.to_string_lossy().replace('\\', "/"))
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result_fails() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {

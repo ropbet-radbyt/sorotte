@@ -283,8 +283,8 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
         .as_millis() as u64;
     crate::app::media_search_cache::persist_media_search_root_index_at_root(
         &root,
-        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV1 {
-            version: 1,
+        &crate::app::media_search_cache::PersistedMediaSearchRootIndexV2 {
+            version: 2,
             root_key: crate::app::media_search_cache::normalized_media_search_root_key(&root),
             root_path: root.to_string_lossy().into_owned(),
             built_at_unix_ms,
