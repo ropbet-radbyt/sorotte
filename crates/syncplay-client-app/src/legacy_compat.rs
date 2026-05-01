@@ -163,7 +163,7 @@ pub fn legacy_configuration_getter_ini_compat_entries()
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.sharedPlaylistEnabled",
             status: Supported,
-            note: "loaded/persisted into CLI shared-playlist feature advertisement and outbound playlist action gating (GUI playlist UX semantics remain out of scope)",
+            note: "loaded/persisted into CLI shared-playlist feature advertisement and outbound playlist action gating; syncplay-gui owns interactive playlist workflows",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.pauseOnLeave",
@@ -213,7 +213,7 @@ pub fn legacy_configuration_getter_ini_compat_entries()
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.roomList",
             status: Supported,
-            note: "loaded/persisted for a headless room fallback when client_settings.room is absent (GUI room-history management remains unimplemented)",
+            note: "loaded/persisted for CLI room fallback when client_settings.room is absent; syncplay-gui owns interactive room selection",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}",
@@ -233,17 +233,17 @@ pub fn legacy_configuration_getter_ini_compat_entries()
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.mediaSearchDirectories",
             status: Supported,
-            note: "loaded/persisted and used for headless startup-file fallback search when the requested media file is missing (GUI background cache refresh remains unimplemented)",
+            note: "loaded/persisted and used for CLI startup-file fallback search when the requested media file is missing; syncplay-gui owns interactive media search",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.publicServers",
             status: Supported,
-            note: "loaded/persisted for a headless server fallback when server_data.host/server_data.port are absent (GUI server-browser behavior remains unimplemented)",
+            note: "loaded/persisted for CLI server fallback when server_data.host/server_data.port are absent; syncplay-gui owns public-server browsing",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}",
             status: Supported,
-            note: "loaded/persisted and applied to headless startup-file fallback search timing/warning behavior (GUI background cache refresh remains unimplemented)",
+            note: "loaded/persisted and applied to CLI startup-file fallback search timing/warning behavior; syncplay-gui owns interactive media search timing",
         },
         LegacyConfigurationGetterIniCompatEntry {
             key: "client_settings.forceGuiPrompt",
@@ -293,7 +293,7 @@ pub fn legacy_configuration_getter_ini_compat_entries()
         LegacyConfigurationGetterIniCompatEntry {
             key: "general.{checkForUpdatesAutomatically,lastCheckedForUpdates}",
             status: Supported,
-            note: "stored automatic-update cadence and last-checked timestamp are honored headlessly; GUI update dialogs and remote update probing remain unimplemented in syncplay-cli",
+            note: "stored automatic-update cadence and last-checked timestamp are honored headlessly; syncplay-gui owns interactive update checks and dialogs",
         },
     ]
 }

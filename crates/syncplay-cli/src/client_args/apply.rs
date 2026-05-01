@@ -43,7 +43,7 @@ pub(crate) fn emit_legacy_client_arg_compatibility_warnings(overrides: &LegacyCl
     }
     if overrides.file.is_some() {
         eprintln!(
-            "warning: legacy positional file is routed to managed mpv preload, unmanaged external launch, and explicit mpv IPC startup open-file; broader ConfigurationGetter side-effect semantics (for example GUI/relative-config behavior) remain unimplemented"
+            "warning: legacy positional file is routed to managed mpv preload, unmanaged external launch, and explicit mpv IPC startup open-file; syncplay-cli intentionally keeps broader ConfigurationGetter side effects such as relative config handling out of this path"
         );
     }
     if !overrides.player_args.is_empty() {
