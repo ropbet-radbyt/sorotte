@@ -756,6 +756,10 @@ impl GuiWidgetEguiRenderer {
             | "main-window:playlist-url-edit:commit"
             | "main-window:media-url-edit:commit"
             | "main-window:chat:send"
+            | "plugins:plex:connect"
+            | "plugins:plex:poll-auth"
+            | "plugins:plex:refresh-servers"
+            | "plugins:plex:enable-sync"
             | "plugins:stream-support:install"
             | "plugins:stream-support:alert:install"
             | "plugins:stream-support:recheck"
@@ -765,7 +769,8 @@ impl GuiWidgetEguiRenderer {
             "config-command:disconnect"
             | "main-window:connection:disconnect"
             | "main-window:room:leave"
-            | "main-window:media-url-edit:cancel" => {
+            | "main-window:media-url-edit:cancel"
+            | "plugins:plex:disconnect" => {
                 Some((palette.danger, palette.danger_hover, palette.danger_text))
             }
             _ => None,

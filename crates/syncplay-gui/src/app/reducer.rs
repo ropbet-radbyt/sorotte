@@ -41,6 +41,7 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(_)
+            | GuiShellAction::ApplyGuiPlexRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiDraftRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(_)
@@ -156,6 +157,7 @@ impl SyncplayGuiShellAppState {
             }
             GuiShellAction::SelectMenuAction { .. }
             | GuiShellAction::SelectMediaSearchDirectory(_)
+            | GuiShellAction::SelectPlugin(_)
             | GuiShellAction::MoveSelectedMediaSearchDirectoryUp
             | GuiShellAction::MoveSelectedMediaSearchDirectoryDown
             | GuiShellAction::RemoveSelectedMediaSearchDirectory
@@ -186,6 +188,12 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::RecheckStreamHelper
             | GuiShellAction::RetryPendingStreamMediaOpen
             | GuiShellAction::OpenStreamHelperInstallLocation
+            | GuiShellAction::StartPlexAuth
+            | GuiShellAction::PollPlexAuth
+            | GuiShellAction::RefreshPlexServers
+            | GuiShellAction::SelectPlexServer { .. }
+            | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::DisconnectPlex
             | GuiShellAction::ToggleMainWindowPlaybackButtons
             | GuiShellAction::ToggleMainWindowAutoplayControls
             | GuiShellAction::ToggleMainWindowHideEmptyRooms

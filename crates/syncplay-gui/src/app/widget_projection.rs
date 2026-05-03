@@ -284,6 +284,7 @@ impl SyncplayGuiShellAppState {
     pub(super) fn resync_from_settings(&mut self, settings: StoredClientSettingsMvp) {
         let previous_settings = self.configuration.to_stored_settings();
         let active_view = self.active_view;
+        let selected_plugin = self.selected_plugin;
         let open_modal = self.open_modal;
         let selection = self.selection.clone();
         let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
@@ -309,6 +310,7 @@ impl SyncplayGuiShellAppState {
         let playlist_shuffle_nonce = self.playlist_shuffle_nonce;
         let media_index_status = self.media_index_status.clone();
         let player_setup_issue = self.player_setup_issue.clone();
+        let plex = self.plex.clone();
         let saved_configuration = self.saved_configuration.clone();
         let tls_prompt_expected = self.menus.tls_prompt_expected;
         let update_notice_expected = self.menus.update_notice_expected;
@@ -335,6 +337,7 @@ impl SyncplayGuiShellAppState {
 
         *self = Self::from_stored_settings(&settings);
         self.active_view = active_view;
+        self.selected_plugin = selected_plugin;
         self.open_modal = open_modal;
         self.selection = selection;
         self.runtime_menu_action_overrides = runtime_menu_action_overrides;
@@ -358,6 +361,7 @@ impl SyncplayGuiShellAppState {
         self.playlist_shuffle_nonce = playlist_shuffle_nonce;
         self.media_index_status = media_index_status;
         self.player_setup_issue = player_setup_issue;
+        self.plex = plex;
         self.saved_configuration = saved_configuration;
         if preserve_tls_prompt_expected {
             self.menus.tls_prompt_expected = tls_prompt_expected;

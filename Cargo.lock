@@ -3334,6 +3334,7 @@ dependencies = [
  "syncplay-client-core",
  "syncplay-player-api",
  "syncplay-player-mpv",
+ "syncplay-plex",
  "syncplay-protocol",
  "syncplay-server",
  "tokio",
@@ -3401,6 +3402,7 @@ dependencies = [
  "syncplay-compat",
  "syncplay-player-api",
  "syncplay-player-mpv",
+ "syncplay-plex",
  "syncplay-protocol",
  "webpki-roots 0.26.11",
  "windows 0.61.3",
@@ -3422,6 +3424,18 @@ dependencies = [
  "anyhow",
  "serde_json",
  "syncplay-player-api",
+]
+
+[[package]]
+name = "syncplay-plex"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "syncplay-player-api",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

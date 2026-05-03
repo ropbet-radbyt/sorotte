@@ -2,22 +2,42 @@ use super::*;
 
 impl SyncplayGuiShellAppState {
     pub(crate) fn plugins_widget_tree(&self) -> GuiWidgetNode {
-        let stream_support_selected = true;
+        let stream_support_selected = self.selected_plugin == GuiPluginSelection::StreamSupport;
+        let plex_selected = self.selected_plugin == GuiPluginSelection::Plex;
         let plugin_list = GuiWidgetNode::branch(
             "plugins:list",
             "Plugins",
             GuiWidgetKind::Panel,
-            vec![GuiWidgetNode::leaf(
-                "plugins:list:stream-support",
-                "Stream Support",
-                GuiWidgetKind::ListItem,
-                Some(self.stream_helper.health.label().to_owned()),
-                true,
-                stream_support_selected,
-            )],
+            vec![
+                GuiWidgetNode::leaf(
+                    "plugins:list:stream-support",
+                    "Stream Support",
+                    GuiWidgetKind::ListItem,
+                    Some(self.stream_helper.health.label().to_owned()),
+                    true,
+                    stream_support_selected,
+                ),
+                GuiWidgetNode::leaf(
+                    "plugins:list:plex",
+                    "Plex",
+                    GuiWidgetKind::ListItem,
+                    Some(self.plex.status.clone()),
+                    true,
+                    plex_selected,
+                ),
+            ],
         );
 
-        let detail = self.stream_support_plugin_detail_widget_tree();
+        let selected_detail = match self.selected_plugin {
+            GuiPluginSelection::StreamSupport => self.stream_support_plugin_detail_widget_tree(),
+            GuiPluginSelection::Plex => self.plex_plugin_detail_widget_tree(),
+        };
+        let detail = GuiWidgetNode::branch(
+            "plugins:details",
+            "Plugin Details",
+            GuiWidgetKind::Panel,
+            vec![selected_detail.with_span(2)],
+        );
         GuiWidgetNode::layout(
             "plugins-root",
             "Plugins",
@@ -27,6 +47,388 @@ impl SyncplayGuiShellAppState {
             },
             vec![plugin_list, detail.with_span(2)],
         )
+    }
+
+    fn plex_plugin_detail_widget_tree(&self) -> GuiWidgetNode {
+        let mut children = vec![
+            GuiWidgetNode::layout(
+                "plugins:plex:status",
+                "Plex Status",
+                GuiLayoutMode::KeyValueGrid {
+                    min_pair_width: 260.0,
+                },
+                self.plex_plugin_status_rows(),
+            ),
+            GuiWidgetNode::layout(
+                "plugins:plex:actions",
+                "Plex Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 150.0,
+                },
+                vec![
+                    self.plex_account_action_node(),
+                    GuiWidgetNode::leaf(
+                        "plugins:plex:refresh-servers",
+                        "Refresh Servers",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.plex_plugin_action_enabled("refresh-servers"),
+                        false,
+                    ),
+                    self.plex_sync_action_node(),
+                ],
+            ),
+        ];
+        if !self.plex.servers.is_empty() {
+            children.push(GuiWidgetNode::layout(
+                "plugins:plex:servers",
+                "Plex Servers",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 190.0,
+                },
+                self.plex
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, server)| {
+                        GuiWidgetNode::leaf(
+                            format!("plugins:plex:server:{index}"),
+                            server.name.clone(),
+                            GuiWidgetKind::Button,
+                            Some(format!(
+                                "{} · route: {} · {}",
+                                Self::plex_server_scope_label(server),
+                                server.connection_kind.label(),
+                                server.uri
+                            )),
+                            true,
+                            server.selected,
+                        )
+                        .with_tooltip(format!(
+                            "{}\n{}\n{} route\n{}",
+                            server.name,
+                            Self::plex_server_scope_label(server),
+                            server.connection_kind.label(),
+                            server.uri
+                        ))
+                    })
+                    .collect(),
+            ));
+        }
+
+        GuiWidgetNode::branch("plugins:plex", "Plex", GuiWidgetKind::Panel, children)
+    }
+
+    fn plex_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
+        let mut rows = vec![
+            GuiWidgetNode::leaf(
+                "plugins:plex:title",
+                "Title",
+                GuiWidgetKind::Status,
+                Some(self.plex_status_title()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:plex:summary",
+                "Summary",
+                GuiWidgetKind::Status,
+                Some(self.plex_status_summary()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:plex:health",
+                "Health",
+                GuiWidgetKind::Status,
+                Some(self.plex_status_health()),
+                true,
+                false,
+            ),
+        ];
+        if self.plex.authenticated && self.plex.servers.is_empty() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:servers",
+                "Servers",
+                GuiWidgetKind::Status,
+                Some("none found".to_owned()),
+                true,
+                false,
+            ));
+        } else if self.plex.authenticated && self.selected_plex_server().is_none() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:server",
+                "Server",
+                GuiWidgetKind::Status,
+                Some("select a server".to_owned()),
+                true,
+                false,
+            ));
+        }
+        if let Some(item) = self.plex.current_item.as_ref() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:item",
+                "Current Item",
+                GuiWidgetKind::Status,
+                Some(item.clone()),
+                true,
+                false,
+            ));
+        }
+        if let Some(last_report) = self.plex.last_report.as_ref() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:last-report",
+                "Last Report",
+                GuiWidgetKind::Status,
+                Some(last_report.clone()),
+                true,
+                false,
+            ));
+        }
+        if let Some(code) = self.plex.auth_code.as_ref() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:auth-code",
+                "Auth Code",
+                GuiWidgetKind::Status,
+                Some(code.clone()),
+                true,
+                false,
+            ));
+        }
+        if let Some(url) = self.plex.auth_url.as_ref() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:auth-url",
+                "Auth URL",
+                GuiWidgetKind::Status,
+                Some(url.clone()),
+                true,
+                false,
+            ));
+        }
+        if let Some(error) = self.plex.last_error.as_ref() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:plex:status:error",
+                "Last Error",
+                GuiWidgetKind::Status,
+                Some(error.clone()),
+                true,
+                false,
+            ));
+        }
+        rows
+    }
+
+    fn plex_status_title(&self) -> String {
+        if self.plex.authenticating {
+            "Plex login pending".to_owned()
+        } else if !self.plex.authenticated {
+            "Connect Plex".to_owned()
+        } else if self.selected_plex_server().is_none() {
+            "Choose a Plex server".to_owned()
+        } else if self.selected_plex_server_reachability()
+            == Some(GuiPlexServerReachability::Checking)
+        {
+            "Checking Plex server".to_owned()
+        } else if self.selected_plex_server_reachability()
+            == Some(GuiPlexServerReachability::Unreachable)
+        {
+            "Plex server offline".to_owned()
+        } else if self.plex.enabled {
+            "Plex sync active".to_owned()
+        } else {
+            "Plex ready".to_owned()
+        }
+    }
+
+    fn plex_status_summary(&self) -> String {
+        if let Some(error) = self.plex.last_error.as_deref() {
+            return error.to_owned();
+        }
+        if !self.plex.authenticated && !self.plex.authenticating {
+            return "Connect your Plex account to report watch progress.".to_owned();
+        }
+        if self.plex.enabled {
+            if let Some(item) = self.plex.current_item.as_ref() {
+                return format!("Reporting watch progress for {item}.");
+            }
+            return self
+                .selected_plex_server()
+                .map(|server| {
+                    format!(
+                        "Reporting watch progress to {} ({} over a {} route).",
+                        server.name,
+                        Self::plex_server_scope_label(server),
+                        server.connection_kind.label()
+                    )
+                })
+                .unwrap_or_else(|| "Timeline reporting enabled.".to_owned());
+        }
+        if self.plex.authenticating {
+            return "Finish the browser login; this panel will update automatically.".to_owned();
+        }
+        match self.selected_plex_server_reachability() {
+            Some(GuiPlexServerReachability::Checking) => {
+                return format!(
+                    "Checking whether the selected {} Plex server is reachable over a {} route.",
+                    self.selected_plex_server_scope_label().unwrap_or("owned"),
+                    self.selected_plex_server_route_label().unwrap_or("remote")
+                );
+            }
+            Some(GuiPlexServerReachability::Reachable) => {
+                return format!(
+                    "Selected {} Plex server is reachable over a {} route; sync is ready to enable.",
+                    self.selected_plex_server_scope_label().unwrap_or("owned"),
+                    self.selected_plex_server_route_label().unwrap_or("remote")
+                );
+            }
+            Some(GuiPlexServerReachability::Unreachable) => {
+                return format!(
+                    "Selected {} Plex server could not be reached over a {} route. Refresh servers or choose another.",
+                    self.selected_plex_server_scope_label().unwrap_or("owned"),
+                    self.selected_plex_server_route_label().unwrap_or("remote")
+                );
+            }
+            Some(GuiPlexServerReachability::Unknown) => {
+                return format!(
+                    "Selected {} Plex server has not been checked over its {} route yet.",
+                    self.selected_plex_server_scope_label().unwrap_or("owned"),
+                    self.selected_plex_server_route_label().unwrap_or("remote")
+                );
+            }
+            None => {}
+        }
+        if self.plex.authenticated {
+            return "Plex account connected; no server selected.".to_owned();
+        }
+        "Plex account not connected.".to_owned()
+    }
+
+    fn plex_status_health(&self) -> String {
+        if self.plex.last_error.is_some() {
+            "error".to_owned()
+        } else if self.plex.enabled {
+            "enabled".to_owned()
+        } else if self.plex.authenticating {
+            "authenticating".to_owned()
+        } else if self.selected_plex_server_reachability()
+            == Some(GuiPlexServerReachability::Checking)
+        {
+            "checking".to_owned()
+        } else if self.selected_plex_server_reachability()
+            == Some(GuiPlexServerReachability::Unreachable)
+        {
+            "offline".to_owned()
+        } else if self.plex.authenticated {
+            "ready".to_owned()
+        } else {
+            "disconnected".to_owned()
+        }
+    }
+
+    fn plex_account_action_node(&self) -> GuiWidgetNode {
+        if self.plex.authenticating {
+            GuiWidgetNode::leaf(
+                "plugins:plex:poll-auth",
+                "Check Login",
+                GuiWidgetKind::Button,
+                None,
+                self.plex_plugin_action_enabled("poll-auth"),
+                false,
+            )
+        } else if self.plex.authenticated {
+            GuiWidgetNode::leaf(
+                "plugins:plex:disconnect",
+                "Disconnect Plex",
+                GuiWidgetKind::Button,
+                None,
+                self.plex_plugin_action_enabled("disconnect"),
+                false,
+            )
+        } else {
+            GuiWidgetNode::leaf(
+                "plugins:plex:connect",
+                "Connect Plex",
+                GuiWidgetKind::Button,
+                None,
+                self.plex_plugin_action_enabled("connect"),
+                false,
+            )
+        }
+    }
+
+    fn plex_sync_action_node(&self) -> GuiWidgetNode {
+        GuiWidgetNode::leaf(
+            if self.plex.enabled {
+                "plugins:plex:disable-sync"
+            } else {
+                "plugins:plex:enable-sync"
+            },
+            if self.plex.enabled {
+                "Turn Sync Off"
+            } else {
+                "Turn Sync On"
+            },
+            GuiWidgetKind::Button,
+            None,
+            self.plex_plugin_action_enabled("toggle-sync"),
+            false,
+        )
+    }
+
+    fn selected_plex_server(&self) -> Option<&GuiPlexServerRow> {
+        self.plex.servers.iter().find(|server| server.selected)
+    }
+
+    fn selected_plex_server_reachability(&self) -> Option<GuiPlexServerReachability> {
+        self.selected_plex_server()
+            .map(|server| server.reachability)
+    }
+
+    fn selected_plex_server_route_label(&self) -> Option<&'static str> {
+        self.selected_plex_server()
+            .map(|server| server.connection_kind.label())
+    }
+
+    fn selected_plex_server_scope_label(&self) -> Option<&'static str> {
+        self.selected_plex_server()
+            .map(Self::plex_server_scope_label)
+    }
+
+    fn plex_server_scope_label(server: &GuiPlexServerRow) -> &'static str {
+        if server.has_local_connection {
+            "local server"
+        } else if server.owned {
+            "owned server"
+        } else {
+            "shared server"
+        }
+    }
+
+    fn plex_plugin_action_enabled(&self, action: &str) -> bool {
+        if self.pending_operation.is_some() {
+            return false;
+        }
+        match action {
+            "connect" => !self.plex.authenticated && !self.plex.authenticating,
+            "poll-auth" => self.plex.authenticating,
+            "refresh-servers" => self.plex.authenticated,
+            "toggle-sync" => {
+                if self.plex.enabled {
+                    return true;
+                }
+                self.plex.authenticated
+                    && self.selected_plex_server().is_some()
+                    && !matches!(
+                        self.selected_plex_server_reachability(),
+                        Some(GuiPlexServerReachability::Checking)
+                            | Some(GuiPlexServerReachability::Unreachable)
+                    )
+            }
+            "disconnect" => {
+                self.plex.authenticated || self.plex.authenticating || self.plex.enabled
+            }
+            _ => false,
+        }
     }
 
     fn stream_support_plugin_detail_widget_tree(&self) -> GuiWidgetNode {

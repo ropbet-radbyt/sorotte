@@ -80,6 +80,26 @@ pub fn upsert_syncplay_ini_stored_client_settings_mvp(
             &serialized,
         );
     }
+    if let Some(value) = settings.plex_sync_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "plex",
+            "syncEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
+    if let Some(value) = settings.plex_user_token.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "plex", "userToken", value);
+    }
+    if let Some(value) = settings.plex_selected_server_id.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerId", value);
+    }
+    if let Some(value) = settings.plex_selected_server_url.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerUrl", value);
+    }
+    if let Some(value) = settings.plex_selected_server_token.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerToken", value);
+    }
     if let Some(value) = settings.folder_search_first_file_timeout_seconds
         && let Some(formatted) = format_ini_non_negative_f64_legacy_compatible(value)
     {

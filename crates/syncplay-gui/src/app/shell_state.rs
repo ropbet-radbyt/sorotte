@@ -12,6 +12,7 @@ use syncplay_client_app::app_boundary::{
         privacy_mode_legacy_name_compatible, unpause_action_mode_legacy_name_compatible,
     },
 };
+use syncplay_plex::PlexServerConnectionKind;
 
 use super::GuiLaunchMode;
 use super::remote_services;
@@ -263,6 +264,126 @@ impl Default for GuiStreamHelperRuntimeSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexServerRow {
+    pub(super) name: String,
+    pub(super) machine_identifier: String,
+    pub(super) uri: String,
+    pub(super) reachability: GuiPlexServerReachability,
+    pub(super) connection_kind: PlexServerConnectionKind,
+    pub(super) has_local_connection: bool,
+    pub(super) owned: bool,
+    pub(super) selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum GuiPlexServerReachability {
+    #[default]
+    Unknown,
+    Checking,
+    Reachable,
+    Unreachable,
+}
+
+impl GuiPlexServerReachability {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Checking => "checking",
+            Self::Reachable => "reachable",
+            Self::Unreachable => "offline",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexState {
+    pub(super) enabled: bool,
+    pub(super) authenticated: bool,
+    pub(super) authenticating: bool,
+    pub(super) auth_code: Option<String>,
+    pub(super) auth_url: Option<String>,
+    pub(super) selected_server_id: Option<String>,
+    pub(super) selected_server_url: Option<String>,
+    pub(super) servers: Vec<GuiPlexServerRow>,
+    pub(super) status: String,
+    pub(super) current_item: Option<String>,
+    pub(super) last_report: Option<String>,
+    pub(super) last_error: Option<String>,
+}
+
+impl GuiPlexState {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        let authenticated = settings
+            .plex_user_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty());
+        let selected_server_id = settings.plex_selected_server_id.clone();
+        let selected_server_url = settings.plex_selected_server_url.clone();
+        Self {
+            enabled: settings.plex_sync_enabled.unwrap_or(false),
+            authenticated,
+            authenticating: false,
+            auth_code: None,
+            auth_url: None,
+            selected_server_id,
+            selected_server_url,
+            servers: Vec::new(),
+            status: if authenticated {
+                "ready".to_owned()
+            } else {
+                "disconnected".to_owned()
+            },
+            current_item: None,
+            last_report: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiPlexRuntimeSnapshot {
+    pub(super) enabled: bool,
+    pub(super) authenticated: bool,
+    pub(super) authenticating: bool,
+    pub(super) auth_code: Option<String>,
+    pub(super) auth_url: Option<String>,
+    pub(super) selected_server_id: Option<String>,
+    pub(super) selected_server_url: Option<String>,
+    pub(super) servers: Vec<GuiPlexServerRow>,
+    pub(super) status: String,
+    pub(super) current_item: Option<String>,
+    pub(super) last_report: Option<String>,
+    pub(super) last_error: Option<String>,
+}
+
+impl From<&GuiPlexState> for GuiPlexRuntimeSnapshot {
+    fn from(value: &GuiPlexState) -> Self {
+        Self {
+            enabled: value.enabled,
+            authenticated: value.authenticated,
+            authenticating: value.authenticating,
+            auth_code: value.auth_code.clone(),
+            auth_url: value.auth_url.clone(),
+            selected_server_id: value.selected_server_id.clone(),
+            selected_server_url: value.selected_server_url.clone(),
+            servers: value.servers.clone(),
+            status: value.status.clone(),
+            current_item: value.current_item.clone(),
+            last_report: value.last_report.clone(),
+            last_error: value.last_error.clone(),
+        }
+    }
+}
+
+impl Default for GuiPlexRuntimeSnapshot {
+    fn default() -> Self {
+        Self::from(&GuiPlexState::from_stored_settings(
+            &StoredClientSettingsMvp::default(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PublicServerBrowserRuntimeFlags {
     pub(super) can_connect: bool,
@@ -305,6 +426,13 @@ pub(super) struct SyncplayGuiRuntimeSnapshot {
     pub(super) about_dialog_available: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum GuiPluginSelection {
+    #[default]
+    StreamSupport,
+    Plex,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiFeedbackRuntimeSnapshot {
     pub(super) validation_issues: Vec<GuiValidationIssue>,
@@ -320,6 +448,7 @@ pub(super) struct GuiErrorRuntimeSnapshot {
 pub(super) struct SyncplayGuiShellAppState {
     pub(super) active_view: GuiShellView,
     pub(super) selected_configuration_tab: GuiConfigurationTab,
+    pub(super) selected_plugin: GuiPluginSelection,
     pub(super) open_modal: Option<GuiShellModal>,
     pub(super) selection: GuiSelectionState,
     pub(super) main_window_playlist_selection_is_local: bool,
@@ -353,6 +482,7 @@ pub(super) struct SyncplayGuiShellAppState {
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,
     pub(super) stream_helper: GuiStreamHelperState,
     pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
+    pub(super) plex: GuiPlexState,
     pub(super) saved_configuration: StoredClientSettingsMvp,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
     pub(super) main_window: MainWindowShellState,

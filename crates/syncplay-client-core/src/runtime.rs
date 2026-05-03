@@ -12,4 +12,5 @@ pub struct ClientRuntime<P, C> {
     control: C,
     pub(crate) ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible,
     pending_player_playback_telemetry_updates: Vec<PlayerPlaybackTelemetryUpdate>,
+    last_local_file_update: Option<LocalFileUpdate>,
 }

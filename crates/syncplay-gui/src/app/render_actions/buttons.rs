@@ -195,6 +195,23 @@ impl GuiWidgetEguiRenderer {
             | "plugins:stream-support:alert:retry" => {
                 vec![GuiShellAction::RetryPendingStreamMediaOpen]
             }
+            "plugins:plex:connect" => vec![GuiShellAction::StartPlexAuth],
+            "plugins:plex:poll-auth" => vec![GuiShellAction::PollPlexAuth],
+            "plugins:plex:refresh-servers" => vec![GuiShellAction::RefreshPlexServers],
+            "plugins:plex:enable-sync" => vec![GuiShellAction::TogglePlexSync(true)],
+            "plugins:plex:disable-sync" => vec![GuiShellAction::TogglePlexSync(false)],
+            "plugins:plex:disconnect" => vec![GuiShellAction::DisconnectPlex],
+            id if id.starts_with("plugins:plex:server:") => id
+                .strip_prefix("plugins:plex:server:")
+                .and_then(|index| index.parse::<usize>().ok())
+                .and_then(|index| state.plex.servers.get(index))
+                .map(|server| {
+                    vec![GuiShellAction::SelectPlexServer {
+                        machine_identifier: server.machine_identifier.clone(),
+                        uri: server.uri.clone(),
+                    }]
+                })
+                .unwrap_or_default(),
             "main-window:player-setup:open-settings" => vec![
                 GuiShellAction::SwitchView(GuiShellView::Setup),
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),

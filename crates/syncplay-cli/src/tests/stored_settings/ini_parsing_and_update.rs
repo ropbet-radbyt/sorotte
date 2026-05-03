@@ -89,6 +89,7 @@ fn parse_syncplay_ini_stored_client_settings_mvp_reads_python_style_sections() {
             show_noncontroller_osd: Some(true),
             show_different_room_osd: Some(false),
             show_contact_info: Some(true),
+            ..StoredClientSettingsMvp::default()
         }
     );
 }
@@ -307,6 +308,7 @@ fn upsert_syncplay_ini_stored_client_settings_mvp_preserves_unrelated_entries() 
             show_noncontroller_osd: Some(false),
             show_different_room_osd: Some(true),
             show_contact_info: Some(true),
+            ..StoredClientSettingsMvp::default()
         },
     );
 

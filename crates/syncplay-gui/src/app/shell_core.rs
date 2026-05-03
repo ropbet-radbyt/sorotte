@@ -7,9 +7,9 @@ use syncplay_client_app::app_boundary::state::{
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind,
-    GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal, GuiShellView,
-    GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
+    GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind, GuiPlexState,
+    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
+    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
     MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
     SyncplayGuiShellAppState,
 };
@@ -31,6 +31,7 @@ impl SyncplayGuiShellAppState {
         let mut state = Self {
             active_view: GuiShellView::Setup,
             selected_configuration_tab: GuiConfigurationTab::Connection,
+            selected_plugin: GuiPluginSelection::default(),
             open_modal: None,
             selection: GuiSelectionState::default(),
             main_window_playlist_selection_is_local: false,
@@ -64,6 +65,7 @@ impl SyncplayGuiShellAppState {
             player_setup_issue: None,
             stream_helper: Default::default(),
             stream_helper_remediation: Default::default(),
+            plex: GuiPlexState::from_stored_settings(&shell_settings),
             saved_configuration: shell_settings.clone(),
             configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
             main_window: MainWindowShellState::from_stored_settings(&shell_settings),

@@ -276,7 +276,7 @@ try {
     Invoke-CargoStep "clippy" @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     Invoke-CargoStep `
         "strict server release matrix" `
-        @("test", "-p", "syncplay-server", "--test", "server_release_verify", "--", "--ignored", "--test-threads=1", "--nocapture") `
+        @("test", "-p", "syncplay-server", "--test", "server_release_verify", "--", "--test-threads=1", "--nocapture") `
         @{
             SYNCPLAY_REQUIRE_SERVER_RELEASE_VERIFY = "1"
             SYNCPLAY_SERVER_RELEASE_VERIFY = "1"

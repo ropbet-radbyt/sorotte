@@ -18,10 +18,178 @@ impl<T> ConnectedSessionAsyncStream for T where T: AsyncRead + AsyncWrite + Unpi
 
 type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAsyncStream>>;
 
+const CLI_PLEX_CLIENT_IDENTIFIER: &str = "syncplay-rs-cli";
+const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
+
+type CliPlexSyncEngine = PlexSyncEngine<PlexHttpClient>;
+
+struct CliPlexSync {
+    engine: Option<CliPlexSyncEngine>,
+    cache_path: Option<std::path::PathBuf>,
+}
+
 fn normalized_tls_server_host(host: &str) -> &str {
     host.strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host)
+}
+
+fn cli_plex_cache_path() -> Option<std::path::PathBuf> {
+    crate::config_paths::resolve_syncplay_cli_config_path_legacy_compatible().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join(CLI_PLEX_CACHE_FILE_NAME))
+    })
+}
+
+fn load_cli_plex_match_cache(path: Option<&std::path::Path>) -> PlexMatchCache {
+    let Some(path) = path else {
+        return PlexMatchCache::default();
+    };
+    match PlexMatchCache::load_from_path(path) {
+        Ok(cache) => cache,
+        Err(error) => {
+            eprintln!("warning: failed to load Plex match cache: {error}");
+            PlexMatchCache::default()
+        }
+    }
+}
+
+async fn create_cli_plex_sync(config: &PlexClientConfig) -> Option<CliPlexSync> {
+    if !config.enabled || !config.has_selected_server() {
+        return None;
+    }
+    let config = config.clone();
+    let cache_path = cli_plex_cache_path();
+    match tokio::task::spawn_blocking(move || {
+        let client = PlexHttpClient::new(CLI_PLEX_CLIENT_IDENTIFIER)?;
+        let cache = load_cli_plex_match_cache(cache_path.as_deref());
+        Ok::<_, syncplay_plex::PlexError>(CliPlexSync {
+            engine: Some(PlexSyncEngine::new(config, client, cache)),
+            cache_path,
+        })
+    })
+    .await
+    {
+        Ok(Ok(plex)) => Some(plex),
+        Ok(Err(error)) => {
+            eprintln!("warning: failed to initialize Plex sync client: {error}");
+            None
+        }
+        Err(error) => {
+            eprintln!("warning: Plex sync worker failed during initialization: {error}");
+            None
+        }
+    }
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+        .filter(|value| value.is_finite())
+}
+
+fn value_as_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
+}
+
+fn session_local_file_update(
+    session: &syncplay_client_core::ClientSession,
+) -> Option<LocalFileUpdate> {
+    let username = session.username.as_deref()?;
+    if session.user_has_file(username) == Some(false) {
+        return None;
+    }
+    let mut file = LocalFileUpdate::new(session.user_file_name(username)?.to_owned());
+    file.duration_seconds = session.user_file_duration(username).and_then(value_as_f64);
+    file.size_bytes = session.user_file_size(username).and_then(value_as_u64);
+    Some(file)
+}
+
+fn current_cli_plex_watch_event(
+    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+) -> Option<PlexWatchEvent> {
+    let session_file = session_local_file_update(runtime.session())?;
+    let mut file = runtime
+        .last_local_file_update()
+        .cloned()
+        .unwrap_or_else(|| session_file.clone());
+    if file.duration_seconds.is_none() {
+        file.duration_seconds = session_file.duration_seconds;
+    }
+    if file.size_bytes.is_none() {
+        file.size_bytes = session_file.size_bytes;
+    }
+
+    let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
+    if let Some(position_seconds) = runtime.session().local_position_seconds() {
+        event = event.with_position_seconds(position_seconds);
+    }
+    if let Some(duration_seconds) = event.duration_seconds {
+        event = event.with_duration_seconds(duration_seconds);
+    }
+    if let Some(paused) = runtime.session().local_paused() {
+        event = event.with_paused(paused);
+    }
+    Some(event)
+}
+
+fn save_cli_plex_cache_if_changed(
+    engine: &CliPlexSyncEngine,
+    cache_path: Option<&std::path::Path>,
+    before: &PlexMatchCache,
+) {
+    if engine.cache() == before {
+        return;
+    }
+    if let Some(path) = cache_path
+        && let Err(error) = engine.cache().save_to_path(path)
+    {
+        eprintln!("warning: failed to save Plex match cache: {error}");
+    }
+}
+
+async fn sync_cli_plex_watch_state(
+    runtime: &ClientRuntime<MpvAdapter, QueuedRuntimeControl>,
+    plex: Option<&mut CliPlexSync>,
+) {
+    let Some(plex) = plex else {
+        return;
+    };
+    let event = current_cli_plex_watch_event(runtime);
+    let Some(mut engine) = plex.engine.take() else {
+        return;
+    };
+    let cache_path = plex.cache_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        let before = engine.cache().clone();
+        let _ = engine.tick(event, SystemTime::now());
+        save_cli_plex_cache_if_changed(&engine, cache_path.as_deref(), &before);
+        engine
+    })
+    .await
+    {
+        Ok(engine) => plex.engine = Some(engine),
+        Err(error) => eprintln!("warning: Plex sync worker failed: {error}"),
+    }
+}
+
+async fn finalize_cli_plex_watch_state(plex: &mut Option<CliPlexSync>) {
+    let Some(mut plex) = plex.take() else {
+        return;
+    };
+    let Some(mut engine) = plex.engine.take() else {
+        return;
+    };
+    let cache_path = plex.cache_path.take();
+    let _ = tokio::task::spawn_blocking(move || {
+        let before = engine.cache().clone();
+        let _ = engine.tick(None, SystemTime::now());
+        save_cli_plex_cache_if_changed(&engine, cache_path.as_deref(), &before);
+    })
+    .await;
 }
 
 fn ensure_rustls_crypto_provider() {
@@ -154,6 +322,7 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     let diagnostics_config = client_loop_diagnostics_config(None);
+    let plex_config = cli_plex_config_from_env_and_stored_settings(None);
     run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
         stream,
         ConnectedSessionLaunchContext {
@@ -165,6 +334,7 @@ where
             notification_sink,
             file_difference_sink,
             diagnostics_config,
+            plex_config: &plex_config,
         },
     )
     .await
@@ -183,6 +353,7 @@ where
     pub(crate) notification_sink: &'a mut F,
     pub(crate) file_difference_sink: &'a mut G,
     pub(crate) diagnostics_config: ClientLoopDiagnosticsConfig,
+    pub(crate) plex_config: &'a PlexClientConfig,
 }
 
 pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<
@@ -205,6 +376,7 @@ where
         notification_sink,
         file_difference_sink,
         diagnostics_config,
+        plex_config,
     } = launch;
     let mut local_input_rx = local_input_rx;
     let mut hello_payload = HelloPayload::new(
@@ -236,15 +408,18 @@ where
             Box::new(stream)
         };
     let (reader, mut writer) = tokio::io::split(stream);
+    let mut plex_sync = create_cli_plex_sync(plex_config).await;
     write_protocol_line(&mut writer, &hello_line).await?;
     let mut pending_chat_message_on_connect = chat_message_on_connect.map(str::to_owned);
     publish_pending_local_file_updates(runtime, config)?;
     flush_runtime_protocol_lines(runtime, &mut writer).await?;
+    sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
 
     let mut reader = BufReader::new(reader).lines();
     let connected_start = Instant::now();
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
+    let mut plex_tick = tokio::time::interval(Duration::from_secs(10));
     let mut player_chat_input_tick =
         tokio::time::interval(Duration::from_millis(PLAYER_CHAT_INPUT_POLL_INTERVAL_MS));
     let mut file_difference_state = FileDifferenceNotificationState::default();
@@ -264,6 +439,7 @@ where
 
     loop {
         if connected_start.elapsed().as_secs_f64() >= config.max_connected_runtime_seconds {
+            finalize_cli_plex_watch_state(&mut plex_sync).await;
             return Ok(ConnectedSessionExit::RuntimeWindowElapsed);
         }
 
@@ -316,10 +492,15 @@ where
                         )
                         .await?;
                         if let Some(error) = trailing_decode_error {
+                            finalize_cli_plex_watch_state(&mut plex_sync).await;
                             return Err(error.into());
                         }
+                        sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
                     }
-                    None => return Ok(ConnectedSessionExit::TransportClosed),
+                    None => {
+                        finalize_cli_plex_watch_state(&mut plex_sync).await;
+                        return Ok(ConnectedSessionExit::TransportClosed);
+                    }
                 }
             }
             _ = autoplay_tick.tick() => {
@@ -356,11 +537,16 @@ where
                     },
                 )
                 .await?;
+                sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
+            }
+            _ = plex_tick.tick(), if plex_sync.is_some() => {
+                sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
             }
             _ = player_chat_input_tick.tick() => {
                 if drain_player_chat_input_legacy_compatible(runtime)? {
                     flush_runtime_protocol_lines(runtime, &mut writer).await?;
                 }
+                sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
             }
             local_line = recv_local_input_line(&mut local_input_rx) => {
                 let Some(local_line) = local_line else {
@@ -438,6 +624,7 @@ where
                         },
                     )
                     .await?;
+                    sync_cli_plex_watch_state(runtime, plex_sync.as_mut()).await;
                 }
             }
         }

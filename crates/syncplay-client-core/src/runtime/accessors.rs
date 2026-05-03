@@ -12,6 +12,7 @@ where
             control,
             ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
             pending_player_playback_telemetry_updates: Vec::new(),
+            last_local_file_update: None,
         }
     }
 
@@ -90,6 +91,10 @@ where
 
     pub fn player_mut(&mut self) -> &mut P {
         &mut self.player
+    }
+
+    pub fn last_local_file_update(&self) -> Option<&LocalFileUpdate> {
+        self.last_local_file_update.as_ref()
     }
 
     pub fn current_room_playstate_legacy_ping_compatible_at(

@@ -30,6 +30,12 @@ fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_and_reads_known_sect
          port = 8999\n\
          [client_settings]\n\
          autoplayMinUsers = 3\n\
+         [plex]\n\
+         syncEnabled = yes\n\
+         userToken = user-token\n\
+         selectedServerId = machine-id\n\
+         selectedServerUrl = http://plex.local:32400\n\
+         selectedServerToken = server-token\n\
          [gui]\n\
          chatInputRelativeFontSize = 2\n",
     );
@@ -39,6 +45,20 @@ fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_and_reads_known_sect
     assert_eq!(
         settings.autoplay_min_users,
         Some(AutoplayThresholdOverride::Set(3))
+    );
+    assert_eq!(settings.plex_sync_enabled, Some(true));
+    assert_eq!(settings.plex_user_token.as_deref(), Some("user-token"));
+    assert_eq!(
+        settings.plex_selected_server_id.as_deref(),
+        Some("machine-id")
+    );
+    assert_eq!(
+        settings.plex_selected_server_url.as_deref(),
+        Some("http://plex.local:32400")
+    );
+    assert_eq!(
+        settings.plex_selected_server_token.as_deref(),
+        Some("server-token")
     );
     assert_eq!(settings.chat_input_relative_font_size, Some(2));
 }
@@ -55,6 +75,43 @@ fn upsert_syncplay_ini_stored_client_settings_mvp_preserves_existing_entries() {
 
     assert!(updated.contains("[misc]\nfoo = bar\n"));
     assert!(updated.contains("[client_settings]\nname = alice\n"));
+}
+
+#[test]
+fn upsert_syncplay_ini_stored_client_settings_mvp_writes_plex_settings() {
+    let updated = upsert_syncplay_ini_stored_client_settings_mvp(
+        "",
+        &StoredClientSettingsMvp {
+            plex_sync_enabled: Some(true),
+            plex_user_token: Some("user-token".to_owned()),
+            plex_selected_server_id: Some("machine-id".to_owned()),
+            plex_selected_server_url: Some("http://plex.local:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("[plex]\n"));
+    assert!(updated.contains("syncEnabled = True\n"));
+    assert!(updated.contains("userToken = user-token\n"));
+    assert!(updated.contains("selectedServerId = machine-id\n"));
+    assert!(updated.contains("selectedServerUrl = http://plex.local:32400\n"));
+    assert!(updated.contains("selectedServerToken = server-token\n"));
+}
+
+#[test]
+fn stored_settings_debug_redacts_plex_tokens() {
+    let settings = StoredClientSettingsMvp {
+        plex_user_token: Some("secret-user-token".to_owned()),
+        plex_selected_server_token: Some("secret-server-token".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+
+    let rendered = format!("{settings:?}");
+
+    assert!(rendered.contains("<redacted>"));
+    assert!(!rendered.contains("secret-user-token"));
+    assert!(!rendered.contains("secret-server-token"));
 }
 
 #[test]

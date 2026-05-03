@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::anyhow;
 use serde_json::Value;
@@ -42,7 +42,11 @@ use syncplay_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, ClientRuntime,
     QueuedRuntimeControl, SYNCPLAY_COMPAT_VERSION_LEGACY, legacy_server_password_token,
 };
+use syncplay_player_api::LocalFileUpdate;
 use syncplay_player_mpv::MpvAdapter;
+use syncplay_plex::{
+    PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexSyncEngine, PlexWatchEvent,
+};
 use syncplay_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line,
     decode_message_line_items, encode_message_line,
@@ -98,3 +102,45 @@ pub(super) use self::connected_session::{
 #[cfg(test)]
 pub(super) use self::network_loop::run_client_network_loop;
 pub(super) use self::network_loop::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
+
+pub(super) fn cli_plex_config_from_env_and_stored_settings(
+    stored_settings: Option<&StoredClientSettingsMvp>,
+) -> PlexClientConfig {
+    let mut config = PlexClientConfig {
+        enabled: env_flag_enabled("SYNCPLAY_CLIENT_PLEX_SYNC"),
+        user_token: env_trimmed("SYNCPLAY_CLIENT_PLEX_TOKEN"),
+        selected_server_id: env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_ID"),
+        selected_server_url: env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_URL"),
+        selected_server_token: env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_TOKEN"),
+    };
+
+    let Some(settings) = stored_settings else {
+        return config;
+    };
+    if env_trimmed("SYNCPLAY_CLIENT_PLEX_SYNC").is_none()
+        && let Some(value) = settings.plex_sync_enabled
+    {
+        config.enabled = value;
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_PLEX_TOKEN").is_none()
+        && let Some(value) = settings.plex_user_token.as_ref()
+    {
+        config.user_token = Some(value.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_ID").is_none()
+        && let Some(value) = settings.plex_selected_server_id.as_ref()
+    {
+        config.selected_server_id = Some(value.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_URL").is_none()
+        && let Some(value) = settings.plex_selected_server_url.as_ref()
+    {
+        config.selected_server_url = Some(value.clone());
+    }
+    if env_trimmed("SYNCPLAY_CLIENT_PLEX_SERVER_TOKEN").is_none()
+        && let Some(value) = settings.plex_selected_server_token.as_ref()
+    {
+        config.selected_server_token = Some(value.clone());
+    }
+    config
+}

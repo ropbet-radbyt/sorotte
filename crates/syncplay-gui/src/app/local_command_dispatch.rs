@@ -61,6 +61,34 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPendingStreamMediaOpen);
                 }
+                GuiShellAction::StartPlexAuth => {
+                    plan.runtime_requests.push(GuiRuntimeRequest::StartPlexAuth);
+                }
+                GuiShellAction::PollPlexAuth => {
+                    plan.runtime_requests.push(GuiRuntimeRequest::PollPlexAuth);
+                }
+                GuiShellAction::RefreshPlexServers => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RefreshPlexServers);
+                }
+                GuiShellAction::SelectPlexServer {
+                    machine_identifier,
+                    uri,
+                } => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::SelectPlexServer {
+                            machine_identifier,
+                            uri,
+                        });
+                }
+                GuiShellAction::TogglePlexSync(enabled) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::TogglePlexSync(enabled));
+                }
+                GuiShellAction::DisconnectPlex => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::DisconnectPlex);
+                }
                 other => plan.shell_actions.push(other),
             }
         }

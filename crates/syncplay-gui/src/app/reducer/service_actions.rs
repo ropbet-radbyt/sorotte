@@ -31,6 +31,11 @@ impl SyncplayGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SelectPlugin(plugin) => {
+                self.selected_plugin = plugin;
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::MoveSelectedMediaSearchDirectoryUp => {
                 self.move_selected_media_search_directory(-1)
             }

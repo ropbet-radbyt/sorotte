@@ -66,6 +66,9 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(snapshot) => {
                 self.apply_gui_stream_helper_remediation_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiPlexRuntimeSnapshot(snapshot) => {
+                self.apply_gui_plex_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => {
                 self.apply_gui_interaction_runtime_snapshot(snapshot)
             }

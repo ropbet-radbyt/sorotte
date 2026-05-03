@@ -100,6 +100,11 @@ pub(crate) fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
         show_noncontroller_osd: config.show_noncontroller_osd_override,
         show_different_room_osd: config.show_different_room_osd_override,
         show_contact_info: None,
+        plex_sync_enabled: None,
+        plex_user_token: None,
+        plex_selected_server_id: None,
+        plex_selected_server_url: None,
+        plex_selected_server_token: None,
     };
     shared_upsert_syncplay_ini_stored_client_settings_mvp_at_path(&path, &settings)
 }

@@ -115,6 +115,7 @@ fn apply_stored_client_settings_mvp_if_env_absent_preserves_env_precedence() {
             show_noncontroller_osd: Some(true),
             show_different_room_osd: Some(false),
             show_contact_info: None,
+            ..StoredClientSettingsMvp::default()
         },
     );
 

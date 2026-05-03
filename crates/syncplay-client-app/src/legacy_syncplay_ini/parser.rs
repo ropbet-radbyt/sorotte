@@ -371,6 +371,26 @@ pub fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredCl
                 }
                 _ => {}
             },
+            Some("plex") => match key.as_str() {
+                "syncenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.plex_sync_enabled = Some(parsed);
+                    }
+                }
+                "usertoken" if !value.is_empty() => {
+                    settings.plex_user_token = Some(value);
+                }
+                "selectedserverid" if !value.is_empty() => {
+                    settings.plex_selected_server_id = Some(value);
+                }
+                "selectedserverurl" if !value.is_empty() => {
+                    settings.plex_selected_server_url = Some(value);
+                }
+                "selectedservertoken" if !value.is_empty() => {
+                    settings.plex_selected_server_token = Some(value);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

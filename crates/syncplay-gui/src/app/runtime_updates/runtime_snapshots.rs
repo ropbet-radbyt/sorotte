@@ -6,8 +6,8 @@ use super::super::shell_state::{
     GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
     GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot, GuiPendingOperationKind,
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
-    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
-    GuiSavedConfigurationRuntimeSnapshot, GuiStreamHelperHealth,
+    GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
+    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiStreamHelperHealth,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
     MenuDialogRuntimeSnapshot, MenuDialogShellState, SyncplayGuiShellAppState,
@@ -342,6 +342,59 @@ impl SyncplayGuiShellAppState {
         } else {
             0.0
         };
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_plex_runtime_snapshot(
+        &mut self,
+        snapshot: GuiPlexRuntimeSnapshot,
+    ) -> bool {
+        if snapshot.status.trim().is_empty() {
+            return self
+                .record_action_error("GUI Plex runtime snapshots cannot contain empty status.");
+        }
+        self.plex.enabled = snapshot.enabled;
+        self.plex.authenticated = snapshot.authenticated;
+        self.plex.authenticating = snapshot.authenticating;
+        self.plex.auth_code = snapshot
+            .auth_code
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.auth_url = snapshot
+            .auth_url
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.selected_server_id = snapshot
+            .selected_server_id
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.selected_server_url = snapshot
+            .selected_server_url
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.servers = snapshot
+            .servers
+            .into_iter()
+            .filter_map(|server| {
+                Some(GuiPlexServerRow {
+                    name: normalized_editable_text(&server.name)?,
+                    machine_identifier: normalized_editable_text(&server.machine_identifier)?,
+                    uri: normalized_editable_text(&server.uri)?,
+                    reachability: server.reachability,
+                    connection_kind: server.connection_kind,
+                    has_local_connection: server.has_local_connection,
+                    owned: server.owned,
+                    selected: server.selected,
+                })
+            })
+            .collect();
+        self.plex.status = snapshot.status;
+        self.plex.current_item = snapshot
+            .current_item
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.last_report = snapshot
+            .last_report
+            .and_then(|value| normalized_editable_text(&value));
+        self.plex.last_error = snapshot
+            .last_error
+            .and_then(|value| normalized_editable_text(&value));
         self.clear_action_error_and_refresh();
         true
     }

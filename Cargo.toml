@@ -7,6 +7,7 @@ members = [
     "crates/syncplay-client-app",
     "crates/syncplay-player-api",
     "crates/syncplay-player-mpv",
+    "crates/syncplay-plex",
     "crates/syncplay-cli",
     "crates/syncplay-gui",
     "crates/syncplay-sim",

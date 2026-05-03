@@ -59,6 +59,34 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
             }],
+            Self::StartPlexAuth => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Starting Plex authentication.".to_owned(),
+            }],
+            Self::PollPlexAuth => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Checking Plex authentication status.".to_owned(),
+            }],
+            Self::RefreshPlexServers => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Refreshing Plex servers.".to_owned(),
+            }],
+            Self::SelectPlexServer { .. } => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Selecting Plex server.".to_owned(),
+            }],
+            Self::TogglePlexSync(enabled) => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: if *enabled {
+                    "Enabling Plex watch sync.".to_owned()
+                } else {
+                    "Disabling Plex watch sync.".to_owned()
+                },
+            }],
+            Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Disconnecting Plex.".to_owned(),
+            }],
             Self::SendChatMessage(_message) => Vec::new(),
             Self::SeekToPosition(target_position_seconds) => {
                 let message = format!("Seek requested: target {target_position_seconds} seconds.");
@@ -152,6 +180,34 @@ impl GuiRuntimeRequest {
             Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
+            }],
+            Self::StartPlexAuth => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Starting Plex authentication.".to_owned(),
+            }],
+            Self::PollPlexAuth => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Checking Plex authentication status.".to_owned(),
+            }],
+            Self::RefreshPlexServers => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Refreshing Plex servers.".to_owned(),
+            }],
+            Self::SelectPlexServer { .. } => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Selecting Plex server.".to_owned(),
+            }],
+            Self::TogglePlexSync(enabled) => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: if *enabled {
+                    "Enabling Plex watch sync.".to_owned()
+                } else {
+                    "Disabling Plex watch sync.".to_owned()
+                },
+            }],
+            Self::DisconnectPlex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Disconnecting Plex.".to_owned(),
             }],
             Self::UndoSeek => vec![
                 GuiShellAction::PushTransientNotification {

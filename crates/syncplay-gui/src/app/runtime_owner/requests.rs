@@ -123,6 +123,32 @@ impl GuiPersistedConfigRuntimeOwner {
                 return self
                     .handle_retry_pending_stream_media_open_request(handle, projected_state);
             }
+            GuiRuntimeRequest::StartPlexAuth => {
+                return self.handle_start_plex_auth_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::PollPlexAuth => {
+                return self.handle_poll_plex_auth_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::RefreshPlexServers => {
+                return self.handle_refresh_plex_servers_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::SelectPlexServer {
+                machine_identifier,
+                uri,
+            } => {
+                return self.handle_select_plex_server_request(
+                    handle,
+                    projected_state,
+                    machine_identifier,
+                    uri,
+                );
+            }
+            GuiRuntimeRequest::TogglePlexSync(enabled) => {
+                return self.handle_toggle_plex_sync_request(handle, projected_state, enabled);
+            }
+            GuiRuntimeRequest::DisconnectPlex => {
+                return self.handle_disconnect_plex_request(handle, projected_state);
+            }
             GuiRuntimeRequest::UndoSeek => {
                 return self.handle_undo_seek_request(handle, projected_state);
             }

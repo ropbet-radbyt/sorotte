@@ -6,7 +6,7 @@ use super::{
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
     GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionRuntimeSnapshot,
-    GuiPendingOperationKind, GuiPublicServerEditSessionRuntimeSnapshot,
+    GuiPendingOperationKind, GuiPluginSelection, GuiPublicServerEditSessionRuntimeSnapshot,
     GuiSavedConfigurationRuntimeSnapshot, GuiSelectionState, GuiShellAction, GuiShellModal,
     GuiShellView, GuiStreamTargetKind, GuiTextEditSessionRuntimeSnapshot, GuiTransientNotification,
     GuiTransientNotificationLevel, GuiValidationIssue, GuiWidgetKind, MainWindowPlaylistRow,

@@ -47,6 +47,24 @@ pub fn python_bin_from_env() -> std::ffi::OsString {
     env::var_os("SYNCPLAY_PYTHON_BIN").unwrap_or_else(|| "python".into())
 }
 
+fn python_live_peer_prerequisites() -> Result<(), String> {
+    let output = Command::new(python_bin_from_env())
+        .arg("-c")
+        .arg("import twisted, OpenSSL, service_identity")
+        .output()
+        .map_err(|error| format!("Python prerequisite check could not start: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Python prerequisites are missing or unusable; status={} stdout='{}' stderr='{}'",
+        output.status,
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
 pub fn legacy_syncplay_root() -> Option<PathBuf> {
     if let Some(path) = env::var_os("SYNCPLAY_LEGACY_ROOT").filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
@@ -90,12 +108,25 @@ pub fn reserve_ipv4_port() -> u16 {
         .port()
 }
 
-pub fn reserve_ipv6_port_or_panic() -> u16 {
-    let listener = TcpListener::bind("[::1]:0").expect("ephemeral IPv6 port should bind");
-    listener
-        .local_addr()
-        .expect("ephemeral IPv6 listener should have a local address")
-        .port()
+pub fn reserve_ipv6_port_or_skip() -> Option<u16> {
+    let listener = match TcpListener::bind("[::1]:0") {
+        Ok(listener) => listener,
+        Err(error) => {
+            if strict_release_required() {
+                panic!(
+                    "strict server release verification requires IPv6 loopback support: {error}"
+                );
+            }
+            eprintln!("IPv6 listener test skipped; IPv6 loopback is unavailable: {error}");
+            return None;
+        }
+    };
+    Some(
+        listener
+            .local_addr()
+            .expect("ephemeral IPv6 listener should have a local address")
+            .port(),
+    )
 }
 
 pub fn temporary_path(label: &str, extension: &str) -> PathBuf {
@@ -587,6 +618,16 @@ impl PythonPeer {
                 "legacy Python client test skipped; missing {}",
                 probe.display()
             );
+            return None;
+        }
+
+        if let Err(reason) = python_live_peer_prerequisites() {
+            if strict_release_required() {
+                panic!(
+                    "strict server release verification requires Python live peer support: {reason}"
+                );
+            }
+            eprintln!("legacy Python client test skipped; {reason}");
             return None;
         }
 

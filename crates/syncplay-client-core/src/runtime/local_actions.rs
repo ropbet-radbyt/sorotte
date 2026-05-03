@@ -278,6 +278,7 @@ where
         };
 
         let file_payload = Self::local_file_update_payload(&local_file_update);
+        self.last_local_file_update = Some(local_file_update.clone());
         self.publish_local_file_legacy_compatible(
             &file_payload,
             filename_privacy_mode,

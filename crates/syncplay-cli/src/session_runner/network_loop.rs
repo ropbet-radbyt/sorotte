@@ -113,6 +113,7 @@ where
     local_input_rx: Option<UnboundedReceiver<String>>,
     notification_sink: F,
     file_difference_sink: G,
+    plex_config: PlexClientConfig,
     retries: u32,
 }
 
@@ -192,6 +193,7 @@ where
                 .then(spawn_local_input_receiver_legacy_compatible),
             notification_sink,
             file_difference_sink,
+            plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
             retries: 0_u32,
         },
         _managed_mpv_process_guard: managed_mpv_process_guard,
@@ -220,6 +222,7 @@ where
             notification_sink: &mut retry_state.notification_sink,
             file_difference_sink: &mut retry_state.file_difference_sink,
             diagnostics_config,
+            plex_config: &retry_state.plex_config,
         },
         retries: &mut retry_state.retries,
         network_start,
@@ -332,6 +335,7 @@ where
         notification_sink,
         file_difference_sink,
         diagnostics_config,
+        plex_config,
     } = launch;
     let (attempt_execution_plan, connect_error) =
         client_network_loop_transport_attempt_execution_plan_legacy_compatible(
@@ -345,6 +349,7 @@ where
                 notification_sink,
                 file_difference_sink,
                 diagnostics_config,
+                plex_config,
             },
         )
         .await?;

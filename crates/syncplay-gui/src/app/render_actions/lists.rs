@@ -4,6 +4,18 @@ impl GuiWidgetEguiRenderer {
     pub(in crate::app) fn action_for_list_item_node(
         node: &GuiWidgetNode,
     ) -> Option<GuiShellAction> {
+        match node.id.as_str() {
+            "plugins:list:stream-support" => {
+                return Some(GuiShellAction::SelectPlugin(
+                    GuiPluginSelection::StreamSupport,
+                ));
+            }
+            "plugins:list:plex" => {
+                return Some(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex));
+            }
+            _ => {}
+        }
+
         Self::parse_index_suffix(&node.id, "main-window:user:")
             .map(GuiShellAction::SelectMainWindowUser)
             .or_else(|| {

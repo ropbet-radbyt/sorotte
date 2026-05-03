@@ -18,6 +18,7 @@ syncplay-client-app = { path = "../syncplay-client-app" }
 syncplay-client-core = { path = "../syncplay-client-core" }
 syncplay-player-mpv = { path = "../syncplay-player-mpv" }
 syncplay-player-api = { path = "../syncplay-player-api" }
+syncplay-plex = { path = "../syncplay-plex" }
 syncplay-protocol = { path = "../syncplay-protocol" }
 syncplay-server = { path = "../syncplay-server" }
 webpki-roots.workspace = true

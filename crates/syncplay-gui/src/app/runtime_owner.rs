@@ -5,6 +5,7 @@ mod tests;
 
 mod player;
 mod player_facade;
+mod plex;
 mod projection;
 mod requests;
 mod room_transitions;
@@ -32,6 +33,11 @@ use syncplay_client_app::app_boundary::{
 };
 use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
 use syncplay_player_mpv::MpvAdapter;
+use syncplay_plex::{
+    PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexServerConnection,
+    PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent,
+    plex_server_connection_kind_from_uri,
+};
 
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
@@ -48,8 +54,10 @@ use super::runtime_stack::{
     GuiTestPlayerAdapter,
 };
 use super::shell_state::{
-    GuiCommandAvailabilityState, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
-    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SyncplayGuiShellAppState,
+    GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot, GuiPlexRuntimeSnapshot,
+    GuiPlexServerReachability, GuiPlexServerRow, GuiShellAction,
+    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
+    GuiTransientNotificationLevel, SyncplayGuiShellAppState,
 };
 use super::startup::{
     explicit_mpv_ipc_path_from_lookup, gui_startup_remote_actions,
@@ -110,10 +118,25 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot,
     pub(super) stream_helper_remediation_runtime_snapshot:
         GuiStreamHelperRemediationRuntimeSnapshot,
+    pub(super) plex_client: Option<PlexHttpClient>,
+    pub(super) plex_auth_session: Option<PlexAuthSession>,
+    pub(super) plex_auth_poll_due_at: Option<Instant>,
+    pub(super) plex_servers: Vec<PlexServerConnection>,
+    pub(super) plex_server_reachability: HashMap<String, GuiPlexServerReachability>,
+    pub(super) startup_plex_server_refresh_attempted: bool,
+    pub(super) startup_plex_server_refresh_rx:
+        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
+    pub(super) plex_sync_engine: Option<PlexSyncEngine<PlexHttpClient>>,
+    pub(super) plex_runtime_snapshot: GuiPlexRuntimeSnapshot,
     pub(super) pending_stream_retry_target: Option<String>,
     pub(super) managed_stream_helper_refresh_required: bool,
     pub(super) pending_stream_feedback: VecDeque<Vec<GuiShellAction>>,
     pub(super) pending_stream_load_context: Option<GuiPendingStreamLoadContext>,
+}
+
+pub(super) struct GuiPlexServerRefreshOutcome {
+    pub(super) servers: Vec<PlexServerConnection>,
+    pub(super) reachability: HashMap<String, GuiPlexServerReachability>,
 }
 
 pub(super) struct GuiAttachedMediaSearchIndex {

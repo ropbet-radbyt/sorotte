@@ -12,7 +12,13 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::IntegrateStreamHelperJsRuntime(_)
             | GuiShellAction::RecheckStreamHelper
             | GuiShellAction::OpenStreamHelperInstallLocation
-            | GuiShellAction::RetryPendingStreamMediaOpen => {
+            | GuiShellAction::RetryPendingStreamMediaOpen
+            | GuiShellAction::StartPlexAuth
+            | GuiShellAction::PollPlexAuth
+            | GuiShellAction::RefreshPlexServers
+            | GuiShellAction::SelectPlexServer { .. }
+            | GuiShellAction::TogglePlexSync(_)
+            | GuiShellAction::DisconnectPlex => {
                 self.clear_action_error_and_refresh();
                 true
             }

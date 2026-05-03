@@ -14,9 +14,9 @@ use super::{
     apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
     chat_notification_message, clear_syncplay_cli_gui_qsettings_legacy_compatible,
     clear_syncplay_cli_stored_settings_legacy_compatible,
-    controlled_room_base_name_legacy_compatible, controller_auth_notification_hidden_from_osd,
-    controller_auth_transition_notification_message, create_client_runtime,
-    create_client_runtime_with_managed_mpv_support, create_client_session,
+    cli_plex_config_from_env_and_stored_settings, controlled_room_base_name_legacy_compatible,
+    controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
+    create_client_runtime, create_client_runtime_with_managed_mpv_support, create_client_session,
     flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
     flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
     flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
@@ -385,6 +385,7 @@ mod mpv_smoke;
 mod mpv_startup;
 mod notification_messages;
 mod output_notifications;
+mod plex_watch_sync;
 mod reconnect_diagnostics;
 mod runtime_notifications;
 mod startup_playlist;

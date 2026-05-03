@@ -18,7 +18,7 @@ impl GuiWidgetEguiRenderer {
             self.render_layout(ui, node, state);
             return;
         };
-        let Some(stream_support) = node.find("plugins:stream-support") else {
+        let Some(details) = node.find("plugins:details") else {
             self.render_layout(ui, node, state);
             return;
         };
@@ -43,23 +43,13 @@ impl GuiWidgetEguiRenderer {
                             self.render_plugins_list_panel(ui, plugin_list, state, rail_width);
                         });
                         Self::allocate_plugin_width(ui, detail_width, |ui| {
-                            self.render_stream_support_plugin_panel(
-                                ui,
-                                stream_support,
-                                state,
-                                detail_width,
-                            );
+                            self.render_plugins_detail_stack(ui, details, state, detail_width);
                         });
                     });
                 } else {
                     self.render_plugins_list_panel(ui, plugin_list, state, content_width);
                     ui.add_space(Self::PLUGINS_GAP);
-                    self.render_stream_support_plugin_panel(
-                        ui,
-                        stream_support,
-                        state,
-                        content_width,
-                    );
+                    self.render_plugins_detail_stack(ui, details, state, content_width);
                 }
             });
         });
@@ -114,6 +104,27 @@ impl GuiWidgetEguiRenderer {
                 }
             },
         );
+    }
+
+    fn render_plugins_detail_stack(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        panel_width: f32,
+    ) {
+        for (index, child) in node.children.iter().enumerate() {
+            if child.id == "plugins:stream-support" {
+                self.render_stream_support_plugin_panel(ui, child, state, panel_width);
+            } else if child.id == "plugins:plex" {
+                self.render_plex_plugin_panel(ui, child, state, panel_width);
+            } else {
+                self.render_layout(ui, child, state);
+            }
+            if index + 1 < node.children.len() {
+                ui.add_space(Self::PLUGINS_GAP);
+            }
+        }
     }
 
     fn render_plugin_list_item(
@@ -234,17 +245,83 @@ impl GuiWidgetEguiRenderer {
         );
     }
 
+    fn render_plex_plugin_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        panel_width: f32,
+    ) {
+        let status_node = node.find("plugins:plex:status");
+        let servers_node = node.find("plugins:plex:servers");
+        let actions_node = node.find("plugins:plex:actions");
+
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width)
+                .body_margin(egui::Margin::symmetric(12, 8))
+                .body_horizontal_margin(24.0),
+            |renderer, ui, _body_width| {
+                if let Some(status_node) = status_node {
+                    renderer.render_plex_overview(ui, status_node);
+                    ui.add_space(8.0);
+                    renderer.render_plex_status_cards(ui, status_node);
+                }
+                if let Some(servers_node) = servers_node {
+                    ui.add_space(8.0);
+                    renderer.render_plex_server_cards(ui, servers_node, state);
+                }
+                if let Some(actions_node) = actions_node {
+                    ui.add_space(8.0);
+                    renderer.render_plugin_action_buttons(ui, actions_node, state);
+                }
+            },
+        );
+    }
+
     fn render_stream_support_overview(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_overview(
+            ui,
+            status_node,
+            "plugins:stream-support:title",
+            "plugins:stream-support:summary",
+            "plugins:stream-support:health",
+            "Stream helper status",
+        );
+    }
+
+    fn render_plex_overview(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_overview(
+            ui,
+            status_node,
+            "plugins:plex:title",
+            "plugins:plex:summary",
+            "plugins:plex:health",
+            "Plex watch sync",
+        );
+    }
+
+    fn render_plugin_overview(
+        &self,
+        ui: &mut egui::Ui,
+        status_node: &GuiWidgetNode,
+        title_id: &str,
+        summary_id: &str,
+        health_id: &str,
+        default_title: &str,
+    ) {
         let title = status_node
-            .find("plugins:stream-support:title")
+            .find(title_id)
             .map(Self::display_status_value)
-            .unwrap_or_else(|| "Stream helper status".to_owned());
+            .unwrap_or_else(|| default_title.to_owned());
         let summary = status_node
-            .find("plugins:stream-support:summary")
+            .find(summary_id)
             .map(Self::display_status_value)
             .unwrap_or_default();
         let health = status_node
-            .find("plugins:stream-support:health")
+            .find(health_id)
             .map(Self::display_status_value)
             .unwrap_or_default();
 
@@ -310,17 +387,39 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn render_stream_support_status_cards(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_status_cards(
+            ui,
+            status_node,
+            &[
+                "plugins:stream-support:title",
+                "plugins:stream-support:summary",
+                "plugins:stream-support:health",
+            ],
+        );
+    }
+
+    fn render_plex_status_cards(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_status_cards(
+            ui,
+            status_node,
+            &[
+                "plugins:plex:title",
+                "plugins:plex:summary",
+                "plugins:plex:health",
+            ],
+        );
+    }
+
+    fn render_plugin_status_cards(
+        &self,
+        ui: &mut egui::Ui,
+        status_node: &GuiWidgetNode,
+        hidden_ids: &[&str],
+    ) {
         let items = status_node
             .children
             .iter()
-            .filter(|child| {
-                !matches!(
-                    child.id.as_str(),
-                    "plugins:stream-support:title"
-                        | "plugins:stream-support:summary"
-                        | "plugins:stream-support:health"
-                )
-            })
+            .filter(|child| !hidden_ids.contains(&child.id.as_str()))
             .collect::<Vec<_>>();
         if items.is_empty() {
             return;
@@ -339,7 +438,7 @@ impl GuiWidgetEguiRenderer {
                 ui.spacing_mut().item_spacing = spacing;
                 for child in chunk {
                     Self::allocate_plugin_width(ui, card_width, |ui| {
-                        self.render_stream_support_status_card(ui, child, card_width);
+                        self.render_plugin_status_card(ui, child, card_width);
                     });
                 }
             });
@@ -349,12 +448,7 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    fn render_stream_support_status_card(
-        &self,
-        ui: &mut egui::Ui,
-        node: &GuiWidgetNode,
-        card_width: f32,
-    ) {
+    fn render_plugin_status_card(&self, ui: &mut egui::Ui, node: &GuiWidgetNode, card_width: f32) {
         let palette = Self::palette_for_ui(ui);
         egui::Frame::new()
             .fill(palette.surface_muted.gamma_multiply(0.84))
@@ -398,6 +492,15 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SyncplayGuiShellAppState,
     ) {
+        self.render_plugin_action_buttons(ui, node, state);
+    }
+
+    fn render_plugin_action_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
         let available_width = Self::visible_available_width(ui);
         let gap = 8.0;
         let target_button_width = 176.0;
@@ -433,16 +536,239 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
+    fn render_plex_server_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+    ) {
+        if node.children.is_empty() {
+            return;
+        }
+        let available_width = Self::visible_available_width(ui);
+        let gap = 8.0;
+        let columns: usize = if available_width >= 720.0 { 2 } else { 1 };
+        let card_width = ((available_width - (gap * columns.saturating_sub(1) as f32))
+            / columns as f32)
+            .max(0.0);
+        let row_count = node.children.len().div_ceil(columns);
+        for (row_index, chunk) in node.children.chunks(columns).enumerate() {
+            ui.horizontal_top(|ui| {
+                let mut spacing = ui.spacing().item_spacing;
+                spacing.x = gap;
+                ui.spacing_mut().item_spacing = spacing;
+                for child in chunk {
+                    Self::allocate_plugin_width(ui, card_width, |ui| {
+                        self.render_plex_server_card(ui, child, state, card_width);
+                    });
+                }
+            });
+            if row_index + 1 < row_count {
+                ui.add_space(gap);
+            }
+        }
+    }
+
+    fn render_plex_server_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SyncplayGuiShellAppState,
+        card_width: f32,
+    ) {
+        let palette = Self::palette_for_ui(ui);
+        let card_height = 60.0;
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(card_width, card_height), egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+        });
+        let response = Self::attach_node_tooltip(response, node);
+        if response.clicked() {
+            self.handle_button_node_click(state, node);
+        }
+
+        let fill = if node.selected {
+            palette.info_bg
+        } else if response.hovered() {
+            palette.surface_muted
+        } else {
+            palette.surface_muted.gamma_multiply(0.84)
+        };
+        let stroke = if node.selected {
+            egui::Stroke::new(1.5, palette.info_border)
+        } else if response.hovered() {
+            egui::Stroke::new(1.0, palette.primary)
+        } else {
+            egui::Stroke::new(1.0, palette.border)
+        };
+        let card_rect = rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter()
+            .rect(card_rect, 5, fill, stroke, egui::StrokeKind::Inside);
+        if node.selected {
+            let stripe_rect =
+                egui::Rect::from_min_max(card_rect.left_top(), card_rect.left_bottom())
+                    .expand2(egui::vec2(2.0, 0.0))
+                    .intersect(card_rect);
+            ui.painter()
+                .rect_filled(stripe_rect, 5, palette.info_border);
+        }
+
+        let content_rect = card_rect.shrink2(egui::vec2(12.0, 8.0));
+        let server_row = Self::plex_server_row_for_node(state, node);
+        let reachability = server_row
+            .map(|server| server.reachability.label())
+            .unwrap_or("unknown");
+        let server_scope = server_row
+            .map(|server| {
+                if server.has_local_connection {
+                    "local"
+                } else if server.owned {
+                    "owned"
+                } else {
+                    "shared"
+                }
+            })
+            .unwrap_or("owned");
+        let reachability_chip_width = 86.0;
+        let kind_chip_width = 66.0;
+        let chip_gap = 6.0;
+        let show_kind_chip = content_rect.width() >= 300.0;
+        let reachability_chip_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                content_rect.right() - reachability_chip_width,
+                content_rect.top(),
+            ),
+            egui::vec2(reachability_chip_width, 22.0),
+        );
+        let text_right = if show_kind_chip {
+            let kind_chip_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    reachability_chip_rect.left() - kind_chip_width - chip_gap,
+                    content_rect.top(),
+                ),
+                egui::vec2(kind_chip_width, 22.0),
+            );
+            Self::paint_stream_support_health_chip(ui, kind_chip_rect, server_scope);
+            kind_chip_rect.left()
+        } else {
+            reachability_chip_rect.left()
+        };
+        Self::paint_stream_support_health_chip(ui, reachability_chip_rect, reachability);
+        let selected_icon_width = if node.selected { 24.0 } else { 0.0 };
+        if node.selected {
+            let check_rect = egui::Rect::from_center_size(
+                egui::pos2(content_rect.left() + 9.0, content_rect.top() + 10.5),
+                egui::vec2(18.0, 18.0),
+            );
+            Self::paint_selected_check(ui, check_rect);
+        }
+
+        let text_left = content_rect.left() + selected_icon_width;
+        let text_width = (text_right - text_left - 8.0).max(0.0);
+        let title_color = if node.selected {
+            palette.info_text
+        } else {
+            palette.neutral_text
+        };
+        let title_font = egui::TextStyle::Button.resolve(ui.style());
+        let (display_title, title_truncated) = Self::truncate_single_line_text_for_width(
+            ui,
+            &node.label,
+            title_font.clone(),
+            title_color,
+            text_width,
+        );
+        let title_galley = ui
+            .painter()
+            .layout_no_wrap(display_title, title_font, title_color);
+        ui.painter().with_clip_rect(content_rect).galley(
+            egui::pos2(text_left, content_rect.top()),
+            title_galley,
+            title_color,
+        );
+
+        let uri = node.value.as_deref().unwrap_or_default();
+        if !uri.is_empty() {
+            let uri_font = egui::TextStyle::Small.resolve(ui.style());
+            let uri_color = palette.muted_text;
+            let (display_uri, uri_truncated) = Self::truncate_single_line_text_for_width(
+                ui,
+                uri,
+                uri_font.clone(),
+                uri_color,
+                text_width,
+            );
+            let uri_galley = ui
+                .painter()
+                .layout_no_wrap(display_uri, uri_font, uri_color);
+            ui.painter().with_clip_rect(content_rect).galley(
+                egui::pos2(text_left, content_rect.top() + 22.0),
+                uri_galley,
+                uri_color,
+            );
+            if uri_truncated || title_truncated {
+                response.on_hover_text(format!("{}\n{}", node.label, uri));
+            }
+        } else if title_truncated {
+            response.on_hover_text(node.label.clone());
+        }
+    }
+
+    fn plex_server_row_for_node<'a>(
+        state: &'a SyncplayGuiShellAppState,
+        node: &GuiWidgetNode,
+    ) -> Option<&'a super::super::shell_state::GuiPlexServerRow> {
+        let index = node
+            .id
+            .strip_prefix("plugins:plex:server:")?
+            .parse::<usize>()
+            .ok()?;
+        state.plex.servers.get(index)
+    }
+
+    fn paint_selected_check(ui: &egui::Ui, rect: egui::Rect) {
+        let palette = Self::palette_for_ui(ui);
+        ui.painter()
+            .circle_filled(rect.center(), rect.width() * 0.5, palette.info_border);
+        let stroke = egui::Stroke::new(1.8, palette.primary_text);
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left() + 4.5, rect.center().y),
+                egui::pos2(rect.left() + 7.5, rect.bottom() - 5.0),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left() + 7.5, rect.bottom() - 5.0),
+                egui::pos2(rect.right() - 4.0, rect.top() + 5.0),
+            ],
+            stroke,
+        );
+    }
+
     fn paint_stream_support_health_chip(ui: &egui::Ui, rect: egui::Rect, value: &str) {
         let palette = Self::palette_for_ui(ui);
         let normalized = value.to_ascii_lowercase();
-        let (fill, stroke, text) = if normalized.contains("healthy") {
+        let (fill, stroke, text) = if normalized.contains("healthy")
+            || normalized.contains("ready")
+            || normalized.contains("connected")
+            || normalized.contains("enabled")
+            || normalized.contains("syncing")
+            || normalized.contains("reachable")
+            || normalized.contains("local")
+            || normalized.contains("owned")
+        {
             (
                 palette.success_bg,
                 palette.success_border,
                 palette.success_text,
             )
-        } else if normalized.contains("broken") || normalized.contains("error") {
+        } else if normalized.contains("broken")
+            || normalized.contains("error")
+            || normalized.contains("offline")
+        {
             (
                 if ui.visuals().dark_mode {
                     egui::Color32::from_rgb(72, 37, 35)

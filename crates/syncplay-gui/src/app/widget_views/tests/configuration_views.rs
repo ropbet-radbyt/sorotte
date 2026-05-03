@@ -247,6 +247,24 @@ fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
 
     let plugins = state.plugins_widget_tree();
     assert!(plugins.find("plugins:stream-support").is_some());
+    assert!(plugins.find("plugins:plex").is_none());
+    assert!(
+        plugins
+            .find("plugins:list:stream-support")
+            .expect("stream support list row should exist")
+            .selected
+    );
+    assert!(
+        !plugins
+            .find("plugins:list:plex")
+            .expect("plex list row should exist")
+            .selected
+    );
+    let details = plugins
+        .find("plugins:details")
+        .expect("plugin details should exist");
+    assert_eq!(details.children.len(), 1);
+    assert_eq!(details.children[0].id, "plugins:stream-support");
     assert_eq!(
         plugins
             .find("plugins:stream-support:summary")
@@ -298,6 +316,124 @@ fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
             .find("shell:modal:stream-support:target")
             .and_then(|node| node.value.as_deref()),
         Some("https://www.youtube.com/watch?v=UyjIPZfygTk")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_only_selected_plugin_detail() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+
+    let plugins = state.plugins_widget_tree();
+    assert!(plugins.find("plugins:stream-support").is_some());
+    assert!(plugins.find("plugins:plex").is_none());
+
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    let plugins = state.plugins_widget_tree();
+    assert!(
+        !plugins
+            .find("plugins:list:stream-support")
+            .expect("stream support list row should exist")
+            .selected
+    );
+    assert!(
+        plugins
+            .find("plugins:list:plex")
+            .expect("plex list row should exist")
+            .selected
+    );
+    let details = plugins
+        .find("plugins:details")
+        .expect("plugin details should exist");
+    assert_eq!(details.children.len(), 1);
+    assert_eq!(details.children[0].id, "plugins:plex");
+    assert!(plugins.find("plugins:plex:status").is_some());
+    assert!(plugins.find("plugins:stream-support").is_none());
+}
+
+#[test]
+fn gui_shell_app_state_projects_empty_plex_server_discovery_status() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            authenticated: true,
+            status: "ready".to_owned(),
+            ..GuiPlexRuntimeSnapshot::default()
+        }
+    )));
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:plex:status:servers")
+            .and_then(|node| node.value.as_deref()),
+        Some("none found")
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_plex_as_connection_and_server_cards() {
+    let mut state =
+        SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
+    assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
+        GuiPlexRuntimeSnapshot {
+            authenticated: true,
+            selected_server_id: Some("raptor-machine".to_owned()),
+            selected_server_url: Some("https://raptor.example:32400".to_owned()),
+            servers: vec![
+                GuiPlexServerRow {
+                    name: "Raptor".to_owned(),
+                    machine_identifier: "raptor-machine".to_owned(),
+                    uri: "https://raptor.example:32400".to_owned(),
+                    reachability: GuiPlexServerReachability::Reachable,
+                    connection_kind: PlexServerConnectionKind::Remote,
+                    has_local_connection: true,
+                    owned: true,
+                    selected: true,
+                },
+                GuiPlexServerRow {
+                    name: "Tower".to_owned(),
+                    machine_identifier: "tower-machine".to_owned(),
+                    uri: "https://tower.example:32400".to_owned(),
+                    reachability: GuiPlexServerReachability::Unreachable,
+                    connection_kind: PlexServerConnectionKind::Remote,
+                    has_local_connection: false,
+                    owned: false,
+                    selected: false,
+                },
+            ],
+            status: "ready".to_owned(),
+            ..GuiPlexRuntimeSnapshot::default()
+        }
+    )));
+
+    let plugins = state.plugins_widget_tree();
+    assert!(plugins.find("plugins:plex:status:sync").is_none());
+    assert!(plugins.find("plugins:plex:status:auth").is_none());
+    assert!(plugins.find("plugins:plex:status:state").is_none());
+    assert_eq!(
+        plugins
+            .find("plugins:plex:connect")
+            .map(|node| node.label.as_str()),
+        None
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:plex:disconnect")
+            .map(|node| node.label.as_str()),
+        Some("Disconnect Plex")
+    );
+    let selected = plugins
+        .find("plugins:plex:server:0")
+        .expect("selected Plex server row should exist");
+    assert!(selected.selected);
+    assert_eq!(selected.label, "Raptor");
+    assert_eq!(
+        selected.value.as_deref(),
+        Some("local server · route: remote · https://raptor.example:32400")
     );
 }
 

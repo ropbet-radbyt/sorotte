@@ -135,6 +135,7 @@ fn persist_and_load_syncplay_cli_stored_settings_mvp_roundtrips_via_env_override
             show_noncontroller_osd: Some(true),
             show_different_room_osd: Some(false),
             show_contact_info: None,
+            ..StoredClientSettingsMvp::default()
         }
     );
 

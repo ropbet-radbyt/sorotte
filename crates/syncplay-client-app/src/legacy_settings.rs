@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use syncplay_client_core::{PrivacyMode, UnpauseActionMode};
 
@@ -8,7 +8,7 @@ pub enum AutoplayThresholdOverride {
     Set(usize),
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct StoredClientSettingsMvp {
     pub language: Option<String>,
     pub check_for_updates_automatically: Option<bool>,
@@ -23,6 +23,11 @@ pub struct StoredClientSettingsMvp {
     pub per_player_arguments: Option<BTreeMap<String, Vec<String>>>,
     pub media_search_directories: Option<Vec<String>>,
     pub public_servers: Option<Vec<(String, String)>>,
+    pub plex_sync_enabled: Option<bool>,
+    pub plex_user_token: Option<String>,
+    pub plex_selected_server_id: Option<String>,
+    pub plex_selected_server_url: Option<String>,
+    pub plex_selected_server_token: Option<String>,
     pub folder_search_first_file_timeout_seconds: Option<f64>,
     pub folder_search_timeout_seconds: Option<f64>,
     pub folder_search_double_check_interval_seconds: Option<f64>,
@@ -80,6 +85,143 @@ pub struct StoredClientSettingsMvp {
     pub show_noncontroller_osd: Option<bool>,
     pub show_different_room_osd: Option<bool>,
     pub show_contact_info: Option<bool>,
+}
+
+impl fmt::Debug for StoredClientSettingsMvp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredClientSettingsMvp")
+            .field("language", &self.language)
+            .field(
+                "check_for_updates_automatically",
+                &self.check_for_updates_automatically,
+            )
+            .field("last_checked_for_updates", &self.last_checked_for_updates)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("server_password", &self.server_password)
+            .field("username", &self.username)
+            .field("room", &self.room)
+            .field("room_list", &self.room_list)
+            .field("player_path", &self.player_path)
+            .field("per_player_arguments", &self.per_player_arguments)
+            .field("media_search_directories", &self.media_search_directories)
+            .field("public_servers", &self.public_servers)
+            .field("plex_sync_enabled", &self.plex_sync_enabled)
+            .field(
+                "plex_user_token",
+                &redacted_secret_debug(&self.plex_user_token),
+            )
+            .field("plex_selected_server_id", &self.plex_selected_server_id)
+            .field("plex_selected_server_url", &self.plex_selected_server_url)
+            .field(
+                "plex_selected_server_token",
+                &redacted_secret_debug(&self.plex_selected_server_token),
+            )
+            .field(
+                "folder_search_first_file_timeout_seconds",
+                &self.folder_search_first_file_timeout_seconds,
+            )
+            .field(
+                "folder_search_timeout_seconds",
+                &self.folder_search_timeout_seconds,
+            )
+            .field(
+                "folder_search_double_check_interval_seconds",
+                &self.folder_search_double_check_interval_seconds,
+            )
+            .field(
+                "folder_search_warning_threshold_seconds",
+                &self.folder_search_warning_threshold_seconds,
+            )
+            .field("force_gui_prompt", &self.force_gui_prompt)
+            .field("autoplay_initial_state", &self.autoplay_initial_state)
+            .field(
+                "autoplay_require_same_filenames",
+                &self.autoplay_require_same_filenames,
+            )
+            .field("ready_at_start", &self.ready_at_start)
+            .field("shared_playlist_enabled", &self.shared_playlist_enabled)
+            .field("pause_on_leave", &self.pause_on_leave)
+            .field("loop_at_end_of_playlist", &self.loop_at_end_of_playlist)
+            .field("loop_single_files", &self.loop_single_files)
+            .field(
+                "only_switch_to_trusted_domains",
+                &self.only_switch_to_trusted_domains,
+            )
+            .field("trusted_domains", &self.trusted_domains)
+            .field("rewind_on_desync", &self.rewind_on_desync)
+            .field("fastforward_on_desync", &self.fastforward_on_desync)
+            .field("slow_on_desync", &self.slow_on_desync)
+            .field("dont_slow_down_with_me", &self.dont_slow_down_with_me)
+            .field("rewind_threshold_seconds", &self.rewind_threshold_seconds)
+            .field(
+                "fastforward_threshold_seconds",
+                &self.fastforward_threshold_seconds,
+            )
+            .field(
+                "slowdown_threshold_seconds",
+                &self.slowdown_threshold_seconds,
+            )
+            .field("unpause_action", &self.unpause_action)
+            .field("autoplay_min_users", &self.autoplay_min_users)
+            .field("filename_privacy_mode", &self.filename_privacy_mode)
+            .field("filesize_privacy_mode", &self.filesize_privacy_mode)
+            .field(
+                "show_duration_notification",
+                &self.show_duration_notification,
+            )
+            .field("autosave_joins_to_list", &self.autosave_joins_to_list)
+            .field("show_osd", &self.show_osd)
+            .field("chat_input_enabled", &self.chat_input_enabled)
+            .field("chat_input_font_underline", &self.chat_input_font_underline)
+            .field("chat_input_font_family", &self.chat_input_font_family)
+            .field(
+                "chat_input_relative_font_size",
+                &self.chat_input_relative_font_size,
+            )
+            .field("chat_input_font_weight", &self.chat_input_font_weight)
+            .field("chat_input_font_color", &self.chat_input_font_color)
+            .field("chat_input_position", &self.chat_input_position)
+            .field("chat_direct_input", &self.chat_direct_input)
+            .field("chat_output_enabled", &self.chat_output_enabled)
+            .field(
+                "chat_output_font_underline",
+                &self.chat_output_font_underline,
+            )
+            .field("chat_output_font_family", &self.chat_output_font_family)
+            .field(
+                "chat_output_relative_font_size",
+                &self.chat_output_relative_font_size,
+            )
+            .field("chat_output_font_weight", &self.chat_output_font_weight)
+            .field("chat_output_mode", &self.chat_output_mode)
+            .field("chat_move_osd", &self.chat_move_osd)
+            .field("chat_max_lines", &self.chat_max_lines)
+            .field("chat_top_margin", &self.chat_top_margin)
+            .field("chat_left_margin", &self.chat_left_margin)
+            .field("chat_bottom_margin", &self.chat_bottom_margin)
+            .field("chat_osd_margin", &self.chat_osd_margin)
+            .field(
+                "notification_timeout_seconds",
+                &self.notification_timeout_seconds,
+            )
+            .field("alert_timeout_seconds", &self.alert_timeout_seconds)
+            .field("chat_timeout_seconds", &self.chat_timeout_seconds)
+            .field("show_same_room_osd", &self.show_same_room_osd)
+            .field("show_osd_warnings", &self.show_osd_warnings)
+            .field("show_slowdown_osd", &self.show_slowdown_osd)
+            .field("show_noncontroller_osd", &self.show_noncontroller_osd)
+            .field("show_different_room_osd", &self.show_different_room_osd)
+            .field("show_contact_info", &self.show_contact_info)
+            .finish()
+    }
+}
+
+fn redacted_secret_debug(value: &Option<String>) -> Option<&'static str> {
+    value
+        .as_deref()
+        .filter(|secret| !secret.is_empty())
+        .map(|_| "<redacted>")
 }
 
 pub fn privacy_mode_legacy_name_compatible(mode: PrivacyMode) -> &'static str {

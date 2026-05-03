@@ -72,6 +72,8 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let shell_tree = state.shell_widget_tree();
     let public_servers_surface = shell_tree.find("public-servers-root").unwrap();
     let plugins_surface = shell_tree.find("plugins-root").unwrap();
+    let stream_plugin_row = shell_tree.find("plugins:list:stream-support").unwrap();
+    let plex_plugin_row = shell_tree.find("plugins:list:plex").unwrap();
     let menu_action = shell_tree.find("menus:action:0:0").unwrap();
     let exit_menu_action = shell_tree.find("menus:action:0:3").unwrap();
     let seek_menu_action = shell_tree.find("menus:action:1:3").unwrap();
@@ -165,6 +167,16 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_list_item_node(playlist_row),
         Some(GuiShellAction::SelectMainWindowPlaylist(0))
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_list_item_node(stream_plugin_row),
+        Some(GuiShellAction::SelectPlugin(
+            GuiPluginSelection::StreamSupport,
+        ))
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_list_item_node(plex_plugin_row),
+        Some(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex))
     );
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_button_node(&state, room_toggle_button),
