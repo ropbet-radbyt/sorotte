@@ -118,6 +118,18 @@ impl GuiPersistedConfigRuntimeOwner {
                     Ok(()) => {
                         self.player_paused = Some(paused);
                         state_changed = true;
+                        // Remote room sync is not local playback intent; mirror it as telemetry
+                        // so later pumps do not reinterpret it as a readiness-changing action.
+                        if let Some(session) = self.session.as_mut()
+                            && let Err(error) = session.sync_local_playback_telemetry(
+                                Some(paused),
+                                self.player_position_seconds,
+                            )
+                        {
+                            eprintln!(
+                                "warning: failed to mirror remote room pause sync into the session runtime: {error}"
+                            );
+                        }
                     }
                     Err(error) => {
                         room_playstate_sync_failed = true;
