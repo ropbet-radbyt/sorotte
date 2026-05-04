@@ -73,6 +73,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) session_transport_reconnect_due_at: Option<Instant>,
     pub(super) session_transport_reconnect_failures: u32,
     pub(super) session_transport_disconnect_pending_cleanup: bool,
+    pub(super) runtime_pump_generation: u64,
     pub(super) session_default_room: Option<String>,
     pub(super) pending_room_change_request: Option<GuiPendingRoomChangeRequest>,
     pub(super) startup_saved_connect_attempted: bool,
@@ -102,6 +103,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) suppressed_attached_room_playstate_after_playlist_reset:
         Option<GuiSessionRoomPlaystate>,
     pub(super) pending_local_attached_pause_override: Option<bool>,
+    pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) active_shared_playlist_index: Option<usize>,

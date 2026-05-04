@@ -83,6 +83,35 @@ impl GuiPersistedConfigRuntimeOwner {
         Value::Object(payload)
     }
 
+    fn should_defer_attached_player_pause_sync(
+        &mut self,
+        previous_session_paused: Option<bool>,
+        target_paused: bool,
+    ) -> bool {
+        // mpv can briefly report pause=true while loading or starting media. Confirm
+        // attached-player pauses on the following GUI pump before changing readiness.
+        if !target_paused
+            || previous_session_paused == Some(true)
+            || self.runtime_pump_generation == 0
+        {
+            self.pending_attached_player_pause_confirmation_pump = None;
+            return false;
+        }
+
+        match self.pending_attached_player_pause_confirmation_pump {
+            Some(pump_generation) if pump_generation != self.runtime_pump_generation => {
+                self.pending_attached_player_pause_confirmation_pump = None;
+                false
+            }
+            Some(_) => true,
+            None => {
+                self.pending_attached_player_pause_confirmation_pump =
+                    Some(self.runtime_pump_generation);
+                true
+            }
+        }
+    }
+
     pub(super) fn sync_detached_session_preferences_and_player_state(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -115,56 +144,91 @@ impl GuiPersistedConfigRuntimeOwner {
             playlist_control_available,
             can_auto_advance_to_next_playlist_item,
         );
-        let pending_local_attached_pause_override_update = {
+        let (previous_session_paused, supports_playback_pause_changes) = {
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
             };
-            let previous_session_paused = session.local_pause_state();
-            let mut pending_local_attached_pause_override_update = None;
             session.sync_runtime_settings(&runtime_settings)?;
-            if session.supports_playback_pause_changes()
-                && let Some(target_paused) = self.player_paused
+            (
+                session.local_pause_state(),
+                session.supports_playback_pause_changes(),
+            )
+        };
+        let player_paused = self.player_paused;
+        let pending_local_attached_pause_override_update = {
+            let mut pending_local_attached_pause_override_update = None;
+
+            if supports_playback_pause_changes
+                && let Some(target_paused) = player_paused
                 && previous_session_paused != Some(target_paused)
             {
-                session.sync_local_playback_telemetry(
-                    previous_session_paused,
-                    self.player_position_seconds,
-                )?;
-                let _ = session.set_playback_paused(target_paused)?;
-                if let Some(corrected_paused) = session.local_pause_state()
-                    && Some(corrected_paused) != self.player_paused
+                if self
+                    .should_defer_attached_player_pause_sync(previous_session_paused, target_paused)
                 {
-                    if let Some(player) = self.player.as_mut() {
-                        player
-                            .set_paused(corrected_paused)
-                            .map_err(|error| {
-                                format!(
-                                    "Attached player readiness/pause correction failed while restoring the paused state: {error}"
-                                )
-                            })?;
-                    }
-                    self.player_paused = Some(corrected_paused);
-                }
-                session.sync_local_playback_telemetry(
-                    self.player_paused,
-                    self.player_position_seconds,
-                )?;
-                pending_local_attached_pause_override_update = Some(
-                    match (
-                        session.local_pause_state(),
-                        session
-                            .current_room_playstate_for_attached_player_sync()
-                            .and_then(|playstate| playstate.paused),
-                    ) {
-                        (Some(session_pause_state), Some(room_pause_state))
-                            if room_pause_state != session_pause_state =>
-                        {
-                            Some(session_pause_state)
+                    let Some(session) = self.session.as_mut() else {
+                        return Ok(());
+                    };
+                    session.sync_local_playback_telemetry(
+                        previous_session_paused,
+                        self.player_position_seconds,
+                    )?;
+                    pending_local_attached_pause_override_update = Some(Some(target_paused));
+                } else {
+                    let Some(session) = self.session.as_mut() else {
+                        return Ok(());
+                    };
+                    session.sync_local_playback_telemetry(
+                        previous_session_paused,
+                        self.player_position_seconds,
+                    )?;
+                    let _ = session.set_playback_paused(target_paused)?;
+                    if let Some(corrected_paused) = session.local_pause_state()
+                        && Some(corrected_paused) != self.player_paused
+                    {
+                        if let Some(player) = self.player.as_mut() {
+                            player
+                                .set_paused(corrected_paused)
+                                .map_err(|error| {
+                                    format!(
+                                        "Attached player readiness/pause correction failed while restoring the paused state: {error}"
+                                    )
+                                })?;
                         }
-                        _ => None,
-                    },
-                );
+                        self.player_paused = Some(corrected_paused);
+                    }
+                    session.sync_local_playback_telemetry(
+                        self.player_paused,
+                        self.player_position_seconds,
+                    )?;
+                    pending_local_attached_pause_override_update = Some(
+                        match (
+                            session.local_pause_state(),
+                            session
+                                .current_room_playstate_for_attached_player_sync()
+                                .and_then(|playstate| playstate.paused),
+                        ) {
+                            (Some(session_pause_state), Some(room_pause_state))
+                                if room_pause_state != session_pause_state =>
+                            {
+                                Some(session_pause_state)
+                            }
+                            _ => None,
+                        },
+                    );
+                }
             } else {
+                let pause_confirmation_was_pending = self
+                    .pending_attached_player_pause_confirmation_pump
+                    .is_some();
+                if player_paused != Some(true) || previous_session_paused == Some(true) {
+                    self.pending_attached_player_pause_confirmation_pump = None;
+                    if pause_confirmation_was_pending && player_paused != Some(true) {
+                        pending_local_attached_pause_override_update = Some(None);
+                    }
+                }
+                let Some(session) = self.session.as_mut() else {
+                    return Ok(());
+                };
                 session.sync_local_playback_telemetry(
                     self.player_paused,
                     self.player_position_seconds,

@@ -14,6 +14,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         state: &SyncplayGuiShellAppState,
     ) {
+        self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
         let mut projected_state = state.clone();
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
