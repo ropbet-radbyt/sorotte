@@ -118,6 +118,58 @@ fn probe_stream_helper_startup_snapshot_does_not_execute_helper_binaries() {
 }
 
 #[test]
+fn probe_stream_helper_runtime_snapshot_without_extractor_target_does_not_execute_helper_binaries()
+{
+    let root = std::env::temp_dir().join(format!(
+        "syncplay-stream-helper-runtime-no-target-{}-{}",
+        std::process::id(),
+        current_unix_seconds()
+    ));
+    let bin_dir = managed_stream_helper_bin_dir(&root);
+    std::fs::create_dir_all(&bin_dir).expect("managed helper bin dir should be created");
+    std::fs::write(
+        bin_dir.join(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        }),
+        b"not an executable",
+    )
+    .expect("fake downloader should be written");
+    std::fs::write(
+        bin_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
+        b"not an executable",
+    )
+    .expect("fake runtime should be written");
+
+    let snapshot = probe_stream_helper_runtime_snapshot(
+        Some(&root),
+        StreamHelperAttachMode::ManagedPlayer,
+        None,
+    );
+
+    assert_eq!(snapshot.health, GuiStreamHelperHealth::Healthy);
+    assert!(
+        snapshot
+            .downloader_status
+            .as_deref()
+            .is_some_and(|status| status.contains("version check pending")),
+        "runtime snapshot without a target should use metadata/discovery only, got {:?}",
+        snapshot.downloader_status
+    );
+    assert!(
+        snapshot
+            .js_runtime_status
+            .as_deref()
+            .is_some_and(|status| status.contains("version check pending")),
+        "runtime snapshot without a target should use metadata/discovery only, got {:?}",
+        snapshot.js_runtime_status
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn managed_installation_staleness_depends_on_metadata_age() {
     assert!(managed_installation_is_stale(None));
     assert!(managed_installation_is_stale(Some(

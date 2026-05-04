@@ -32,6 +32,39 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
             .display()
             .to_string()
     });
+    let Some(target) = extractor_target else {
+        let snapshot_details = StreamHelperRuntimeSnapshotDetails {
+            install_location: install_location.clone(),
+            downloader_status: Some(startup_component_status(
+                ManagedStreamHelperComponent::Downloader,
+                attach_mode,
+                discovery.managed_downloader,
+                discovery.environment_downloader,
+                metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.downloader_version.as_deref()),
+            )),
+            js_runtime_status: Some(startup_component_status(
+                ManagedStreamHelperComponent::JsRuntime,
+                attach_mode,
+                discovery.managed_js_runtime,
+                discovery.environment_js_runtime,
+                metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.js_runtime_version.as_deref()),
+            )),
+            open_install_location_available: root.is_some(),
+        };
+        return runtime_snapshot_with_details(
+            GuiStreamHelperHealth::Healthy,
+            None,
+            None,
+            install_supported,
+            integration_supported,
+            false,
+            snapshot_details,
+        );
+    };
     let downloader_probe = probe_stream_helper_component(
         ManagedStreamHelperComponent::Downloader,
         attach_mode,
@@ -63,10 +96,6 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
             retry_available,
             snapshot_details.clone(),
         )
-    };
-
-    let Some(target) = extractor_target else {
-        return status_snapshot(GuiStreamHelperHealth::Healthy, None, None, false);
     };
 
     if attach_mode == StreamHelperAttachMode::ExternalPlayer
