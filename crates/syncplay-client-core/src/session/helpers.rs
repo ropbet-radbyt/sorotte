@@ -94,12 +94,12 @@ impl ClientSession {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
             if (!global_paused || recently_advanced)
+                && !self.local_user_ready()
                 && !self.recently_rewound(now_seconds, RECENT_REWIND_READINESS_SUPPRESSION_SECONDS)
             {
-                let ready = !self.local_user_ready();
-                self.apply_local_ready_state_optimistically(ready);
+                self.apply_local_ready_state_optimistically(true);
                 actions.push(ClientRuntimeAction::SetReady {
-                    ready,
+                    ready: true,
                     manually_initiated: true,
                 });
             }
