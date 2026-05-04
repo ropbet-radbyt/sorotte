@@ -1,3 +1,4 @@
+mod child_process;
 mod configuration_draft;
 mod connection_workflows;
 mod feedback_workflows;

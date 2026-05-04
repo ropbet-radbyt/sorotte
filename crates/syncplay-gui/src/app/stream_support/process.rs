@@ -1,10 +1,12 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use reqwest::blocking::Client;
+
+use crate::app::child_process::configure_gui_child_process;
 
 use super::{STREAM_HELPER_DOWNLOAD_TIMEOUT, STREAM_HELPER_USER_AGENT};
 
@@ -54,8 +56,11 @@ pub(in crate::app::stream_support) fn probe_executable_version(
     path: &Path,
     args: &[&str],
 ) -> Result<String, String> {
-    let output = Command::new(path)
+    let mut command = Command::new(path);
+    configure_gui_child_process(&mut command);
+    let output = command
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("failed to start '{}': {error}", path.display()))?;
     if !output.status.success() {

@@ -11,6 +11,8 @@ use syncplay_client_app::app_boundary::state::StoredClientSettingsMvp;
 use syncplay_player_api::PlayerAdapter;
 use syncplay_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 
+use super::child_process::configure_gui_child_process;
+
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
 const LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER: &str = "-- syncplay-rust-chat-input-bridge";
@@ -164,8 +166,10 @@ pub(crate) fn spawn_managed_mpv_and_attach(
         &config.extra_args,
         downloader_path,
     ));
+    configure_gui_child_process(&mut command);
 
     let child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -196,6 +200,7 @@ fn managed_mpv_launch_args(
     downloader_path: Option<&Path>,
 ) -> Vec<String> {
     let mut args = vec![
+        "--no-terminal".to_owned(),
         "--pause".to_owned(),
         "--force-window=yes".to_owned(),
         "--idle=yes".to_owned(),
@@ -685,6 +690,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "--no-terminal".to_owned(),
                 "--pause".to_owned(),
                 "--force-window=yes".to_owned(),
                 "--idle=yes".to_owned(),
@@ -709,6 +715,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "--no-terminal".to_owned(),
                 "--pause".to_owned(),
                 "--force-window=yes".to_owned(),
                 "--idle=yes".to_owned(),
