@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Metronome play icon concept">
+  <defs>
+    <linearGradient id="bg" x1="36" y1="20" x2="218" y2="235" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#123241"/>
+      <stop offset="1" stop-color="#25233b"/>
+    </linearGradient>
+    <linearGradient id="body" x1="75" y1="44" x2="182" y2="218" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#50d2ca"/>
+      <stop offset="1" stop-color="#7e88f2"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <path d="M101.3 48h53.4l39.8 148.2c3.3 12.2-5.9 24.3-18.5 24.3H80c-12.6 0-21.8-12.1-18.5-24.3L101.3 48z" fill="url(#body)"/>
+  <path d="M103 200h50" stroke="#f6fbff" stroke-width="14" stroke-linecap="round"/>
+  <path d="M128 71v72" stroke="#142d42" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="128" cy="71" r="13" fill="#f6fbff"/>
+  <path d="M116 112c0-7.5 8.2-12.1 14.6-8.1l37.5 23.4c6 3.8 6 12.6 0 16.4l-37.5 23.4c-6.4 4-14.6-.6-14.6-8.1v-47z" fill="#f6fbff"/>
+  <circle cx="72" cy="88" r="10" fill="#f6fbff"/>
+  <circle cx="184" cy="88" r="10" fill="#f6fbff"/>
+  <path d="M84 92c15 11 25 16 44 16s29-5 44-16" fill="none" stroke="#f6fbff" stroke-width="9" stroke-linecap="round"/>
+</svg>

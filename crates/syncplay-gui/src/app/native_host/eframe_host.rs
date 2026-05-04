@@ -5,11 +5,21 @@ impl GuiEframeNativeHost {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Syncplay GUI")
+                .with_icon(Self::syncplay_window_icon())
                 .with_inner_size([1280.0, 820.0])
                 .with_min_inner_size([640.0, 520.0])
                 .with_drag_and_drop(true),
             ..Default::default()
         }
+    }
+
+    fn syncplay_window_icon() -> std::sync::Arc<egui::IconData> {
+        std::sync::Arc::new(
+            eframe::icon_data::from_png_bytes(include_bytes!(
+                "../../../assets/icons/syncplay-icon.png"
+            ))
+            .expect("bundled Syncplay window icon should decode"),
+        )
     }
 
     pub(in crate::app) fn with_runtime_and_pump(
