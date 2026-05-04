@@ -93,7 +93,8 @@ impl ClientSession {
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
-            if (!global_paused || recently_advanced)
+            if paused != global_paused
+                && (!global_paused || recently_advanced)
                 && !self.local_user_ready()
                 && !self.recently_rewound(now_seconds, RECENT_REWIND_READINESS_SUPPRESSION_SECONDS)
             {
