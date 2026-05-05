@@ -699,6 +699,35 @@ fn hello_response_features_reflect_chat_readiness_and_length_limits() {
 }
 
 #[test]
+fn server_feature_list_includes_shared_playlists() {
+    let features = crate::server_feature_list(false, false, true, true, 150, 16);
+
+    assert_eq!(
+        features.get("sharedPlaylists").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
+fn server_feature_list_set_others_readiness_tracks_readiness_enabled() {
+    let enabled_features = crate::server_feature_list(false, false, true, true, 150, 16);
+    let disabled_features = crate::server_feature_list(false, false, true, false, 150, 16);
+
+    assert_eq!(
+        enabled_features
+            .get("setOthersReadiness")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        disabled_features
+            .get("setOthersReadiness")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+}
+
+#[test]
 fn hello_response_features_reflect_isolate_rooms() {
     let mut runtime = ServerRuntime::default();
     runtime.set_isolate_rooms(true);

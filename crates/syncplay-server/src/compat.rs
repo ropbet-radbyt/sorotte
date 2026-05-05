@@ -318,7 +318,12 @@ pub(crate) fn multiline_as_playlist(multiline: &str) -> Vec<String> {
 }
 
 pub(crate) fn parse_permanent_rooms_file(contents: &str) -> BTreeSet<String> {
-    contents.lines().map(str::to_owned).collect()
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) fn feature_ui_mode(features: Option<&Value>) -> Option<&str> {

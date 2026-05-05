@@ -29,7 +29,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
         Mutex,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        mpsc::{Receiver, Sender, UnboundedSender, channel},
         watch,
     },
     task::JoinHandle,
@@ -69,7 +69,12 @@ const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
-const TLS_CERT_FILENAME: &str = "cert.pem";
+const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
+const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
+const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
+const SERVER_WRITE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";
@@ -105,7 +110,8 @@ pub(crate) use messages::*;
 pub(crate) use network::read_network_line_from_stream;
 pub(crate) use persistence::{PersistedRoomState, RoomPersistenceStore, StatsPersistenceStore};
 pub(crate) use tls::{
-    load_tls_server_config, tls_certificate_bundle_is_available, tls_certificate_file_modified_time,
+    load_tls_server_config, tls_certificate_bundle_is_available,
+    tls_certificate_bundle_modified_time,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,7 +207,7 @@ enum ClientOutboundEvent {
     TransportAction(ServerTransportAction),
 }
 
-type ClientEventSender = UnboundedSender<ClientOutboundEvent>;
+type ClientEventSender = Sender<ClientOutboundEvent>;
 type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
 
 #[derive(Debug)]

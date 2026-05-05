@@ -182,10 +182,7 @@ impl ClientSession {
         }
 
         if let Some(ready) = set_payload.ready {
-            let target_username = ready
-                .username
-                .or(ready.set_by)
-                .or_else(|| self.username.clone());
+            let target_username = ready.username.or_else(|| self.username.clone());
             if let Some(target_username) = target_username {
                 if self.user_room(&target_username).is_none()
                     && let Some(room_name) = self.room.clone()

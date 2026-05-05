@@ -47,6 +47,43 @@ fn handle_disconnect_clears_readiness_support_until_next_hello() {
 }
 
 #[test]
+fn client_ready_setby_does_not_become_target_username() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"setBy":"bob"}}}"#)
+        .expect("ready state should apply");
+
+    assert_eq!(session.user_ready("alice"), Some(true));
+    assert_eq!(
+        session.user_ready("bob"),
+        None,
+        "setBy is metadata and should not create or update the target user"
+    );
+}
+
+#[test]
+fn client_ready_missing_username_targets_local_user() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .expect("hello should apply");
+
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true}}}"#)
+        .expect("ready state should apply");
+
+    assert_eq!(session.user_ready("alice"), Some(true));
+}
+
+#[test]
 fn instaplay_conditions_met_respects_legacy_unpause_modes() {
     let mut session = ClientSession::default();
     session

@@ -81,13 +81,11 @@ async fn negotiate_start_tls_legacy_compatible(
     write_protocol_line(&mut stream, &tls_request_line).await?;
 
     let mut reader = BufReader::new(stream);
-    let mut tls_response_line = String::new();
-    let read_bytes = reader.read_line(&mut tls_response_line).await?;
-    if read_bytes == 0 {
+    let Some(tls_response_line) = read_inbound_protocol_line(&mut reader).await? else {
         return Err(anyhow!(
             "server closed connection before TLS negotiation completed"
         ));
-    }
+    };
 
     let upgrade_to_tls = matches!(
         decode_message_line(tls_response_line.trim()),
@@ -241,7 +239,7 @@ where
     publish_pending_local_file_updates(runtime, config)?;
     flush_runtime_protocol_lines(runtime, &mut writer).await?;
 
-    let mut reader = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
     let connected_start = Instant::now();
     let mut autoplay_tick =
         tokio::time::interval(Duration::from_secs_f64(AUTOPLAY_TICK_INTERVAL_SECONDS));
@@ -268,7 +266,7 @@ where
         }
 
         tokio::select! {
-            line = reader.next_line() => {
+            line = read_inbound_protocol_line(&mut reader) => {
                 match line? {
                     Some(line) => {
                         let (decoded_inbound_messages, trailing_decode_error) =
@@ -447,6 +445,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 

@@ -276,9 +276,33 @@ impl ServerRuntime {
         } else {
             base_now
         };
-        self.time_now_override_seconds = Some(advanced_now);
-        let outbound_messages = self.collect_due_periodic_updates()?;
-        self.collect_due_stats_snapshots()?;
+        self.advance_time_to_and_collect_dispatch(advanced_now)
+    }
+
+    pub fn advance_time_to_and_collect_dispatch(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
+        let now_seconds = if now_seconds.is_finite() {
+            now_seconds
+        } else {
+            self.current_time_seconds()
+        };
+        self.time_now_override_seconds = Some(now_seconds);
+        self.collect_dispatch_at(now_seconds)
+    }
+
+    pub fn collect_dispatch_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<ServerRuntimeDispatch, ServerRuntimeError> {
+        let now_seconds = if now_seconds.is_finite() {
+            now_seconds
+        } else {
+            self.current_time_seconds()
+        };
+        let outbound_messages = self.collect_due_periodic_updates_at(now_seconds)?;
+        self.collect_due_stats_snapshots_at(now_seconds)?;
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {

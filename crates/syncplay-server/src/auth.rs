@@ -3,7 +3,7 @@ use super::*;
 static CONTROLLED_ROOM_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\+(.*):(\w{12})$").expect("controlled room regex is valid"));
 static PASSWORD_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Z]{2}-\d{3}-\d{3}").expect("password regex is valid"));
+    LazyLock::new(|| Regex::new(r"^[A-Z]{2}-\d{3}-\d{3}$").expect("password regex is valid"));
 const GENERATED_SERVER_SALT_LENGTH: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,12 +33,7 @@ impl RoomPasswordProvider {
     }
 
     pub(crate) fn is_valid_room_password(&self, password: &str) -> bool {
-        if password.is_empty() {
-            return false;
-        }
-        PASSWORD_REGEX
-            .find(password)
-            .is_some_and(|matched| matched.start() == 0)
+        PASSWORD_REGEX.is_match(password)
     }
 
     pub(crate) fn check(

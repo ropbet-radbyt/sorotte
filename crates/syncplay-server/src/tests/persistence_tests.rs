@@ -250,6 +250,49 @@ fn persistent_room_sqlite_reload_restores_playlist_index_and_position() {
 }
 
 #[test]
+fn room_persistence_sets_busy_timeout_or_wal() {
+    let db_path = temporary_sqlite_path("persistent-rooms-pragma");
+    let _ = fs::remove_file(&db_path);
+    let store = crate::RoomPersistenceStore::open(&db_path)
+        .expect("room persistence should initialize sqlite pragmas");
+    let connection = store
+        .connection("test inspect pragmas")
+        .expect("room persistence connection should open");
+
+    let busy_timeout_ms: i64 = connection
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .expect("busy timeout pragma should query");
+    let journal_mode: String = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .expect("journal mode pragma should query");
+
+    assert!(
+        busy_timeout_ms >= 5_000,
+        "room persistence connections should set a nonzero busy timeout"
+    );
+    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+
+    drop(connection);
+    fs::remove_file(&db_path).expect("temporary sqlite db should be removable");
+}
+
+#[test]
+fn permanent_rooms_file_ignores_blank_lines() {
+    assert_eq!(
+        crate::parse_permanent_rooms_file(" room-a \n\n\t\nroom-b\n"),
+        BTreeSet::from(["room-a".to_owned(), "room-b".to_owned()])
+    );
+}
+
+#[test]
+fn permanent_rooms_file_ignores_comment_lines() {
+    assert_eq!(
+        crate::parse_permanent_rooms_file("# comment\nroom-a\n  # another comment\nroom-b\n"),
+        BTreeSet::from(["room-a".to_owned(), "room-b".to_owned()])
+    );
+}
+
+#[test]
 fn permanent_room_file_retains_empty_playlist_state_when_room_empties() {
     let db_path = temporary_sqlite_path("permanent-room-retention");
     let permanent_rooms_file = temporary_text_path("permanent-room-retention");

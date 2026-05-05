@@ -811,6 +811,20 @@ impl MpvAdapter {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_test_transport_and_ipc_timeout(
+        transport: impl MpvJsonIpcTransport + 'static,
+        command_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            ipc_client: Some(MpvJsonIpcClient::new_with_command_timeout(
+                Box::new(transport),
+                command_timeout,
+            )),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn enable_test_legacy_chat_input(&mut self) {
         self.legacy_syncplayintf_script_loaded = true;
         self.legacy_syncplayintf_options_applied = true;
