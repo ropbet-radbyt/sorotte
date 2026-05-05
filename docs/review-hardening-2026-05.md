@@ -202,3 +202,23 @@
 - Compatibility notes:
   - Matching-response semantics and buffering of unrelated mpv events are preserved.
   - Timeout and oversized-line failures are Rust deployment hardening; the client runtime can continue after the operation returns an error.
+
+## codex/review-hardening-final-integration
+
+- Changed files:
+  - `docs/review-hardening-2026-05.md`
+- Behavior changed:
+  - None beyond the integrated topic branches.
+- Tests added/updated:
+  - None beyond the integrated topic branches.
+- Commands run:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+  - `python -m pip install twisted pyopenssl service_identity`
+  - `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Final integration preserved the Python interop fixtures and compatibility tests.
+  - The server release verification script passed, including the strict ignored server release matrix.
