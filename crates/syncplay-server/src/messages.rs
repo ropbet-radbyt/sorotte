@@ -208,7 +208,8 @@ pub(crate) fn server_feature_list(
         "maxChatMessageLength": max_chat_message_length,
         "maxUsernameLength": max_username_length,
         "featureList": true,
-        "setOthersReadiness": true,
+        "sharedPlaylists": true,
+        "setOthersReadiness": readiness_enabled,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
 }
