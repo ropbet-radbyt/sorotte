@@ -1,5 +1,25 @@
 use super::*;
 
+fn controller_auth_payloads(
+    directed_lines: &[DirectedOutboundLine],
+) -> Vec<(String, String, bool)> {
+    directed_lines
+        .iter()
+        .filter_map(|line| {
+            let message = decode_message_line(&line.line).ok()?;
+            let ProtocolMessage::Set(payload) = message else {
+                return None;
+            };
+            let auth = payload.set.controller_auth?;
+            Some((
+                line.client_id.clone(),
+                auth.room?,
+                auth.success.unwrap_or(false),
+            ))
+        })
+        .collect()
+}
+
 #[test]
 fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
     let mut runtime = ServerRuntime::default();
@@ -50,6 +70,118 @@ fn room_change_fanout_emits_global_room_update_and_playlist_snapshot() {
     assert!(
         has_room_sync_state_update(&directed_messages, "client-1", true),
         "moved user should receive seek room sync state update"
+    );
+}
+
+#[test]
+fn controller_auth_grants_requested_room_when_current_room_differs() {
+    let controlled_room_name = controlled_room_name_for_test("target", "AB-123-456");
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"lobby"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            &format!(
+                r#"{{"Hello":{{"username":"bob","room":{{"name":"{controlled_room_name}"}},"version":"1.2.255"}}}}"#
+            ),
+        )
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"Set":{{"controllerAuth":{{"room":"{controlled_room_name}","password":"AB-123-456"}}}}}}"#
+            ),
+        )
+        .expect("alice auth should succeed for requested room");
+
+    assert!(runtime.user_is_room_controller("alice", &controlled_room_name));
+    assert!(
+        !runtime.user_is_room_controller("alice", "lobby"),
+        "auth should not be granted for the sender's current room"
+    );
+    assert_eq!(
+        controller_auth_payloads(&directed_lines),
+        vec![("client-2".to_owned(), controlled_room_name, true)]
+    );
+}
+
+#[test]
+fn controller_auth_omitted_room_uses_current_room() {
+    let controlled_room_name = controlled_room_name_for_test("room1", "AB-123-456");
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        runtime
+            .handle_line(
+                client_id,
+                &format!(
+                    r#"{{"Hello":{{"username":"{username}","room":{{"name":"{controlled_room_name}"}},"version":"1.2.255"}}}}"#
+                ),
+            )
+            .expect("hello should establish session");
+    }
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"controllerAuth":{"password":"AB-123-456"}}}"#,
+        )
+        .expect("alice auth should use current room");
+
+    assert!(runtime.user_is_room_controller("alice", &controlled_room_name));
+    assert_eq!(
+        controller_auth_payloads(&directed_lines),
+        vec![
+            ("client-1".to_owned(), controlled_room_name.clone(), true),
+            ("client-2".to_owned(), controlled_room_name, true),
+        ]
+    );
+}
+
+#[test]
+fn controller_auth_status_reports_requested_room() {
+    let controlled_room_name = controlled_room_name_for_test("target", "AB-123-456");
+    let mut runtime = server_runtime_with_default_controlled_room_salt_for_test();
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"lobby"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line(
+            "client-2",
+            &format!(
+                r#"{{"Hello":{{"username":"bob","room":{{"name":"{controlled_room_name}"}},"version":"1.2.255"}}}}"#
+            ),
+        )
+        .expect("bob hello should establish session");
+
+    let directed_lines = runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"Set":{{"controllerAuth":{{"room":"{controlled_room_name}","password":"AB-123-456"}}}}}}"#
+            ),
+        )
+        .expect("alice auth should succeed for requested room");
+
+    let auth_payloads = controller_auth_payloads(&directed_lines);
+    assert!(
+        !auth_payloads.is_empty(),
+        "controllerAuth status should fan out to requested room peers"
+    );
+    assert!(
+        auth_payloads
+            .iter()
+            .all(|(_, room, success)| room == &controlled_room_name && *success),
+        "controllerAuth status should report the requested room"
     );
 }
 

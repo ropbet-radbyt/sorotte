@@ -25,3 +25,31 @@
   - None.
 - Compatibility notes:
   - Python compatibility is preserved: shared playlists are implemented and should be advertised, and `setBy` is metadata rather than the readiness target.
+
+## codex/review-hardening-02-controlled-room-auth
+
+- Changed files:
+  - `crates/syncplay-server/src/auth.rs`
+  - `crates/syncplay-server/src/runtime_handlers.rs`
+  - `crates/syncplay-server/src/tests/controller_playlist_tests.rs`
+  - `crates/syncplay-server/src/tests/runtime_config_tests.rs`
+- Behavior changed:
+  - `controllerAuth.room` now controls the room used for password validation, controller grants, status payloads, and peer fanout.
+  - Omitting `controllerAuth.room` still authenticates against the sender's current room.
+  - Controlled-room passwords must fully match the `AA-123-456` legacy shape; trailing characters are rejected.
+- Tests added/updated:
+  - `controller_auth_grants_requested_room_when_current_room_differs`
+  - `controller_auth_omitted_room_uses_current_room`
+  - `controller_auth_status_reports_requested_room`
+  - `controlled_room_password_rejects_trailing_characters`
+  - `controlled_room_password_accepts_exact_legacy_format`
+- Commands run:
+  - `cargo test -p syncplay-server controlled_room`
+  - `cargo test -p syncplay-server controller_auth`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Current-room fallback is preserved for omitted `controllerAuth.room`.
+  - Full-match password validation is intentional Rust deployment hardening; it rejects inputs that previously matched only by prefix.

@@ -719,28 +719,22 @@ impl ServerRuntime {
                     let Some(controller_auth) = set.controller_auth.take() else {
                         continue;
                     };
-                    let room_to_check =
-                        controller_auth.room.unwrap_or_else(|| session.room.clone());
+                    let auth_room = controller_auth.room.unwrap_or_else(|| session.room.clone());
                     let auth_password = controller_auth.password.unwrap_or_default();
                     match self
                         .room_password_provider
-                        .check(&room_to_check, &auth_password)
+                        .check(&auth_room, &auth_password)
                     {
                         Ok(success) => {
                             if success {
-                                self.add_room_controller(&session.username, &session.room);
+                                self.add_room_controller(&session.username, &auth_room);
                             }
                             let auth_message = controller_auth_status_message(
                                 &session.username,
-                                &session.room,
+                                &auth_room,
                                 success,
                             );
-                            let recipients = if self.isolate_rooms {
-                                self.clients_in_room(&session.room)
-                            } else {
-                                self.clients_all()
-                            };
-                            for peer_client in recipients {
+                            for peer_client in self.clients_in_room(&auth_room) {
                                 outbound_messages.push(DirectedProtocolMessage::new(
                                     peer_client,
                                     auth_message.clone(),
@@ -750,7 +744,7 @@ impl ServerRuntime {
                         Err(RoomPasswordCheckError::NotControlledRoom) => {
                             let new_room_name = self
                                 .room_password_provider
-                                .controlled_room_name_for(&room_to_check, &auth_password);
+                                .controlled_room_name_for(&auth_room, &auth_password);
                             let new_room_message =
                                 new_controlled_room_message(&new_room_name, &auth_password);
                             outbound_messages
@@ -759,10 +753,10 @@ impl ServerRuntime {
                         Err(RoomPasswordCheckError::InvalidPassword) => {
                             let auth_message = controller_auth_status_message(
                                 &session.username,
-                                &session.room,
+                                &auth_room,
                                 false,
                             );
-                            for peer_client in self.clients_in_room(&session.room) {
+                            for peer_client in self.clients_in_room(&auth_room) {
                                 outbound_messages.push(DirectedProtocolMessage::new(
                                     peer_client,
                                     auth_message.clone(),

@@ -16,13 +16,24 @@ fn room_password_provider_matches_legacy_sha_hash_output() {
 }
 
 #[test]
-fn room_password_provider_uses_legacy_regex_matching_behavior() {
+fn controlled_room_password_accepts_exact_legacy_format() {
     let provider = RoomPasswordProvider::default();
-    assert!(provider.is_valid_room_password("AB-123-4567"));
+    assert!(provider.is_valid_room_password("AB-123-456"));
+    assert_eq!(
+        provider.check("+room1:CB39A19549E8", "AB-123-456"),
+        Ok(true)
+    );
+}
+
+#[test]
+fn controlled_room_password_rejects_trailing_characters() {
+    let provider = RoomPasswordProvider::default();
+    assert!(!provider.is_valid_room_password("AB-123-4567"));
+    assert!(!provider.is_valid_room_password("AB-123-456-extra"));
     assert!(!provider.is_valid_room_password("ab-123-456"));
     assert_eq!(
         provider.check("+room1:CB39A19549E8", "AB-123-4567"),
-        Ok(false)
+        Err(RoomPasswordCheckError::InvalidPassword)
     );
     assert_eq!(
         provider.check("+room1:CB39A19549E8", "bad-password"),
