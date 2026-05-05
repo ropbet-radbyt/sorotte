@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::BTreeSet;
 
+pub const DEFAULT_MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+
 #[derive(Debug)]
 pub struct DecodedMessageLineItem {
     pub command: Option<String>,

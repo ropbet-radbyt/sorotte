@@ -9,10 +9,14 @@ use std::{
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use syncplay_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
 use syncplay_protocol::{
-    ProtocolMessage, decode_message_line, decode_message_line_items, encode_message_line,
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES, ProtocolMessage, decode_message_line,
+    decode_message_line_items, encode_message_line,
 };
 
 use super::handle::{GuiQueuedSessionTransportHandle, GuiSessionTransportDriver};
+
+pub(in crate::app::runtime_stack::transport) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize =
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES;
 
 enum GuiTcpSessionNetworkTransport {
     Plain(TcpStream),
@@ -341,9 +345,32 @@ impl GuiTcpSessionTransportDriver {
         Ok(())
     }
 
+    fn inbound_protocol_line_too_long_error() -> String {
+        format!(
+            "Session transport TCP inbound protocol line exceeded {MAX_INBOUND_PROTOCOL_LINE_BYTES} bytes."
+        )
+    }
+
+    fn raw_protocol_line_len(raw_line: &[u8]) -> usize {
+        let without_lf = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
+        without_lf.strip_suffix(b"\r").unwrap_or(without_lf).len()
+    }
+
+    fn current_unterminated_inbound_line_len(inbound_buffer: &[u8]) -> usize {
+        inbound_buffer
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(inbound_buffer.len(), |newline_index| {
+                inbound_buffer.len().saturating_sub(newline_index + 1)
+            })
+    }
+
     fn next_complete_inbound_line(inbound_buffer: &mut Vec<u8>) -> Result<Option<String>, String> {
         while let Some(newline_index) = inbound_buffer.iter().position(|byte| *byte == b'\n') {
             let mut raw_line: Vec<u8> = inbound_buffer.drain(..=newline_index).collect();
+            if Self::raw_protocol_line_len(&raw_line) > MAX_INBOUND_PROTOCOL_LINE_BYTES {
+                return Err(Self::inbound_protocol_line_too_long_error());
+            }
             if raw_line.last() == Some(&b'\n') {
                 raw_line.pop();
             }
@@ -408,6 +435,14 @@ impl GuiTcpSessionTransportDriver {
                 Ok(_) => {
                     self.inbound_buffer.push(byte[0]);
                     self.note_inbound_activity();
+                    if byte[0] != b'\n'
+                        && Self::current_unterminated_inbound_line_len(&self.inbound_buffer)
+                            > MAX_INBOUND_PROTOCOL_LINE_BYTES
+                    {
+                        let message = Self::inbound_protocol_line_too_long_error();
+                        let _ = self.disconnect_with_error(message.clone());
+                        return Err(message);
+                    }
                     if byte[0] == b'\n' {
                         break;
                     }
@@ -496,6 +531,12 @@ impl GuiTcpSessionTransportDriver {
                     self.inbound_buffer
                         .extend_from_slice(&read_buffer[..read_bytes]);
                     self.note_inbound_activity();
+                    if Self::current_unterminated_inbound_line_len(&self.inbound_buffer)
+                        > MAX_INBOUND_PROTOCOL_LINE_BYTES
+                    {
+                        return self
+                            .disconnect_with_error(Self::inbound_protocol_line_too_long_error());
+                    }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {

@@ -144,3 +144,34 @@
   - Existing TLS reload behavior when some bundle files are missing is preserved by considering readable required files.
   - Permanent-room blank/comment parsing is Rust deployment hardening; existing Python fixtures do not require blank room names.
   - Persistence remains synchronous and lightweight; blocking disk I/O was not moved to a worker in this branch.
+
+## codex/review-hardening-06-client-transport-hardening
+
+- Changed files:
+  - `crates/syncplay-protocol/src/codec.rs`
+  - `crates/syncplay-protocol/src/lib.rs`
+  - `crates/syncplay-cli/src/protocol_io.rs`
+  - `crates/syncplay-cli/src/session_runner.rs`
+  - `crates/syncplay-cli/src/session_runner/connected_session.rs`
+  - `crates/syncplay-gui/src/app/runtime_stack/transport/tcp.rs`
+  - `crates/syncplay-gui/src/app/runtime_stack/transport/tests.rs`
+- Behavior changed:
+  - Added a shared default protocol line limit of 64 KiB.
+  - GUI TCP transport disconnects with a clear error when an inbound protocol line exceeds the limit before parsing.
+  - CLI connected-session reads, including StartTLS negotiation, now use a capped inbound protocol line reader instead of unbounded `BufReader::lines()`.
+- Tests added/updated:
+  - `gui_tcp_rejects_inbound_line_over_max_bytes`
+  - `gui_tcp_accepts_line_at_or_under_max_bytes`
+  - `cli_connected_session_rejects_inbound_line_over_max_bytes`
+  - `cli_connected_session_accepts_batched_valid_line`
+- Commands run:
+  - `cargo test -p syncplay-gui transport`
+  - `cargo test -p syncplay-cli connected_session`
+  - `cargo fmt --all`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - CRLF, LF, and batched multi-command JSON lines remain supported.
+  - Oversized inbound-line rejection is Rust deployment hardening, not a Python parity behavior change.

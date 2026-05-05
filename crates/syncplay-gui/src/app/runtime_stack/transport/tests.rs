@@ -1,3 +1,4 @@
+use super::tcp::MAX_INBOUND_PROTOCOL_LINE_BYTES;
 use super::*;
 
 use std::{
@@ -64,6 +65,149 @@ fn test_tls_server_config() -> Arc<ServerConfig> {
 fn hello_line() -> String {
     r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
             .to_owned()
+}
+
+fn valid_chat_line_with_len(line_len: usize) -> String {
+    let prefix = r#"{"Chat":""#;
+    let suffix = r#""}"#;
+    assert!(line_len >= prefix.len() + suffix.len());
+    let message_len = line_len - prefix.len() - suffix.len();
+    let line = format!("{prefix}{}{suffix}", "a".repeat(message_len));
+    assert_eq!(line.len(), line_len);
+    line
+}
+
+fn write_plaintext_tls_fallback(stream: &mut std::net::TcpStream) {
+    stream
+        .write_all(br#"{"TLS":{"startTLS":"false"}}"#)
+        .expect("test server should write the TLS decline");
+    stream
+        .write_all(b"\n")
+        .expect("test server should terminate the TLS decline");
+}
+
+fn connect_gui_transport_driver(port: u16) -> GuiTcpSessionTransportDriver {
+    GuiTcpSessionTransportDriver::connect_from_host_arg(&format!("localhost:{port}"))
+        .expect("transport test client driver should connect")
+        .with_inbound_idle_timeout(Duration::from_secs(2))
+}
+
+#[test]
+fn gui_tcp_rejects_inbound_line_over_max_bytes() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("oversized-line transport test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("oversized-line transport test server should expose its address");
+    let (first_line_tx, first_line_rx) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("oversized-line transport test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("oversized-line transport test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("oversized-line transport test server should read the TLS request");
+        first_line_tx
+            .send(first_line)
+            .expect("oversized-line transport test server should report the TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        stream
+            .write_all(&vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES + 1])
+            .expect("oversized-line transport test server should write the oversized line");
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    let mut driver = connect_gui_transport_driver(address.port());
+    let transport = GuiQueuedSessionTransportHandle::default();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        match driver.pump(&transport) {
+            Ok(()) => {}
+            Err(error) => break error,
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the oversized inbound line to fail the TCP transport",
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let first_line = first_line_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("oversized-line transport test server should receive the TLS request");
+    assert!(first_line.contains(r#""TLS""#));
+    assert!(
+        error.contains("inbound protocol line exceeded"),
+        "oversized inbound line should surface a clear transport error"
+    );
+    assert!(transport.drain_inbound_protocol_lines().is_empty());
+
+    server_thread
+        .join()
+        .expect("oversized-line transport test server thread should join");
+}
+
+#[test]
+fn gui_tcp_accepts_line_at_or_under_max_bytes() {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("max-line transport test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("max-line transport test server should expose its address");
+    let expected_line = valid_chat_line_with_len(MAX_INBOUND_PROTOCOL_LINE_BYTES);
+    let server_line = expected_line.clone();
+    let server_thread = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("max-line transport test server should accept a client");
+        let reader_stream = stream
+            .try_clone()
+            .expect("max-line transport test server should clone the socket");
+        let mut reader = BufReader::new(reader_stream);
+        let mut first_line = String::new();
+        reader
+            .read_line(&mut first_line)
+            .expect("max-line transport test server should read the TLS request");
+        write_plaintext_tls_fallback(&mut stream);
+        stream
+            .write_all(server_line.as_bytes())
+            .expect("max-line transport test server should write the max-sized line");
+        stream
+            .write_all(b"\n")
+            .expect("max-line transport test server should terminate the max-sized line");
+        thread::sleep(Duration::from_millis(250));
+    });
+
+    let mut driver = connect_gui_transport_driver(address.port());
+    let transport = GuiQueuedSessionTransportHandle::default();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let inbound_lines = loop {
+        driver
+            .pump(&transport)
+            .expect("max-sized inbound line should not fail the TCP transport");
+        let inbound_lines = transport.drain_inbound_protocol_lines();
+        if !inbound_lines.is_empty() {
+            break inbound_lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the max-sized inbound line",
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    assert_eq!(inbound_lines, vec![expected_line]);
+
+    server_thread
+        .join()
+        .expect("max-line transport test server thread should join");
 }
 
 #[test]
