@@ -175,3 +175,30 @@
 - Compatibility notes:
   - CRLF, LF, and batched multi-command JSON lines remain supported.
   - Oversized inbound-line rejection is Rust deployment hardening, not a Python parity behavior change.
+
+## codex/review-hardening-07-mpv-ipc-timeouts
+
+- Changed files:
+  - `crates/syncplay-player-mpv/src/ipc.rs`
+  - `crates/syncplay-player-mpv/src/adapter.rs`
+  - `crates/syncplay-player-mpv/src/tests/ipc_tests.rs`
+- Behavior changed:
+  - mpv IPC command execution now runs through a worker thread and returns a timeout error after 5 seconds without a matching response.
+  - mpv IPC line reads are capped at 1 MiB in both the buffered pipe reader and IPC client response handling.
+  - Unrelated mpv events observed while waiting for a command response remain buffered for the adapter.
+- Tests added/updated:
+  - `mpv_ipc_rejects_line_over_max_bytes`
+  - `mpv_ipc_command_times_out_without_matching_response`
+  - `mpv_ipc_preserves_unrelated_events_while_waiting`
+  - `mpv_ipc_ignores_response_for_other_request_id`
+  - `mpv_adapter_surfaces_timeout_as_player_error`
+- Commands run:
+  - `cargo test -p syncplay-player-mpv ipc`
+  - `cargo test -p syncplay-player-mpv adapter`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Matching-response semantics and buffering of unrelated mpv events are preserved.
+  - Timeout and oversized-line failures are Rust deployment hardening; the client runtime can continue after the operation returns an error.
