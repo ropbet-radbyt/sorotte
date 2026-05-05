@@ -503,7 +503,7 @@ pub async fn run_server_network_loops_until_shutdown(
             _ = tick.tick() => {
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.advance_time_and_collect_dispatch(SERVER_NETWORK_TICK_INTERVAL_SECONDS)
+                    runtime_guard.collect_dispatch_at(current_unix_timestamp_seconds())
                 };
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,

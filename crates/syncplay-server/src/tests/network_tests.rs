@@ -137,6 +137,40 @@ async fn server_network_prunes_finished_session_tasks() {
 }
 
 #[tokio::test]
+async fn server_network_tick_does_not_accumulate_simulated_time() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.set_time_now_override_seconds(Some(50.0));
+    }
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server_task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        runtime.clone(),
+        None,
+        shutdown_rx,
+    ));
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    shutdown_tx
+        .send(true)
+        .expect("shutdown signal should send successfully");
+    server_task
+        .await
+        .expect("server task should join cleanly")
+        .expect("server loop should exit without error");
+
+    assert_eq!(
+        runtime.lock().await.time_now_override_seconds,
+        Some(50.0),
+        "production network ticks should not advance the deterministic override"
+    );
+}
+
+#[tokio::test]
 async fn server_network_closes_or_drops_slow_client_when_outbound_queue_full() {
     let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let (event_tx, _event_rx) = mpsc::channel(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY);

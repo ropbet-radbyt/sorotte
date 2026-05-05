@@ -599,6 +599,97 @@ fn periodic_state_updates_emit_after_time_advance() {
 }
 
 #[test]
+fn server_runtime_tick_uses_supplied_absolute_time() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let dispatch = runtime
+        .collect_dispatch_at(100.0 + super::INITIAL_SERVER_STATE_DELAY_SECONDS)
+        .expect("absolute-time tick should collect due state");
+    let messages = decode_directed_lines(&dispatch.outbound_lines);
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        runtime.time_now_override_seconds,
+        Some(100.0),
+        "absolute collection should not mutate the deterministic test override"
+    );
+}
+
+#[test]
+fn server_runtime_delta_helper_remains_deterministic_for_tests() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(10.0));
+
+    runtime
+        .advance_time_and_collect_dispatch(1.5)
+        .expect("delta helper should collect at deterministic advanced time");
+
+    assert_eq!(runtime.time_now_override_seconds, Some(11.5));
+}
+
+#[test]
+fn room_playback_position_ages_by_actual_elapsed_seconds() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":true}}}"#,
+        )
+        .expect("playing state update should apply");
+
+    let aged_playback = runtime.room_playback_state_at("room1", 103.0);
+
+    assert!(
+        (aged_playback.position - 15.0).abs() <= 0.000_001,
+        "playback should age by the supplied absolute elapsed time"
+    );
+}
+
+#[test]
+fn state_timeout_uses_actual_elapsed_seconds() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line(
+            "client-1",
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("alice hello should establish session");
+
+    let before_timeout = runtime
+        .collect_dispatch_at(112.0)
+        .expect("pre-timeout absolute tick should collect");
+    assert!(
+        !has_close_transport_action(&before_timeout.transport_actions, "client-1"),
+        "client should remain connected before the protocol timeout elapses"
+    );
+    assert!(runtime.session("client-1").is_some());
+
+    let timeout_dispatch = runtime
+        .collect_dispatch_at(113.2)
+        .expect("timeout absolute tick should collect");
+    assert!(
+        has_close_transport_action(&timeout_dispatch.transport_actions, "client-1"),
+        "client should close once actual elapsed time exceeds the protocol timeout"
+    );
+    assert!(runtime.session("client-1").is_none());
+}
+
+#[test]
 fn periodic_state_updates_age_playing_room_position() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(0.0));

@@ -81,3 +81,33 @@
   - None.
 - Compatibility notes:
   - Oversized-line rejection, pre-Hello idle close, and bounded outbound queues are Rust deployment hardening, not Python protocol parity changes.
+
+## codex/review-hardening-04-server-clock-model
+
+- Changed files:
+  - `crates/syncplay-server/src/runtime_api.rs`
+  - `crates/syncplay-server/src/runtime_maintenance.rs`
+  - `crates/syncplay-server/src/network.rs`
+  - `crates/syncplay-server/src/tests/state_tests.rs`
+  - `crates/syncplay-server/src/tests/network_tests.rs`
+- Behavior changed:
+  - Added an absolute-time dispatch path for runtime maintenance.
+  - Production network ticks now collect dispatch at the current Unix wall-clock time instead of advancing the runtime's deterministic test override by a fixed interval.
+  - Deterministic delta-based time advancement remains available for tests.
+  - Periodic playback aging and timeout checks use supplied absolute elapsed time while outbound ping timestamps remain current collection-time values for Python compatibility.
+- Tests added/updated:
+  - `server_runtime_tick_uses_supplied_absolute_time`
+  - `server_runtime_delta_helper_remains_deterministic_for_tests`
+  - `server_network_tick_does_not_accumulate_simulated_time`
+  - `room_playback_position_ages_by_actual_elapsed_seconds`
+  - `state_timeout_uses_actual_elapsed_seconds`
+- Commands run:
+  - `cargo test -p syncplay-server state`
+  - `cargo test -p syncplay-server network`
+  - `cargo test -p syncplay-compat state_fanout`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Python parity is preserved for outbound periodic `ping.latencyCalculation`: catch-up dispatches continue to use the current collection timestamp rather than each scheduled tick timestamp.
