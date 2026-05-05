@@ -29,7 +29,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
         Mutex,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel},
         watch,
     },
     task::JoinHandle,
@@ -69,6 +69,9 @@ const PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 const SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS: f64 = 3600.0;
 const SERVER_STATS_DELAY_STEP_SECONDS: f64 = 5.0;
 const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
+const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
+const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 const TLS_CERT_FILENAME: &str = "cert.pem";
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
@@ -201,7 +204,7 @@ enum ClientOutboundEvent {
     TransportAction(ServerTransportAction),
 }
 
-type ClientEventSender = UnboundedSender<ClientOutboundEvent>;
+type ClientEventSender = Sender<ClientOutboundEvent>;
 type SharedClientEventSenders = Arc<Mutex<BTreeMap<String, ClientEventSender>>>;
 
 #[derive(Debug)]

@@ -3,18 +3,34 @@ use std::net::SocketAddr;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
 
-async fn dispatch_outbound_lines_to_clients(
+pub(crate) async fn dispatch_outbound_lines_to_clients(
     client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
 ) {
     for line in outbound_lines {
-        let event_sender = {
-            let senders = client_event_senders.lock().await;
-            senders.get(&line.client_id).cloned()
-        };
-        if let Some(event_sender) = event_sender {
-            let _ = event_sender.send(ClientOutboundEvent::Line(line.line));
-        }
+        dispatch_client_event(
+            client_event_senders,
+            &line.client_id,
+            ClientOutboundEvent::Line(line.line),
+        )
+        .await;
+    }
+}
+
+async fn dispatch_client_event(
+    client_event_senders: &SharedClientEventSenders,
+    client_id: &str,
+    event: ClientOutboundEvent,
+) {
+    let event_sender = {
+        let senders = client_event_senders.lock().await;
+        senders.get(client_id).cloned()
+    };
+    if let Some(event_sender) = event_sender
+        && event_sender.try_send(event).is_err()
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.remove(client_id);
     }
 }
 
@@ -23,12 +39,25 @@ async fn dispatch_transport_actions_to_clients(
     transport_actions: &[DirectedTransportAction],
 ) {
     for action in transport_actions {
-        let event_sender = {
-            let senders = client_event_senders.lock().await;
-            senders.get(&action.client_id).cloned()
-        };
-        if let Some(event_sender) = event_sender {
-            let _ = event_sender.send(ClientOutboundEvent::TransportAction(action.action.clone()));
+        dispatch_client_event(
+            client_event_senders,
+            &action.client_id,
+            ClientOutboundEvent::TransportAction(action.action.clone()),
+        )
+        .await;
+    }
+}
+
+pub(crate) async fn prune_finished_session_tasks(session_tasks: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < session_tasks.len() {
+        if session_tasks[index].is_finished() {
+            let task = session_tasks.swap_remove(index);
+            if let Err(source) = task.await {
+                eprintln!("syncplay server client session task ended unexpectedly: {source}");
+            }
+        } else {
+            index += 1;
         }
     }
 }
@@ -81,6 +110,12 @@ where
             break;
         }
         bytes.push(byte[0]);
+        if bytes.len() > MAX_PROTOCOL_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                PROTOCOL_LINE_TOO_LONG_ERROR,
+            ));
+        }
     }
 
     if bytes.last() == Some(&b'\r') {
@@ -202,18 +237,17 @@ async fn apply_local_transport_actions(
     Ok(())
 }
 
-async fn run_server_network_client_session(
+pub(crate) async fn run_server_network_client_session_with_pre_hello_timeout(
     stream: TcpStream,
     peer_ip: Option<String>,
     client_id: String,
     runtime: Arc<Mutex<ServerRuntime>>,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    pre_hello_timeout: std::time::Duration,
 ) -> Result<(), ServerNetworkError> {
-    let (event_tx, mut event_rx): (
-        UnboundedSender<ClientOutboundEvent>,
-        UnboundedReceiver<ClientOutboundEvent>,
-    ) = unbounded_channel();
+    let (event_tx, mut event_rx): (Sender<ClientOutboundEvent>, Receiver<ClientOutboundEvent>) =
+        channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
     {
         let mut senders = client_event_senders.lock().await;
         senders.insert(client_id.clone(), event_tx);
@@ -221,8 +255,14 @@ async fn run_server_network_client_session(
 
     let mut transport = ServerNetworkTransport::Plain(stream);
     let mut session_error: Option<ServerNetworkError> = None;
+    let pre_hello_timer = time::sleep(pre_hello_timeout);
+    tokio::pin!(pre_hello_timer);
+    let mut session_known = false;
     loop {
         tokio::select! {
+            _ = &mut pre_hello_timer, if !session_known => {
+                break;
+            }
             inbound_line_result = transport.read_line() => {
                 let inbound_line = match inbound_line_result {
                     Ok(Some(line)) => line,
@@ -230,7 +270,13 @@ async fn run_server_network_client_session(
                     Err(source) => {
                         if source.kind() == io::ErrorKind::InvalidData
                             && let Ok(error_line) = encode_message_line(
-                                &ProtocolMessage::error_message(LEGACY_SERVER_LINE_DECODE_ERROR),
+                                &ProtocolMessage::error_message(
+                                    if source.to_string() == PROTOCOL_LINE_TOO_LONG_ERROR {
+                                        PROTOCOL_LINE_TOO_LONG_ERROR
+                                    } else {
+                                        LEGACY_SERVER_LINE_DECODE_ERROR
+                                    },
+                                ),
                             )
                         {
                             let _ = transport.write_line(&error_line).await;
@@ -245,12 +291,16 @@ async fn run_server_network_client_session(
                 }
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
+                    let dispatch = runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
                         &client_id,
                         inbound_line,
                         peer_ip.as_deref(),
-                    )
+                    );
+                    let session_exists = runtime_guard.session(&client_id).is_some();
+                    (dispatch, session_exists)
                 };
+                let (dispatch, session_exists) = dispatch;
+                session_known = session_known || session_exists;
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,
                     Err(source) => {
@@ -357,6 +407,26 @@ async fn run_server_network_client_session(
     Ok(())
 }
 
+async fn run_server_network_client_session(
+    stream: TcpStream,
+    peer_ip: Option<String>,
+    client_id: String,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    client_event_senders: SharedClientEventSenders,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+) -> Result<(), ServerNetworkError> {
+    run_server_network_client_session_with_pre_hello_timeout(
+        stream,
+        peer_ip,
+        client_id,
+        runtime,
+        client_event_senders,
+        transport_action_sink,
+        std::time::Duration::from_secs_f64(PROTOCOL_TIMEOUT_SECONDS),
+    )
+    .await
+}
+
 async fn accept_server_network_clients_until_shutdown(
     listener: TcpListener,
     accepted_clients: UnboundedSender<AcceptedClient>,
@@ -428,6 +498,7 @@ pub async fn run_server_network_loops_until_shutdown(
     let mut loop_error: Option<ServerNetworkError> = None;
 
     loop {
+        prune_finished_session_tasks(&mut session_tasks).await;
         tokio::select! {
             _ = tick.tick() => {
                 let dispatch = {
@@ -478,8 +549,9 @@ pub async fn run_server_network_loops_until_shutdown(
                 let client_event_senders = client_event_senders.clone();
                 let transport_action_sink = transport_action_sink.clone();
                 let peer_ip = Some(address.ip().to_string());
+                let task_client_id = client_id.clone();
                 session_tasks.push(tokio::spawn(async move {
-                    let _ = run_server_network_client_session(
+                    if let Err(source) = run_server_network_client_session(
                         stream,
                         peer_ip,
                         client_id,
@@ -487,7 +559,12 @@ pub async fn run_server_network_loops_until_shutdown(
                         client_event_senders,
                         transport_action_sink,
                     )
-                    .await;
+                    .await
+                    {
+                        eprintln!(
+                            "syncplay server client session {task_client_id} ended with error: {source}"
+                        );
+                    }
                 }));
             }
         }

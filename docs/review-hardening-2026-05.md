@@ -53,3 +53,31 @@
 - Compatibility notes:
   - Current-room fallback is preserved for omitted `controllerAuth.room`.
   - Full-match password validation is intentional Rust deployment hardening; it rejects inputs that previously matched only by prefix.
+
+## codex/review-hardening-03-server-transport-hardening
+
+- Changed files:
+  - `crates/syncplay-server/src/lib.rs`
+  - `crates/syncplay-server/src/network.rs`
+  - `crates/syncplay-server/src/tests.rs`
+  - `crates/syncplay-server/src/tests/network_tests.rs`
+- Behavior changed:
+  - Server protocol line reads are capped at 64 KiB and oversized lines receive `Error: Protocol line too long` before the connection closes.
+  - Clients that do not send a complete pre-Hello protocol line before `PROTOCOL_TIMEOUT_SECONDS` are closed without creating a runtime session.
+  - Per-client outbound event queues are bounded at 256 entries; a full queue removes the sender so the slow client session closes instead of accumulating unbounded messages.
+  - The network loop prunes finished session task handles and reports session/task errors via lightweight stderr diagnostics.
+- Tests added/updated:
+  - `server_network_rejects_line_over_max_bytes`
+  - `server_network_closes_pre_hello_idle_client`
+  - `server_network_does_not_create_session_for_pre_hello_idle_client`
+  - `server_network_prunes_finished_session_tasks`
+  - `server_network_closes_or_drops_slow_client_when_outbound_queue_full`
+- Commands run:
+  - `cargo test -p syncplay-server network`
+  - `cargo test -p syncplay-server server_release_verify` (completed successfully; 0 tests matched this filter)
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Oversized-line rejection, pre-Hello idle close, and bounded outbound queues are Rust deployment hardening, not Python protocol parity changes.

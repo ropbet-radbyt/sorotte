@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::{Mutex, mpsc, watch},
     time::timeout,

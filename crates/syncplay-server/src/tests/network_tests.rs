@@ -1,5 +1,170 @@
 use super::*;
 
+async fn connected_tcp_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("listener should have local address");
+    let (client_stream, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+    let (server_stream, _) = accepted.expect("server should accept client");
+    (client_stream.expect("client should connect"), server_stream)
+}
+
+#[tokio::test]
+async fn server_network_rejects_line_over_max_bytes() {
+    let (mut client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_pre_hello_timeout(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime,
+            client_event_senders,
+            None,
+            Duration::from_secs(2),
+        ),
+    );
+
+    let too_long_line = vec![b'x'; crate::MAX_PROTOCOL_LINE_BYTES + 1];
+    client_stream
+        .write_all(&too_long_line)
+        .await
+        .expect("oversized line bytes should write");
+    client_stream
+        .flush()
+        .await
+        .expect("oversized line should flush");
+
+    let response_line = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut client_stream),
+    )
+    .await
+    .expect("error response should arrive before timeout")
+    .expect("error response read should succeed")
+    .expect("error response line should be present");
+    let response = decode_message_line(&response_line).expect("error response should decode");
+    let ProtocolMessage::Error(payload) = response else {
+        panic!("oversized line should receive protocol Error");
+    };
+    assert_eq!(payload.error.message, crate::PROTOCOL_LINE_TOO_LONG_ERROR);
+
+    let mut byte = [0_u8; 1];
+    let bytes_read = timeout(Duration::from_secs(2), client_stream.read(&mut byte))
+        .await
+        .expect("connection close should arrive before timeout")
+        .expect("closed connection read should succeed");
+    assert_eq!(bytes_read, 0);
+    assert!(
+        session_task
+            .await
+            .expect("session task should join")
+            .is_err(),
+        "oversized line should end the session with an IO error"
+    );
+}
+
+#[tokio::test]
+async fn server_network_closes_pre_hello_idle_client() {
+    let (mut client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_pre_hello_timeout(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime,
+            client_event_senders,
+            None,
+            Duration::from_millis(20),
+        ),
+    );
+
+    let mut byte = [0_u8; 1];
+    let bytes_read = timeout(Duration::from_secs(2), client_stream.read(&mut byte))
+        .await
+        .expect("idle close should arrive before timeout")
+        .expect("closed connection read should succeed");
+    assert_eq!(bytes_read, 0);
+    session_task
+        .await
+        .expect("session task should join")
+        .expect("idle pre-hello close should not be an error");
+}
+
+#[tokio::test]
+async fn server_network_does_not_create_session_for_pre_hello_idle_client() {
+    let (_client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+
+    crate::network::run_server_network_client_session_with_pre_hello_timeout(
+        server_stream,
+        None,
+        "client-1".to_owned(),
+        runtime.clone(),
+        client_event_senders,
+        None,
+        Duration::from_millis(20),
+    )
+    .await
+    .expect("idle pre-hello close should not be an error");
+
+    assert!(
+        runtime.lock().await.session("client-1").is_none(),
+        "idle pre-hello clients should never create a runtime session"
+    );
+}
+
+#[tokio::test]
+async fn server_network_prunes_finished_session_tasks() {
+    let mut session_tasks = vec![tokio::spawn(async {})];
+    tokio::task::yield_now().await;
+
+    timeout(
+        Duration::from_secs(1),
+        crate::network::prune_finished_session_tasks(&mut session_tasks),
+    )
+    .await
+    .expect("session task pruning should complete before timeout");
+
+    assert!(session_tasks.is_empty());
+}
+
+#[tokio::test]
+async fn server_network_closes_or_drops_slow_client_when_outbound_queue_full() {
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let (event_tx, _event_rx) = mpsc::channel(crate::CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    for index in 0..crate::CLIENT_OUTBOUND_QUEUE_CAPACITY {
+        event_tx
+            .try_send(crate::ClientOutboundEvent::Line(format!("queued-{index}")))
+            .expect("test queue should accept initial fill");
+    }
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.insert("client-1".to_owned(), event_tx);
+    }
+
+    crate::network::dispatch_outbound_lines_to_clients(
+        &client_event_senders,
+        vec![DirectedOutboundLine {
+            client_id: "client-1".to_owned(),
+            line: r#"{"Chat":"overflow"}"#.to_owned(),
+        }],
+    )
+    .await;
+
+    assert!(
+        !client_event_senders.lock().await.contains_key("client-1"),
+        "a full outbound queue should close/drop the slow client sender"
+    );
+}
+
 #[tokio::test]
 async fn server_network_loop_routes_hello_response_to_connected_client() {
     let listener = TcpListener::bind("127.0.0.1:0")
