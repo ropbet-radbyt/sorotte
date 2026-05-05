@@ -254,3 +254,25 @@
   - Protocol serialization and CRLF framing are unchanged.
   - StartTLS success and plain fallback behavior are preserved.
   - TLS handshake timeouts, write timeouts, and accepted-client queue bounding are Rust deployment hardening.
+
+## codex/review-hardening-final-integration branch 8 merge refresh
+
+- Changed files:
+  - `docs/review-hardening-2026-05.md`
+- Behavior changed:
+  - None beyond merging `codex/review-hardening-08-server-io-timeouts`.
+- Tests added/updated:
+  - None beyond the merged topic branch.
+- Commands run:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+  - `cargo test -p syncplay-server network`
+  - `cargo test -p syncplay-server tls`
+  - `python -m pip install twisted pyopenssl service_identity`
+  - `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - The merge preserves the topic-branch commit structure.
+  - The server release verification script passed after merging branch 8 into the final integration branch.
