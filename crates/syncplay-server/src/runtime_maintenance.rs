@@ -42,7 +42,7 @@ impl ServerRuntime {
             self.tls_last_edit_cert_time = None;
             return;
         }
-        self.tls_last_edit_cert_time = tls_certificate_file_modified_time(path);
+        self.tls_last_edit_cert_time = tls_certificate_bundle_modified_time(path);
         match load_tls_server_config(path) {
             Ok(server_config) => {
                 self.tls_server_config = Some(server_config);
@@ -61,7 +61,7 @@ impl ServerRuntime {
         let Some(path) = self.tls_cert_path.as_ref() else {
             return;
         };
-        let Some(current_edit_time) = tls_certificate_file_modified_time(path) else {
+        let Some(current_edit_time) = tls_certificate_bundle_modified_time(path) else {
             return;
         };
         if Some(current_edit_time) == self.tls_last_edit_cert_time {

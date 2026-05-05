@@ -793,6 +793,54 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
 }
 
+fn assert_tls_rotation_detects_file_change(filename: &str) {
+    let cert_path = temporary_directory_path(&format!("tls-rotation-{filename}"));
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let initial_outbound = runtime
+        .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("initial tls request should be handled");
+    assert_eq!(
+        tls_start_response(&initial_outbound).as_deref(),
+        Some("true")
+    );
+
+    overwrite_file_until_modified_time_changes(
+        &cert_path.join(filename),
+        &format!("rotated-{filename}"),
+    );
+
+    let rotated_outbound = runtime
+        .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("rotated tls request should be handled");
+    assert_eq!(
+        tls_start_response(&rotated_outbound).as_deref(),
+        Some("false"),
+        "editing {filename} should trigger TLS bundle reload"
+    );
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[test]
+fn tls_rotation_detects_cert_change() {
+    assert_tls_rotation_detects_file_change("cert.pem");
+}
+
+#[test]
+fn tls_rotation_detects_chain_change() {
+    assert_tls_rotation_detects_file_change("chain.pem");
+}
+
+#[test]
+fn tls_rotation_detects_privkey_change() {
+    assert_tls_rotation_detects_file_change("privkey.pem");
+}
+
 #[test]
 fn tls_rotation_retry_cap_disables_acceptability_after_repeated_failed_reloads() {
     let cert_path = temporary_directory_path("tls-cert-rotation-retry-cap");

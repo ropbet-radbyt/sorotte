@@ -6,10 +6,17 @@ pub(crate) fn tls_certificate_bundle_is_available(path: &Path) -> bool {
         .all(|filename| path.join(filename).is_file())
 }
 
-pub(crate) fn tls_certificate_file_modified_time(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path.join(TLS_CERT_FILENAME))
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
+pub(crate) fn tls_certificate_bundle_modified_time(path: &Path) -> Option<SystemTime> {
+    let mut modified_times = Vec::new();
+    for filename in TLS_REQUIRED_CERT_FILENAMES {
+        if let Some(modified_time) = fs::metadata(path.join(filename))
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+        {
+            modified_times.push(modified_time);
+        }
+    }
+    modified_times.into_iter().max()
 }
 
 fn tls_certificates_from_pem(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {

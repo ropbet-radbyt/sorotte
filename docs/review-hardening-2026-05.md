@@ -111,3 +111,36 @@
   - None.
 - Compatibility notes:
   - Python parity is preserved for outbound periodic `ping.latencyCalculation`: catch-up dispatches continue to use the current collection timestamp rather than each scheduled tick timestamp.
+
+## codex/review-hardening-05-tls-and-persistence
+
+- Changed files:
+  - `crates/syncplay-server/src/tls.rs`
+  - `crates/syncplay-server/src/runtime_maintenance.rs`
+  - `crates/syncplay-server/src/lib.rs`
+  - `crates/syncplay-server/src/persistence.rs`
+  - `crates/syncplay-server/src/compat.rs`
+  - `crates/syncplay-server/src/tests/runtime_config_tests.rs`
+  - `crates/syncplay-server/src/tests/persistence_tests.rs`
+- Behavior changed:
+  - TLS rotation now tracks the max modified time across readable required bundle files: `privkey.pem`, `cert.pem`, and `chain.pem`.
+  - Room persistence SQLite connections set a busy timeout and initialize WAL journal mode.
+  - Permanent rooms files are trimmed and ignore blank/comment lines.
+- Tests added/updated:
+  - `tls_rotation_detects_cert_change`
+  - `tls_rotation_detects_chain_change`
+  - `tls_rotation_detects_privkey_change`
+  - `room_persistence_sets_busy_timeout_or_wal`
+  - `permanent_rooms_file_ignores_blank_lines`
+  - `permanent_rooms_file_ignores_comment_lines`
+- Commands run:
+  - `cargo test -p syncplay-server tls`
+  - `cargo test -p syncplay-server persistence`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Existing TLS reload behavior when some bundle files are missing is preserved by considering readable required files.
+  - Permanent-room blank/comment parsing is Rust deployment hardening; existing Python fixtures do not require blank room names.
+  - Persistence remains synchronous and lightweight; blocking disk I/O was not moved to a worker in this branch.

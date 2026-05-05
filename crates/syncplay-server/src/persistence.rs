@@ -174,6 +174,9 @@ impl RoomPersistenceStore {
     fn initialize_schema(&self) -> Result<(), RoomPersistenceError> {
         let connection = self.connection("connect")?;
         connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|source| self.sqlite_error("enable WAL journal mode", source))?;
+        connection
             .execute(
                 "CREATE TABLE IF NOT EXISTS persistent_rooms (\
                  name STRING PRIMARY KEY, \
@@ -188,8 +191,18 @@ impl RoomPersistenceStore {
         Ok(())
     }
 
-    fn connection(&self, action: &'static str) -> Result<Connection, RoomPersistenceError> {
-        Connection::open(&self.db_path).map_err(|source| self.sqlite_error(action, source))
+    pub(crate) fn connection(
+        &self,
+        action: &'static str,
+    ) -> Result<Connection, RoomPersistenceError> {
+        let connection =
+            Connection::open(&self.db_path).map_err(|source| self.sqlite_error(action, source))?;
+        // Room persistence is intentionally synchronous and should stay lightweight.
+        // A busy timeout prevents transient writer contention from failing immediately.
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|source| self.sqlite_error("set busy timeout", source))?;
+        Ok(connection)
     }
 
     fn sqlite_error(&self, action: &'static str, source: rusqlite::Error) -> RoomPersistenceError {
