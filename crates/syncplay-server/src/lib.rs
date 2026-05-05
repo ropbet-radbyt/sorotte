@@ -29,7 +29,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
         Mutex,
-        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel},
+        mpsc::{Receiver, Sender, UnboundedSender, channel},
         watch,
     },
     task::JoinHandle,
@@ -72,6 +72,9 @@ const SERVER_NETWORK_TICK_INTERVAL_SECONDS: f64 = 0.25;
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+const ACCEPTED_CLIENT_QUEUE_CAPACITY: usize = 1024;
+const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
+const SERVER_WRITE_TIMEOUT_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
 const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";

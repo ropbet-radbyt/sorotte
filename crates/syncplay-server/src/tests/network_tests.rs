@@ -200,6 +200,59 @@ async fn server_network_closes_or_drops_slow_client_when_outbound_queue_full() {
 }
 
 #[tokio::test]
+async fn server_network_accept_queue_is_bounded() {
+    let (accepted_tx, _accepted_rx): (
+        mpsc::Sender<io::Result<(TcpStream, std::net::SocketAddr)>>,
+        _,
+    ) = mpsc::channel(crate::ACCEPTED_CLIENT_QUEUE_CAPACITY);
+    for index in 0..crate::ACCEPTED_CLIENT_QUEUE_CAPACITY {
+        accepted_tx
+            .try_send(Err(io::Error::other(format!("fill-{index}"))))
+            .expect("bounded accepted-client queue should accept entries up to capacity");
+    }
+
+    let overflow = accepted_tx.try_send(Err(io::Error::other("overflow")));
+
+    assert!(
+        matches!(overflow, Err(mpsc::error::TrySendError::Full(_))),
+        "accepted-client queue should be bounded at configured capacity"
+    );
+}
+
+#[tokio::test]
+async fn server_network_write_timeout_closes_stalled_client() {
+    let error = crate::network::stalled_transport_write_for_test(Duration::from_millis(20))
+        .await
+        .expect_err("stalled transport write should time out");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        error.to_string().contains("server protocol write"),
+        "write timeout error should name the failed operation"
+    );
+}
+
+#[tokio::test]
+async fn server_network_error_response_write_timeout_does_not_hang_session() {
+    let error =
+        crate::network::stalled_transport_error_response_write_for_test(Duration::from_millis(20))
+            .await
+            .expect_err("stalled error-response write should time out");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn server_network_direct_response_write_timeout_does_not_block_loop() {
+    let error =
+        crate::network::stalled_transport_direct_response_write_for_test(Duration::from_millis(20))
+            .await
+            .expect_err("stalled direct response write should time out");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
 async fn server_network_loop_routes_hello_response_to_connected_client() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -449,6 +502,264 @@ async fn server_network_loop_sends_error_for_invalid_utf8_line() {
         .await
         .expect("server task should join cleanly")
         .expect("server loop should exit without error");
+}
+
+#[tokio::test]
+async fn server_network_closes_starttls_client_that_never_handshakes() {
+    let cert_path = temporary_directory_path("tls-handshake-timeout-close");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let (mut client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+    }
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_timeouts(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime,
+            client_event_senders,
+            None,
+            crate::network::ServerNetworkClientSessionTimeouts::new(
+                Duration::from_secs(2),
+                Duration::from_millis(20),
+                Duration::from_secs(2),
+            ),
+        ),
+    );
+
+    client_stream
+        .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+        .await
+        .expect("tls request line should write");
+    client_stream
+        .write_all(b"\n")
+        .await
+        .expect("tls request newline should write");
+    client_stream
+        .flush()
+        .await
+        .expect("tls request should flush");
+
+    let tls_response_line = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut client_stream),
+    )
+    .await
+    .expect("tls response should arrive before timeout")
+    .expect("tls response read should succeed")
+    .expect("tls response line should be present");
+    let ProtocolMessage::Tls(payload) =
+        decode_message_line(&tls_response_line).expect("tls response should decode")
+    else {
+        panic!("server should respond with TLS payload");
+    };
+    assert_eq!(payload.tls.start_tls, "true");
+
+    let mut byte = [0_u8; 1];
+    let bytes_read = timeout(Duration::from_secs(2), client_stream.read(&mut byte))
+        .await
+        .expect("TLS handshake timeout close should arrive before timeout")
+        .expect("closed connection read should succeed");
+    assert_eq!(bytes_read, 0);
+
+    let error = session_task
+        .await
+        .expect("session task should join")
+        .expect_err("TLS handshake timeout should end the session with an error");
+    let ServerNetworkError::Io(source) = error else {
+        panic!("TLS handshake timeout should be an IO error");
+    };
+    assert_eq!(source.kind(), io::ErrorKind::TimedOut);
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[tokio::test]
+async fn server_network_starttls_handshake_timeout_does_not_create_session() {
+    let cert_path = temporary_directory_path("tls-handshake-timeout-no-session");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let (mut client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+    }
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_timeouts(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime.clone(),
+            client_event_senders,
+            None,
+            crate::network::ServerNetworkClientSessionTimeouts::new(
+                Duration::from_secs(2),
+                Duration::from_millis(20),
+                Duration::from_secs(2),
+            ),
+        ),
+    );
+
+    client_stream
+        .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+        .await
+        .expect("tls request line should write");
+    client_stream
+        .write_all(b"\n")
+        .await
+        .expect("tls request newline should write");
+    client_stream
+        .flush()
+        .await
+        .expect("tls request should flush");
+
+    let _ = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut client_stream),
+    )
+    .await
+    .expect("tls response should arrive before timeout")
+    .expect("tls response read should succeed")
+    .expect("tls response line should be present");
+
+    session_task
+        .await
+        .expect("session task should join")
+        .expect_err("TLS handshake timeout should end the session with an error");
+    assert!(
+        runtime.lock().await.session("client-1").is_none(),
+        "a client that only requests StartTLS should not create a runtime session"
+    );
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[tokio::test]
+async fn server_network_starttls_success_still_allows_hello() {
+    let cert_path = temporary_directory_path("tls-handshake-timeout-success");
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let (mut client_stream, server_stream) = connected_tcp_pair().await;
+    let runtime = Arc::new(Mutex::new(ServerRuntime::new()));
+    {
+        let mut runtime_guard = runtime.lock().await;
+        runtime_guard.set_tls_cert_path(Some(cert_path.clone()));
+    }
+    let client_event_senders = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let session_task = tokio::spawn(
+        crate::network::run_server_network_client_session_with_timeouts(
+            server_stream,
+            None,
+            "client-1".to_owned(),
+            runtime.clone(),
+            client_event_senders,
+            None,
+            crate::network::ServerNetworkClientSessionTimeouts::new(
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ),
+        ),
+    );
+
+    client_stream
+        .write_all(br#"{"TLS":{"startTLS":"send"}}"#)
+        .await
+        .expect("tls request line should write");
+    client_stream
+        .write_all(b"\n")
+        .await
+        .expect("tls request newline should write");
+    client_stream
+        .flush()
+        .await
+        .expect("tls request should flush");
+
+    let tls_response_line = timeout(
+        Duration::from_secs(2),
+        super::read_network_line_from_stream(&mut client_stream),
+    )
+    .await
+    .expect("tls response should arrive before timeout")
+    .expect("tls response read should succeed")
+    .expect("tls response line should be present");
+    let ProtocolMessage::Tls(payload) =
+        decode_message_line(&tls_response_line).expect("tls response should decode")
+    else {
+        panic!("server should respond with TLS payload");
+    };
+    assert_eq!(payload.tls.start_tls, "true");
+
+    let connector = tls_client_connector_for_test_fixture();
+    let server_name = ServerName::try_from("localhost").expect("server name should parse");
+    let mut tls_stream = timeout(
+        Duration::from_secs(2),
+        connector.connect(server_name, client_stream),
+    )
+    .await
+    .expect("tls handshake should complete before timeout")
+    .expect("tls handshake should succeed");
+
+    tls_stream
+        .write_all(br#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.0"}}"#)
+        .await
+        .expect("hello line should write over tls");
+    tls_stream
+        .write_all(b"\n")
+        .await
+        .expect("hello newline should write over tls");
+    tls_stream
+        .flush()
+        .await
+        .expect("hello line should flush over tls");
+
+    let mut saw_hello = false;
+    for _ in 0..4 {
+        let maybe_line = timeout(
+            Duration::from_secs(2),
+            super::read_network_line_from_stream(&mut tls_stream),
+        )
+        .await
+        .expect("post-upgrade response should arrive before timeout")
+        .expect("post-upgrade response read should succeed");
+        let Some(line) = maybe_line else {
+            break;
+        };
+        let message = decode_message_line(&line).expect("post-upgrade line should decode");
+        if matches!(message, ProtocolMessage::Hello(_)) {
+            saw_hello = true;
+            break;
+        }
+    }
+    assert!(saw_hello, "successful StartTLS should preserve Hello flow");
+    assert!(
+        runtime.lock().await.session("client-1").is_some(),
+        "successful StartTLS Hello should create the runtime session"
+    );
+
+    tls_stream
+        .shutdown()
+        .await
+        .expect("tls stream should shut down");
+    session_task
+        .await
+        .expect("session task should join")
+        .expect("clean TLS client close should not fail the session");
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
 }
 
 #[tokio::test]

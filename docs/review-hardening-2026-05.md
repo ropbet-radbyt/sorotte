@@ -222,3 +222,35 @@
 - Compatibility notes:
   - Final integration preserved the Python interop fixtures and compatibility tests.
   - The server release verification script passed, including the strict ignored server release matrix.
+
+## codex/review-hardening-08-server-io-timeouts
+
+- Changed files:
+  - `crates/syncplay-server/src/lib.rs`
+  - `crates/syncplay-server/src/network.rs`
+  - `crates/syncplay-server/src/tests.rs`
+  - `crates/syncplay-server/src/tests/network_tests.rs`
+- Behavior changed:
+  - Server StartTLS handshakes now time out after `TLS_HANDSHAKE_TIMEOUT_SECONDS` and close the session on timeout.
+  - Server protocol writes now time out after `SERVER_WRITE_TIMEOUT_SECONDS` for direct responses, queued outbound events, protocol error responses, and TLS negotiation responses.
+  - The accepted-client queue is bounded at `ACCEPTED_CLIENT_QUEUE_CAPACITY`.
+- Tests added/updated:
+  - `server_network_closes_starttls_client_that_never_handshakes`
+  - `server_network_starttls_handshake_timeout_does_not_create_session`
+  - `server_network_starttls_success_still_allows_hello`
+  - `server_network_write_timeout_closes_stalled_client`
+  - `server_network_error_response_write_timeout_does_not_hang_session`
+  - `server_network_direct_response_write_timeout_does_not_block_loop`
+  - `server_network_accept_queue_is_bounded`
+- Commands run:
+  - `cargo test -p syncplay-server network`
+  - `cargo test -p syncplay-server tls`
+  - `cargo fmt --all`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Commands not run and why:
+  - None.
+- Compatibility notes:
+  - Protocol serialization and CRLF framing are unchanged.
+  - StartTLS success and plain fallback behavior are preserved.
+  - TLS handshake timeouts, write timeouts, and accepted-client queue bounding are Rust deployment hardening.
