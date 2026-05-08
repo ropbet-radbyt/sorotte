@@ -102,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 Run the strict server release gate:
 
 ```powershell
-python -m pip install twisted pyopenssl service_identity
+python -m pip install -r requirements/legacy-python-interop.txt
 powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1
 ```
 
