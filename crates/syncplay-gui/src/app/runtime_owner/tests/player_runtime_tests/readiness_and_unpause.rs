@@ -35,6 +35,13 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
                 .push(paused);
             Ok(())
         }
+
+        fn set_position(
+            &mut self,
+            _position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            Ok(())
+        }
     }
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
@@ -129,6 +136,13 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
                 .push(paused);
             Ok(())
         }
+
+        fn set_position(
+            &mut self,
+            _position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            Ok(())
+        }
     }
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
@@ -211,6 +225,126 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
             .set_paused_values
             .is_empty(),
         "stale room pause snapshots should not immediately resume the attached player before the server echo arrives"
+    );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_for_cache() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        playback_updates: Vec<syncplay_player_api::PlayerPlaybackTelemetryUpdate>,
+        set_paused_values: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn take_playback_telemetry_update(
+            &mut self,
+        ) -> Option<syncplay_player_api::PlayerPlaybackTelemetryUpdate> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .playback_updates
+                .pop()
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .set_paused_values
+                .push(paused);
+            Ok(())
+        }
+
+        fn set_position(
+            &mut self,
+            _position_seconds: f64,
+        ) -> Result<(), syncplay_player_api::PlayerError> {
+            Ok(())
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_client_core_chat_session_runtime("alice", "room1")
+        .expect("client-core chat runtime owner should bootstrap");
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_paused = Some(false);
+    owner.player_position_seconds = Some(10.0);
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path("C:/Media/episode1.mkv".to_owned()),
+    );
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    session_transport.push_inbound_protocol_line(
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
+            .to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#.to_owned(),
+    );
+    session_transport.push_inbound_protocol_line(
+        r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#.to_owned(),
+    );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let _ = handle.drain_actions();
+    let _ = session_transport.drain_outbound_protocol_lines();
+
+    player_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .playback_updates
+        .push(
+            syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_paused_for_cache(true)
+                .with_cache_buffering_percent(50.0),
+        );
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    assert!(
+        !outbound_protocol_lines
+            .iter()
+            .any(|line| line.contains("\"ready\"") && line.contains("\"isReady\":false")),
+        "mpv cache pause should not queue a local not-ready update"
+    );
+    assert_eq!(
+        owner.player_paused,
+        Some(false),
+        "mpv cache pause should not overwrite the last user-visible pause state"
+    );
+    assert_eq!(owner.player_paused_for_cache, Some(true));
+    assert_eq!(owner.player_cache_buffering_percent, Some(50.0));
+    assert!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_paused_values
+            .is_empty(),
+        "mpv cache pause should not trigger a pause correction back into the player"
     );
 }
 

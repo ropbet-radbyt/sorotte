@@ -671,6 +671,8 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
         r#"{"request_id":10,"error":"success"}"#,
+        r#"{"request_id":11,"error":"success"}"#,
+        r#"{"request_id":12,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -703,9 +705,11 @@ fn attached_open_file_completes_pending_load_from_polled_properties_without_file
         r#"{"request_id":5,"error":"success"}"#,
         r#"{"request_id":6,"error":"success"}"#,
         r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":9,"error":"success","data":24.5}"#,
-        r#"{"request_id":10,"error":"success","data":1000}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":11,"error":"success","data":24.5}"#,
+        r#"{"request_id":12,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -747,12 +751,14 @@ fn pending_open_file_poll_ignores_stale_previous_file_until_requested_target_loa
         r#"{"request_id":5,"error":"success"}"#,
         r#"{"request_id":6,"error":"success"}"#,
         r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success","data":"C:/media/old.mkv"}"#,
-        r#"{"request_id":9,"error":"success","data":10.0}"#,
-        r#"{"request_id":10,"error":"success","data":500}"#,
-        r#"{"request_id":11,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":12,"error":"success","data":24.5}"#,
-        r#"{"request_id":13,"error":"success","data":1000}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success","data":"C:/media/old.mkv"}"#,
+        r#"{"request_id":11,"error":"success","data":10.0}"#,
+        r#"{"request_id":12,"error":"success","data":500}"#,
+        r#"{"request_id":13,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":14,"error":"success","data":24.5}"#,
+        r#"{"request_id":15,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -787,12 +793,14 @@ fn attached_open_file_defers_local_file_update_until_duration_is_available() {
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
         r#"{"request_id":10,"error":"success"}"#,
-        r#"{"request_id":11,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":12,"error":"success","data":null}"#,
-        r#"{"request_id":13,"error":"success","data":1000}"#,
-        r#"{"request_id":14,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":15,"error":"success","data":24.5}"#,
-        r#"{"request_id":16,"error":"success","data":1000}"#,
+        r#"{"request_id":11,"error":"success"}"#,
+        r#"{"request_id":12,"error":"success"}"#,
+        r#"{"request_id":13,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":14,"error":"success","data":null}"#,
+        r#"{"request_id":15,"error":"success","data":1000}"#,
+        r#"{"request_id":16,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":17,"error":"success","data":24.5}"#,
+        r#"{"request_id":18,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 

@@ -106,6 +106,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
+    pub(super) player_paused_for_cache: Option<bool>,
+    pub(super) player_cache_buffering_percent: Option<f64>,
     pub(super) active_shared_playlist_index: Option<usize>,
     pub(super) playlist_auto_advance_eof_latched: bool,
     pub(super) user_offset_seconds: f64,

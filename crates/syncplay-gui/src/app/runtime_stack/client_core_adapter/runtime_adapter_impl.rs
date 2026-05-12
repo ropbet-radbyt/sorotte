@@ -491,6 +491,25 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 paused,
                 position_seconds,
                 playback_rate: None,
+                paused_for_cache: None,
+                cache_buffering_percent: None,
+            });
+        Ok(())
+    }
+
+    fn sync_local_playback_cache_state(
+        &mut self,
+        paused_for_cache: Option<bool>,
+        cache_buffering_percent: Option<f64>,
+    ) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .apply_player_playback_telemetry_update(&PlayerPlaybackTelemetryUpdate {
+                paused: None,
+                position_seconds: None,
+                playback_rate: None,
+                paused_for_cache,
+                cache_buffering_percent,
             });
         Ok(())
     }
@@ -555,6 +574,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn local_pause_state(&self) -> Option<bool> {
         self.runtime.session().local_paused()
+    }
+
+    fn local_paused_for_cache(&self) -> Option<bool> {
+        self.runtime.session().local_paused_for_cache()
     }
 
     fn local_username(&self) -> Option<&str> {

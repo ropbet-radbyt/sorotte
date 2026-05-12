@@ -42,6 +42,8 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_attached_player_pause_confirmation_pump: None,
             player_position_seconds: None,
             player_paused: None,
+            player_paused_for_cache: None,
+            player_cache_buffering_percent: None,
             active_shared_playlist_index: None,
             playlist_auto_advance_eof_latched: false,
             user_offset_seconds: 0.0,

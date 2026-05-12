@@ -149,16 +149,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 return Ok(());
             };
             session.sync_runtime_settings(&runtime_settings)?;
+            session.sync_local_playback_cache_state(
+                self.player_paused_for_cache,
+                self.player_cache_buffering_percent,
+            )?;
             (
                 session.local_pause_state(),
                 session.supports_playback_pause_changes(),
             )
         };
         let player_paused = self.player_paused;
+        let player_paused_for_cache = self.player_paused_for_cache == Some(true);
         let pending_local_attached_pause_override_update = {
             let mut pending_local_attached_pause_override_update = None;
 
             if supports_playback_pause_changes
+                && !player_paused_for_cache
                 && let Some(target_paused) = player_paused
                 && previous_session_paused != Some(target_paused)
             {

@@ -72,6 +72,8 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         pending_attached_player_pause_confirmation_pump: None,
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
+        player_paused_for_cache: None,
+        player_cache_buffering_percent: None,
         active_shared_playlist_index: None,
         playlist_auto_advance_eof_latched: false,
         user_offset_seconds: 0.0,

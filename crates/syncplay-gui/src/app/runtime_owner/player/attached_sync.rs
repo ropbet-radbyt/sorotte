@@ -63,6 +63,12 @@ impl GuiPersistedConfigRuntimeOwner {
         let sync_paused_state = (!suppress_stale_room_pause_sync)
             .then_some(playstate.paused)
             .flatten();
+        let sync_paused_state =
+            if self.player_paused_for_cache == Some(true) && sync_paused_state == Some(false) {
+                None
+            } else {
+                sync_paused_state
+            };
         let initial_room_playstate_sync = self.last_applied_attached_room_playstate.is_none();
         let allow_initial_self_origin_position_sync =
             force && self.player_position_seconds.is_none() && initial_room_playstate_sync;
@@ -155,6 +161,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     for action in actions {
                         match action {
                             GuiAttachedPlayerRuntimeAction::Paused(paused) => {
+                                if self.player_paused_for_cache == Some(true) && !paused {
+                                    continue;
+                                }
                                 let Some(player) = self.player.as_mut() else {
                                     return;
                                 };

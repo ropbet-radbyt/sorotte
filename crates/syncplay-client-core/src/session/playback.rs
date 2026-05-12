@@ -338,6 +338,9 @@ impl ClientSession {
         if !readiness_supported {
             return Vec::new();
         }
+        if self.local_paused_for_cache == Some(true) {
+            return Vec::new();
+        }
 
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
@@ -383,6 +386,9 @@ impl ClientSession {
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> bool {
+        if self.local_paused_for_cache == Some(true) {
+            return false;
+        }
         if is_playing_music {
             return true;
         }

@@ -69,6 +69,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_player_pause_confirmation_pump = None;
         let mut sync_error = None;
         if !target_paused {
+            if self.player_paused_for_cache == Some(true) {
+                self.refresh_player_state_impl();
+                return Ok((true, None));
+            }
             match self.preflight_local_player_unpause_against_detached_session_impl(
                 state,
                 previous_paused,

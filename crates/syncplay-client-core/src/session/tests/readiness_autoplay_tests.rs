@@ -355,6 +355,54 @@ fn runtime_actions_for_readiness_unpause_attempt_sets_ready_when_if_others_ready
 }
 
 #[test]
+fn cache_pause_blocks_readiness_unpause_without_changing_ready_or_manual_pause_state() {
+    let mut session = ClientSession::default();
+    session
+            .apply_message_json(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"readiness":true}}}"#,
+            )
+            .expect("hello should apply");
+    session
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true}}}}"#,
+        )
+        .expect("other user ready state should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
+    session.local_paused = Some(false);
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default()
+            .with_paused(true)
+            .with_paused_for_cache(true)
+            .with_cache_buffering_percent(42.5),
+    );
+
+    assert_eq!(session.local_paused(), Some(false));
+    assert_eq!(session.local_paused_for_cache(), Some(true));
+    assert_eq!(session.local_cache_buffering_percent(), Some(42.5));
+
+    let actions = session.runtime_actions_for_readiness_unpause_attempt(20.0, true, true, false);
+    assert!(actions.is_empty());
+    assert_eq!(session.local_paused(), Some(false));
+    assert_eq!(session.user_ready("alice"), Some(true));
+
+    let unpause_actions = session.runtime_actions_for_local_pause_set(false);
+    assert!(unpause_actions.is_empty());
+    assert_eq!(session.user_ready("alice"), Some(true));
+
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default()
+            .with_paused_for_cache(false)
+            .with_paused(false),
+    );
+    let resumed_actions =
+        session.runtime_actions_for_readiness_unpause_attempt(21.0, true, true, false);
+    assert!(resumed_actions.is_empty());
+    assert_eq!(session.local_paused(), Some(false));
+}
+
+#[test]
 fn runtime_actions_for_readiness_unpause_attempt_honors_pause_on_leave_cooldown() {
     let mut session = ClientSession::default();
     session
@@ -471,6 +519,42 @@ fn autoplay_check_starts_countdown_when_conditions_are_met() {
         session.autoplay_time_left_seconds(),
         session.readiness_autoplay_config().autoplay_delay_seconds
     );
+}
+
+#[test]
+fn autoplay_check_does_not_start_countdown_while_paused_for_cache() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
+    session
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true}}}}"#,
+            )
+            .expect("other user ready state should apply");
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
+    session.local_paused = Some(true);
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(true),
+    );
+
+    session.autoplay_check(true, true, false, false);
+
+    assert!(!session.autoplay_timer_is_running());
+    assert_eq!(session.local_paused_for_cache(), Some(true));
+
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(false),
+    );
+    session.autoplay_check(true, true, false, false);
+
+    assert!(session.autoplay_timer_is_running());
 }
 
 #[test]

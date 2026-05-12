@@ -6,6 +6,8 @@ impl ClientSession {
             user_views: self.user_views.clone(),
             local_position: self.local_position,
             local_paused: self.local_paused,
+            local_paused_for_cache: self.local_paused_for_cache,
+            local_cache_buffering_percent: self.local_cache_buffering_percent,
             last_seek_position_before_manual_seek: self.last_seek_position_before_manual_seek,
             last_paused_on_leave_at_seconds: self.last_paused_on_leave_at_seconds,
             last_rewound_at_seconds: self.last_rewound_at_seconds,
@@ -21,6 +23,8 @@ impl ClientSession {
         self.user_views = snapshot.user_views;
         self.local_position = snapshot.local_position;
         self.local_paused = snapshot.local_paused;
+        self.local_paused_for_cache = snapshot.local_paused_for_cache;
+        self.local_cache_buffering_percent = snapshot.local_cache_buffering_percent;
         self.last_seek_position_before_manual_seek = snapshot.last_seek_position_before_manual_seek;
         self.last_paused_on_leave_at_seconds = snapshot.last_paused_on_leave_at_seconds;
         self.last_rewound_at_seconds = snapshot.last_rewound_at_seconds;
@@ -32,7 +36,19 @@ impl ClientSession {
         &mut self,
         update: &PlayerPlaybackTelemetryUpdate,
     ) {
-        if let Some(paused) = update.paused {
+        if let Some(paused_for_cache) = update.paused_for_cache {
+            self.local_paused_for_cache = Some(paused_for_cache);
+        }
+        if let Some(cache_buffering_percent) = update
+            .cache_buffering_percent
+            .filter(|value| value.is_finite())
+        {
+            self.local_cache_buffering_percent = Some(cache_buffering_percent);
+        }
+        let cache_pause_active = self.local_paused_for_cache == Some(true);
+        if let Some(paused) = update.paused
+            && !cache_pause_active
+        {
             self.local_paused = Some(paused);
         }
         if let Some(position_seconds) = update.position_seconds.filter(|value| value.is_finite()) {

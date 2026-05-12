@@ -16,6 +16,11 @@ use super::child_process::configure_gui_child_process;
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
 const LEGACY_SYNCPLAYINTF_CHAT_INPUT_BRIDGE_MARKER: &str = "-- syncplay-rust-chat-input-bridge";
+const MPV_BUFFERING_DEFAULT_OPTIONS: &[(&str, &str)] = &[
+    ("cache-pause", "yes"),
+    ("cache-pause-initial", "yes"),
+    ("cache-pause-wait", "5"),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedMpvSettingsDecision {
@@ -115,6 +120,7 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
             error
         );
     }
+    apply_mpv_buffering_defaults_to_adapter(player);
 
     if (ui_settings.chat_output_enabled || ui_settings.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path()
@@ -128,6 +134,16 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter(
     }
 
     Ok(())
+}
+
+fn apply_mpv_buffering_defaults_to_adapter(player: &mut MpvAdapter) {
+    for (name, value) in MPV_BUFFERING_DEFAULT_OPTIONS {
+        if let Err(error) = player.set_option_string(name, value) {
+            eprintln!(
+                "warning: failed to apply mpv buffering default {name}={value} via GUI JSON IPC: {error}"
+            );
+        }
+    }
 }
 
 pub(crate) fn spawn_managed_mpv_and_attach(
@@ -208,6 +224,9 @@ fn managed_mpv_launch_args(
         "--keep-open-pause=yes".to_owned(),
         "--drag-and-drop=no".to_owned(),
         "--ytdl=yes".to_owned(),
+        "--cache-pause=yes".to_owned(),
+        "--cache-pause-initial=yes".to_owned(),
+        "--cache-pause-wait=5".to_owned(),
     ];
     if let Some(path) = downloader_path {
         args.push(format!(
@@ -698,6 +717,9 @@ mod tests {
                 "--keep-open-pause=yes".to_owned(),
                 "--drag-and-drop=no".to_owned(),
                 "--ytdl=yes".to_owned(),
+                "--cache-pause=yes".to_owned(),
+                "--cache-pause-initial=yes".to_owned(),
+                "--cache-pause-wait=5".to_owned(),
                 r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),
             ]
@@ -723,6 +745,9 @@ mod tests {
                 "--keep-open-pause=yes".to_owned(),
                 "--drag-and-drop=no".to_owned(),
                 "--ytdl=yes".to_owned(),
+                "--cache-pause=yes".to_owned(),
+                "--cache-pause-initial=yes".to_owned(),
+                "--cache-pause-wait=5".to_owned(),
                 "--script-opts-append=ytdl_hook-ytdl_path=C:/Tools/yt-dlp.exe".to_owned(),
                 r"--input-ipc-server=\\.\pipe\syncplay-rust-gui-mpv-test".to_owned(),
                 "--profile=syncplay".to_owned(),

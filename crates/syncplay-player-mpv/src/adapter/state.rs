@@ -8,6 +8,8 @@ impl fmt::Debug for MpvAdapter {
             .field("paused", &self.paused)
             .field("position_seconds", &self.position_seconds)
             .field("playback_rate", &self.playback_rate)
+            .field("paused_for_cache", &self.paused_for_cache)
+            .field("cache_buffering_percent", &self.cache_buffering_percent)
             .field("muted", &self.muted)
             .field("volume", &self.volume)
             .field("deinterlace", &self.deinterlace)
@@ -70,6 +72,8 @@ impl Default for MpvAdapter {
             paused: false,
             position_seconds: 0.0,
             playback_rate: 0.0,
+            paused_for_cache: false,
+            cache_buffering_percent: None,
             muted: false,
             volume: None,
             deinterlace: false,
@@ -113,4 +117,6 @@ pub(super) struct MpvObservedState {
     pub(super) paused: Option<bool>,
     pub(super) position_seconds: Option<f64>,
     pub(super) playback_rate: Option<f64>,
+    pub(super) paused_for_cache: Option<bool>,
+    pub(super) cache_buffering_percent: Option<f64>,
 }
