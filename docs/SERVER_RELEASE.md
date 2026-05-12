@@ -206,7 +206,7 @@ powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1
 The gate bootstraps the pinned Syncplay `v1.7.5` oracle into `.interop-cache/syncplay-legacy` when `SYNCPLAY_LEGACY_ROOT` is not set, then runs the normal cargo checks plus the strict `syncplay-server` binary release matrix. Python prerequisites are required:
 
 ```powershell
-python -m pip install twisted pyopenssl service_identity
+python -m pip install -r requirements/legacy-python-interop.txt
 ```
 
 Reports are written to:

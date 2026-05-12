@@ -58,7 +58,7 @@ jobs:
       - name: Install legacy TLS parity prerequisites
         run: |
           python -m pip install --upgrade pip
-          python -m pip install twisted pyopenssl service_identity
+          python -m pip install -r requirements/legacy-python-interop.txt
 
       - name: Strict live legacy TLS parity
         env:
@@ -100,7 +100,7 @@ jobs:
       - name: Install legacy TLS parity prerequisites
         run: |
           python -m pip install --upgrade pip
-          python -m pip install twisted pyopenssl service_identity
+          python -m pip install -r requirements/legacy-python-interop.txt
 
       - name: Strict live legacy TLS parity
         env:
@@ -136,7 +136,7 @@ jobs:
       - name: Install server release prerequisites
         run: |
           python -m pip install --upgrade pip
-          python -m pip install twisted pyopenssl service_identity
+          python -m pip install -r requirements/legacy-python-interop.txt
 
       - name: Strict server release verification
         shell: pwsh

@@ -215,7 +215,7 @@
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace`
-  - `python -m pip install twisted pyopenssl service_identity`
+  - `python -m pip install -r requirements/legacy-python-interop.txt`
   - `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
 - Commands not run and why:
   - None.
@@ -269,7 +269,7 @@
   - `cargo test --workspace`
   - `cargo test -p syncplay-server network`
   - `cargo test -p syncplay-server tls`
-  - `python -m pip install twisted pyopenssl service_identity`
+  - `python -m pip install -r requirements/legacy-python-interop.txt`
   - `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
 - Commands not run and why:
   - None.
