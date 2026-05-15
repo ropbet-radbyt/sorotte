@@ -2,6 +2,8 @@ use std::{
     collections::VecDeque,
     io::{self, Read, Write},
     path::Path,
+    sync::mpsc,
+    time::Duration,
 };
 
 use serde_json::{Value, json};
@@ -15,17 +17,35 @@ pub(crate) trait MpvJsonIpcTransport: Send + Sync {
     fn read_line(&mut self, line: &mut String) -> io::Result<usize>;
 }
 
+pub(crate) const MPV_IPC_MAX_LINE_BYTES: usize = 1024 * 1024;
+pub(crate) const MPV_IPC_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) struct MpvJsonIpcClient {
-    transport: Box<dyn MpvJsonIpcTransport>,
-    next_request_id: u64,
+    command_tx: mpsc::Sender<MpvIpcWorkerRequest>,
+    command_timeout: Duration,
     pending_events: VecDeque<Value>,
 }
 
 impl MpvJsonIpcClient {
     pub(crate) fn new(transport: Box<dyn MpvJsonIpcTransport>) -> Self {
+        Self::new_with_command_timeout(transport, MPV_IPC_COMMAND_TIMEOUT)
+    }
+
+    pub(crate) fn new_with_command_timeout(
+        transport: Box<dyn MpvJsonIpcTransport>,
+        command_timeout: Duration,
+    ) -> Self {
+        let (command_tx, command_rx) = mpsc::channel::<MpvIpcWorkerRequest>();
+        let _worker_thread = std::thread::spawn(move || {
+            let mut worker = MpvIpcWorker::new(transport);
+            while let Ok(request) = command_rx.recv() {
+                let outcome = worker.send_command(request.command);
+                let _ = request.response_tx.send(outcome);
+            }
+        });
         Self {
-            transport,
-            next_request_id: 1,
+            command_tx,
+            command_timeout,
             pending_events: VecDeque::new(),
         }
     }
@@ -84,30 +104,107 @@ impl MpvJsonIpcClient {
     }
 
     fn send_command(&mut self, command: Value) -> Result<Value, String> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(MpvIpcWorkerRequest {
+                command,
+                response_tx,
+            })
+            .map_err(|err| format!("failed to queue mpv IPC command: {err}"))?;
+        let outcome = match response_rx.recv_timeout(self.command_timeout) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(format!(
+                    "mpv IPC command timed out after {:.1} seconds",
+                    self.command_timeout.as_secs_f64()
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("mpv IPC command worker disconnected".to_owned());
+            }
+        };
+        self.pending_events.extend(outcome.pending_events);
+        outcome.result
+    }
+
+    pub(crate) fn take_pending_events(&mut self) -> Vec<Value> {
+        self.pending_events.drain(..).collect()
+    }
+}
+
+struct MpvIpcWorkerRequest {
+    command: Value,
+    response_tx: mpsc::Sender<MpvIpcCommandOutcome>,
+}
+
+struct MpvIpcCommandOutcome {
+    result: Result<Value, String>,
+    pending_events: Vec<Value>,
+}
+
+struct MpvIpcWorker {
+    transport: Box<dyn MpvJsonIpcTransport>,
+    next_request_id: u64,
+}
+
+impl MpvIpcWorker {
+    fn new(transport: Box<dyn MpvJsonIpcTransport>) -> Self {
+        Self {
+            transport,
+            next_request_id: 1,
+        }
+    }
+
+    fn send_command(&mut self, command: Value) -> MpvIpcCommandOutcome {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);
+        let mut pending_events = Vec::new();
 
         let request = json!({
             "command": command,
             "request_id": request_id,
         });
-        let mut line = serde_json::to_string(&request)
-            .map_err(|err| format!("failed to serialize mpv IPC request: {err}"))?;
+        let mut line = match serde_json::to_string(&request) {
+            Ok(line) => line,
+            Err(err) => {
+                return MpvIpcCommandOutcome {
+                    result: Err(format!("failed to serialize mpv IPC request: {err}")),
+                    pending_events,
+                };
+            }
+        };
         line.push('\n');
-        self.transport
-            .send_line(&line)
-            .map_err(|err| format!("failed to write mpv IPC request: {err}"))?;
+        if let Err(err) = self.transport.send_line(&line) {
+            return MpvIpcCommandOutcome {
+                result: Err(format!("failed to write mpv IPC request: {err}")),
+                pending_events,
+            };
+        }
 
         let mut response_line = String::new();
         loop {
-            let bytes_read = self
-                .transport
-                .read_line(&mut response_line)
-                .map_err(|err| format!("failed to read mpv IPC response: {err}"))?;
+            let bytes_read = match self.transport.read_line(&mut response_line) {
+                Ok(bytes_read) => bytes_read,
+                Err(err) => {
+                    return MpvIpcCommandOutcome {
+                        result: Err(format!("failed to read mpv IPC response: {err}")),
+                        pending_events,
+                    };
+                }
+            };
             if bytes_read == 0 {
-                return Err(format!(
-                    "unexpected EOF while waiting for mpv IPC response (request_id={request_id})"
-                ));
+                return MpvIpcCommandOutcome {
+                    result: Err(format!(
+                        "unexpected EOF while waiting for mpv IPC response (request_id={request_id})"
+                    )),
+                    pending_events,
+                };
+            }
+            if let Err(err) = validate_mpv_ipc_line_len(response_line.as_bytes()) {
+                return MpvIpcCommandOutcome {
+                    result: Err(err),
+                    pending_events,
+                };
             }
 
             let trimmed = response_line.trim_end_matches(['\r', '\n']);
@@ -115,10 +212,17 @@ impl MpvJsonIpcClient {
                 continue;
             }
 
-            let parsed: Value = serde_json::from_str(trimmed)
-                .map_err(|err| format!("invalid mpv IPC JSON line '{trimmed}': {err}"))?;
+            let parsed: Value = match serde_json::from_str(trimmed) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return MpvIpcCommandOutcome {
+                        result: Err(format!("invalid mpv IPC JSON line '{trimmed}': {err}")),
+                        pending_events,
+                    };
+                }
+            };
             if parsed.get("event").and_then(Value::as_str).is_some() {
-                self.pending_events.push_back(parsed);
+                pending_events.push(parsed);
                 continue;
             }
             let Some(parsed_request_id) = parsed.get("request_id").and_then(Value::as_u64) else {
@@ -134,17 +238,19 @@ impl MpvJsonIpcClient {
                 .and_then(Value::as_str)
                 .unwrap_or("<missing error>");
             if error != MPV_RESPONSE_SUCCESS {
-                return Err(format!(
-                    "mpv command failed for request_id={request_id}: {error}"
-                ));
+                return MpvIpcCommandOutcome {
+                    result: Err(format!(
+                        "mpv command failed for request_id={request_id}: {error}"
+                    )),
+                    pending_events,
+                };
             }
 
-            return Ok(parsed);
+            return MpvIpcCommandOutcome {
+                result: Ok(parsed),
+                pending_events,
+            };
         }
-    }
-
-    pub(crate) fn take_pending_events(&mut self) -> Vec<Value> {
-        self.pending_events.drain(..).collect()
     }
 }
 
@@ -235,6 +341,27 @@ fn decode_line_bytes(bytes: Vec<u8>, line: &mut String) -> io::Result<usize> {
     Ok(line.len())
 }
 
+fn mpv_ipc_line_len(bytes: &[u8]) -> usize {
+    let without_lf = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    without_lf.strip_suffix(b"\r").unwrap_or(without_lf).len()
+}
+
+fn mpv_ipc_line_too_long_error() -> String {
+    format!("mpv IPC line too long: exceeded {MPV_IPC_MAX_LINE_BYTES} bytes")
+}
+
+fn validate_mpv_ipc_line_len(bytes: &[u8]) -> Result<(), String> {
+    if mpv_ipc_line_len(bytes) > MPV_IPC_MAX_LINE_BYTES {
+        Err(mpv_ipc_line_too_long_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn mpv_ipc_line_too_long_io_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, mpv_ipc_line_too_long_error())
+}
+
 pub(crate) fn read_line_from_stream(
     stream: &mut impl Read,
     read_buffer: &mut Vec<u8>,
@@ -242,6 +369,9 @@ pub(crate) fn read_line_from_stream(
 ) -> io::Result<usize> {
     loop {
         if let Some(newline_index) = read_buffer.iter().position(|byte| *byte == b'\n') {
+            if mpv_ipc_line_len(&read_buffer[..=newline_index]) > MPV_IPC_MAX_LINE_BYTES {
+                return Err(mpv_ipc_line_too_long_io_error());
+            }
             let remainder = read_buffer.split_off(newline_index + 1);
             let bytes = std::mem::replace(read_buffer, remainder);
             return decode_line_bytes(bytes, line);
@@ -257,7 +387,12 @@ pub(crate) fn read_line_from_stream(
                 let bytes = std::mem::take(read_buffer);
                 return decode_line_bytes(bytes, line);
             }
-            Ok(bytes_read) => read_buffer.extend_from_slice(&chunk[..bytes_read]),
+            Ok(bytes_read) => {
+                read_buffer.extend_from_slice(&chunk[..bytes_read]);
+                if !read_buffer.contains(&b'\n') && read_buffer.len() > MPV_IPC_MAX_LINE_BYTES {
+                    return Err(mpv_ipc_line_too_long_io_error());
+                }
+            }
             Err(err) => return Err(err),
         }
     }

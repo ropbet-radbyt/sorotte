@@ -11,6 +11,7 @@ impl GuiPersistedConfigRuntimeOwner {
             session_transport_reconnect_due_at: None,
             session_transport_reconnect_failures: 0,
             session_transport_disconnect_pending_cleanup: false,
+            runtime_pump_generation: 0,
             session_default_room: None,
             pending_room_change_request: None,
             startup_saved_connect_attempted: false,
@@ -38,8 +39,12 @@ impl GuiPersistedConfigRuntimeOwner {
             last_applied_attached_room_playstate: None,
             suppressed_attached_room_playstate_after_playlist_reset: None,
             pending_local_attached_pause_override: None,
+            pending_attached_cache_unpause: false,
+            pending_attached_player_pause_confirmation_pump: None,
             player_position_seconds: None,
             player_paused: None,
+            player_paused_for_cache: None,
+            player_cache_buffering_percent: None,
             active_shared_playlist_index: None,
             playlist_auto_advance_eof_latched: false,
             user_offset_seconds: 0.0,
@@ -155,6 +160,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.player_paused = None;
+        self.pending_attached_cache_unpause = false;
+        self.pending_attached_player_pause_confirmation_pump = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
@@ -198,6 +205,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         self.pending_local_attached_pause_override = None;
+        self.pending_attached_cache_unpause = false;
+        self.pending_attached_player_pause_confirmation_pump = None;
     }
 
     fn detach_player(&mut self) {

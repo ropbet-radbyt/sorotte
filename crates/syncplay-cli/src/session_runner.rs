@@ -51,7 +51,7 @@ use syncplay_protocol::{
     HelloPayload, ProtocolError, ProtocolMessage, StatePayload, decode_message_line,
     decode_message_line_items, encode_message_line,
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
@@ -83,7 +83,9 @@ use crate::notifications::{
     flush_reconnect_notifications_legacy_compatible,
     flush_user_change_notifications_legacy_compatible,
 };
-use crate::protocol_io::{flush_runtime_protocol_lines, write_protocol_line};
+use crate::protocol_io::{
+    flush_runtime_protocol_lines, read_inbound_protocol_line, write_protocol_line,
+};
 use crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible;
 use crate::stdin_input::{recv_local_input_line, spawn_local_input_receiver_legacy_compatible};
 

@@ -45,6 +45,8 @@ pub struct PlayerPlaybackTelemetryUpdate {
     pub paused: Option<bool>,
     pub position_seconds: Option<f64>,
     pub playback_rate: Option<f64>,
+    pub paused_for_cache: Option<bool>,
+    pub cache_buffering_percent: Option<f64>,
 }
 
 impl PlayerPlaybackTelemetryUpdate {
@@ -60,6 +62,16 @@ impl PlayerPlaybackTelemetryUpdate {
 
     pub fn with_playback_rate(mut self, playback_rate: f64) -> Self {
         self.playback_rate = Some(playback_rate);
+        self
+    }
+
+    pub fn with_paused_for_cache(mut self, paused_for_cache: bool) -> Self {
+        self.paused_for_cache = Some(paused_for_cache);
+        self
+    }
+
+    pub fn with_cache_buffering_percent(mut self, cache_buffering_percent: f64) -> Self {
+        self.cache_buffering_percent = Some(cache_buffering_percent);
         self
     }
 }
@@ -340,11 +352,15 @@ mod tests {
         let update = PlayerPlaybackTelemetryUpdate::default()
             .with_paused(true)
             .with_position_seconds(12.5)
-            .with_playback_rate(0.95);
+            .with_playback_rate(0.95)
+            .with_paused_for_cache(true)
+            .with_cache_buffering_percent(37.5);
 
         assert_eq!(update.paused, Some(true));
         assert_eq!(update.position_seconds, Some(12.5));
         assert_eq!(update.playback_rate, Some(0.95));
+        assert_eq!(update.paused_for_cache, Some(true));
+        assert_eq!(update.cache_buffering_percent, Some(37.5));
     }
 
     #[test]

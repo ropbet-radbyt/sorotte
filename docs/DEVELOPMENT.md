@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 Install Python prerequisites:
 
 ```powershell
-python -m pip install twisted pyopenssl service_identity
+python -m pip install -r requirements/legacy-python-interop.txt
 ```
 
 Run release verification:

@@ -1,5 +1,11 @@
 use super::*;
 
+const MANAGED_MPV_BUFFERING_DEFAULT_ARGS: &[&str] = &[
+    "--cache-pause=yes",
+    "--cache-pause-initial=yes",
+    "--cache-pause-wait=5",
+];
+
 #[cfg(test)]
 pub(crate) fn create_mpv_adapter_from_env() -> MpvAdapter {
     let ipc_path = env_trimmed("SYNCPLAY_CLIENT_MPV_IPC_PATH")
@@ -124,11 +130,7 @@ fn spawn_managed_mpv_and_attach(
     if let Some(parent) = mpv_bin.parent() {
         command.current_dir(parent);
     }
-    command
-        .arg("--pause")
-        .arg("--force-window=no")
-        .arg("--idle=yes")
-        .arg(format!("--input-ipc-server={ipc_path}"));
+    command.args(managed_mpv_launch_base_args_legacy_compatible(&ipc_path));
     if !config.extra_args.is_empty() {
         command.args(&config.extra_args);
     }
@@ -155,6 +157,31 @@ fn spawn_managed_mpv_and_attach(
 
     eprintln!("info: started managed mpv and attached JSON IPC at '{ipc_path}'");
     Ok((adapter, guard))
+}
+
+#[cfg(test)]
+pub(crate) fn managed_mpv_launch_base_args_legacy_compatible(ipc_path: &str) -> Vec<String> {
+    managed_mpv_launch_base_args(ipc_path)
+}
+
+#[cfg(not(test))]
+fn managed_mpv_launch_base_args_legacy_compatible(ipc_path: &str) -> Vec<String> {
+    managed_mpv_launch_base_args(ipc_path)
+}
+
+fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
+    let mut args = vec![
+        "--pause".to_owned(),
+        "--force-window=no".to_owned(),
+        "--idle=yes".to_owned(),
+    ];
+    args.extend(
+        MANAGED_MPV_BUFFERING_DEFAULT_ARGS
+            .iter()
+            .map(|arg| (*arg).to_owned()),
+    );
+    args.push(format!("--input-ipc-server={ipc_path}"));
+    args
 }
 
 pub(crate) fn connect_mpv_adapter_with_retry(

@@ -12,12 +12,16 @@ impl ServerRuntime {
     }
 
     pub(crate) fn initialize_stats_snapshot_schedule(&mut self) {
+        self.initialize_stats_snapshot_schedule_at(self.current_time_seconds());
+    }
+
+    pub(crate) fn initialize_stats_snapshot_schedule_at(&mut self, now_seconds: f64) {
         if self.stats_persistence.is_none() {
             self.stats_next_snapshot_at_seconds = None;
             return;
         }
         self.stats_next_snapshot_at_seconds = Some(
-            self.current_time_seconds()
+            now_seconds
                 + self.stats_snapshot_start_delay_seconds
                 + self.stats_snapshot_interval_seconds,
         );
@@ -38,7 +42,7 @@ impl ServerRuntime {
             self.tls_last_edit_cert_time = None;
             return;
         }
-        self.tls_last_edit_cert_time = tls_certificate_file_modified_time(path);
+        self.tls_last_edit_cert_time = tls_certificate_bundle_modified_time(path);
         match load_tls_server_config(path) {
             Ok(server_config) => {
                 self.tls_server_config = Some(server_config);
@@ -57,7 +61,7 @@ impl ServerRuntime {
         let Some(path) = self.tls_cert_path.as_ref() else {
             return;
         };
-        let Some(current_edit_time) = tls_certificate_file_modified_time(path) else {
+        let Some(current_edit_time) = tls_certificate_bundle_modified_time(path) else {
             return;
         };
         if Some(current_edit_time) == self.tls_last_edit_cert_time {
@@ -74,18 +78,20 @@ impl ServerRuntime {
         }
     }
 
-    pub(crate) fn collect_due_stats_snapshots(&mut self) -> Result<(), ServerRuntimeError> {
+    pub(crate) fn collect_due_stats_snapshots_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), ServerRuntimeError> {
         let Some(stats_persistence) = self.stats_persistence.clone() else {
             self.stats_next_snapshot_at_seconds = None;
             return Ok(());
         };
         if self.stats_next_snapshot_at_seconds.is_none() {
-            self.initialize_stats_snapshot_schedule();
+            self.initialize_stats_snapshot_schedule_at(now_seconds);
         }
         let Some(mut next_snapshot_at_seconds) = self.stats_next_snapshot_at_seconds else {
             return Ok(());
         };
-        let now_seconds = self.current_time_seconds();
         while next_snapshot_at_seconds <= now_seconds {
             self.record_stats_snapshot_at(&stats_persistence, next_snapshot_at_seconds)?;
             next_snapshot_at_seconds += self.stats_snapshot_interval_seconds;
@@ -112,10 +118,10 @@ impl ServerRuntime {
         Ok(())
     }
 
-    pub(crate) fn collect_due_periodic_updates(
+    pub(crate) fn collect_due_periodic_updates_at(
         &mut self,
+        now: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
-        let now = self.current_time_seconds();
         let mut due_clients: Vec<String> = self
             .client_next_periodic_state_at
             .iter()
@@ -136,7 +142,11 @@ impl ServerRuntime {
                     client_id.clone(),
                     next_state_at + SERVER_STATE_INTERVAL_SECONDS,
                 );
-                outbound.extend(self.collect_periodic_tick_for_client(&client_id, next_state_at)?);
+                outbound.extend(self.collect_periodic_tick_for_client_at(
+                    &client_id,
+                    next_state_at,
+                    now,
+                )?);
                 if !self.sessions.contains_key(&client_id) {
                     break;
                 }
@@ -147,10 +157,11 @@ impl ServerRuntime {
         Ok(outbound)
     }
 
-    pub(crate) fn collect_periodic_tick_for_client(
+    pub(crate) fn collect_periodic_tick_for_client_at(
         &mut self,
         client_id: &str,
         ticked_at: f64,
+        message_now_seconds: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let Some(session) = self.sessions.get(client_id).cloned() else {
             return Ok(Vec::new());
@@ -164,11 +175,12 @@ impl ServerRuntime {
         let room_state = self.refresh_room_playback_state_from_clients_at(&session.room, ticked_at);
 
         let mut outbound = Vec::new();
-        if let Some(state_message) = self.periodic_state_sync_message_for_client(
+        if let Some(state_message) = self.periodic_state_sync_message_for_client_at(
             client_id,
             room_state.position,
             room_state.paused,
             room_state.set_by.as_deref(),
+            message_now_seconds,
         ) {
             outbound.push(DirectedProtocolMessage::new(client_id, state_message));
         }
@@ -206,17 +218,18 @@ impl ServerRuntime {
             .unwrap_or(u64::MAX)
     }
 
-    pub(crate) fn periodic_state_sync_message_for_client(
+    pub(crate) fn periodic_state_sync_message_for_client_at(
         &mut self,
         client_id: &str,
         position: f64,
         paused: bool,
         set_by: Option<&str>,
+        now_seconds: f64,
     ) -> Option<ProtocolMessage> {
         let server_ignoring_counter = self.server_ignoring_counter(client_id);
         let server_rtt_seconds = self.server_rtt_seconds(client_id);
         let (pending_client_latency, pending_client_ignoring) =
-            self.take_client_passthrough_state_metadata(client_id);
+            self.take_client_passthrough_state_metadata_at(client_id, now_seconds);
         if server_ignoring_counter > 0 {
             return None;
         }
@@ -230,7 +243,7 @@ impl ServerRuntime {
                 client_latency_calculation: pending_client_latency,
                 client_ignoring_counter: pending_client_ignoring,
                 server_rtt_seconds,
-                latency_calculation_seconds: Some(self.current_time_seconds()),
+                latency_calculation_seconds: Some(now_seconds),
                 ..StateSyncOptions::default()
             },
         ))
@@ -654,7 +667,14 @@ impl ServerRuntime {
         &mut self,
         client_id: &str,
     ) -> (Option<f64>, Option<u32>) {
-        let now_seconds = self.current_time_seconds();
+        self.take_client_passthrough_state_metadata_at(client_id, self.current_time_seconds())
+    }
+
+    pub(crate) fn take_client_passthrough_state_metadata_at(
+        &mut self,
+        client_id: &str,
+        now_seconds: f64,
+    ) -> (Option<f64>, Option<u32>) {
         let state_counters = self
             .client_state_counters
             .entry(client_id.to_owned())

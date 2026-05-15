@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Shared room play icon concept">
+  <defs>
+    <linearGradient id="bg" x1="36" y1="24" x2="222" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#102c3a"/>
+      <stop offset="1" stop-color="#252642"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="56" y1="58" x2="200" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#40d6b2"/>
+      <stop offset="1" stop-color="#5b8cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <rect x="50" y="64" width="156" height="102" rx="22" fill="none" stroke="url(#frame)" stroke-width="16"/>
+  <path d="M113 91.5c0-7.4 8.1-11.9 14.4-8l43.6 27.3c5.9 3.7 5.9 12.3 0 16l-43.6 27.3c-6.3 3.9-14.4-.6-14.4-8V91.5z" fill="#f6fbff"/>
+  <path d="M88 195h80" stroke="#f6fbff" stroke-width="14" stroke-linecap="round"/>
+  <path d="M128 166v29" stroke="#f6fbff" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="57" cy="196" r="16" fill="#40d6b2"/>
+  <circle cx="199" cy="196" r="16" fill="#5b8cff"/>
+  <path d="M73 196h38M145 196h38" stroke="#92f1df" stroke-width="10" stroke-linecap="round"/>
+</svg>

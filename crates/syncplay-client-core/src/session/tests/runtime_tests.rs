@@ -637,6 +637,8 @@ fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_cal
             paused: Some(true),
             position_seconds: Some(12.5),
             playback_rate: Some(0.95),
+            paused_for_cache: None,
+            cache_buffering_percent: None,
         }]
     );
     assert!(runtime.drain_player_playback_telemetry_updates().is_empty());

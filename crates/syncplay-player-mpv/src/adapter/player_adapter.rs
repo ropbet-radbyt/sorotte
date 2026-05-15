@@ -19,6 +19,10 @@ impl PlayerAdapter for MpvAdapter {
             self.observed_state.path = None;
             self.observed_state.duration_seconds = None;
             self.observed_state.size_bytes = None;
+            self.paused_for_cache = false;
+            self.cache_buffering_percent = None;
+            self.observed_state.paused_for_cache = None;
+            self.observed_state.cache_buffering_percent = None;
         } else {
             self.current_path = Some(path.to_owned());
             self.pending_local_file_update = Some(Self::local_file_update_for_path(path));

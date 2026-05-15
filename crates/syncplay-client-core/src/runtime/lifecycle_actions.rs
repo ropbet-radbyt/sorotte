@@ -189,10 +189,18 @@ where
             return Ok(());
         };
         let room_seeked = room_playstate.do_seek == Some(true);
+        let cache_pause_active = self.session.local_paused_for_cache == Some(true);
+        let cache_blocks_room_unpause = cache_pause_active && room_playstate.paused == Some(false);
+        if cache_blocks_room_unpause {
+            self.session.pending_cache_room_playstate_resync = true;
+        }
+        let cache_room_playstate_resync =
+            !cache_pause_active && self.session.pending_cache_room_playstate_resync;
         let pause_mismatch = room_playstate
             .paused
             .is_some_and(|room_paused| self.session.local_paused.unwrap_or(true) != room_paused);
-        if !room_seeked && !pause_mismatch {
+        let pause_mismatch_actionable = pause_mismatch && !cache_blocks_room_unpause;
+        if !room_seeked && !pause_mismatch_actionable && !cache_room_playstate_resync {
             return Ok(());
         }
         let set_by_is_self = self
@@ -202,17 +210,20 @@ where
             .zip(room_playstate.set_by.as_deref())
             .is_some_and(|(username, set_by)| username == set_by);
         if set_by_is_self {
+            self.session.pending_cache_room_playstate_resync = false;
             return Ok(());
         }
 
-        let target_position = if (room_seeked || room_playstate.paused == Some(true))
+        let target_position = if (room_seeked
+            || room_playstate.paused == Some(true)
+            || cache_room_playstate_resync)
             && let Some(room_position) = room_playstate.position.filter(|value| value.is_finite())
         {
             Some(room_position)
         } else {
             None
         };
-        let target_paused = if pause_mismatch {
+        let target_paused = if pause_mismatch_actionable || cache_room_playstate_resync {
             room_playstate.paused
         } else {
             None
@@ -237,6 +248,9 @@ where
             )?;
             // Mirror the confirmed local state to avoid duplicate correction attempts until telemetry catches up.
             self.session.local_paused = Some(room_paused);
+        }
+        if cache_room_playstate_resync {
+            self.session.pending_cache_room_playstate_resync = false;
         }
         Ok(())
     }

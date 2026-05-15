@@ -132,7 +132,26 @@ impl GuiPersistedConfigRuntimeOwner {
             local_file_updates.push(update);
         }
         for update in playback_updates {
-            if let Some(paused) = update.paused {
+            if let Some(paused_for_cache) = update.paused_for_cache {
+                self.player_paused_for_cache = Some(paused_for_cache);
+            }
+            if let Some(cache_buffering_percent) = update.cache_buffering_percent {
+                self.player_cache_buffering_percent = Some(cache_buffering_percent);
+            }
+            if (update.paused_for_cache.is_some() || update.cache_buffering_percent.is_some())
+                && let Some(session) = self.session.as_mut()
+                && let Err(error) = session.sync_local_playback_cache_state(
+                    update.paused_for_cache,
+                    update.cache_buffering_percent,
+                )
+            {
+                eprintln!(
+                    "warning: failed to mirror attached-player cache buffering state into the session runtime: {error}"
+                );
+            }
+            if let Some(paused) = update.paused
+                && self.player_paused_for_cache != Some(true)
+            {
                 self.player_paused = Some(paused);
             }
             if let Some(position_seconds) = update.position_seconds {

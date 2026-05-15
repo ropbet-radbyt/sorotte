@@ -15,7 +15,7 @@ The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` will select t
 Install Python prerequisites when you need the server release gate or live legacy compatibility tests:
 
 ```powershell
-python -m pip install twisted pyopenssl service_identity
+python -m pip install -r requirements/legacy-python-interop.txt
 ```
 
 ## Build From Source

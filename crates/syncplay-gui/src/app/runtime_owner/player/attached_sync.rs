@@ -47,8 +47,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             self.suppressed_attached_room_playstate_after_playlist_reset = None;
         }
-        let playstate_unchanged =
-            !force && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate);
         let set_by_is_local_user = playstate
             .set_by
             .as_deref()
@@ -60,9 +58,22 @@ impl GuiPersistedConfigRuntimeOwner {
         let suppress_stale_room_pause_sync = self
             .pending_local_attached_pause_override
             .is_some_and(|pending_paused| playstate.paused != Some(pending_paused));
-        let sync_paused_state = (!suppress_stale_room_pause_sync)
+        let requested_sync_paused_state = (!suppress_stale_room_pause_sync)
             .then_some(playstate.paused)
             .flatten();
+        let pending_cache_unpause_ready = self.pending_attached_cache_unpause
+            && self.player_paused_for_cache != Some(true)
+            && requested_sync_paused_state == Some(false);
+        let mut sync_paused_state = requested_sync_paused_state;
+        if self.player_paused_for_cache == Some(true) && sync_paused_state == Some(false) {
+            self.pending_attached_cache_unpause = true;
+            sync_paused_state = None;
+        } else if sync_paused_state == Some(true) {
+            self.pending_attached_cache_unpause = false;
+        }
+        let playstate_unchanged = !force
+            && !pending_cache_unpause_ready
+            && self.last_applied_attached_room_playstate.as_ref() == Some(&playstate);
         let initial_room_playstate_sync = self.last_applied_attached_room_playstate.is_none();
         let allow_initial_self_origin_position_sync =
             force && self.player_position_seconds.is_none() && initial_room_playstate_sync;
@@ -70,6 +81,7 @@ impl GuiPersistedConfigRuntimeOwner {
             initial_room_playstate_sync && !set_by_is_local_user;
         let user_offset_seconds = self.user_offset_seconds;
         let should_seek_for_room_playstate = force
+            || pending_cache_unpause_ready
             || playstate.do_seek == Some(true)
             || sync_paused_state == Some(true)
             || allow_initial_remote_position_sync;
@@ -108,7 +120,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
 
             if let Some(paused) = sync_paused_state
-                && (force || self.player_paused != Some(paused))
+                && (force || pending_cache_unpause_ready || self.player_paused != Some(paused))
             {
                 let Some(player) = self.player.as_mut() else {
                     self.last_applied_attached_room_playstate = None;
@@ -117,7 +129,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 match player.set_paused(paused) {
                     Ok(()) => {
                         self.player_paused = Some(paused);
+                        if !paused {
+                            self.pending_attached_cache_unpause = false;
+                        }
                         state_changed = true;
+                        // Remote room sync is not local playback intent; mirror it as telemetry
+                        // so later pumps do not reinterpret it as a readiness-changing action.
+                        if let Some(session) = self.session.as_mut()
+                            && let Err(error) = session.sync_local_playback_telemetry(
+                                Some(paused),
+                                self.player_position_seconds,
+                            )
+                        {
+                            eprintln!(
+                                "warning: failed to mirror remote room pause sync into the session runtime: {error}"
+                            );
+                        }
                     }
                     Err(error) => {
                         room_playstate_sync_failed = true;
@@ -143,12 +170,19 @@ impl GuiPersistedConfigRuntimeOwner {
                     for action in actions {
                         match action {
                             GuiAttachedPlayerRuntimeAction::Paused(paused) => {
+                                if self.player_paused_for_cache == Some(true) && !paused {
+                                    self.pending_attached_cache_unpause = true;
+                                    continue;
+                                }
                                 let Some(player) = self.player.as_mut() else {
                                     return;
                                 };
                                 match player.set_paused(paused) {
                                     Ok(()) => {
                                         self.player_paused = Some(paused);
+                                        if !paused {
+                                            self.pending_attached_cache_unpause = false;
+                                        }
                                         state_changed = true;
                                         if let Some(session) = self.session.as_mut()
                                             && let Err(error) = session

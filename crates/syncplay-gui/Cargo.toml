@@ -41,6 +41,9 @@ webpki-roots.workspace = true
 windows-sys.workspace = true
 windows.workspace = true
 
+[build-dependencies]
+embed-resource = "3.0.9"
+
 [[bin]]
 name = "syncplay-gui-semantic-smoke"
 path = "src/bin/syncplay-gui-semantic-smoke.rs"

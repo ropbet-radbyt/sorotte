@@ -42,6 +42,10 @@ impl ClientSession {
     }
 
     pub(super) fn effective_local_paused_state(&self, now_seconds: f64) -> bool {
+        if self.local_paused_for_cache == Some(true) {
+            return true;
+        }
+
         self.local_paused
             .or_else(|| {
                 self.current_room_playstate_at(now_seconds)
@@ -69,6 +73,10 @@ impl ClientSession {
         paused: bool,
         now_seconds: f64,
     ) -> Vec<ClientRuntimeAction> {
+        if self.local_paused_for_cache == Some(true) && !paused {
+            return Vec::new();
+        }
+
         let effective_paused = self.effective_local_paused_state(now_seconds);
         if effective_paused == paused {
             return Vec::new();
@@ -93,13 +101,14 @@ impl ClientSession {
             if effective_paused != global_paused {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
-            if (!global_paused || recently_advanced)
+            if paused != global_paused
+                && (!global_paused || recently_advanced)
+                && !self.local_user_ready()
                 && !self.recently_rewound(now_seconds, RECENT_REWIND_READINESS_SUPPRESSION_SECONDS)
             {
-                let ready = !self.local_user_ready();
-                self.apply_local_ready_state_optimistically(ready);
+                self.apply_local_ready_state_optimistically(true);
                 actions.push(ClientRuntimeAction::SetReady {
-                    ready,
+                    ready: true,
                     manually_initiated: true,
                 });
             }

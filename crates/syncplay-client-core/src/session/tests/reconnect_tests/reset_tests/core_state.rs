@@ -32,6 +32,14 @@ fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
 
     let behind_initial = session.evaluate_desync_correction(0.0, 0.0, false, false, true);
     assert_eq!(behind_initial, DesyncCorrectionAction::None);
+    session.apply_player_playback_telemetry_update(
+        &PlayerPlaybackTelemetryUpdate::default()
+            .with_paused_for_cache(true)
+            .with_cache_buffering_percent(42.5),
+    );
+    assert_eq!(session.local_paused_for_cache(), Some(true));
+    assert_eq!(session.local_cache_buffering_percent(), Some(42.5));
+    assert!(session.pending_cache_room_playstate_resync);
 
     session
         .apply_message_json_at(
@@ -51,6 +59,9 @@ fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
     assert_eq!(session.username.as_deref(), Some("alice"));
     assert_eq!(session.room.as_deref(), Some("room1"));
     assert!(!session.recently_advanced(11.0));
+    assert_eq!(session.local_paused_for_cache(), None);
+    assert_eq!(session.local_cache_buffering_percent(), None);
+    assert!(!session.pending_cache_room_playstate_resync);
 }
 
 #[test]

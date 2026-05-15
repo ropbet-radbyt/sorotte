@@ -147,6 +147,14 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
+    fn sync_local_playback_cache_state(
+        &mut self,
+        _paused_for_cache: Option<bool>,
+        _cache_buffering_percent: Option<f64>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {
         Err("Attached session runtime does not support playback pause changes.".to_owned())
     }
@@ -184,6 +192,10 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     }
 
     fn local_pause_state(&self) -> Option<bool> {
+        None
+    }
+
+    fn local_paused_for_cache(&self) -> Option<bool> {
         None
     }
 

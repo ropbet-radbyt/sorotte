@@ -12,8 +12,8 @@ impl SyncplayGuiShellAppState {
             .to_owned();
         let has_room_draft = configured_room_name_text(&room_draft).is_some();
         let has_joined_room = joined_room_name_text(&self.main_window.room_name).is_some();
-        let playlist_has_entries = !self.main_window.playlist.is_empty();
-        let controls_available = playlist_has_entries && self.pending_operation.is_none();
+        let local_ready_available =
+            self.main_window.playback.can_set_ready && self.pending_operation.is_none();
         let local_user_ready = self.displayed_local_main_window_user_ready();
         let ready_button = GuiWidgetNode::leaf(
             "main-window:control:set-ready",
@@ -24,9 +24,7 @@ impl SyncplayGuiShellAppState {
             },
             GuiWidgetKind::Button,
             None,
-            self.main_window.playback.can_set_ready
-                && controls_available
-                && !self.local_ready_transition_pending(),
+            local_ready_available,
             false,
         );
         let saved_session_target = self.saved_session_connect_target();

@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::{Mutex, mpsc, watch},
     time::timeout,
@@ -26,8 +26,8 @@ use super::{
     LEGACY_SERVER_LINE_DECODE_ERROR, LEGACY_SERVER_PASSWORD_REQUIRED_ERROR,
     LEGACY_SERVER_WRONG_PASSWORD_ERROR, LEGACY_UI_MODE_UNKNOWN, RoomPasswordCheckError,
     RoomPasswordProvider, SERVER_REAL_VERSION, SERVER_STATE_INTERVAL_SECONDS, ServerApp,
-    ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError, ServerTransportAction,
-    TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
+    ServerNetworkError, ServerRuntime, ServerRuntimeDispatch, ServerRuntimeError,
+    ServerTransportAction, TLS_CERT_ROTATION_MAX_RETRIES, default_motd_for_client_version,
     generate_server_salt_legacy_compatible, motd_for_client_context, motd_for_client_version,
     read_network_line_from_stream, run_server_network_loop_until_shutdown,
 };

@@ -621,6 +621,14 @@ impl ClientSession {
         self.local_paused
     }
 
+    pub fn local_paused_for_cache(&self) -> Option<bool> {
+        self.local_paused_for_cache
+    }
+
+    pub fn local_cache_buffering_percent(&self) -> Option<f64> {
+        self.local_cache_buffering_percent
+    }
+
     pub fn local_position_seconds(&self) -> Option<f64> {
         self.local_position
     }

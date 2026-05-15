@@ -346,7 +346,6 @@ impl SyncplayGuiShellAppState {
     ) -> bool {
         self.pending_operation.is_none()
             && self.commands.can_disconnect_session
-            && self.main_window_playlist_has_entries()
             && self.main_window.playback.can_set_ready
             && self.main_window.playback.can_set_others_ready
             && !user.is_self
@@ -549,9 +548,6 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn announce_local_user_ready_state(&mut self, ready: bool) -> bool {
-        if !self.require_main_window_playlist_entry_for_controls() {
-            return false;
-        }
         if !self.main_window.playback.can_set_ready {
             return self.record_action_error(
                 "Local readiness cannot change when ready controls are unavailable.",
@@ -561,11 +557,12 @@ impl SyncplayGuiShellAppState {
             return self
                 .record_action_error("The local user row is missing from the main-window shell.");
         };
+        let current_ready = self.displayed_local_main_window_user_ready();
         let Some(user) = self.main_window.users.get_mut(index) else {
             return self
                 .record_action_error("The local user row is missing from the main-window shell.");
         };
-        if user.is_ready == ready {
+        if current_ready == ready {
             return self.record_action_error(if ready {
                 "The local user is already marked ready."
             } else {

@@ -24,6 +24,8 @@ pub struct MpvAdapter {
     paused: bool,
     position_seconds: f64,
     playback_rate: f64,
+    paused_for_cache: bool,
+    cache_buffering_percent: Option<f64>,
     muted: bool,
     volume: Option<f64>,
     deinterlace: bool,
@@ -89,6 +91,14 @@ impl MpvAdapter {
         } else {
             self.playback_rate
         }
+    }
+
+    pub fn paused_for_cache(&self) -> bool {
+        self.paused_for_cache
+    }
+
+    pub fn cache_buffering_percent(&self) -> Option<f64> {
+        self.cache_buffering_percent
     }
 
     pub fn muted(&self) -> bool {
@@ -348,6 +358,11 @@ impl MpvAdapter {
             (MPV_OBS_PAUSE_ID, MPV_PROPERTY_PAUSE),
             (MPV_OBS_TIME_POS_ID, MPV_PROPERTY_TIME_POS),
             (MPV_OBS_SPEED_ID, MPV_PROPERTY_SPEED),
+            (MPV_OBS_PAUSED_FOR_CACHE_ID, MPV_PROPERTY_PAUSED_FOR_CACHE),
+            (
+                MPV_OBS_CACHE_BUFFERING_STATE_ID,
+                MPV_PROPERTY_CACHE_BUFFERING_STATE,
+            ),
         ];
 
         for (observer_id, property_name) in registrations {
@@ -464,7 +479,9 @@ impl MpvAdapter {
     fn queue_playback_telemetry_update(&mut self, update: PlayerPlaybackTelemetryUpdate) {
         match self.pending_playback_telemetry_update.as_mut() {
             Some(pending) => {
-                if let Some(paused) = update.paused {
+                if let Some(paused) = update.paused
+                    && !(paused && pending.paused_for_cache == Some(true))
+                {
                     pending.paused = Some(paused);
                 }
                 if let Some(position_seconds) = update.position_seconds {
@@ -473,8 +490,21 @@ impl MpvAdapter {
                 if let Some(playback_rate) = update.playback_rate {
                     pending.playback_rate = Some(playback_rate);
                 }
+                if let Some(paused_for_cache) = update.paused_for_cache {
+                    pending.paused_for_cache = Some(paused_for_cache);
+                    if paused_for_cache && pending.paused == Some(true) {
+                        pending.paused = None;
+                    }
+                }
+                if let Some(cache_buffering_percent) = update.cache_buffering_percent {
+                    pending.cache_buffering_percent = Some(cache_buffering_percent);
+                }
             }
             None => {
+                let mut update = update;
+                if update.paused_for_cache == Some(true) && update.paused == Some(true) {
+                    update.paused = None;
+                }
                 self.pending_playback_telemetry_update = Some(update);
             }
         }
@@ -586,6 +616,33 @@ impl MpvAdapter {
                     );
                 } else {
                     self.observed_state.playback_rate = None;
+                }
+                false
+            }
+            MPV_PROPERTY_PAUSED_FOR_CACHE => {
+                if let Some(paused_for_cache) = data.and_then(Value::as_bool) {
+                    self.paused_for_cache = paused_for_cache;
+                    self.observed_state.paused_for_cache = Some(paused_for_cache);
+                    self.queue_playback_telemetry_update(
+                        PlayerPlaybackTelemetryUpdate::default()
+                            .with_paused_for_cache(paused_for_cache),
+                    );
+                } else {
+                    self.observed_state.paused_for_cache = None;
+                }
+                false
+            }
+            MPV_PROPERTY_CACHE_BUFFERING_STATE => {
+                if let Some(cache_buffering_percent) = data.and_then(Value::as_f64) {
+                    self.cache_buffering_percent = Some(cache_buffering_percent);
+                    self.observed_state.cache_buffering_percent = Some(cache_buffering_percent);
+                    self.queue_playback_telemetry_update(
+                        PlayerPlaybackTelemetryUpdate::default()
+                            .with_cache_buffering_percent(cache_buffering_percent),
+                    );
+                } else {
+                    self.cache_buffering_percent = None;
+                    self.observed_state.cache_buffering_percent = None;
                 }
                 false
             }
@@ -806,6 +863,20 @@ impl MpvAdapter {
     pub(crate) fn with_test_transport(transport: impl MpvJsonIpcTransport + 'static) -> Self {
         Self {
             ipc_client: Some(MpvJsonIpcClient::new(Box::new(transport))),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_transport_and_ipc_timeout(
+        transport: impl MpvJsonIpcTransport + 'static,
+        command_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            ipc_client: Some(MpvJsonIpcClient::new_with_command_timeout(
+                Box::new(transport),
+                command_timeout,
+            )),
             ..Self::default()
         }
     }

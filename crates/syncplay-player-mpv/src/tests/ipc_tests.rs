@@ -1,4 +1,23 @@
 use super::*;
+use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvJsonIpcClient};
+use std::{thread, time::Duration};
+
+#[derive(Debug)]
+struct BlockingReadTransport {
+    sleep_duration: Duration,
+}
+
+impl MpvJsonIpcTransport for BlockingReadTransport {
+    fn send_line(&mut self, _line: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn read_line(&mut self, line: &mut String) -> io::Result<usize> {
+        thread::sleep(self.sleep_duration);
+        line.clear();
+        Ok(0)
+    }
+}
 
 #[test]
 fn buffered_read_line_from_stream_reuses_remaining_bytes_across_calls() {
@@ -37,6 +56,111 @@ fn buffered_read_line_from_stream_returns_partial_final_line_on_eof() {
     let eof_bytes = read_line_from_stream(&mut stream, &mut read_buffer, &mut line).expect("eof");
     assert_eq!(eof_bytes, 0);
     assert!(line.is_empty());
+}
+
+#[test]
+fn mpv_ipc_rejects_line_over_max_bytes() {
+    let oversized_response = format!(
+        r#"{{"request_id":1,"error":"success","data":"{}"}}"#,
+        "a".repeat(MPV_IPC_MAX_LINE_BYTES)
+    );
+    let mut stream = io::Cursor::new(format!("{oversized_response}\n").into_bytes());
+    let mut read_buffer = Vec::new();
+    let mut line = String::new();
+    let stream_error = read_line_from_stream(&mut stream, &mut read_buffer, &mut line)
+        .expect_err("oversized stream line should fail before decoding");
+    assert!(
+        stream_error.to_string().contains("mpv IPC line too long"),
+        "unexpected stream error: {stream_error}"
+    );
+
+    let lines = [oversized_response.as_str()];
+    let (transport, _state) = fake_transport_with_reads(&lines);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+    let client_error = client
+        .get_property("path")
+        .expect_err("oversized IPC client line should fail");
+    assert!(
+        client_error.contains("mpv IPC line too long"),
+        "unexpected client error: {client_error}"
+    );
+}
+
+#[test]
+fn mpv_ipc_command_times_out_without_matching_response() {
+    let mut client = MpvJsonIpcClient::new_with_command_timeout(
+        Box::new(BlockingReadTransport {
+            sleep_duration: Duration::from_millis(250),
+        }),
+        Duration::from_millis(20),
+    );
+
+    let error = client
+        .get_property("path")
+        .expect_err("missing matching response should time out");
+
+    assert!(
+        error.contains("mpv IPC command timed out"),
+        "unexpected timeout error: {error}"
+    );
+}
+
+#[test]
+fn mpv_ipc_preserves_unrelated_events_while_waiting() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"event":"property-change","name":"pause","data":true}"#,
+        r#"{"request_id":1,"error":"success","data":false}"#,
+    ]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let value = client
+        .get_property("pause")
+        .expect("matching response should succeed");
+
+    assert_eq!(value, Some(json!(false)));
+    assert_eq!(
+        client.take_pending_events(),
+        vec![json!({"event":"property-change","name":"pause","data":true})]
+    );
+}
+
+#[test]
+fn mpv_ipc_ignores_response_for_other_request_id() {
+    let (transport, _state) = fake_transport_with_reads(&[
+        r#"{"request_id":999,"error":"success","data":"old.mkv"}"#,
+        r#"{"request_id":1,"error":"success","data":"movie.mkv"}"#,
+    ]);
+    let mut client = MpvJsonIpcClient::new(Box::new(transport));
+
+    let path = client
+        .get_property_string("path")
+        .expect("matching response should succeed");
+
+    assert_eq!(path.as_deref(), Some("movie.mkv"));
+}
+
+#[test]
+fn mpv_adapter_surfaces_timeout_as_player_error() {
+    let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+        BlockingReadTransport {
+            sleep_duration: Duration::from_millis(250),
+        },
+        Duration::from_millis(20),
+    );
+
+    let error = adapter
+        .set_paused(true)
+        .expect_err("adapter command should surface IPC timeout");
+
+    match error {
+        syncplay_player_api::PlayerError::OperationFailed(message) => {
+            assert!(
+                message.contains("mpv IPC command timed out"),
+                "unexpected adapter timeout message: {message}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
 }
 
 #[test]
@@ -547,6 +671,8 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
         r#"{"request_id":10,"error":"success"}"#,
+        r#"{"request_id":11,"error":"success"}"#,
+        r#"{"request_id":12,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -579,9 +705,11 @@ fn attached_open_file_completes_pending_load_from_polled_properties_without_file
         r#"{"request_id":5,"error":"success"}"#,
         r#"{"request_id":6,"error":"success"}"#,
         r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":9,"error":"success","data":24.5}"#,
-        r#"{"request_id":10,"error":"success","data":1000}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":11,"error":"success","data":24.5}"#,
+        r#"{"request_id":12,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -623,12 +751,14 @@ fn pending_open_file_poll_ignores_stale_previous_file_until_requested_target_loa
         r#"{"request_id":5,"error":"success"}"#,
         r#"{"request_id":6,"error":"success"}"#,
         r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success","data":"C:/media/old.mkv"}"#,
-        r#"{"request_id":9,"error":"success","data":10.0}"#,
-        r#"{"request_id":10,"error":"success","data":500}"#,
-        r#"{"request_id":11,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":12,"error":"success","data":24.5}"#,
-        r#"{"request_id":13,"error":"success","data":1000}"#,
+        r#"{"request_id":8,"error":"success"}"#,
+        r#"{"request_id":9,"error":"success"}"#,
+        r#"{"request_id":10,"error":"success","data":"C:/media/old.mkv"}"#,
+        r#"{"request_id":11,"error":"success","data":10.0}"#,
+        r#"{"request_id":12,"error":"success","data":500}"#,
+        r#"{"request_id":13,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":14,"error":"success","data":24.5}"#,
+        r#"{"request_id":15,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 
@@ -663,12 +793,14 @@ fn attached_open_file_defers_local_file_update_until_duration_is_available() {
         r#"{"request_id":8,"error":"success"}"#,
         r#"{"request_id":9,"error":"success"}"#,
         r#"{"request_id":10,"error":"success"}"#,
-        r#"{"request_id":11,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":12,"error":"success","data":null}"#,
-        r#"{"request_id":13,"error":"success","data":1000}"#,
-        r#"{"request_id":14,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":15,"error":"success","data":24.5}"#,
-        r#"{"request_id":16,"error":"success","data":1000}"#,
+        r#"{"request_id":11,"error":"success"}"#,
+        r#"{"request_id":12,"error":"success"}"#,
+        r#"{"request_id":13,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":14,"error":"success","data":null}"#,
+        r#"{"request_id":15,"error":"success","data":1000}"#,
+        r#"{"request_id":16,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":17,"error":"success","data":24.5}"#,
+        r#"{"request_id":18,"error":"success","data":1000}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
 

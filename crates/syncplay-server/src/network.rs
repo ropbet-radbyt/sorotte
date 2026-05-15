@@ -3,18 +3,63 @@ use std::net::SocketAddr;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
 
-async fn dispatch_outbound_lines_to_clients(
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ServerNetworkClientSessionTimeouts {
+    pre_hello: std::time::Duration,
+    tls_handshake: std::time::Duration,
+    write: std::time::Duration,
+}
+
+impl ServerNetworkClientSessionTimeouts {
+    pub(crate) fn new(
+        pre_hello: std::time::Duration,
+        tls_handshake: std::time::Duration,
+        write: std::time::Duration,
+    ) -> Self {
+        Self {
+            pre_hello,
+            tls_handshake,
+            write,
+        }
+    }
+
+    fn production_with_pre_hello(pre_hello: std::time::Duration) -> Self {
+        Self::new(
+            pre_hello,
+            std::time::Duration::from_secs_f64(TLS_HANDSHAKE_TIMEOUT_SECONDS),
+            std::time::Duration::from_secs_f64(SERVER_WRITE_TIMEOUT_SECONDS),
+        )
+    }
+}
+
+pub(crate) async fn dispatch_outbound_lines_to_clients(
     client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
 ) {
     for line in outbound_lines {
-        let event_sender = {
-            let senders = client_event_senders.lock().await;
-            senders.get(&line.client_id).cloned()
-        };
-        if let Some(event_sender) = event_sender {
-            let _ = event_sender.send(ClientOutboundEvent::Line(line.line));
-        }
+        dispatch_client_event(
+            client_event_senders,
+            &line.client_id,
+            ClientOutboundEvent::Line(line.line),
+        )
+        .await;
+    }
+}
+
+async fn dispatch_client_event(
+    client_event_senders: &SharedClientEventSenders,
+    client_id: &str,
+    event: ClientOutboundEvent,
+) {
+    let event_sender = {
+        let senders = client_event_senders.lock().await;
+        senders.get(client_id).cloned()
+    };
+    if let Some(event_sender) = event_sender
+        && event_sender.try_send(event).is_err()
+    {
+        let mut senders = client_event_senders.lock().await;
+        senders.remove(client_id);
     }
 }
 
@@ -23,12 +68,25 @@ async fn dispatch_transport_actions_to_clients(
     transport_actions: &[DirectedTransportAction],
 ) {
     for action in transport_actions {
-        let event_sender = {
-            let senders = client_event_senders.lock().await;
-            senders.get(&action.client_id).cloned()
-        };
-        if let Some(event_sender) = event_sender {
-            let _ = event_sender.send(ClientOutboundEvent::TransportAction(action.action.clone()));
+        dispatch_client_event(
+            client_event_senders,
+            &action.client_id,
+            ClientOutboundEvent::TransportAction(action.action.clone()),
+        )
+        .await;
+    }
+}
+
+pub(crate) async fn prune_finished_session_tasks(session_tasks: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < session_tasks.len() {
+        if session_tasks[index].is_finished() {
+            let task = session_tasks.swap_remove(index);
+            if let Err(source) = task.await {
+                eprintln!("syncplay server client session task ended unexpectedly: {source}");
+            }
+        } else {
+            index += 1;
         }
     }
 }
@@ -53,7 +111,7 @@ fn transport_actions_close_client(
     })
 }
 
-async fn write_network_line_to_stream<S>(stream: &mut S, line: &str) -> io::Result<()>
+pub(crate) async fn write_network_line_to_stream<S>(stream: &mut S, line: &str) -> io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
@@ -61,6 +119,16 @@ where
     stream.write_all(b"\r\n").await?;
     stream.flush().await?;
     Ok(())
+}
+
+fn timeout_io_error(operation: &str, timeout_duration: std::time::Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "{operation} timed out after {:.1} seconds",
+            timeout_duration.as_secs_f64()
+        ),
+    )
 }
 
 pub(crate) async fn read_network_line_from_stream<S>(stream: &mut S) -> io::Result<Option<String>>
@@ -81,6 +149,12 @@ where
             break;
         }
         bytes.push(byte[0]);
+        if bytes.len() > MAX_PROTOCOL_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                PROTOCOL_LINE_TOO_LONG_ERROR,
+            ));
+        }
     }
 
     if bytes.last() == Some(&b'\r') {
@@ -100,6 +174,8 @@ enum ServerNetworkTransport {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
     Closed,
+    #[cfg(test)]
+    StalledWrite,
 }
 
 impl ServerNetworkTransport {
@@ -115,10 +191,12 @@ impl ServerNetworkTransport {
                 io::ErrorKind::NotConnected,
                 "transport is closed",
             )),
+            #[cfg(test)]
+            Self::StalledWrite => std::future::pending().await,
         }
     }
 
-    async fn write_line(&mut self, line: &str) -> io::Result<()> {
+    async fn write_line_without_timeout(&mut self, line: &str) -> io::Result<()> {
         match self {
             Self::Plain(stream) => write_network_line_to_stream(stream, line).await,
             Self::Tls(stream) => write_network_line_to_stream(stream.as_mut(), line).await,
@@ -126,6 +204,19 @@ impl ServerNetworkTransport {
                 io::ErrorKind::NotConnected,
                 "transport is closed",
             )),
+            #[cfg(test)]
+            Self::StalledWrite => std::future::pending().await,
+        }
+    }
+
+    async fn write_line_with_timeout(
+        &mut self,
+        line: &str,
+        timeout_duration: std::time::Duration,
+    ) -> io::Result<()> {
+        match time::timeout(timeout_duration, self.write_line_without_timeout(line)).await {
+            Ok(result) => result,
+            Err(_) => Err(timeout_io_error("server protocol write", timeout_duration)),
         }
     }
 
@@ -134,6 +225,8 @@ impl ServerNetworkTransport {
             Self::Plain(stream) => stream.shutdown().await,
             Self::Tls(stream) => stream.shutdown().await,
             Self::Closed => Ok(()),
+            #[cfg(test)]
+            Self::StalledWrite => Ok(()),
         }
     }
 
@@ -148,6 +241,22 @@ impl ServerNetworkTransport {
                 io::ErrorKind::NotConnected,
                 "transport is closed",
             )),
+            #[cfg(test)]
+            Self::StalledWrite => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "transport is stalled",
+            )),
+        }
+    }
+
+    async fn upgrade_to_tls_with_timeout(
+        self,
+        acceptor: TlsAcceptor,
+        timeout_duration: std::time::Duration,
+    ) -> io::Result<Self> {
+        match time::timeout(timeout_duration, self.upgrade_to_tls(acceptor)).await {
+            Ok(result) => result,
+            Err(_) => Err(timeout_io_error("server TLS handshake", timeout_duration)),
         }
     }
 }
@@ -157,11 +266,14 @@ async fn route_outbound_lines_for_client_session(
     client_id: &str,
     client_event_senders: &SharedClientEventSenders,
     outbound_lines: Vec<DirectedOutboundLine>,
+    write_timeout: std::time::Duration,
 ) -> io::Result<()> {
     let mut peer_outbound_lines = Vec::new();
     for line in outbound_lines {
         if line.client_id == client_id {
-            transport.write_line(&line.line).await?;
+            transport
+                .write_line_with_timeout(&line.line, write_timeout)
+                .await?;
         } else {
             peer_outbound_lines.push(line);
         }
@@ -189,6 +301,7 @@ async fn apply_local_transport_actions(
     client_id: &str,
     runtime: &Arc<Mutex<ServerRuntime>>,
     transport_actions: &[DirectedTransportAction],
+    tls_handshake_timeout: std::time::Duration,
 ) -> io::Result<()> {
     let should_start_tls = transport_actions.iter().any(|action| {
         action.client_id == client_id && action.action == ServerTransportAction::StartTls
@@ -198,22 +311,23 @@ async fn apply_local_transport_actions(
     }
     let tls_acceptor = tls_acceptor_from_runtime(runtime).await?;
     let current_transport = std::mem::replace(transport, ServerNetworkTransport::Closed);
-    *transport = current_transport.upgrade_to_tls(tls_acceptor).await?;
+    *transport = current_transport
+        .upgrade_to_tls_with_timeout(tls_acceptor, tls_handshake_timeout)
+        .await?;
     Ok(())
 }
 
-async fn run_server_network_client_session(
+pub(crate) async fn run_server_network_client_session_with_timeouts(
     stream: TcpStream,
     peer_ip: Option<String>,
     client_id: String,
     runtime: Arc<Mutex<ServerRuntime>>,
     client_event_senders: SharedClientEventSenders,
     transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    timeouts: ServerNetworkClientSessionTimeouts,
 ) -> Result<(), ServerNetworkError> {
-    let (event_tx, mut event_rx): (
-        UnboundedSender<ClientOutboundEvent>,
-        UnboundedReceiver<ClientOutboundEvent>,
-    ) = unbounded_channel();
+    let (event_tx, mut event_rx): (Sender<ClientOutboundEvent>, Receiver<ClientOutboundEvent>) =
+        channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
     {
         let mut senders = client_event_senders.lock().await;
         senders.insert(client_id.clone(), event_tx);
@@ -221,8 +335,14 @@ async fn run_server_network_client_session(
 
     let mut transport = ServerNetworkTransport::Plain(stream);
     let mut session_error: Option<ServerNetworkError> = None;
+    let pre_hello_timer = time::sleep(timeouts.pre_hello);
+    tokio::pin!(pre_hello_timer);
+    let mut session_known = false;
     loop {
         tokio::select! {
+            _ = &mut pre_hello_timer, if !session_known => {
+                break;
+            }
             inbound_line_result = transport.read_line() => {
                 let inbound_line = match inbound_line_result {
                     Ok(Some(line)) => line,
@@ -230,10 +350,18 @@ async fn run_server_network_client_session(
                     Err(source) => {
                         if source.kind() == io::ErrorKind::InvalidData
                             && let Ok(error_line) = encode_message_line(
-                                &ProtocolMessage::error_message(LEGACY_SERVER_LINE_DECODE_ERROR),
+                                &ProtocolMessage::error_message(
+                                    if source.to_string() == PROTOCOL_LINE_TOO_LONG_ERROR {
+                                        PROTOCOL_LINE_TOO_LONG_ERROR
+                                    } else {
+                                        LEGACY_SERVER_LINE_DECODE_ERROR
+                                    },
+                                ),
                             )
                         {
-                            let _ = transport.write_line(&error_line).await;
+                            let _ = transport
+                                .write_line_with_timeout(&error_line, timeouts.write)
+                                .await;
                         }
                         session_error = Some(ServerNetworkError::Io(source));
                         break;
@@ -245,12 +373,16 @@ async fn run_server_network_client_session(
                 }
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
+                    let dispatch = runtime_guard.handle_line_fanout_with_transport_actions_for_peer(
                         &client_id,
                         inbound_line,
                         peer_ip.as_deref(),
-                    )
+                    );
+                    let session_exists = runtime_guard.session(&client_id).is_some();
+                    (dispatch, session_exists)
                 };
+                let (dispatch, session_exists) = dispatch;
+                session_known = session_known || session_exists;
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,
                     Err(source) => {
@@ -265,6 +397,7 @@ async fn run_server_network_client_session(
                     &client_id,
                     &client_event_senders,
                     dispatch.outbound_lines,
+                    timeouts.write,
                 )
                 .await
                 {
@@ -280,6 +413,7 @@ async fn run_server_network_client_session(
                     &client_id,
                     &runtime,
                     &dispatch.transport_actions,
+                    timeouts.tls_handshake,
                 )
                 .await
                 {
@@ -296,7 +430,11 @@ async fn run_server_network_client_session(
                 };
                 match outbound_event {
                     ClientOutboundEvent::Line(outbound_line) => {
-                        if let Err(source) = transport.write_line(&outbound_line).await {
+                        if let Err(source) =
+                            transport
+                                .write_line_with_timeout(&outbound_line, timeouts.write)
+                                .await
+                        {
                             session_error = Some(ServerNetworkError::Io(source));
                             break;
                         }
@@ -314,6 +452,7 @@ async fn run_server_network_client_session(
                             &client_id,
                             &runtime,
                             &[action],
+                            timeouts.tls_handshake,
                         )
                         .await
                         {
@@ -357,9 +496,93 @@ async fn run_server_network_client_session(
     Ok(())
 }
 
+pub(crate) async fn run_server_network_client_session_with_pre_hello_timeout(
+    stream: TcpStream,
+    peer_ip: Option<String>,
+    client_id: String,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    client_event_senders: SharedClientEventSenders,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+    pre_hello_timeout: std::time::Duration,
+) -> Result<(), ServerNetworkError> {
+    run_server_network_client_session_with_timeouts(
+        stream,
+        peer_ip,
+        client_id,
+        runtime,
+        client_event_senders,
+        transport_action_sink,
+        ServerNetworkClientSessionTimeouts::production_with_pre_hello(pre_hello_timeout),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn stalled_transport_write_for_test(
+    write_timeout: std::time::Duration,
+) -> io::Result<()> {
+    let mut transport = ServerNetworkTransport::StalledWrite;
+    transport
+        .write_line_with_timeout(r#"{"Chat":"stalled"}"#, write_timeout)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn stalled_transport_error_response_write_for_test(
+    write_timeout: std::time::Duration,
+) -> io::Result<()> {
+    let mut transport = ServerNetworkTransport::StalledWrite;
+    let error_line = encode_message_line(&ProtocolMessage::error_message(
+        LEGACY_SERVER_LINE_DECODE_ERROR,
+    ))
+    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+    transport
+        .write_line_with_timeout(&error_line, write_timeout)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn stalled_transport_direct_response_write_for_test(
+    write_timeout: std::time::Duration,
+) -> io::Result<()> {
+    let mut transport = ServerNetworkTransport::StalledWrite;
+    let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
+    route_outbound_lines_for_client_session(
+        &mut transport,
+        "client-1",
+        &client_event_senders,
+        vec![DirectedOutboundLine {
+            client_id: "client-1".to_owned(),
+            line: r#"{"Chat":"direct"}"#.to_owned(),
+        }],
+        write_timeout,
+    )
+    .await
+}
+
+async fn run_server_network_client_session(
+    stream: TcpStream,
+    peer_ip: Option<String>,
+    client_id: String,
+    runtime: Arc<Mutex<ServerRuntime>>,
+    client_event_senders: SharedClientEventSenders,
+    transport_action_sink: Option<UnboundedSender<DirectedTransportAction>>,
+) -> Result<(), ServerNetworkError> {
+    run_server_network_client_session_with_pre_hello_timeout(
+        stream,
+        peer_ip,
+        client_id,
+        runtime,
+        client_event_senders,
+        transport_action_sink,
+        std::time::Duration::from_secs_f64(PROTOCOL_TIMEOUT_SECONDS),
+    )
+    .await
+}
+
 async fn accept_server_network_clients_until_shutdown(
     listener: TcpListener,
-    accepted_clients: UnboundedSender<AcceptedClient>,
+    accepted_clients: Sender<AcceptedClient>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     loop {
@@ -370,16 +593,22 @@ async fn accept_server_network_clients_until_shutdown(
                 }
             }
             accepted = listener.accept() => {
-                match accepted {
-                    Ok((stream, address)) => {
-                        if accepted_clients.send(Ok((stream, address))).is_err() {
+                let accepted_client = accepted;
+                let accepted_error = accepted_client.is_err();
+                tokio::select! {
+                    sent = accepted_clients.send(accepted_client) => {
+                        if sent.is_err() {
                             break;
                         }
                     }
-                    Err(source) => {
-                        let _ = accepted_clients.send(Err(source));
-                        break;
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
                     }
+                }
+                if accepted_error {
+                    break;
                 }
             }
         }
@@ -401,10 +630,8 @@ pub async fn run_server_network_loops_until_shutdown(
     }
 
     let client_event_senders: SharedClientEventSenders = Arc::new(Mutex::new(BTreeMap::new()));
-    let (accepted_tx, mut accepted_rx): (
-        UnboundedSender<AcceptedClient>,
-        UnboundedReceiver<AcceptedClient>,
-    ) = unbounded_channel();
+    let (accepted_tx, mut accepted_rx): (Sender<AcceptedClient>, Receiver<AcceptedClient>) =
+        channel(ACCEPTED_CLIENT_QUEUE_CAPACITY);
     let mut accept_tasks: Vec<JoinHandle<()>> = Vec::new();
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();
@@ -428,11 +655,12 @@ pub async fn run_server_network_loops_until_shutdown(
     let mut loop_error: Option<ServerNetworkError> = None;
 
     loop {
+        prune_finished_session_tasks(&mut session_tasks).await;
         tokio::select! {
             _ = tick.tick() => {
                 let dispatch = {
                     let mut runtime_guard = runtime.lock().await;
-                    runtime_guard.advance_time_and_collect_dispatch(SERVER_NETWORK_TICK_INTERVAL_SECONDS)
+                    runtime_guard.collect_dispatch_at(current_unix_timestamp_seconds())
                 };
                 let dispatch = match dispatch {
                     Ok(dispatch) => dispatch,
@@ -478,8 +706,9 @@ pub async fn run_server_network_loops_until_shutdown(
                 let client_event_senders = client_event_senders.clone();
                 let transport_action_sink = transport_action_sink.clone();
                 let peer_ip = Some(address.ip().to_string());
+                let task_client_id = client_id.clone();
                 session_tasks.push(tokio::spawn(async move {
-                    let _ = run_server_network_client_session(
+                    if let Err(source) = run_server_network_client_session(
                         stream,
                         peer_ip,
                         client_id,
@@ -487,7 +716,12 @@ pub async fn run_server_network_loops_until_shutdown(
                         client_event_senders,
                         transport_action_sink,
                     )
-                    .await;
+                    .await
+                    {
+                        eprintln!(
+                            "syncplay server client session {task_client_id} ended with error: {source}"
+                        );
+                    }
                 }));
             }
         }

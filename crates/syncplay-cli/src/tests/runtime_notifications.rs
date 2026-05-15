@@ -114,13 +114,15 @@ fn player_playback_telemetry_update_message_formats_present_fields() {
     let update = PlayerPlaybackTelemetryUpdate::default()
         .with_paused(true)
         .with_position_seconds(12.5)
-        .with_playback_rate(0.95);
+        .with_playback_rate(0.95)
+        .with_paused_for_cache(true)
+        .with_cache_buffering_percent(42.5);
 
     let message = player_playback_telemetry_update_message(&update)
         .expect("expected telemetry message for populated update");
     assert_eq!(
         message,
-        "player telemetry: paused=true position=12.500 speed=0.950"
+        "player telemetry: paused=true position=12.500 speed=0.950 paused-for-cache=true cache-buffering=42.5%"
     );
 
     assert_eq!(

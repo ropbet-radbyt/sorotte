@@ -15,9 +15,9 @@ mod state;
 
 pub use chat::{ChatMessagePayload, ChatPayload, ErrorPayload, TlsPayload};
 pub use codec::{
-    DecodedMessageLineItem, ProtocolError, decode_line, decode_message_line,
-    decode_message_line_items, decode_message_lines, encode_line, encode_message_line,
-    extract_hello, extract_hello_from_message,
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES, DecodedMessageLineItem, ProtocolError, decode_line,
+    decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
+    encode_message_line, extract_hello, extract_hello_from_message,
 };
 pub use envelope::{
     ChatMessage, ErrorMessage, HelloMessage, ListMessage, SetMessage, StateMessage, TlsMessage,

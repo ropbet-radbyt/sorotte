@@ -14,6 +14,12 @@ pub(crate) fn player_playback_telemetry_update_message(
     if let Some(playback_rate) = update.playback_rate {
         fields.push(format!("speed={playback_rate:.3}"));
     }
+    if let Some(paused_for_cache) = update.paused_for_cache {
+        fields.push(format!("paused-for-cache={paused_for_cache}"));
+    }
+    if let Some(cache_buffering_percent) = update.cache_buffering_percent {
+        fields.push(format!("cache-buffering={cache_buffering_percent:.1}%"));
+    }
 
     if fields.is_empty() {
         None
@@ -52,6 +58,12 @@ pub(crate) fn player_playback_telemetry_update_message_localized_legacy_compatib
     }
     if let Some(playback_rate) = update.playback_rate {
         fields.push(format!("speed={playback_rate:.3}"));
+    }
+    if let Some(paused_for_cache) = update.paused_for_cache {
+        fields.push(format!("paused-for-cache={paused_for_cache}"));
+    }
+    if let Some(cache_buffering_percent) = update.cache_buffering_percent {
+        fields.push(format!("cache-buffering={cache_buffering_percent:.1}%"));
     }
 
     if fields.is_empty() {

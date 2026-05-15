@@ -109,7 +109,7 @@ use self::mpv_startup::{
     legacy_external_player_launch_spec_from_overrides_legacy_compatible,
     legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible,
     legacy_player_path_requests_managed_mpv_legacy_compatible,
-    managed_mpv_launch_env_config_from_env,
+    managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,
     parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible,
     resolve_managed_mpv_launch_program_legacy_compatible,
     should_skip_legacy_external_player_launch_due_to_mpv_integration_env,

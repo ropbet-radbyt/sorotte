@@ -219,6 +219,73 @@ fn gui_shell_app_state_keeps_local_ready_transition_pending_until_runtime_matche
 }
 
 #[test]
+fn gui_shell_app_state_replaces_pending_local_ready_target_before_runtime_matches() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some(TEST_USERNAME.to_owned()),
+        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+        room: Some("Room".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+
+    let runtime_snapshot = |is_ready| MainWindowRuntimeSnapshot {
+        room_name: "Room".to_owned(),
+        shared_playlist_enabled: false,
+        controlled_room_active: false,
+        users: vec![MainWindowRuntimeUserSnapshot {
+            username: TEST_USERNAME.to_owned(),
+            is_self: true,
+            is_ready,
+            is_controller: false,
+            ..Default::default()
+        }],
+        playlist: Vec::new(),
+        chat: Vec::new(),
+        can_toggle_pause: false,
+        can_seek: false,
+        can_set_ready: true,
+        can_manage_playlist: false,
+        playback_paused: false,
+        autoplay_active: false,
+        hide_empty_rooms: false,
+        rooms: Vec::new(),
+        ..Default::default()
+    };
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(false),
+    )));
+    assert!(state.apply(GuiShellAction::AnnounceLocalUserReady));
+    assert_eq!(state.pending_local_ready_target, Some(true));
+    assert!(state.displayed_local_main_window_user_ready());
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(false),
+    )));
+    assert_eq!(state.pending_local_ready_target, Some(true));
+    assert!(state.displayed_local_main_window_user_ready());
+    assert!(!state.main_window.users[0].is_ready);
+
+    assert!(state.apply(GuiShellAction::AnnounceLocalUserNotReady));
+    assert_eq!(state.pending_local_ready_target, Some(false));
+    assert!(!state.displayed_local_main_window_user_ready());
+    assert!(!state.main_window.users[0].is_ready);
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(true),
+    )));
+    assert_eq!(state.pending_local_ready_target, Some(false));
+    assert!(!state.displayed_local_main_window_user_ready());
+    assert!(state.main_window.users[0].is_ready);
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        runtime_snapshot(false),
+    )));
+    assert_eq!(state.pending_local_ready_target, None);
+    assert!(!state.displayed_local_main_window_user_ready());
+    assert!(!state.main_window.users[0].is_ready);
+}
+
+#[test]
 fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuration_edits() {
     let mut state =
         SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

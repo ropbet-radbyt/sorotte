@@ -1,4 +1,11 @@
 use super::*;
+use syncplay_player_api::PlayerAdapter;
+
+const MPV_BUFFERING_DEFAULT_OPTIONS: &[(&str, &str)] = &[
+    ("cache-pause", "yes"),
+    ("cache-pause-initial", "yes"),
+    ("cache-pause-wait", "5"),
+];
 
 fn timeout_ms_from_stored_client_setting_legacy_compatible(
     value: Option<i64>,
@@ -220,6 +227,7 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible
     player
         .configure_legacy_syncplay_ui_settings(resolved.clone())
         .map_err(|error| anyhow!("failed to configure mpv OSD/chat settings: {error}"))?;
+    apply_mpv_buffering_defaults_to_mpv_adapter_legacy_compatible(player);
 
     if (resolved.chat_output_enabled || resolved.chat_input_enabled)
         && let Some(script_path) = find_legacy_syncplayintf_script_path_legacy_compatible()
@@ -233,4 +241,14 @@ pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible
     }
 
     Ok(())
+}
+
+fn apply_mpv_buffering_defaults_to_mpv_adapter_legacy_compatible(player: &mut MpvAdapter) {
+    for (name, value) in MPV_BUFFERING_DEFAULT_OPTIONS {
+        if let Err(error) = player.set_option_string(name, value) {
+            eprintln!(
+                "warning: failed to apply mpv buffering default {name}={value} via JSON IPC: {error}"
+            );
+        }
+    }
 }

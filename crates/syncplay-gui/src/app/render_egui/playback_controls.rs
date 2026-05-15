@@ -61,9 +61,7 @@ impl GuiWidgetEguiRenderer {
         let is_ready = Self::main_window_display_ready(state);
         let pending = state.local_ready_transition_pending();
         let label = if is_ready { "Ready" } else { "Not Ready" };
-        let hover_text = if pending {
-            "Updating readiness..."
-        } else if is_ready {
+        let hover_text = if is_ready {
             "Mark Not Ready"
         } else {
             "Mark Ready"

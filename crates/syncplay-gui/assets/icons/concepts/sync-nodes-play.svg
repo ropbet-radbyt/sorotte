@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Sync nodes play icon concept">
+  <defs>
+    <linearGradient id="bg" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0e3341"/>
+      <stop offset="1" stop-color="#22253c"/>
+    </linearGradient>
+    <linearGradient id="line" x1="45" y1="70" x2="211" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#52d5b8"/>
+      <stop offset="1" stop-color="#698bff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <path d="M70 86c29 31 87 31 116 0M70 170c29-31 87-31 116 0" fill="none" stroke="url(#line)" stroke-width="15" stroke-linecap="round"/>
+  <circle cx="62" cy="82" r="22" fill="#52d5b8"/>
+  <circle cx="194" cy="82" r="22" fill="#698bff"/>
+  <circle cx="62" cy="174" r="22" fill="#698bff"/>
+  <circle cx="194" cy="174" r="22" fill="#52d5b8"/>
+  <circle cx="128" cy="128" r="54" fill="#f6fbff"/>
+  <path d="M116 101.5c0-6.6 7.2-10.6 12.8-7.1l37.3 23.2c5.3 3.3 5.3 11 0 14.3l-37.3 23.2c-5.6 3.5-12.8-.5-12.8-7.1v-46.5z" fill="#172e43"/>
+</svg>

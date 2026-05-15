@@ -209,6 +209,26 @@ fn gui_shell_dispatch_plan_routes_local_ready_commands_without_usernames() {
 }
 
 #[test]
+fn gui_shell_dispatch_plan_toggles_from_displayed_pending_local_ready_state() {
+    let mut state = runtime_ready_state();
+    state.pending_local_ready_target = Some(true);
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::BeginLocalChatSend("/toggle".to_owned())],
+    );
+
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::SetLocalReady(false)]
+    );
+    assert!(
+        plan.shell_actions
+            .contains(&GuiShellAction::AnnounceLocalUserNotReady)
+    );
+}
+
+#[test]
 fn gui_shell_dispatch_plan_emits_playlist_index_errors_locally() {
     let state = runtime_ready_state();
     let plan = GuiShellDispatchPlan::from_shell_actions(

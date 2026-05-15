@@ -326,13 +326,7 @@ fn local_ready_shell_action(ready: bool) -> GuiShellAction {
 }
 
 fn local_user_ready_state(state: &SyncplayGuiShellAppState) -> bool {
-    state
-        .main_window
-        .users
-        .iter()
-        .find(|user| user.is_self)
-        .map(|user| user.is_ready)
-        .unwrap_or(false)
+    state.displayed_local_main_window_user_ready()
 }
 
 fn validated_playlist_index(state: &SyncplayGuiShellAppState, index: i64) -> Option<usize> {

@@ -16,13 +16,24 @@ fn room_password_provider_matches_legacy_sha_hash_output() {
 }
 
 #[test]
-fn room_password_provider_uses_legacy_regex_matching_behavior() {
+fn controlled_room_password_accepts_exact_legacy_format() {
     let provider = RoomPasswordProvider::default();
-    assert!(provider.is_valid_room_password("AB-123-4567"));
+    assert!(provider.is_valid_room_password("AB-123-456"));
+    assert_eq!(
+        provider.check("+room1:CB39A19549E8", "AB-123-456"),
+        Ok(true)
+    );
+}
+
+#[test]
+fn controlled_room_password_rejects_trailing_characters() {
+    let provider = RoomPasswordProvider::default();
+    assert!(!provider.is_valid_room_password("AB-123-4567"));
+    assert!(!provider.is_valid_room_password("AB-123-456-extra"));
     assert!(!provider.is_valid_room_password("ab-123-456"));
     assert_eq!(
         provider.check("+room1:CB39A19549E8", "AB-123-4567"),
-        Ok(false)
+        Err(RoomPasswordCheckError::InvalidPassword)
     );
     assert_eq!(
         provider.check("+room1:CB39A19549E8", "bad-password"),
@@ -780,6 +791,54 @@ fn tls_send_reloads_context_when_cert_edit_time_changes() {
     );
 
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+fn assert_tls_rotation_detects_file_change(filename: &str) {
+    let cert_path = temporary_directory_path(&format!("tls-rotation-{filename}"));
+    let _ = fs::remove_dir_all(&cert_path);
+    fs::create_dir_all(&cert_path).expect("tls cert temp directory should be creatable");
+    write_valid_tls_bundle(&cert_path);
+
+    let mut runtime = ServerRuntime::new();
+    runtime.set_tls_cert_path(Some(cert_path.clone()));
+    let initial_outbound = runtime
+        .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("initial tls request should be handled");
+    assert_eq!(
+        tls_start_response(&initial_outbound).as_deref(),
+        Some("true")
+    );
+
+    overwrite_file_until_modified_time_changes(
+        &cert_path.join(filename),
+        &format!("rotated-{filename}"),
+    );
+
+    let rotated_outbound = runtime
+        .handle_line("client-1", r#"{"TLS":{"startTLS":"send"}}"#)
+        .expect("rotated tls request should be handled");
+    assert_eq!(
+        tls_start_response(&rotated_outbound).as_deref(),
+        Some("false"),
+        "editing {filename} should trigger TLS bundle reload"
+    );
+
+    fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
+}
+
+#[test]
+fn tls_rotation_detects_cert_change() {
+    assert_tls_rotation_detects_file_change("cert.pem");
+}
+
+#[test]
+fn tls_rotation_detects_chain_change() {
+    assert_tls_rotation_detects_file_change("chain.pem");
+}
+
+#[test]
+fn tls_rotation_detects_privkey_change() {
+    assert_tls_rotation_detects_file_change("privkey.pem");
 }
 
 #[test]

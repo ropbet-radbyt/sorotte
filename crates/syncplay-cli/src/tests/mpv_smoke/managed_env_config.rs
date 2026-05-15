@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn managed_mpv_launch_base_args_include_buffering_defaults_before_ipc_arg() {
+    let args =
+        managed_mpv_launch_base_args_legacy_compatible(r"\\.\pipe\syncplay-rust-cli-mpv-test");
+
+    assert_eq!(
+        args,
+        vec![
+            "--pause".to_owned(),
+            "--force-window=no".to_owned(),
+            "--idle=yes".to_owned(),
+            "--cache-pause=yes".to_owned(),
+            "--cache-pause-initial=yes".to_owned(),
+            "--cache-pause-wait=5".to_owned(),
+            r"--input-ipc-server=\\.\pipe\syncplay-rust-cli-mpv-test".to_owned(),
+        ]
+    );
+}
+
+#[test]
 fn managed_mpv_launch_env_config_from_env_parses_values() {
     let key_enabled = "SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH";
     let key_bin = "SYNCPLAY_CLIENT_MPV_MANAGED_BIN";
