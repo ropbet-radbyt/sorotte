@@ -9,8 +9,12 @@ pub use paths::{
     load_syncplay_ini_stored_client_settings_mvp_from_path,
     update_syncplay_ini_stored_client_settings_mvp_at_path,
     upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
 };
-pub use writer::upsert_syncplay_ini_stored_client_settings_mvp;
+pub use writer::{
+    upsert_syncplay_ini_stored_client_settings_mvp,
+    upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity,
+};
 
 #[cfg(test)]
 mod tests;

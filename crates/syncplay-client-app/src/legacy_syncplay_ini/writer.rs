@@ -10,12 +10,35 @@ use crate::legacy_settings::{
 
 use super::helpers::{
     format_ini_bool_legacy_compatible, format_ini_non_negative_f64_legacy_compatible,
-    upsert_ini_value_legacy_compatible,
+    remove_ini_value_legacy_compatible, upsert_ini_value_legacy_compatible,
 };
 
 pub fn upsert_syncplay_ini_stored_client_settings_mvp(
     existing_contents: &str,
     settings: &StoredClientSettingsMvp,
+) -> String {
+    upsert_syncplay_ini_stored_client_settings_mvp_with_plex_identity_clear(
+        existing_contents,
+        settings,
+        false,
+    )
+}
+
+pub fn upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity(
+    existing_contents: &str,
+    settings: &StoredClientSettingsMvp,
+) -> String {
+    upsert_syncplay_ini_stored_client_settings_mvp_with_plex_identity_clear(
+        existing_contents,
+        settings,
+        true,
+    )
+}
+
+fn upsert_syncplay_ini_stored_client_settings_mvp_with_plex_identity_clear(
+    existing_contents: &str,
+    settings: &StoredClientSettingsMvp,
+    clear_plex_identity: bool,
 ) -> String {
     let had_bom = existing_contents.starts_with('\u{feff}');
     let mut lines = existing_contents
@@ -87,6 +110,12 @@ pub fn upsert_syncplay_ini_stored_client_settings_mvp(
             "syncEnabled",
             format_ini_bool_legacy_compatible(value),
         );
+    }
+    if clear_plex_identity {
+        remove_ini_value_legacy_compatible(&mut lines, "plex", "userToken");
+        remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerId");
+        remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerUrl");
+        remove_ini_value_legacy_compatible(&mut lines, "plex", "selectedServerToken");
     }
     if let Some(value) = settings.plex_user_token.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "plex", "userToken", value);

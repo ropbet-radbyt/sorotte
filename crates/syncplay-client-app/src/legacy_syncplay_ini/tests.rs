@@ -8,6 +8,7 @@ use super::{
     update_syncplay_ini_stored_client_settings_mvp_at_path,
     upsert_syncplay_ini_stored_client_settings_mvp,
     upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+    upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity,
 };
 use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
 
@@ -97,6 +98,67 @@ fn upsert_syncplay_ini_stored_client_settings_mvp_writes_plex_settings() {
     assert!(updated.contains("selectedServerId = machine-id\n"));
     assert!(updated.contains("selectedServerUrl = http://plex.local:32400\n"));
     assert!(updated.contains("selectedServerToken = server-token\n"));
+}
+
+#[test]
+fn upsert_syncplay_ini_preserves_plex_identity_when_only_disabling_sync() {
+    let updated = upsert_syncplay_ini_stored_client_settings_mvp(
+        "[plex]\n\
+         syncEnabled = True\n\
+         userToken = old-user-token\n\
+         selectedServerId = old-machine\n\
+         selectedServerUrl = http://old-plex.local:32400\n\
+         selectedServerToken = old-server-token\n\
+         [PLEX]\n\
+         userToken = duplicate-user-token\n\
+         selectedServerId = duplicate-machine\n\
+         selectedServerUrl = http://duplicate-plex.local:32400\n\
+         selectedServerToken = duplicate-server-token\n",
+        &StoredClientSettingsMvp {
+            plex_sync_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("[plex]\n"));
+    assert!(updated.contains("syncEnabled = False\n"));
+    assert!(updated.contains("userToken = old-user-token\n"));
+    assert!(updated.contains("selectedServerId = old-machine\n"));
+    assert!(updated.contains("selectedServerUrl = http://old-plex.local:32400\n"));
+    assert!(updated.contains("selectedServerToken = old-server-token\n"));
+}
+
+#[test]
+fn upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity_removes_credentials() {
+    let updated = upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity(
+        "[plex]\n\
+         syncEnabled = True\n\
+         userToken = old-user-token\n\
+         selectedServerId = old-machine\n\
+         selectedServerUrl = http://old-plex.local:32400\n\
+         selectedServerToken = old-server-token\n",
+        &StoredClientSettingsMvp {
+            plex_sync_enabled: Some(false),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("[plex]\n"));
+    assert!(updated.contains("syncEnabled = False\n"));
+    assert!(!updated.contains("old-user-token"));
+    assert!(!updated.contains("old-machine"));
+    assert!(!updated.contains("old-plex.local"));
+    assert!(!updated.contains("old-server-token"));
+    assert!(!updated.contains("duplicate-user-token"));
+    assert!(!updated.contains("duplicate-machine"));
+    assert!(!updated.contains("duplicate-plex.local"));
+    assert!(!updated.contains("duplicate-server-token"));
+
+    let parsed = parse_syncplay_ini_stored_client_settings_mvp(&updated);
+    assert_eq!(parsed.plex_user_token, None);
+    assert_eq!(parsed.plex_selected_server_id, None);
+    assert_eq!(parsed.plex_selected_server_url, None);
+    assert_eq!(parsed.plex_selected_server_token, None);
 }
 
 #[test]

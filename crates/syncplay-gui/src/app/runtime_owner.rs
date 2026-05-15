@@ -34,8 +34,8 @@ use syncplay_client_app::app_boundary::{
 use syncplay_player_api::{LocalFileUpdate, PlayerAdapter};
 use syncplay_player_mpv::MpvAdapter;
 use syncplay_plex::{
-    PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache, PlexServerConnection,
-    PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent,
+    PlexAuthPollResult, PlexAuthSession, PlexClientConfig, PlexHttpClient, PlexMatchCache,
+    PlexServerConnection, PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent,
     plex_server_connection_kind_from_uri,
 };
 
@@ -125,13 +125,21 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         GuiStreamHelperRemediationRuntimeSnapshot,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
+    pub(super) plex_auth_start_rx: Option<mpsc::Receiver<Result<PlexAuthSession, String>>>,
+    pub(super) plex_auth_poll_rx:
+        Option<mpsc::Receiver<(bool, Result<PlexAuthPollResult, String>)>>,
     pub(super) plex_auth_poll_due_at: Option<Instant>,
     pub(super) plex_servers: Vec<PlexServerConnection>,
     pub(super) plex_server_reachability: HashMap<String, GuiPlexServerReachability>,
     pub(super) startup_plex_server_refresh_attempted: bool,
     pub(super) startup_plex_server_refresh_rx:
         Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
+    pub(super) plex_server_refresh_rx:
+        Option<mpsc::Receiver<Result<GuiPlexServerRefreshOutcome, String>>>,
+    pub(super) plex_server_refresh_context: Option<GuiPlexServerRefreshContext>,
     pub(super) plex_sync_engine: Option<PlexSyncEngine<PlexHttpClient>>,
+    pub(super) plex_sync_rx: Option<mpsc::Receiver<GuiPlexSyncWorkerResult>>,
+    pub(super) plex_sync_next_tick_due_at: Option<Instant>,
     pub(super) plex_runtime_snapshot: GuiPlexRuntimeSnapshot,
     pub(super) pending_stream_retry_target: Option<String>,
     pub(super) managed_stream_helper_refresh_required: bool,
@@ -142,6 +150,18 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
 pub(super) struct GuiPlexServerRefreshOutcome {
     pub(super) servers: Vec<PlexServerConnection>,
     pub(super) reachability: HashMap<String, GuiPlexServerReachability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiPlexServerRefreshContext {
+    Manual,
+    Login,
+}
+
+pub(super) struct GuiPlexSyncWorkerResult {
+    pub(super) engine: PlexSyncEngine<PlexHttpClient>,
+    pub(super) status: PlexSyncStatus,
+    pub(super) cache_save_error: Option<String>,
 }
 
 pub(super) struct GuiAttachedMediaSearchIndex {

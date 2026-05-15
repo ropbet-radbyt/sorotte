@@ -96,3 +96,25 @@ pub(super) fn upsert_ini_value_legacy_compatible(
     lines.push(section_header);
     lines.push(rendered);
 }
+
+pub(super) fn remove_ini_value_legacy_compatible(
+    lines: &mut Vec<String>,
+    section: &str,
+    key: &str,
+) {
+    let section_header = format!("[{section}]");
+    let mut in_section = false;
+    lines.retain(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed.eq_ignore_ascii_case(&section_header);
+            return true;
+        }
+        if !in_section {
+            return true;
+        }
+        !trimmed
+            .split_once('=')
+            .is_some_and(|(candidate_key, _)| candidate_key.trim().eq_ignore_ascii_case(key))
+    });
+}

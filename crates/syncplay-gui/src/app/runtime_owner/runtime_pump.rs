@@ -73,6 +73,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.ensure_configured_player_attached_for_active_session();
         self.sync_player_runtime_state(handle, &projected_state);
         self.pump_startup_plex_server_refresh(handle, &mut projected_state);
+        self.pump_plex_server_refresh(handle, &mut projected_state);
         self.pump_plex_auth_poll(handle, &mut projected_state);
         self.sync_plex_watch_state(handle, &mut projected_state);
         self.run_deferred_startup_remote_actions(handle, &mut projected_state);

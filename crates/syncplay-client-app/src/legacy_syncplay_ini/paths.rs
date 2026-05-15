@@ -5,7 +5,10 @@ use anyhow::anyhow;
 use crate::legacy_settings::StoredClientSettingsMvp;
 
 use super::parser::parse_syncplay_ini_stored_client_settings_mvp;
-use super::writer::upsert_syncplay_ini_stored_client_settings_mvp;
+use super::writer::{
+    upsert_syncplay_ini_stored_client_settings_mvp,
+    upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity,
+};
 
 pub fn load_syncplay_ini_stored_client_settings_mvp_from_path(
     path: &Path,
@@ -23,6 +26,29 @@ pub fn load_syncplay_ini_stored_client_settings_mvp_from_path(
 pub fn upsert_syncplay_ini_stored_client_settings_mvp_at_path(
     path: &Path,
     settings: &StoredClientSettingsMvp,
+) -> anyhow::Result<()> {
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path_with_writer(
+        path,
+        settings,
+        upsert_syncplay_ini_stored_client_settings_mvp,
+    )
+}
+
+pub fn upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity_at_path(
+    path: &Path,
+    settings: &StoredClientSettingsMvp,
+) -> anyhow::Result<()> {
+    upsert_syncplay_ini_stored_client_settings_mvp_at_path_with_writer(
+        path,
+        settings,
+        upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity,
+    )
+}
+
+fn upsert_syncplay_ini_stored_client_settings_mvp_at_path_with_writer(
+    path: &Path,
+    settings: &StoredClientSettingsMvp,
+    writer: fn(&str, &StoredClientSettingsMvp) -> String,
 ) -> anyhow::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -43,8 +69,7 @@ pub fn upsert_syncplay_ini_stored_client_settings_mvp_at_path(
     } else {
         String::new()
     };
-    let updated_contents =
-        upsert_syncplay_ini_stored_client_settings_mvp(&existing_contents, settings);
+    let updated_contents = writer(&existing_contents, settings);
     std::fs::write(path, updated_contents)
         .map_err(|error| anyhow!("failed writing stored settings {}: {error}", path.display()))
 }

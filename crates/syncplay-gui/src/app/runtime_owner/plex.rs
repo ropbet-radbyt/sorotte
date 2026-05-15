@@ -8,6 +8,7 @@ use syncplay_plex::PlexServerConnectionKind;
 use super::*;
 
 const PLEX_AUTH_AUTO_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const PLEX_WATCH_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_start_plex_auth_request(
@@ -15,6 +16,9 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) -> bool {
+        if self.plex_auth_start_rx.is_some() || self.plex_auth_poll_rx.is_some() {
+            return true;
+        }
         let client = match self.ensure_plex_client() {
             Ok(client) => client.clone(),
             Err(message) => {
@@ -22,8 +26,64 @@ impl GuiPersistedConfigRuntimeOwner {
                 return true;
             }
         };
-        match client.start_auth() {
-            Ok(session) => {
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("syncplay-gui-plex-auth-start".to_owned())
+            .spawn(move || {
+                let result = client.start_auth().map_err(|error| error.to_string());
+                let _ = tx.send(result);
+            }) {
+            Ok(_thread) => {
+                self.plex_auth_start_rx = Some(rx);
+                self.sync_plex_runtime_snapshot(handle, projected_state, None);
+            }
+            Err(error) => self.apply_plex_error(
+                handle,
+                projected_state,
+                format!("Failed to start Plex login worker: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn handle_poll_plex_auth_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) -> bool {
+        self.poll_plex_auth(handle, projected_state, true);
+        true
+    }
+
+    pub(super) fn pump_plex_auth_poll(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        self.drain_plex_auth_start(handle, projected_state);
+        self.drain_plex_auth_poll(handle, projected_state);
+        if self.plex_auth_start_rx.is_some() || self.plex_auth_poll_rx.is_some() {
+            return;
+        }
+        let Some(due_at) = self.plex_auth_poll_due_at else {
+            return;
+        };
+        if Instant::now() < due_at {
+            return;
+        }
+        self.poll_plex_auth(handle, projected_state, false);
+    }
+
+    fn drain_plex_auth_start(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_auth_start_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(session)) => {
                 let auth_url = session.auth_url.clone();
                 self.plex_auth_session = Some(session);
                 self.schedule_next_plex_auth_poll();
@@ -46,36 +106,20 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 Self::push_actions_and_project(handle, projected_state, actions);
             }
-            Err(error) => self.apply_plex_error(
+            Ok(Err(error)) => self.apply_plex_error(
                 handle,
                 projected_state,
                 format!("Failed to start Plex login: {error}"),
             ),
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_auth_start_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.apply_plex_error(
+                handle,
+                projected_state,
+                "Plex login worker stopped before returning a result.".to_owned(),
+            ),
         }
-        true
-    }
-
-    pub(super) fn handle_poll_plex_auth_request(
-        &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SyncplayGuiShellAppState,
-    ) -> bool {
-        self.poll_plex_auth(handle, projected_state, true);
-        true
-    }
-
-    pub(super) fn pump_plex_auth_poll(
-        &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SyncplayGuiShellAppState,
-    ) {
-        let Some(due_at) = self.plex_auth_poll_due_at else {
-            return;
-        };
-        if Instant::now() < due_at {
-            return;
-        }
-        self.poll_plex_auth(handle, projected_state, false);
     }
 
     pub(super) fn pump_startup_plex_server_refresh(
@@ -113,17 +157,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(_thread) => {
                     self.startup_plex_server_refresh_rx = Some(rx);
                 }
-                Err(_error) => {
-                    match self.refresh_plex_servers_from_settings(&settings, false) {
-                        Ok(()) => self.sync_plex_runtime_snapshot(handle, projected_state, None),
-                        Err(error) => self.apply_plex_error(
-                            handle,
-                            projected_state,
-                            format!("Failed to refresh Plex servers at startup: {error}"),
-                        ),
-                    }
-                    return;
-                }
+                Err(error) => self.apply_plex_error(
+                    handle,
+                    projected_state,
+                    format!("Failed to start Plex server refresh at startup: {error}"),
+                ),
             }
         }
 
@@ -164,12 +202,94 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    pub(super) fn pump_plex_server_refresh(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_server_refresh_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(outcome)) => {
+                let context = self
+                    .plex_server_refresh_context
+                    .take()
+                    .unwrap_or(GuiPlexServerRefreshContext::Manual);
+                self.apply_plex_server_refresh_outcome(outcome);
+                let mut settings = projected_state.configuration.to_stored_settings();
+                let selection_changed =
+                    reconcile_plex_server_selection(&mut settings, &self.plex_servers, true);
+                let has_selected_server = settings.plex_selected_server_url.is_some();
+                if selection_changed {
+                    self.persist_plex_settings_and_project(handle, projected_state, settings);
+                }
+                self.sync_plex_runtime_snapshot(handle, projected_state, None);
+                if self.plex_servers.is_empty() && !has_selected_server {
+                    let message = match context {
+                        GuiPlexServerRefreshContext::Manual => {
+                            "No reachable Plex Media Servers were returned for this account."
+                        }
+                        GuiPlexServerRefreshContext::Login => {
+                            "Plex login succeeded, but no reachable Plex Media Servers were returned for this account."
+                        }
+                    };
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Warning,
+                            message: message.to_owned(),
+                        }],
+                    );
+                }
+            }
+            Ok(Err(error)) => {
+                let context = self
+                    .plex_server_refresh_context
+                    .take()
+                    .unwrap_or(GuiPlexServerRefreshContext::Manual);
+                match context {
+                    GuiPlexServerRefreshContext::Manual => self.apply_plex_error(
+                        handle,
+                        projected_state,
+                        format!("Failed to refresh Plex servers: {error}"),
+                    ),
+                    GuiPlexServerRefreshContext::Login => Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::PushTransientNotification {
+                            level: GuiTransientNotificationLevel::Warning,
+                            message: format!(
+                                "Plex login succeeded, but server discovery failed: {error}"
+                            ),
+                        }],
+                    ),
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_server_refresh_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.plex_server_refresh_context = None;
+                self.apply_plex_error(
+                    handle,
+                    projected_state,
+                    "Plex server refresh worker stopped before returning a result.".to_owned(),
+                );
+            }
+        }
+    }
+
     fn poll_plex_auth(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
         user_initiated: bool,
     ) {
+        if self.plex_auth_poll_rx.is_some() {
+            return;
+        }
         let Some(session) = self.plex_auth_session.clone() else {
             self.plex_auth_poll_due_at = None;
             if user_initiated {
@@ -192,68 +312,46 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         };
-        match client.poll_auth(session.pin_id) {
-            Ok(result) => {
-                let Some(token) = result.auth_token else {
-                    self.schedule_next_plex_auth_poll();
-                    self.sync_plex_runtime_snapshot(handle, projected_state, None);
-                    if user_initiated {
-                        Self::push_actions_and_project(
-                            handle,
-                            projected_state,
-                            vec![GuiShellAction::PushTransientNotification {
-                                level: GuiTransientNotificationLevel::Info,
-                                message: "Plex login is not complete yet.".to_owned(),
-                            }],
-                        );
-                    }
-                    return;
-                };
-                self.plex_auth_session = None;
-                self.plex_auth_poll_due_at = None;
-                let mut settings = projected_state.configuration.to_stored_settings();
-                settings.plex_user_token = Some(token);
-                settings.plex_sync_enabled.get_or_insert(false);
-                let refresh_result = self.refresh_plex_servers_from_settings(&settings, true);
-                reconcile_plex_server_selection(&mut settings, &self.plex_servers, true);
-                let has_selected_server = settings.plex_selected_server_url.is_some();
-                self.persist_plex_settings_and_project(handle, projected_state, settings);
+        self.plex_auth_poll_due_at = None;
+        let pin_id = session.pin_id;
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("syncplay-gui-plex-auth-poll".to_owned())
+            .spawn(move || {
+                let result = client.poll_auth(pin_id).map_err(|error| error.to_string());
+                let _ = tx.send((user_initiated, result));
+            }) {
+            Ok(_thread) => {
+                self.plex_auth_poll_rx = Some(rx);
                 self.sync_plex_runtime_snapshot(handle, projected_state, None);
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Success,
-                        message: "Plex login complete.".to_owned(),
-                    }],
-                );
-                match refresh_result {
-                    Ok(()) if self.plex_servers.is_empty() && !has_selected_server => {
-                        Self::push_actions_and_project(
-                            handle,
-                            projected_state,
-                            vec![GuiShellAction::PushTransientNotification {
-                                level: GuiTransientNotificationLevel::Warning,
-                                message: "Plex login succeeded, but no reachable Plex Media Servers were returned for this account.".to_owned(),
-                            }],
-                        );
-                    }
-                    Err(error) => {
-                        Self::push_actions_and_project(
-                            handle,
-                            projected_state,
-                            vec![GuiShellAction::PushTransientNotification {
-                                level: GuiTransientNotificationLevel::Warning,
-                                message: format!(
-                                    "Plex login succeeded, but server discovery failed: {error}"
-                                ),
-                            }],
-                        );
-                    }
-                    Ok(()) => {}
-                }
             }
             Err(error) => {
+                if user_initiated {
+                    self.apply_plex_error(
+                        handle,
+                        projected_state,
+                        format!("Failed to start Plex login check: {error}"),
+                    );
+                } else {
+                    self.schedule_next_plex_auth_poll();
+                }
+            }
+        }
+    }
+
+    fn drain_plex_auth_poll(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_auth_poll_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((user_initiated, Ok(result))) => {
+                self.apply_plex_auth_poll_result(handle, projected_state, user_initiated, result)
+            }
+            Ok((user_initiated, Err(error))) => {
                 if user_initiated {
                     self.apply_plex_error(
                         handle,
@@ -264,7 +362,63 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.schedule_next_plex_auth_poll();
                 }
             }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_auth_poll_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.schedule_next_plex_auth_poll();
+            }
         }
+    }
+
+    fn apply_plex_auth_poll_result(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        user_initiated: bool,
+        result: PlexAuthPollResult,
+    ) {
+        let Some(token) = result.auth_token else {
+            self.schedule_next_plex_auth_poll();
+            self.sync_plex_runtime_snapshot(handle, projected_state, None);
+            if user_initiated {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: "Plex login is not complete yet.".to_owned(),
+                    }],
+                );
+            }
+            return;
+        };
+        self.plex_auth_session = None;
+        self.plex_auth_poll_due_at = None;
+        let mut settings = projected_state.configuration.to_stored_settings();
+        settings.plex_user_token = Some(token);
+        settings.plex_sync_enabled.get_or_insert(false);
+        self.startup_plex_server_refresh_rx = None;
+        self.plex_server_refresh_rx = None;
+        self.plex_server_refresh_context = None;
+        let refresh_start_error = self
+            .start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Login)
+            .err();
+        self.persist_plex_settings_and_project(handle, projected_state, settings);
+        self.sync_plex_runtime_snapshot(handle, projected_state, None);
+        let mut actions = vec![GuiShellAction::PushTransientNotification {
+            level: GuiTransientNotificationLevel::Success,
+            message: "Plex login complete.".to_owned(),
+        }];
+        if let Some(error) = refresh_start_error {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Warning,
+                message: format!(
+                    "Plex login succeeded, but server discovery could not start: {error}"
+                ),
+            });
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
     }
 
     pub(super) fn handle_refresh_plex_servers_request(
@@ -272,35 +426,27 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) -> bool {
-        let mut settings = projected_state.configuration.to_stored_settings();
-        match self.refresh_plex_servers_from_settings(&settings, false) {
-            Ok(()) => {
-                let selection_changed =
-                    reconcile_plex_server_selection(&mut settings, &self.plex_servers, true);
-                let has_selected_server = settings.plex_selected_server_url.is_some();
-                if selection_changed {
-                    self.persist_plex_settings_and_project(handle, projected_state, settings);
-                }
-                self.sync_plex_runtime_snapshot(handle, projected_state, None);
-                if self.plex_servers.is_empty() && !has_selected_server {
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Warning,
-                            message:
-                                "No reachable Plex Media Servers were returned for this account."
-                                    .to_owned(),
-                        }],
-                    );
-                }
-            }
-            Err(error) => self.apply_plex_error(
+        if self.plex_server_refresh_rx.is_some() {
+            return true;
+        }
+        let settings = projected_state.configuration.to_stored_settings();
+        if let Err(error) =
+            self.start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Manual)
+        {
+            self.apply_plex_error(
                 handle,
                 projected_state,
                 format!("Failed to refresh Plex servers: {error}"),
-            ),
+            );
+            return true;
         }
+        if let Some(url) = settings.plex_selected_server_url.as_deref() {
+            self.plex_server_reachability.insert(
+                plex_server_reachability_key(url),
+                GuiPlexServerReachability::Checking,
+            );
+        }
+        self.sync_plex_runtime_snapshot(handle, projected_state, None);
         true
     }
 
@@ -350,18 +496,28 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SyncplayGuiShellAppState,
     ) -> bool {
         self.plex_auth_session = None;
+        self.plex_auth_start_rx = None;
+        self.plex_auth_poll_rx = None;
         self.plex_auth_poll_due_at = None;
         self.plex_servers.clear();
         self.plex_server_reachability.clear();
         self.startup_plex_server_refresh_rx = None;
+        self.plex_server_refresh_rx = None;
+        self.plex_server_refresh_context = None;
         self.plex_sync_engine = None;
+        self.plex_sync_rx = None;
+        self.plex_sync_next_tick_due_at = None;
         let mut settings = projected_state.configuration.to_stored_settings();
         settings.plex_sync_enabled = Some(false);
         settings.plex_user_token = None;
         settings.plex_selected_server_id = None;
         settings.plex_selected_server_url = None;
         settings.plex_selected_server_token = None;
-        self.persist_plex_settings_and_project(handle, projected_state, settings);
+        self.persist_plex_settings_and_project_clearing_plex_identity(
+            handle,
+            projected_state,
+            settings,
+        );
         self.sync_plex_runtime_snapshot(handle, projected_state, None);
         true
     }
@@ -371,13 +527,24 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SyncplayGuiShellAppState,
     ) {
+        self.drain_plex_sync_worker(handle, projected_state);
+        if self.plex_sync_rx.is_some() {
+            return;
+        }
         let settings = projected_state.configuration.to_stored_settings();
         let config = plex_config_from_settings(&settings);
         if !config.enabled || !config.has_selected_server() {
+            self.plex_sync_next_tick_due_at = None;
             if let Some(engine) = self.plex_sync_engine.as_mut() {
                 engine.set_config(config);
             }
             self.sync_plex_runtime_snapshot(handle, projected_state, None);
+            return;
+        }
+        let now = Instant::now();
+        if let Some(due_at) = self.plex_sync_next_tick_due_at
+            && now < due_at
+        {
             return;
         }
 
@@ -392,32 +559,49 @@ impl GuiPersistedConfigRuntimeOwner {
             event
         });
         let cache_path = self.plex_cache_path();
-        let cache_entry_count = self
-            .plex_sync_engine
-            .as_ref()
-            .map(|engine| engine.cache().entries.len())
-            .unwrap_or(0);
-        let engine = match self.ensure_plex_sync_engine(config) {
+        let engine = match self.take_plex_sync_engine(config) {
             Ok(engine) => engine,
             Err(message) => {
                 self.apply_plex_error(handle, projected_state, message);
                 return;
             }
         };
-        let status = engine.tick(event, SystemTime::now());
-        let cache_changed = engine.cache().entries.len() != cache_entry_count;
-        if cache_changed
-            && let Some(path) = cache_path
-            && let Err(error) = engine.cache().save_to_path(&path)
-        {
-            self.apply_plex_error(
-                handle,
-                projected_state,
-                format!("Failed to save Plex match cache: {error}"),
-            );
-            return;
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("syncplay-gui-plex-watch-sync".to_owned())
+            .spawn(move || {
+                let mut engine = engine;
+                let before = engine.cache().clone();
+                let status = engine.tick(event, SystemTime::now());
+                let cache_save_error = if engine.cache() != &before {
+                    cache_path.and_then(|path| {
+                        engine
+                            .cache()
+                            .save_to_path(&path)
+                            .err()
+                            .map(|error| format!("Failed to save Plex match cache: {error}"))
+                    })
+                } else {
+                    None
+                };
+                let _ = tx.send(GuiPlexSyncWorkerResult {
+                    engine,
+                    status,
+                    cache_save_error,
+                });
+            }) {
+            Ok(_thread) => {
+                self.plex_sync_rx = Some(rx);
+                self.plex_sync_next_tick_due_at = Some(now + PLEX_WATCH_SYNC_PUMP_INTERVAL);
+            }
+            Err(error) => {
+                self.apply_plex_error(
+                    handle,
+                    projected_state,
+                    format!("Failed to start Plex sync worker: {error}"),
+                );
+            }
         }
-        self.sync_plex_runtime_snapshot(handle, projected_state, Some(status));
     }
 
     fn ensure_plex_client(&mut self) -> Result<&PlexHttpClient, String> {
@@ -432,10 +616,10 @@ impl GuiPersistedConfigRuntimeOwner {
             .ok_or_else(|| "Failed to create Plex HTTP client.".to_owned())
     }
 
-    fn ensure_plex_sync_engine(
+    fn take_plex_sync_engine(
         &mut self,
         config: PlexClientConfig,
-    ) -> Result<&mut PlexSyncEngine<PlexHttpClient>, String> {
+    ) -> Result<PlexSyncEngine<PlexHttpClient>, String> {
         if self.plex_sync_engine.is_none() {
             let client = self.ensure_plex_client()?.clone();
             let cache = self
@@ -446,28 +630,59 @@ impl GuiPersistedConfigRuntimeOwner {
                 .unwrap_or_default();
             self.plex_sync_engine = Some(PlexSyncEngine::new(config.clone(), client, cache));
         }
-        let engine = self
+        let mut engine = self
             .plex_sync_engine
-            .as_mut()
+            .take()
             .ok_or_else(|| "Failed to create Plex sync engine.".to_owned())?;
         engine.set_config(config);
         Ok(engine)
     }
 
-    fn refresh_plex_servers_from_settings(
+    fn drain_plex_sync_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+    ) {
+        let Some(rx) = self.plex_sync_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.plex_sync_engine = Some(result.engine);
+                if let Some(error) = result.cache_save_error {
+                    self.apply_plex_error(handle, projected_state, error);
+                } else {
+                    self.sync_plex_runtime_snapshot(handle, projected_state, Some(result.status));
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.plex_sync_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.apply_plex_error(
+                handle,
+                projected_state,
+                "Plex sync worker stopped before returning a result.".to_owned(),
+            ),
+        }
+    }
+
+    fn start_plex_server_refresh_worker(
         &mut self,
         settings: &StoredClientSettingsMvp,
-        select_first_if_missing: bool,
+        context: GuiPlexServerRefreshContext,
     ) -> Result<(), String> {
         let client = self.ensure_plex_client().map(Clone::clone)?;
-        let outcome = refresh_plex_servers_and_reachability(&client, settings)?;
-        self.apply_plex_server_refresh_outcome(outcome);
-        if select_first_if_missing
-            && settings.plex_selected_server_url.is_none()
-            && let Some(engine) = self.plex_sync_engine.as_mut()
-        {
-            engine.set_config(plex_config_from_settings(settings));
-        }
+        let settings = settings.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("syncplay-gui-plex-server-refresh".to_owned())
+            .spawn(move || {
+                let result = refresh_plex_servers_and_reachability(&client, &settings);
+                let _ = tx.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+        self.plex_server_refresh_rx = Some(rx);
+        self.plex_server_refresh_context = Some(context);
         Ok(())
     }
 
@@ -482,18 +697,55 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SyncplayGuiShellAppState,
         settings: StoredClientSettingsMvp,
     ) {
-        if let Some(path) = self.config_path.as_ref()
-            && let Err(error) =
-                syncplay_client_app::app_boundary::persistence::upsert_syncplay_ini_stored_client_settings_mvp_at_path(path, &settings)
-        {
-            Self::push_actions_and_project(
-                handle,
-                projected_state,
-                vec![GuiShellAction::PushTransientNotification {
-                    level: GuiTransientNotificationLevel::Warning,
-                    message: format!("Plex settings changed but could not be saved: {error}"),
-                }],
-            );
+        self.persist_plex_settings_and_project_with_identity_clear(
+            handle,
+            projected_state,
+            settings,
+            false,
+        );
+    }
+
+    fn persist_plex_settings_and_project_clearing_plex_identity(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        settings: StoredClientSettingsMvp,
+    ) {
+        self.persist_plex_settings_and_project_with_identity_clear(
+            handle,
+            projected_state,
+            settings,
+            true,
+        );
+    }
+
+    fn persist_plex_settings_and_project_with_identity_clear(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SyncplayGuiShellAppState,
+        settings: StoredClientSettingsMvp,
+        clear_plex_identity: bool,
+    ) {
+        if let Some(path) = self.config_path.as_ref() {
+            let persist_result = if clear_plex_identity {
+                syncplay_client_app::app_boundary::persistence::upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity_at_path(
+                    path, &settings,
+                )
+            } else {
+                syncplay_client_app::app_boundary::persistence::upsert_syncplay_ini_stored_client_settings_mvp_at_path(
+                    path, &settings,
+                )
+            };
+            if let Err(error) = persist_result {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Warning,
+                        message: format!("Plex settings changed but could not be saved: {error}"),
+                    }],
+                );
+            }
         }
         let snapshot = GuiConfigurationRuntimeSnapshot {
             draft_settings: settings.clone(),
@@ -540,7 +792,9 @@ impl GuiPersistedConfigRuntimeOwner {
             .plex_user_token
             .as_deref()
             .is_some_and(|token| !token.trim().is_empty());
-        let authenticating = self.plex_auth_session.is_some();
+        let authenticating = self.plex_auth_session.is_some()
+            || self.plex_auth_start_rx.is_some()
+            || self.plex_auth_poll_rx.is_some();
         let status_label = status
             .map(|status| plex_sync_state_label(status.state).to_owned())
             .unwrap_or_else(|| {
@@ -575,8 +829,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         .is_some_and(|uri| uri == server.uri),
             })
             .collect::<Vec<_>>();
-        if server_rows.is_empty()
+        if !server_rows.iter().any(|server| server.selected)
             && let Some(uri) = selected_server_url.as_ref()
+            && !server_rows.iter().any(|server| &server.uri == uri)
         {
             let machine_identifier = selected_server_id.clone().unwrap_or_default();
             server_rows.push(GuiPlexServerRow {
@@ -932,6 +1187,63 @@ mod tests {
         assert_eq!(
             snapshot.servers[0].connection_kind,
             PlexServerConnectionKind::Remote
+        );
+    }
+
+    #[test]
+    fn plex_snapshot_keeps_saved_selected_server_when_discovery_returns_other_servers() {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.plex_servers.push(PlexServerConnection {
+            name: "Other Plex".to_owned(),
+            machine_identifier: "other-machine".to_owned(),
+            uri: "https://other.example:32400".to_owned(),
+            access_token: "other-token".to_owned(),
+            owned: true,
+            has_local_connection: false,
+            connection_kind: PlexServerConnectionKind::Remote,
+        });
+        owner.plex_server_reachability.insert(
+            plex_server_reachability_key("https://saved.example:32400"),
+            GuiPlexServerReachability::Reachable,
+        );
+        let settings = StoredClientSettingsMvp {
+            plex_user_token: Some("user-token".to_owned()),
+            plex_selected_server_id: Some("saved-machine".to_owned()),
+            plex_selected_server_url: Some("https://saved.example:32400".to_owned()),
+            plex_selected_server_token: Some("saved-token".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        };
+
+        let snapshot = owner.plex_snapshot_from_settings_and_status(&settings, None);
+
+        assert_eq!(snapshot.servers.len(), 2);
+        let saved = snapshot
+            .servers
+            .iter()
+            .find(|server| server.uri == "https://saved.example:32400")
+            .expect("saved selected server should be present");
+        assert!(saved.selected);
+        assert_eq!(saved.reachability, GuiPlexServerReachability::Reachable);
+    }
+
+    #[test]
+    fn start_plex_server_refresh_worker_supersedes_pending_refresh() {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        let (_tx, rx) = mpsc::channel();
+        owner.plex_server_refresh_rx = Some(rx);
+        owner.plex_server_refresh_context = Some(GuiPlexServerRefreshContext::Manual);
+
+        owner
+            .start_plex_server_refresh_worker(
+                &StoredClientSettingsMvp::default(),
+                GuiPlexServerRefreshContext::Login,
+            )
+            .expect("refresh worker should start");
+
+        assert!(owner.plex_server_refresh_rx.is_some());
+        assert_eq!(
+            owner.plex_server_refresh_context,
+            Some(GuiPlexServerRefreshContext::Login)
         );
     }
 }

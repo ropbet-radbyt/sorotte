@@ -87,6 +87,8 @@ pub mod persistence {
         update_syncplay_ini_stored_client_settings_mvp_at_path,
         upsert_syncplay_ini_stored_client_settings_mvp,
         upsert_syncplay_ini_stored_client_settings_mvp_at_path,
+        upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity,
+        upsert_syncplay_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
     };
 }
 

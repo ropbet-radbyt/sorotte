@@ -670,6 +670,7 @@ where
         if self.config != config {
             self.current_file_key = None;
             self.last_report_signature = None;
+            self.unmatched_keys.clear();
             self.status = if config.enabled {
                 PlexSyncStatus::ready()
             } else {
@@ -726,7 +727,7 @@ where
             self.status.state = PlexSyncState::Ready;
             return Ok(());
         };
-        let Some(file_key) = cache_key_for_file(&event.file) else {
+        let Some(file_key) = server_scoped_cache_key_for_file(&self.config, &event.file) else {
             self.status = PlexSyncStatus::ready();
             return Ok(());
         };
@@ -897,6 +898,34 @@ pub fn cache_key_for_file(file: &LocalFileUpdate) -> Option<String> {
         .map(|millis| millis.to_string())
         .unwrap_or_else(|| "unknown".to_owned());
     Some(format!("name:{name}:duration:{duration}"))
+}
+
+pub fn server_scoped_cache_key_for_file(
+    config: &PlexClientConfig,
+    file: &LocalFileUpdate,
+) -> Option<String> {
+    cache_key_for_file(file).map(|file_key| {
+        format!(
+            "server:{}:{file_key}",
+            server_cache_scope_for_config(config)
+        )
+    })
+}
+
+fn server_cache_scope_for_config(config: &PlexClientConfig) -> String {
+    config
+        .selected_server_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("id:{}", normalized_cache_scope_value(value)))
+        .or_else(|| {
+            config
+                .selected_server_url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| format!("url:{}", normalize_path_key(value)))
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 pub fn media_search_query_for_file(file: &LocalFileUpdate) -> String {
@@ -1348,6 +1377,24 @@ fn normalize_path_key(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn normalized_cache_scope_value(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
 fn normalized_title_stem(name: &str) -> String {
     let file_name = name
         .rsplit(['/', '\\'])
@@ -1767,6 +1814,26 @@ mod tests {
         assert_eq!(
             cache_key_for_file(&file).as_deref(),
             Some("path:c:/media/example.movie.2024.mkv")
+        );
+    }
+
+    #[test]
+    fn server_scoped_cache_keys_separate_same_file_across_servers() {
+        let file = movie_file();
+        let first_config = PlexClientConfig {
+            selected_server_id: Some("Raptor Machine".to_owned()),
+            selected_server_url: Some("http://plex-a.local:32400".to_owned()),
+            ..PlexClientConfig::default()
+        };
+        let second_config = PlexClientConfig {
+            selected_server_id: Some("Tower Machine".to_owned()),
+            selected_server_url: Some("http://plex-b.local:32400".to_owned()),
+            ..PlexClientConfig::default()
+        };
+
+        assert_ne!(
+            server_scoped_cache_key_for_file(&first_config, &file),
+            server_scoped_cache_key_for_file(&second_config, &file)
         );
     }
 
