@@ -246,7 +246,7 @@ fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text(
         .find("main-window:control:set-ready")
         .expect("ready button should exist while readiness is pending");
     assert_eq!(ready_button.label, "Ready");
-    assert!(!ready_button.enabled);
+    assert!(ready_button.enabled);
 }
 
 #[test]
@@ -281,7 +281,6 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
         "main-window:control:toggle-pause",
         "main-window:control:seek",
         "main-window:control:undo-seek",
-        "main-window:control:set-ready",
     ] {
         assert!(
             !tree
@@ -291,6 +290,12 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
             "{id} should be disabled while the shared playlist is empty"
         );
     }
+    assert!(
+        tree.find("main-window:control:set-ready")
+            .expect("ready button should exist")
+            .enabled,
+        "Ready should stay available even while the shared playlist is empty"
+    );
 
     snapshot.playlist = vec!["episode1.mkv".to_owned()];
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)));

@@ -340,3 +340,41 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
         vec![GuiShellAction::CancelControllerAuthEdit]
     );
 }
+
+#[test]
+fn gui_widget_egui_renderer_keeps_local_ready_available_for_non_controller_empty_room() {
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("+room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.commands.can_disconnect_session = true;
+
+    assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+        MainWindowRuntimeSnapshot {
+            room_name: "+room1".to_owned(),
+            shared_playlist_enabled: true,
+            controlled_room_active: true,
+            users: vec![browser_runtime_user("alice", "+room1", true, false, false)],
+            playlist: Vec::new(),
+            can_set_ready: true,
+            can_set_others_ready: false,
+            can_manage_playlist: false,
+            ..Default::default()
+        }
+    )));
+
+    let tree = state.main_window_widget_tree();
+    let ready_button = tree
+        .find("main-window:control:set-ready")
+        .expect("local Ready button should exist");
+    assert!(
+        ready_button.enabled,
+        "local Ready should not depend on playlist or controller privileges"
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, ready_button),
+        vec![GuiShellAction::AnnounceLocalUserReady]
+    );
+}
