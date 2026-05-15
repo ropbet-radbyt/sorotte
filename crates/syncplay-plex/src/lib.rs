@@ -75,9 +75,10 @@ impl PlexClientConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlexServerConnectionKind {
     Local,
+    #[default]
     Remote,
     Relay,
 }
@@ -93,12 +94,6 @@ impl PlexServerConnectionKind {
 
     pub fn is_local(self) -> bool {
         self == Self::Local
-    }
-}
-
-impl Default for PlexServerConnectionKind {
-    fn default() -> Self {
-        Self::Remote
     }
 }
 
@@ -972,9 +967,7 @@ pub fn choose_best_media_match(
             .then_with(|| left.title.cmp(&right.title))
             .then_with(|| left.rating_key.cmp(&right.rating_key))
     });
-    let Some((best_score, best)) = scored.first() else {
-        return None;
-    };
+    let (best_score, best) = scored.first()?;
     if *best_score < 50 {
         return None;
     }
@@ -1088,7 +1081,7 @@ fn parse_server_resources_response(json: &Value) -> Vec<PlexServerConnection> {
                         connection_kind,
                     })
                 })
-                .min_by_key(|server| server_connection_rank(server))
+                .min_by_key(server_connection_rank)
         })
         .collect()
 }
@@ -1771,13 +1764,13 @@ mod tests {
                 rating_key: "wrong".to_owned(),
                 title: "Example Movie".to_owned(),
                 media_type: PlexMediaType::Movie,
-                duration_millis: Some(3600_000),
+                duration_millis: Some(3_600_000),
             },
             PlexMediaSearchResult {
                 rating_key: "right".to_owned(),
                 title: "Example Movie 2024".to_owned(),
                 media_type: PlexMediaType::Movie,
-                duration_millis: Some(7200_000),
+                duration_millis: Some(7_200_000),
             },
         ];
 
@@ -1794,13 +1787,13 @@ mod tests {
                 rating_key: "1".to_owned(),
                 title: "Pilot".to_owned(),
                 media_type: PlexMediaType::Episode,
-                duration_millis: Some(1800_000),
+                duration_millis: Some(1_800_000),
             },
             PlexMediaSearchResult {
                 rating_key: "2".to_owned(),
                 title: "Pilot".to_owned(),
                 media_type: PlexMediaType::Episode,
-                duration_millis: Some(1800_000),
+                duration_millis: Some(1_800_000),
             },
         ];
 

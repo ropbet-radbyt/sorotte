@@ -671,7 +671,7 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: &StoredClientSettingsMvp,
         context: GuiPlexServerRefreshContext,
     ) -> Result<(), String> {
-        let client = self.ensure_plex_client().map(Clone::clone)?;
+        let client = self.ensure_plex_client().cloned()?;
         let settings = settings.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()

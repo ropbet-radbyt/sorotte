@@ -25,7 +25,13 @@ type CliPlexSyncEngine = PlexSyncEngine<PlexHttpClient>;
 
 struct CliPlexSync {
     engine: Option<CliPlexSyncEngine>,
+    worker: Option<tokio::task::JoinHandle<CliPlexSyncWorkerResult>>,
     cache_path: Option<std::path::PathBuf>,
+}
+
+struct CliPlexSyncWorkerResult {
+    engine: CliPlexSyncEngine,
+    cache_save_error: Option<String>,
 }
 
 fn normalized_tls_server_host(host: &str) -> &str {
@@ -65,6 +71,7 @@ async fn create_cli_plex_sync(config: &PlexClientConfig) -> Option<CliPlexSync> 
         let cache = load_cli_plex_match_cache(cache_path.as_deref());
         Ok::<_, syncplay_plex::PlexError>(CliPlexSync {
             engine: Some(PlexSyncEngine::new(config, client, cache)),
+            worker: None,
             cache_path,
         })
     })
@@ -136,18 +143,41 @@ fn current_cli_plex_watch_event(
     Some(event)
 }
 
-fn save_cli_plex_cache_if_changed(
+fn cli_plex_cache_save_error_if_changed(
     engine: &CliPlexSyncEngine,
     cache_path: Option<&std::path::Path>,
     before: &PlexMatchCache,
-) {
+) -> Option<String> {
     if engine.cache() == before {
+        return None;
+    }
+    cache_path.and_then(|path| {
+        engine
+            .cache()
+            .save_to_path(path)
+            .err()
+            .map(|error| format!("failed to save Plex match cache: {error}"))
+    })
+}
+
+async fn drain_cli_plex_sync_worker(plex: &mut CliPlexSync) {
+    let Some(worker) = plex.worker.as_ref() else {
+        return;
+    };
+    if !worker.is_finished() {
         return;
     }
-    if let Some(path) = cache_path
-        && let Err(error) = engine.cache().save_to_path(path)
-    {
-        eprintln!("warning: failed to save Plex match cache: {error}");
+    let worker = plex.worker.take().expect("worker should be present");
+    match worker.await {
+        Ok(result) => {
+            plex.engine = Some(result.engine);
+            if let Some(error) = result.cache_save_error {
+                eprintln!("warning: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("warning: Plex sync worker failed: {error}");
+        }
     }
 }
 
@@ -158,28 +188,44 @@ async fn sync_cli_plex_watch_state(
     let Some(plex) = plex else {
         return;
     };
+    drain_cli_plex_sync_worker(plex).await;
+    if plex.worker.is_some() {
+        return;
+    }
     let event = current_cli_plex_watch_event(runtime);
     let Some(mut engine) = plex.engine.take() else {
         return;
     };
     let cache_path = plex.cache_path.clone();
-    match tokio::task::spawn_blocking(move || {
+    plex.worker = Some(tokio::task::spawn_blocking(move || {
         let before = engine.cache().clone();
         let _ = engine.tick(event, SystemTime::now());
-        save_cli_plex_cache_if_changed(&engine, cache_path.as_deref(), &before);
-        engine
-    })
-    .await
-    {
-        Ok(engine) => plex.engine = Some(engine),
-        Err(error) => eprintln!("warning: Plex sync worker failed: {error}"),
-    }
+        let cache_save_error =
+            cli_plex_cache_save_error_if_changed(&engine, cache_path.as_deref(), &before);
+        CliPlexSyncWorkerResult {
+            engine,
+            cache_save_error,
+        }
+    }));
 }
 
 async fn finalize_cli_plex_watch_state(plex: &mut Option<CliPlexSync>) {
     let Some(mut plex) = plex.take() else {
         return;
     };
+    if let Some(worker) = plex.worker.take() {
+        match worker.await {
+            Ok(result) => {
+                plex.engine = Some(result.engine);
+                if let Some(error) = result.cache_save_error {
+                    eprintln!("warning: {error}");
+                }
+            }
+            Err(error) => {
+                eprintln!("warning: Plex sync worker failed before final stop: {error}");
+            }
+        }
+    }
     let Some(mut engine) = plex.engine.take() else {
         return;
     };
@@ -187,7 +233,11 @@ async fn finalize_cli_plex_watch_state(plex: &mut Option<CliPlexSync>) {
     let _ = tokio::task::spawn_blocking(move || {
         let before = engine.cache().clone();
         let _ = engine.tick(None, SystemTime::now());
-        save_cli_plex_cache_if_changed(&engine, cache_path.as_deref(), &before);
+        if let Some(error) =
+            cli_plex_cache_save_error_if_changed(&engine, cache_path.as_deref(), &before)
+        {
+            eprintln!("warning: {error}");
+        }
     })
     .await;
 }
