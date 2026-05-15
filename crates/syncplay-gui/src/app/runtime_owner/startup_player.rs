@@ -39,6 +39,7 @@ impl GuiPersistedConfigRuntimeOwner {
             last_applied_attached_room_playstate: None,
             suppressed_attached_room_playstate_after_playlist_reset: None,
             pending_local_attached_pause_override: None,
+            pending_attached_cache_unpause: false,
             pending_attached_player_pause_confirmation_pump: None,
             player_position_seconds: None,
             player_paused: None,
@@ -150,6 +151,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.player_local_file_placeholder = false;
         self.player_position_seconds = None;
         self.player_paused = None;
+        self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.pending_stream_retry_target = None;
@@ -194,6 +196,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_applied_attached_room_playstate = None;
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         self.pending_local_attached_pause_override = None;
+        self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
     }
 

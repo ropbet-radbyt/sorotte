@@ -239,6 +239,91 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
 }
 
 #[test]
+fn client_runtime_room_pause_sync_resyncs_after_cache_pause_release() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
+    session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":30.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
+            )
+            .expect("remote seek state should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(true)
+                .with_paused_for_cache(true),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("remote seek should dispatch while cache pause defers unpause");
+
+    assert_eq!(
+        runtime.player().paused,
+        None,
+        "cache pause should defer room unpause while buffering"
+    );
+    assert!(
+        runtime.session().pending_cache_room_playstate_resync,
+        "deferred cache pause should request a room playstate retry after cache release"
+    );
+    assert_eq!(
+        runtime.session().user_ready("alice"),
+        Some(true),
+        "cache pause must not clear readiness"
+    );
+
+    runtime
+            .session_mut()
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":34.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            )
+            .expect("post-seek room playstate should apply");
+    runtime.player_mut().pending_playback_telemetry_update =
+        Some(PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(false));
+
+    runtime
+        .run_room_pause_sync_if_needed()
+        .expect("cache release should retry room playstate sync");
+
+    let synced_position = runtime
+        .player()
+        .position
+        .expect("cache release should re-seek to the current room position");
+    assert!(
+        (synced_position - 34.0).abs() < 1.0,
+        "cache release should re-seek to the current room position; got {synced_position}"
+    );
+    assert_eq!(
+        runtime.player().paused,
+        Some(false),
+        "cache release should re-apply the room unpause even when local logical state was already playing"
+    );
+    assert!(
+        !runtime.session().pending_cache_room_playstate_resync,
+        "successful cache-release sync should clear the retry flag"
+    );
+    assert_eq!(
+        runtime.session().user_ready("alice"),
+        Some(true),
+        "cache-release correction must not mark the user not-ready"
+    );
+}
+
+#[test]
 fn client_runtime_room_pause_sync_does_not_mirror_failed_seek_corrections() {
     let mut session = ClientSession::default();
     session

@@ -64,6 +64,9 @@ impl ClientSession {
         self.reset_playlist_index_transition_tracking();
         self.local_position = None;
         self.local_paused = None;
+        self.local_paused_for_cache = None;
+        self.local_cache_buffering_percent = None;
+        self.pending_cache_room_playstate_resync = false;
         self.last_seek_position_before_manual_seek = None;
         self.autoplay_timer_running = false;
         self.autoplay_time_left_seconds = self.readiness_autoplay_config.autoplay_delay_seconds;

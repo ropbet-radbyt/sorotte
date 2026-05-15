@@ -103,6 +103,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) suppressed_attached_room_playstate_after_playlist_reset:
         Option<GuiSessionRoomPlaystate>,
     pub(super) pending_local_attached_pause_override: Option<bool>,
+    pub(super) pending_attached_cache_unpause: bool,
     pub(super) pending_attached_player_pause_confirmation_pump: Option<u64>,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
