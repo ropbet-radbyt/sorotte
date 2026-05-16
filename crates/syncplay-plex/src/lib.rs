@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::Path,
     sync::OnceLock,
@@ -15,6 +15,7 @@ const DEFAULT_PLEX_TV_BASE_URL: &str = "https://plex.tv";
 const DEFAULT_PLEX_AUTH_APP_URL: &str = "https://app.plex.tv/auth";
 const DEFAULT_CLIENT_PRODUCT: &str = "Syncplay Rust";
 const DEFAULT_TIMELINE_INTERVAL: Duration = Duration::from_secs(10);
+const MATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const SEEK_REPORT_THRESHOLD_MILLIS: i64 = 15_000;
 static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 
@@ -185,6 +186,7 @@ pub struct PlexMediaSearchResult {
     pub title: String,
     pub media_type: PlexMediaType,
     pub duration_millis: Option<u64>,
+    pub file_paths: Vec<String>,
 }
 
 impl PlexMediaSearchResult {
@@ -348,6 +350,12 @@ pub struct PlexHttpClient {
     auth_app_url: String,
     client_identifier: String,
     product: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlexLibrarySection {
+    key: String,
+    library_type: String,
 }
 
 impl PlexHttpClient {
@@ -522,6 +530,92 @@ impl PlexHttpClient {
         Ok(())
     }
 
+    pub fn search_media_by_file_name(
+        &self,
+        server_url: &str,
+        token: &str,
+        file_name: &str,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        if token.trim().is_empty() {
+            return Err(PlexError::MissingToken);
+        }
+        if file_name.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sections = self.fetch_library_sections(server_url, token)?;
+        let mut output = Vec::new();
+        for section in sections {
+            for media_type in library_section_media_type_filters(&section.library_type) {
+                let results = self.fetch_library_section_media_by_file_name(
+                    server_url,
+                    token,
+                    &section.key,
+                    media_type,
+                    file_name,
+                )?;
+                merge_media_search_results(&mut output, results);
+            }
+        }
+        Ok(output)
+    }
+
+    fn fetch_library_sections(
+        &self,
+        server_url: &str,
+        token: &str,
+    ) -> PlexResult<Vec<PlexLibrarySection>> {
+        let url = format!("{}/library/sections", server_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .get(url)
+            .headers(self.plex_headers(Some(token)))
+            .send()?;
+        let status = response.status();
+        let body = response.text()?;
+        if !status.is_success() {
+            return Err(PlexError::InvalidResponse(format!(
+                "library sections lookup returned HTTP {status}"
+            )));
+        }
+        let json: Value = serde_json::from_str(&body)?;
+        Ok(parse_library_sections_response(&json))
+    }
+
+    fn fetch_library_section_media_by_file_name(
+        &self,
+        server_url: &str,
+        token: &str,
+        section_key: &str,
+        media_type: &str,
+        file_name: &str,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        let url = format!(
+            "{}/library/sections/{}/all",
+            server_url.trim_end_matches('/'),
+            percent_encode_path_segment(section_key)
+        );
+        let response = self
+            .client
+            .get(url)
+            .headers(self.plex_headers(Some(token)))
+            .query(&[
+                ("type", media_type),
+                ("includeGuids", "1"),
+                ("file", file_name),
+            ])
+            .send()?;
+        let status = response.status();
+        let body = response.text()?;
+        if !status.is_success() {
+            return Err(PlexError::InvalidResponse(format!(
+                "library file lookup returned HTTP {status}"
+            )));
+        }
+        let json: Value = serde_json::from_str(&body)?;
+        Ok(parse_search_response(&json))
+    }
+
     fn plex_headers(&self, token: Option<&str>) -> reqwest::header::HeaderMap {
         use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 
@@ -572,6 +666,15 @@ impl PlexSyncTransport for PlexHttpClient {
         Ok(parse_search_response(&json))
     }
 
+    fn search_media_by_file_name(
+        &self,
+        server_url: &str,
+        token: &str,
+        file_name: &str,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+        PlexHttpClient::search_media_by_file_name(self, server_url, token, file_name)
+    }
+
     fn report_timeline(
         &self,
         server_url: &str,
@@ -615,6 +718,13 @@ pub trait PlexSyncTransport {
         query: &str,
     ) -> PlexResult<Vec<PlexMediaSearchResult>>;
 
+    fn search_media_by_file_name(
+        &self,
+        server_url: &str,
+        token: &str,
+        file_name: &str,
+    ) -> PlexResult<Vec<PlexMediaSearchResult>>;
+
     fn report_timeline(
         &self,
         server_url: &str,
@@ -631,7 +741,7 @@ pub struct PlexSyncEngine<T> {
     status: PlexSyncStatus,
     current_file_key: Option<String>,
     last_report_signature: Option<ReportSignature>,
-    unmatched_keys: BTreeSet<String>,
+    unmatched_keys: BTreeMap<String, SystemTime>,
     timeline_interval: Duration,
 }
 
@@ -652,7 +762,7 @@ where
             status,
             current_file_key: None,
             last_report_signature: None,
-            unmatched_keys: BTreeSet::new(),
+            unmatched_keys: BTreeMap::new(),
             timeline_interval: DEFAULT_TIMELINE_INTERVAL,
         }
     }
@@ -734,7 +844,7 @@ where
             self.status.current_item = None;
         }
 
-        let Some(item) = self.resolve_match(&server_url, &token, &event, &file_key)? else {
+        let Some(item) = self.resolve_match(&server_url, &token, &event, &file_key, now)? else {
             self.status = PlexSyncStatus {
                 state: PlexSyncState::Ready,
                 current_item: None,
@@ -770,18 +880,37 @@ where
         token: &str,
         event: &PlexWatchEvent,
         file_key: &str,
+        now: SystemTime,
     ) -> PlexResult<Option<PlexMatchedItem>> {
         if let Some(cached) = self.cache.entries.get(file_key).cloned() {
             let item: PlexMatchedItem = cached.into();
             self.status.current_item = Some(item.clone());
             return Ok(Some(item));
         }
-        if self.unmatched_keys.contains(file_key) {
+        if self
+            .unmatched_keys
+            .get(file_key)
+            .and_then(|last_attempt| now.duration_since(*last_attempt).ok())
+            .is_some_and(|elapsed| elapsed < MATCH_RETRY_INTERVAL)
+        {
             return Ok(None);
+        }
+        if let Some(file_name) = media_file_name_for_file(&event.file)
+            && let Ok(results) = self
+                .transport
+                .search_media_by_file_name(server_url, token, &file_name)
+            && let Some(item) = choose_file_path_media_match(&event.file, &results)
+        {
+            self.cache
+                .entries
+                .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+            self.unmatched_keys.remove(file_key);
+            self.status.current_item = Some(item.clone());
+            return Ok(Some(item));
         }
         let query = media_search_query_for_file(&event.file);
         if query.is_empty() {
-            self.unmatched_keys.insert(file_key.to_owned());
+            self.unmatched_keys.insert(file_key.to_owned(), now);
             return Ok(None);
         }
         let results = self.transport.search_media(server_url, token, &query)?;
@@ -791,11 +920,12 @@ where
                 self.cache
                     .entries
                     .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+                self.unmatched_keys.remove(file_key);
                 self.status.current_item = Some(item.clone());
                 Ok(Some(item))
             }
             None => {
-                self.unmatched_keys.insert(file_key.to_owned());
+                self.unmatched_keys.insert(file_key.to_owned(), now);
                 Ok(None)
             }
         }
@@ -977,6 +1107,47 @@ pub fn choose_best_media_match(
         return None;
     }
     Some((*best).clone().into_matched_item())
+}
+
+pub fn choose_file_path_media_match(
+    file: &LocalFileUpdate,
+    results: &[PlexMediaSearchResult],
+) -> Option<PlexMatchedItem> {
+    let mut path_matches = results
+        .iter()
+        .filter(|result| {
+            result.media_type.is_video_watch_type()
+                && result
+                    .file_paths
+                    .iter()
+                    .any(|plex_path| local_file_path_matches_plex_path(file, plex_path))
+        })
+        .collect::<Vec<_>>();
+    path_matches.sort_by(|left, right| left.rating_key.cmp(&right.rating_key));
+    path_matches.dedup_by(|left, right| left.rating_key == right.rating_key);
+    if path_matches.len() == 1 {
+        return Some(path_matches[0].clone().into_matched_item());
+    }
+
+    let local_file_name = media_file_name_for_file(file).map(|name| normalize_file_name(&name))?;
+    let mut basename_matches = results
+        .iter()
+        .filter(|result| {
+            result.media_type.is_video_watch_type()
+                && result.file_paths.iter().any(|plex_path| {
+                    path_file_name(plex_path)
+                        .as_deref()
+                        .map(normalize_file_name)
+                        .is_some_and(|name| name == local_file_name)
+                })
+        })
+        .collect::<Vec<_>>();
+    basename_matches.sort_by(|left, right| left.rating_key.cmp(&right.rating_key));
+    basename_matches.dedup_by(|left, right| left.rating_key == right.rating_key);
+    if basename_matches.len() == 1 {
+        return Some(basename_matches[0].clone().into_matched_item());
+    }
+    None
 }
 
 pub fn timeline_report_for_event(
@@ -1235,6 +1406,51 @@ fn parse_search_response(json: &Value) -> Vec<PlexMediaSearchResult> {
     output
 }
 
+fn parse_library_sections_response(json: &Value) -> Vec<PlexLibrarySection> {
+    media_container_items_any(json, &["Directory", "directories"])
+        .into_iter()
+        .filter_map(|directory| {
+            let key = json_string(directory, &["key"])?;
+            if key.trim().is_empty() {
+                return None;
+            }
+            Some(PlexLibrarySection {
+                key,
+                library_type: json_string(directory, &["type"]).unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn library_section_media_type_filters(library_type: &str) -> Vec<&'static str> {
+    match library_type.trim().to_ascii_lowercase().as_str() {
+        "movie" => vec!["1"],
+        "show" => vec!["4"],
+        "artist" | "photo" => Vec::new(),
+        _ => vec!["1", "4"],
+    }
+}
+
+fn merge_media_search_results(
+    output: &mut Vec<PlexMediaSearchResult>,
+    results: Vec<PlexMediaSearchResult>,
+) {
+    for mut result in results {
+        if let Some(existing) = output
+            .iter_mut()
+            .find(|existing| existing.rating_key == result.rating_key)
+        {
+            existing.file_paths.append(&mut result.file_paths);
+            existing.file_paths.sort();
+            existing.file_paths.dedup();
+        } else {
+            result.file_paths.sort();
+            result.file_paths.dedup();
+            output.push(result);
+        }
+    }
+}
+
 fn collect_search_results(value: &Value, output: &mut Vec<PlexMediaSearchResult>) {
     match value {
         Value::Object(map) => {
@@ -1254,11 +1470,16 @@ fn collect_search_results(value: &Value, output: &mut Vec<PlexMediaSearchResult>
                     .and_then(Value::as_str)
                     .unwrap_or("Untitled")
                     .to_owned();
+                let mut file_paths = Vec::new();
+                collect_file_paths(value, &mut file_paths);
+                file_paths.sort();
+                file_paths.dedup();
                 output.push(PlexMediaSearchResult {
                     rating_key,
                     title,
                     media_type: PlexMediaType::from_plex_type(type_name),
                     duration_millis: map.get("duration").and_then(value_as_u64),
+                    file_paths,
                 });
             }
             for child in map.values() {
@@ -1268,6 +1489,29 @@ fn collect_search_results(value: &Value, output: &mut Vec<PlexMediaSearchResult>
         Value::Array(items) => {
             for item in items {
                 collect_search_results(item, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_file_paths(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(file) = map
+                .get("file")
+                .and_then(value_as_string)
+                .filter(|value| !value.trim().is_empty())
+            {
+                output.push(file);
+            }
+            for child in map.values() {
+                collect_file_paths(child, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_file_paths(item, output);
             }
         }
         _ => {}
@@ -1350,6 +1594,10 @@ fn percent_encode_fragment_value(value: &str) -> String {
     output
 }
 
+fn percent_encode_path_segment(value: &str) -> String {
+    percent_encode_fragment_value(value)
+}
+
 fn insert_header_value(
     headers: &mut reqwest::header::HeaderMap,
     name: reqwest::header::HeaderName,
@@ -1368,6 +1616,73 @@ fn normalize_path_key(path: &str) -> String {
         .collect::<Vec<_>>()
         .join("/")
         .to_ascii_lowercase()
+}
+
+fn media_file_name_for_file(file: &LocalFileUpdate) -> Option<String> {
+    file.path
+        .as_deref()
+        .and_then(path_file_name)
+        .or_else(|| path_file_name(&file.name))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn path_file_name(path: &str) -> Option<String> {
+    path.replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_file_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn local_file_path_matches_plex_path(file: &LocalFileUpdate, plex_path: &str) -> bool {
+    let Some(local_path) = file
+        .path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let local = normalize_path_key(local_path);
+    let plex = normalize_path_key(plex_path);
+    if local.is_empty() || plex.is_empty() {
+        return false;
+    }
+    if local == plex {
+        return true;
+    }
+
+    let local_suffixes = normalized_path_suffixes(&local);
+    let plex_suffixes = normalized_path_suffixes(&plex);
+    local_suffixes.iter().any(|local_suffix| {
+        local_suffix.contains('/')
+            && plex_suffixes
+                .iter()
+                .any(|plex_suffix| plex_suffix == local_suffix)
+    })
+}
+
+fn normalized_path_suffixes(normalized_path: &str) -> Vec<String> {
+    let mut output = vec![normalized_path.to_owned()];
+    if normalized_path.as_bytes().get(1) == Some(&b':')
+        && normalized_path.as_bytes().get(2) == Some(&b'/')
+    {
+        output.push(normalized_path[3..].to_owned());
+    }
+    let parts = normalized_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for index in 1..parts.len() {
+        output.push(parts[index..].join("/"));
+    }
+    output.sort();
+    output.dedup();
+    output
 }
 
 fn normalized_cache_scope_value(value: &str) -> String {
@@ -1441,6 +1756,8 @@ mod tests {
     struct FakeTransport {
         searches: Rc<RefCell<Vec<String>>>,
         search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
+        file_searches: Rc<RefCell<Vec<String>>>,
+        file_search_results: Rc<RefCell<Vec<PlexMediaSearchResult>>>,
         reports: Rc<RefCell<Vec<PlexTimelineReport>>>,
     }
 
@@ -1453,6 +1770,16 @@ mod tests {
         ) -> PlexResult<Vec<PlexMediaSearchResult>> {
             self.searches.borrow_mut().push(query.to_owned());
             Ok(self.search_results.borrow().clone())
+        }
+
+        fn search_media_by_file_name(
+            &self,
+            _server_url: &str,
+            _token: &str,
+            file_name: &str,
+        ) -> PlexResult<Vec<PlexMediaSearchResult>> {
+            self.file_searches.borrow_mut().push(file_name.to_owned());
+            Ok(self.file_search_results.borrow().clone())
         }
 
         fn report_timeline(
@@ -1743,7 +2070,13 @@ mod tests {
         let json: Value = serde_json::json!({
             "MediaContainer": {
                 "Metadata": [
-                    { "ratingKey": "1", "type": "movie", "title": "Movie", "duration": 60000 },
+                    {
+                        "ratingKey": "1",
+                        "type": "movie",
+                        "title": "Movie",
+                        "duration": 60000,
+                        "Media": [{ "Part": [{ "file": "E:/Movies/Movie.mkv" }] }]
+                    },
                     { "ratingKey": "2", "type": "track", "title": "Song", "duration": 1000 }
                 ]
             }
@@ -1754,6 +2087,154 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].rating_key, "1");
         assert_eq!(results[0].media_type, PlexMediaType::Movie);
+        assert_eq!(results[0].file_paths, vec!["E:/Movies/Movie.mkv"]);
+    }
+
+    #[test]
+    fn file_path_matching_accepts_mapped_drive_suffix() {
+        let file = LocalFileUpdate::new(
+            "[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+        )
+        .with_path(
+            "E:/Anime/Isekai Nonbiri Nouka 2/[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+        );
+        let results = vec![PlexMediaSearchResult {
+            rating_key: "episode-5".to_owned(),
+            title: "Episode 5".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: None,
+            file_paths: vec![
+                "\\\\RAPTOR\\Media\\Anime\\Isekai Nonbiri Nouka 2\\[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv"
+                    .to_owned(),
+            ],
+        }];
+
+        let matched =
+            choose_file_path_media_match(&file, &results).expect("path match should be unique");
+
+        assert_eq!(matched.rating_key, "episode-5");
+    }
+
+    #[test]
+    fn file_path_matching_accepts_plex_library_root_suffix() {
+        let file = LocalFileUpdate::new(
+            "[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+        )
+        .with_path(
+            "E:/Anime/Isekai Nonbiri Nouka 2/[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+        );
+        let results = vec![PlexMediaSearchResult {
+            rating_key: "12706".to_owned(),
+            title: "Another Peaceful Day".to_owned(),
+            media_type: PlexMediaType::Episode,
+            duration_millis: None,
+            file_paths: vec![
+                "/tv/Isekai Nonbiri Nouka 2/[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv"
+                    .to_owned(),
+            ],
+        }];
+
+        let matched = choose_file_path_media_match(&file, &results)
+            .expect("library root suffix should match");
+
+        assert_eq!(matched.rating_key, "12706");
+    }
+
+    #[test]
+    fn sync_engine_prefers_file_path_match_before_title_search() {
+        let transport = FakeTransport::default();
+        transport
+            .file_search_results
+            .borrow_mut()
+            .push(PlexMediaSearchResult {
+                rating_key: "episode-5".to_owned(),
+                title: "Episode 5".to_owned(),
+                media_type: PlexMediaType::Episode,
+                duration_millis: None,
+                file_paths: vec![
+                    "\\\\RAPTOR\\Media\\Anime\\Isekai Nonbiri Nouka 2\\[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv"
+                        .to_owned(),
+                ],
+            });
+        let mut engine = configured_engine(transport.clone());
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let event = PlexWatchEvent::new(
+            LocalFileUpdate::new(
+                "[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+            )
+            .with_path(
+                "E:/Anime/Isekai Nonbiri Nouka 2/[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv",
+            ),
+        )
+        .with_position_seconds(1.0)
+        .with_paused(false)
+        .with_changed_at(now);
+
+        let status = engine.tick(Some(event), now);
+
+        assert_eq!(
+            transport.file_searches.borrow().as_slice(),
+            &["[SubsPlease] Isekai Nonbiri Nouka S2 - 05 (1080p) [6706CE18].mkv"]
+        );
+        assert!(transport.searches.borrow().is_empty());
+        assert_eq!(
+            status
+                .current_item
+                .as_ref()
+                .map(|item| item.rating_key.as_str()),
+            Some("episode-5")
+        );
+        assert_eq!(status.last_error, None);
+    }
+
+    #[test]
+    fn sync_engine_retries_missing_match_after_interval() {
+        let transport = FakeTransport::default();
+        let mut engine = configured_engine(transport.clone());
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let event = PlexWatchEvent::new(movie_file())
+            .with_position_seconds(1.0)
+            .with_paused(false)
+            .with_changed_at(now);
+
+        engine.tick(Some(event.clone()), now);
+        engine.tick(
+            Some(event.clone()),
+            now + MATCH_RETRY_INTERVAL
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_default(),
+        );
+        transport
+            .file_search_results
+            .borrow_mut()
+            .push(PlexMediaSearchResult {
+                rating_key: "123".to_owned(),
+                title: "Example Movie 2024".to_owned(),
+                media_type: PlexMediaType::Movie,
+                duration_millis: Some(7_200_000),
+                file_paths: vec!["C:/Media/Example.Movie.2024.mkv".to_owned()],
+            });
+        let status = engine.tick(
+            Some(event),
+            now + MATCH_RETRY_INTERVAL + Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            transport.file_searches.borrow().as_slice(),
+            &["Example.Movie.2024.mkv", "Example.Movie.2024.mkv",]
+        );
+        assert_eq!(
+            transport.searches.borrow().as_slice(),
+            &["example movie 2024"]
+        );
+        assert_eq!(
+            status
+                .current_item
+                .as_ref()
+                .map(|item| item.rating_key.as_str()),
+            Some("123")
+        );
+        assert_eq!(status.last_error, None);
     }
 
     #[test]
@@ -1765,12 +2246,14 @@ mod tests {
                 title: "Example Movie".to_owned(),
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(3_600_000),
+                file_paths: Vec::new(),
             },
             PlexMediaSearchResult {
                 rating_key: "right".to_owned(),
                 title: "Example Movie 2024".to_owned(),
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
+                file_paths: Vec::new(),
             },
         ];
 
@@ -1788,12 +2271,14 @@ mod tests {
                 title: "Pilot".to_owned(),
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(1_800_000),
+                file_paths: Vec::new(),
             },
             PlexMediaSearchResult {
                 rating_key: "2".to_owned(),
                 title: "Pilot".to_owned(),
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(1_800_000),
+                file_paths: Vec::new(),
             },
         ];
 
@@ -1862,6 +2347,7 @@ mod tests {
                 title: "Example Movie 2024".to_owned(),
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
+                file_paths: Vec::new(),
             });
         let mut engine = configured_engine(transport.clone());
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
@@ -1897,6 +2383,7 @@ mod tests {
                 title: "Example Movie 2024".to_owned(),
                 media_type: PlexMediaType::Movie,
                 duration_millis: Some(7_200_000),
+                file_paths: Vec::new(),
             });
         let mut engine = configured_engine(transport.clone());
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);

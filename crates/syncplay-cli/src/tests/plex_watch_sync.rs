@@ -49,7 +49,11 @@ fn spawn_test_plex_server() -> (String, mpsc::Receiver<String>, thread::JoinHand
             let request = String::from_utf8_lossy(&request).into_owned();
             let _ = request_tx.send(request.clone());
             let request_line = request.lines().next().unwrap_or_default();
-            let body = if request_line.starts_with("GET /search") {
+            let body = if request_line.starts_with("GET /library/sections ") {
+                r#"{"MediaContainer":{"Directory":[{"key":"1","type":"show","title":"Shows"}]}}"#
+            } else if request_line.starts_with("GET /library/sections/1/all") {
+                r#"{"MediaContainer":{"Metadata":[{"ratingKey":"99","type":"episode","title":"Movie Name","duration":95500,"Media":[{"Part":[{"file":"C:/media/Movie Name.mkv"}]}]}]}}"#
+            } else if request_line.starts_with("GET /search") {
                 r#"{"MediaContainer":{"Metadata":[{"ratingKey":"99","type":"movie","title":"Movie Name","duration":95500}]}}"#
             } else {
                 "{}"
@@ -207,24 +211,32 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     ));
     server_task.await.expect("server task should join");
 
-    let search_request = plex_requests
+    let sections_request = plex_requests
         .recv_timeout(Duration::from_secs(2))
-        .expect("Plex search request should be sent");
+        .expect("Plex library sections request should be sent");
+    let file_lookup_request = plex_requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Plex file lookup request should be sent");
     let timeline_request = plex_requests
         .recv_timeout(Duration::from_secs(2))
         .expect("Plex timeline request should be sent");
     assert!(
-        search_request.starts_with("GET /search?"),
-        "first Plex request should search"
+        sections_request.starts_with("GET /library/sections "),
+        "first Plex request should list library sections"
     );
     assert!(
-        search_request
+        sections_request
             .to_ascii_lowercase()
             .contains("x-plex-token: server-token")
     );
     assert!(
+        file_lookup_request.starts_with("GET /library/sections/1/all?"),
+        "second Plex request should look up the local file"
+    );
+    assert!(file_lookup_request.contains("file=Movie+Name.mkv"));
+    assert!(
         timeline_request.starts_with("GET /:/timeline?"),
-        "second Plex request should report timeline"
+        "third Plex request should report timeline"
     );
     assert!(timeline_request.contains("ratingKey=99"));
     assert!(timeline_request.contains("state=playing"));
