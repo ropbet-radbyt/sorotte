@@ -195,6 +195,8 @@ SYNCPLAY_SERVER_TLS_CERT_PATH=/tls
 
 Put extra server flags in the container command or post-arguments field.
 
+For SWAG deployments where SWAG is the public entrypoint and Syncplay TLS is required, see `docs/SWAG_SYNCPLAY.md`.
+
 ## Verification
 
 Run the strict release gate from the workspace root:
