@@ -22,7 +22,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(1)));
     assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
         GuiDraftRuntimeSnapshot {
-            outgoing_chat_message: Some("hello widget".to_owned()),
+            outgoing_chat_message: Some("hello widget ".to_owned()),
         },
     )));
 
@@ -168,7 +168,7 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
         .find("main-window:chat-input")
         .expect("chat input should exist in widget tree");
     assert_eq!(chat_input.kind, GuiWidgetKind::TextInput);
-    assert_eq!(chat_input.value.as_deref(), Some("hello widget"));
+    assert_eq!(chat_input.value.as_deref(), Some("hello widget "));
     assert_eq!(chat_input.enabled, state.commands.can_send_chat_message);
 }
 

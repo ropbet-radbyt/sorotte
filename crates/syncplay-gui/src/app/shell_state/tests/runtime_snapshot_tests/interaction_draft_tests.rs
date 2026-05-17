@@ -418,8 +418,15 @@ fn gui_shell_app_state_applies_gui_draft_runtime_snapshots() {
     )));
     assert_eq!(
         state.outgoing_chat_message.as_deref(),
-        Some("runtime draft")
+        Some("  runtime draft  ")
     );
+
+    assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
+        GuiDraftRuntimeSnapshot {
+            outgoing_chat_message: Some(" ".to_owned()),
+        }
+    )));
+    assert_eq!(state.outgoing_chat_message.as_deref(), Some(" "));
 
     assert!(state.apply(GuiShellAction::BeginPendingOperation(
         GuiPendingOperationKind::SendChatMessage,

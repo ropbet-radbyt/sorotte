@@ -645,11 +645,11 @@ impl SyncplayGuiShellAppState {
     ) -> bool {
         let outgoing_chat_message = match snapshot.outgoing_chat_message {
             Some(message) => {
-                let Some(message) = normalized_editable_text(&message) else {
+                if message.is_empty() {
                     return self.record_action_error(
-                    "GUI draft runtime snapshots cannot contain an empty outgoing chat message.",
-                );
-                };
+                        "GUI draft runtime snapshots cannot contain an empty outgoing chat message.",
+                    );
+                }
                 if self
                     .pending_operation
                     .as_ref()

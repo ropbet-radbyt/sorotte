@@ -35,7 +35,7 @@ impl GuiWidgetEguiRenderer {
             if changed {
                 actions.push(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
                     GuiDraftRuntimeSnapshot {
-                        outgoing_chat_message: normalized_editable_text(value),
+                        outgoing_chat_message: (!value.is_empty()).then(|| value.to_owned()),
                     },
                 ));
             }

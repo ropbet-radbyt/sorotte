@@ -76,15 +76,15 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         GuiWidgetEguiRenderer::actions_for_text_input_node(
             &chat_state,
             chat_input,
-            "Hello world",
+            "Hello world ",
             true,
             true,
         ),
         Some(vec![
             GuiShellAction::ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot {
-                outgoing_chat_message: Some("Hello world".to_owned()),
+                outgoing_chat_message: Some("Hello world ".to_owned()),
             }),
-            GuiShellAction::BeginLocalChatSend("Hello world".to_owned()),
+            GuiShellAction::BeginLocalChatSend("Hello world ".to_owned()),
         ])
     );
 
