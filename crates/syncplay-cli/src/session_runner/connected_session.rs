@@ -20,6 +20,7 @@ type ConnectedSessionWriteHalf = tokio::io::WriteHalf<Box<dyn ConnectedSessionAs
 
 const CLI_PLEX_CLIENT_IDENTIFIER: &str = "syncplay-rs-cli";
 const CLI_PLEX_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
+const CLI_PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 
 type CliPlexSyncEngine = PlexSyncEngine<PlexHttpClient>;
 
@@ -27,6 +28,7 @@ struct CliPlexSync {
     engine: Option<CliPlexSyncEngine>,
     worker: Option<tokio::task::JoinHandle<CliPlexSyncWorkerResult>>,
     cache_path: Option<std::path::PathBuf>,
+    next_tick_due_at: Option<Instant>,
 }
 
 struct CliPlexSyncWorkerResult {
@@ -73,6 +75,7 @@ async fn create_cli_plex_sync(config: &PlexClientConfig) -> Option<CliPlexSync> 
             engine: Some(PlexSyncEngine::new(config, client, cache)),
             worker: None,
             cache_path,
+            next_tick_due_at: None,
         })
     })
     .await
@@ -192,6 +195,12 @@ async fn sync_cli_plex_watch_state(
     if plex.worker.is_some() {
         return;
     }
+    let now = Instant::now();
+    if let Some(due_at) = plex.next_tick_due_at
+        && now < due_at
+    {
+        return;
+    }
     let event = current_cli_plex_watch_event(runtime);
     let Some(mut engine) = plex.engine.take() else {
         return;
@@ -207,6 +216,7 @@ async fn sync_cli_plex_watch_state(
             cache_save_error,
         }
     }));
+    plex.next_tick_due_at = Some(now + CLI_PLEX_SYNC_PUMP_INTERVAL);
 }
 
 async fn finalize_cli_plex_watch_state(plex: &mut Option<CliPlexSync>) {

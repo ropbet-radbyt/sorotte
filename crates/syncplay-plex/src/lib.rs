@@ -1352,16 +1352,17 @@ fn uri_uses_port(uri: &str, port: &str) -> bool {
 }
 
 fn uri_host_looks_private(uri: &str) -> bool {
-    let Some(authority) = uri_authority(uri) else {
+    let Some(host_without_port) = uri_host_without_port(uri) else {
         return false;
     };
-    let host = authority
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(authority)
-        .trim_matches(['[', ']']);
-    let host_without_port = host.rsplit_once(':').map(|(host, _)| host).unwrap_or(host);
-    host_without_port == "localhost"
+    let host_without_port = host_without_port.trim();
+    if let Ok(ip) = host_without_port.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(address) => is_private_or_loopback_ipv4(address.octets()),
+            std::net::IpAddr::V6(address) => is_private_or_loopback_ipv6(address),
+        };
+    }
+    host_without_port.eq_ignore_ascii_case("localhost")
         || parse_ipv4_octets(host_without_port)
             .or_else(|| {
                 host_without_port
@@ -1371,6 +1372,22 @@ fn uri_host_looks_private(uri: &str) -> bool {
                     .and_then(|label| parse_ipv4_octets(&label))
             })
             .is_some_and(is_private_or_loopback_ipv4)
+}
+
+fn uri_host_without_port(uri: &str) -> Option<&str> {
+    let authority = uri_authority(uri)?;
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    if let Some(bracketed) = host.strip_prefix('[') {
+        return bracketed
+            .split_once(']')
+            .map(|(host, _)| host)
+            .filter(|value| !value.is_empty());
+    }
+    Some(host.rsplit_once(':').map(|(host, _)| host).unwrap_or(host))
+        .filter(|value| !value.is_empty())
 }
 
 fn uri_authority(uri: &str) -> Option<&str> {
@@ -1398,6 +1415,11 @@ fn is_private_or_loopback_ipv4(octets: [u8; 4]) -> bool {
         octets,
         [10, _, _, _] | [127, _, _, _] | [169, 254, _, _] | [172, 16..=31, _, _] | [192, 168, _, _]
     )
+}
+
+fn is_private_or_loopback_ipv6(address: std::net::Ipv6Addr) -> bool {
+    let first_segment = address.segments()[0];
+    address.is_loopback() || first_segment & 0xfe00 == 0xfc00 || first_segment & 0xffc0 == 0xfe80
 }
 
 fn parse_search_response(json: &Value) -> Vec<PlexMediaSearchResult> {
@@ -1926,6 +1948,30 @@ mod tests {
         assert!(servers[0].owned);
         assert!(servers[0].has_local_connection);
         assert_eq!(servers[0].connection_kind, PlexServerConnectionKind::Local);
+    }
+
+    #[test]
+    fn connection_kind_detects_case_insensitive_localhost() {
+        assert_eq!(
+            plex_server_connection_kind_from_uri("http://LOCALHOST:32400"),
+            PlexServerConnectionKind::Local
+        );
+    }
+
+    #[test]
+    fn connection_kind_detects_bracketed_ipv6_local_addresses() {
+        assert_eq!(
+            plex_server_connection_kind_from_uri("http://[::1]:32400"),
+            PlexServerConnectionKind::Local
+        );
+        assert_eq!(
+            plex_server_connection_kind_from_uri("https://[fd12:3456:789a::1]:32400"),
+            PlexServerConnectionKind::Local
+        );
+        assert_eq!(
+            plex_server_connection_kind_from_uri("http://[fe80::1]:32400"),
+            PlexServerConnectionKind::Local
+        );
     }
 
     #[test]
