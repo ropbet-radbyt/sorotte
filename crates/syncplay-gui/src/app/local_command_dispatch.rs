@@ -33,6 +33,30 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::BeginLocalChatSend(message) => {
                     plan.extend(plan_chat_submit(state, message));
                 }
+                GuiShellAction::BeginUpdateCheck { user_initiated } => {
+                    plan.shell_actions
+                        .push(GuiShellAction::BeginUpdateCheck { user_initiated });
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::CheckForUpdates {
+                            language: state.update_check_language(),
+                            user_initiated,
+                        });
+                }
+                GuiShellAction::BeginUpdateDownload => {
+                    plan.shell_actions.push(GuiShellAction::BeginUpdateDownload);
+                    if let Some(candidate) = state.update_check.candidate.clone() {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::DownloadUpdate(candidate));
+                    }
+                }
+                GuiShellAction::BeginStagedUpdateApply => {
+                    plan.shell_actions
+                        .push(GuiShellAction::BeginStagedUpdateApply);
+                    if let Some(staged_update) = state.update_check.staged_update.clone() {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::ApplyStagedUpdate(staged_update));
+                    }
+                }
                 GuiShellAction::RetryPlayerLaunch => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPlayerLaunch);

@@ -1,5 +1,6 @@
 use super::*;
 
+use super::super::remote_services::{UpdateCandidate, UpdateCandidateSource, UpdateChannel};
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiRuntimeRequest, GuiShellAction, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, StoredClientSettingsMvp, SyncplayGuiShellAppState,
@@ -32,6 +33,66 @@ fn runtime_ready_state() -> SyncplayGuiShellAppState {
         }
     )));
     state
+}
+
+fn update_candidate() -> UpdateCandidate {
+    UpdateCandidate {
+        channel: UpdateChannel::Stable,
+        version: "0.2.0".to_owned(),
+        git_sha: Some("abcdef123456".to_owned()),
+        created_at_utc: "2026-05-20T00:00:00Z".to_owned(),
+        target: "windows-x86_64".to_owned(),
+        package: "syncplay-gui-0.2.0-windows-x86_64.zip".to_owned(),
+        sha256: "a".repeat(64),
+        download_url: "https://example.invalid/syncplay-gui.zip".to_owned(),
+        details_url: Some("https://example.invalid/release".to_owned()),
+        source: UpdateCandidateSource::ReleaseAsset,
+    }
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::BeginUpdateCheck {
+            user_initiated: true,
+        }],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![GuiShellAction::BeginUpdateCheck {
+            user_initiated: true,
+        }]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::CheckForUpdates {
+            language: "en".to_owned(),
+            user_initiated: true,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_update_downloads_to_runtime_owner() {
+    let mut state = runtime_ready_state();
+    let candidate = update_candidate();
+    state.update_check.candidate = Some(candidate.clone());
+    state.update_check.self_update_supported = true;
+
+    let plan =
+        GuiShellDispatchPlan::from_shell_actions(&state, vec![GuiShellAction::BeginUpdateDownload]);
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![GuiShellAction::BeginUpdateDownload]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::DownloadUpdate(candidate)]
+    );
 }
 
 #[test]

@@ -1,0 +1,64 @@
+name: syncplay-gui release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  gui-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        shell: pwsh
+        run: cargo fmt --all --check
+
+      - name: Run GUI updater tests
+        shell: pwsh
+        run: cargo test -p syncplay-gui update_
+
+      - name: Package GUI release
+        shell: pwsh
+        run: |
+          $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
+          ./scripts/package-gui-release.ps1 -Channel $channel
+
+      - name: Upload GUI package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncplay-gui-windows-x86_64
+          path: target/gui-release/artifacts/*
+
+      - name: Attach package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create $tag --title $tag --notes "Syncplay GUI release $tag"
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release create failed with exit code $LASTEXITCODE"
+              }
+          }
+          gh release upload $tag target/gui-release/artifacts/* --clobber
+          if ($LASTEXITCODE -ne 0) {
+              throw "gh release upload failed with exit code $LASTEXITCODE"
+          }

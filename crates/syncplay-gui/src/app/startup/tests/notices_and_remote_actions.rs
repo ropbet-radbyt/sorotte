@@ -81,6 +81,8 @@ fn gui_startup_remote_actions_run_due_automatic_update_checks() {
         status: super::super::remote_services::LegacyUpdateCheckStatus::UpdateAvailable,
         message: "Remote startup update available.".to_owned(),
         url: Some("https://syncplay.pl/download/".to_owned()),
+        candidate: None,
+        self_update_supported: false,
         public_servers: None,
         checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
         user_initiated: false,

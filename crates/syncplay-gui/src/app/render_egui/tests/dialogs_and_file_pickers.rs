@@ -20,6 +20,8 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
             ("shell:modal:update:dismiss", "Dismiss Notice"),
             ("shell:modal:update:help", "Open Help"),
             ("shell:modal:update:check-again", "Check Again"),
+            ("shell:modal:update:download", "Download Update"),
+            ("shell:modal:update:restart", "Restart to Update"),
         ]
     );
     assert_eq!(

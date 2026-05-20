@@ -6,6 +6,13 @@ impl GuiRuntimeRequest {
         state: &SyncplayGuiShellAppState,
     ) -> Vec<GuiShellAction> {
         match self {
+            Self::CheckForUpdates { user_initiated, .. } => {
+                vec![GuiShellAction::BeginUpdateCheck {
+                    user_initiated: *user_initiated,
+                }]
+            }
+            Self::DownloadUpdate(_) => vec![GuiShellAction::BeginUpdateDownload],
+            Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,
@@ -118,6 +125,13 @@ impl GuiRuntimeRequest {
 
     pub(in crate::app) fn preview_actions(&self) -> Vec<GuiShellAction> {
         match self {
+            Self::CheckForUpdates { user_initiated, .. } => {
+                vec![GuiShellAction::BeginUpdateCheck {
+                    user_initiated: *user_initiated,
+                }]
+            }
+            Self::DownloadUpdate(_) => vec![GuiShellAction::BeginUpdateDownload],
+            Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist,

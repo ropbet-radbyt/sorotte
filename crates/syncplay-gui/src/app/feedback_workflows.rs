@@ -113,9 +113,17 @@ impl SyncplayGuiShellAppState {
     }
 
     pub(super) fn begin_update_check(&mut self, user_initiated: bool) -> bool {
-        let language = self.update_check_language();
-        let result = remote_services::check_for_updates(Some(language.as_str()), user_initiated);
-        self.apply_update_check_result(result)
+        self.update_check.status = Some(remote_services::LegacyUpdateCheckStatus::Checking);
+        self.update_check.message = Some("Checking GitHub for Syncplay GUI updates...".to_owned());
+        self.update_check.user_initiated = user_initiated;
+        self.update_check.download_state = remote_services::UpdateDownloadState::Idle;
+        self.update_check.staged_update = None;
+        if user_initiated {
+            self.open_modal = Some(GuiShellModal::UpdateNotice);
+            self.menus.update_notice_expected = true;
+        }
+        self.clear_action_error_and_refresh();
+        true
     }
 
     pub(super) fn apply_update_check_result(
@@ -132,6 +140,10 @@ impl SyncplayGuiShellAppState {
             status: Some(result.status.clone()),
             message: Some(result.message.clone()),
             url: result.url.clone(),
+            candidate: result.candidate.clone(),
+            download_state: remote_services::UpdateDownloadState::Idle,
+            staged_update: None,
+            self_update_supported: result.self_update_supported,
             last_checked_for_updates: Some(result.checked_at_utc.clone()),
             user_initiated: result.user_initiated,
         };
@@ -145,6 +157,61 @@ impl SyncplayGuiShellAppState {
         ) {
             self.push_transient_notification(self.update_check.status_level(), result.message);
         }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn begin_update_download(&mut self) -> bool {
+        if self.update_check.candidate.is_none() {
+            return self.record_action_error("No update package is available to download.");
+        }
+        if !self.update_check.self_update_supported {
+            return self.record_action_error(
+                "This Syncplay GUI build is not a packaged install; self-update is disabled.",
+            );
+        }
+        self.update_check.download_state = remote_services::UpdateDownloadState::Downloading;
+        self.update_check.message = Some("Downloading and staging update...".to_owned());
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_update_download_result(
+        &mut self,
+        result: remote_services::UpdateDownloadResult,
+    ) -> bool {
+        self.update_check.download_state = result.state;
+        self.update_check.message = Some(result.message.clone());
+        self.update_check.staged_update = result.staged_update;
+        if matches!(result.state, remote_services::UpdateDownloadState::Failed) {
+            self.push_transient_notification(GuiTransientNotificationLevel::Error, result.message);
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn begin_staged_update_apply(&mut self) -> bool {
+        if self.update_check.staged_update.is_none() {
+            return self.record_action_error("No staged update is ready to apply.");
+        }
+        self.update_check.message = Some("Launching update helper...".to_owned());
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn apply_staged_update_launch_result(
+        &mut self,
+        result: remote_services::UpdateApplyLaunchResult,
+    ) -> bool {
+        self.update_check.message = Some(result.message.clone());
+        self.push_transient_notification(
+            if result.success {
+                GuiTransientNotificationLevel::Info
+            } else {
+                GuiTransientNotificationLevel::Error
+            },
+            result.message,
+        );
         self.clear_action_error_and_refresh();
         true
     }
