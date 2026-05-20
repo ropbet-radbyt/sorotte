@@ -1017,16 +1017,37 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
 }
 
 fn safe_zip_relative_path(name: &str) -> Option<PathBuf> {
-    let path = Path::new(name);
+    if name.is_empty()
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || has_windows_drive_prefix(name)
+    {
+        return None;
+    }
     let mut safe = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => safe.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+    for part in name.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            _ if part.contains(':') => return None,
+            _ => {
+                let path = Path::new(part);
+                let mut components = path.components();
+                if !matches!(components.next(), Some(Component::Normal(_)))
+                    || components.next().is_some()
+                {
+                    return None;
+                }
+                safe.push(part);
+            }
         }
     }
     (!safe.as_os_str().is_empty()).then_some(safe)
+}
+
+fn has_windows_drive_prefix(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn validate_extracted_update_payload(source_dir: &Path) -> Result<(), String> {
@@ -1638,6 +1659,9 @@ mod tests {
         );
         assert!(safe_zip_relative_path("../syncplay-gui.exe").is_none());
         assert!(safe_zip_relative_path("C:/Windows/syncplay-gui.exe").is_none());
+        assert!(safe_zip_relative_path(r"C:\Windows\syncplay-gui.exe").is_none());
+        assert!(safe_zip_relative_path(r"\Windows\syncplay-gui.exe").is_none());
+        assert!(safe_zip_relative_path(r"bin\..\syncplay-gui.exe").is_none());
     }
 
     #[test]
