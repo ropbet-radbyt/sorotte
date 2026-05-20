@@ -252,6 +252,134 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_player_without_remote_playstate()
+ {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        applied_pauses: Vec<bool>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn set_paused(&mut self, paused: bool) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .applied_pauses
+                .push(paused);
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSessionState {
+        telemetry_updates: Vec<(Option<bool>, Option<f64>)>,
+    }
+
+    struct RecordingSessionRuntimeAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
+        local_actions: Vec<GuiAttachedPlayerRuntimeAction>,
+    }
+
+    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
+        fn take_attached_player_local_runtime_actions(
+            &mut self,
+        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+            Ok(std::mem::take(&mut self.local_actions))
+        }
+
+        fn sync_local_playback_telemetry(
+            &mut self,
+            paused: Option<bool>,
+            position_seconds: Option<f64>,
+        ) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .telemetry_updates
+                .push((paused, position_seconds));
+            Ok(())
+        }
+
+        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn connect_public_server(
+            &mut self,
+            _selected_server: Option<(String, String)>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn refresh_public_servers(
+            &mut self,
+            _current_servers: Vec<(String, String)>,
+            _language: Option<&str>,
+        ) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn search_missing_media(
+            &mut self,
+            _directories: Vec<String>,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let session_state =
+        std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
+        Box::new(RecordingSessionRuntimeAdapter {
+            state: session_state.clone(),
+            local_actions: vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+        }),
+    );
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.player_local_file = Some(
+        syncplay_player_api::LocalFileUpdate::new("episode2.mkv")
+            .with_path("C:/Media/episode2.mkv".to_owned()),
+    );
+    owner.player_local_file_placeholder = false;
+    owner.player_paused = Some(true);
+    owner.player_position_seconds = Some(0.0);
+
+    let state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .applied_pauses,
+        vec![false],
+        "client-core autoplay unpause must be applied to the attached player even before a remote room playstate exists"
+    );
+    assert_eq!(
+        session_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .telemetry_updates,
+        vec![(Some(false), Some(0.0))],
+        "the applied local autoplay unpause should be mirrored back into session telemetry"
+    );
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_eof() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {

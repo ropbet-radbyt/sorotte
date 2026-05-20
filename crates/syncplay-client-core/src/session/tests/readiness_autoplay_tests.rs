@@ -522,6 +522,46 @@ fn autoplay_check_starts_countdown_when_conditions_are_met() {
 }
 
 #[test]
+fn autoplay_check_waits_for_pending_playlist_index_reset() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
+    session
+            .apply_message_json(
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"bob.mp4"},"isReady":true}}}}"#,
+            )
+            .expect("other user ready state should apply");
+    session.set_autoplay_enabled(false);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(5);
+    session.local_paused = Some(true);
+    session.begin_local_playlist_index_reset_intent(true, 10.0);
+
+    session.autoplay_check(true, true, false, true);
+
+    assert!(
+        !session.autoplay_timer_is_running(),
+        "playlist auto-advance autoplay should wait until the new media reset is applied"
+    );
+    assert_eq!(
+        session.take_pending_playlist_index_reset_intent_at(70.0),
+        Some(true)
+    );
+    let recently_advanced = session.recently_advanced(70.1);
+    session.autoplay_check(true, true, false, recently_advanced);
+
+    assert!(
+        session.autoplay_timer_is_running(),
+        "applying the pending playlist reset should reopen the recently-advanced autoplay window"
+    );
+}
+
+#[test]
 fn autoplay_check_does_not_start_countdown_while_paused_for_cache() {
     let mut session = ClientSession::default();
     session

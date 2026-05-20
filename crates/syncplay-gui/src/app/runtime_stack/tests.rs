@@ -1,4 +1,7 @@
-use super::{GuiClientCoreChatSessionRuntimeAdapter, GuiSessionRuntimeAdapter};
+use super::{
+    GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
+    GuiSessionRuntimeAdapter,
+};
 
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{

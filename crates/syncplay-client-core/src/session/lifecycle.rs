@@ -68,6 +68,7 @@ impl ClientSession {
     pub(super) fn reset_playlist_index_transition_tracking(&mut self) {
         self.received_first_playlist_index = false;
         self.pending_playlist_index_reset_pause_before_sync = None;
+        self.pending_playlist_index_reset_refresh_recently_advanced = false;
         self.suppress_next_self_playlist_index_reset = false;
         self.playlist_active_targets_before_index_update.clear();
     }
@@ -106,13 +107,29 @@ impl ClientSession {
         self.queue_playlist_index_reset_intent(pause_before_sync);
         self.suppress_next_self_playlist_index_reset = true;
         self.last_advanced_at_seconds = Some(now_seconds);
+        self.pending_playlist_index_reset_refresh_recently_advanced = true;
         self.note_recent_rewind(now_seconds);
     }
 
     pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
+        self.take_pending_playlist_index_reset_intent_at(
+            unix_wall_clock_time_seconds_legacy_compatible(),
+        )
+    }
+
+    pub(crate) fn take_pending_playlist_index_reset_intent_at(
+        &mut self,
+        now_seconds: f64,
+    ) -> Option<bool> {
         let pending_reset = self.pending_playlist_index_reset_pause_before_sync.take();
         if pending_reset.is_some() {
-            self.note_recent_rewind(unix_wall_clock_time_seconds_legacy_compatible());
+            if self.pending_playlist_index_reset_refresh_recently_advanced
+                && now_seconds.is_finite()
+            {
+                self.last_advanced_at_seconds = Some(now_seconds);
+            }
+            self.pending_playlist_index_reset_refresh_recently_advanced = false;
+            self.note_recent_rewind(now_seconds);
         }
         pending_reset
     }

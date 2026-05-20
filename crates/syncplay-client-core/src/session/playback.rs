@@ -389,6 +389,9 @@ impl ClientSession {
         if self.local_paused_for_cache == Some(true) {
             return false;
         }
+        if self.has_pending_playlist_index_reset_intent() {
+            return false;
+        }
         if is_playing_music {
             return true;
         }

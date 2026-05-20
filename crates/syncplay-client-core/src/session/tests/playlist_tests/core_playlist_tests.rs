@@ -28,6 +28,34 @@ fn recently_advanced_tracks_local_playlist_index_updates() {
 }
 
 #[test]
+fn recently_advanced_refreshes_when_local_playlist_reset_is_applied() {
+    let mut session = ClientSession::default();
+
+    session.begin_local_playlist_index_reset_intent(true, 10.0);
+    assert!(session.recently_advanced(17.9));
+    assert!(!session.recently_advanced(18.1));
+
+    assert_eq!(
+        session.take_pending_playlist_index_reset_intent_at(70.0),
+        Some(true)
+    );
+    assert!(session.recently_advanced(77.9));
+    assert!(!session.recently_advanced(78.1));
+}
+
+#[test]
+fn recently_advanced_does_not_refresh_for_remote_playlist_reset() {
+    let mut session = ClientSession::default();
+
+    session.queue_playlist_index_reset_intent(false);
+    assert_eq!(
+        session.take_pending_playlist_index_reset_intent_at(70.0),
+        Some(false)
+    );
+    assert!(!session.recently_advanced(70.1));
+}
+
+#[test]
 fn local_playlist_actions_are_suppressed_when_server_shared_playlists_disabled() {
     let mut session = ClientSession::default();
     session

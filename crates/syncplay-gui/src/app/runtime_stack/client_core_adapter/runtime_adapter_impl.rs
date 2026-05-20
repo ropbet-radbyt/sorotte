@@ -762,6 +762,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
+    fn take_attached_player_local_runtime_actions(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(std::mem::take(
+            &mut self.pending_attached_player_local_runtime_actions,
+        ))
+    }
+
     fn attached_player_runtime_actions(
         &mut self,
         now_seconds: f64,
