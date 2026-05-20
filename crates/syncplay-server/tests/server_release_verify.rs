@@ -450,6 +450,11 @@ fn release_verify_tls_and_idle_timeout_behavior() {
 
 #[test]
 fn release_verify_real_python_clients_against_rust_binary() {
+    if !strict_release_required() {
+        eprintln!("legacy Python client release verification skipped outside strict release runs");
+        return;
+    }
+
     let port = reserve_ipv4_port();
     let mut server = ServerProcess::spawn(&server_args(
         port,
