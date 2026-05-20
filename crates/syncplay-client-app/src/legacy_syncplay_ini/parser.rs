@@ -79,7 +79,8 @@ pub fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredCl
                 }
                 "mediasearchdirectories" => {
                     if let Some(parsed) = parse_serialized_string_list_legacy_compatible(&value) {
-                        settings.media_search_directories = Some(parsed);
+                        settings.media_search_directories =
+                            Some(normalize_media_search_directories(parsed));
                     }
                 }
                 "publicservers" => {
@@ -395,4 +396,14 @@ pub fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredCl
         }
     }
     settings
+}
+
+fn normalize_media_search_directories(directories: Vec<String>) -> Vec<String> {
+    directories
+        .into_iter()
+        .filter_map(|directory| {
+            let directory = directory.trim();
+            (!directory.is_empty()).then(|| directory.to_owned())
+        })
+        .collect()
 }

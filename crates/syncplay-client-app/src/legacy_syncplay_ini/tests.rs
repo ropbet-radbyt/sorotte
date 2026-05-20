@@ -65,6 +65,23 @@ fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_and_reads_known_sect
 }
 
 #[test]
+fn parse_syncplay_ini_stored_client_settings_mvp_filters_blank_media_search_directories() {
+    let settings = parse_syncplay_ini_stored_client_settings_mvp(
+        "[client_settings]\n\
+         mediaSearchDirectories = ['Z:/Anime/Seasonal', '', ' Z:/Anime/Temp ', '', 'Z:/Anime/Anime Shows', '']\n",
+    );
+
+    assert_eq!(
+        settings.media_search_directories,
+        Some(vec![
+            "Z:/Anime/Seasonal".to_owned(),
+            "Z:/Anime/Temp".to_owned(),
+            "Z:/Anime/Anime Shows".to_owned(),
+        ])
+    );
+}
+
+#[test]
 fn upsert_syncplay_ini_stored_client_settings_mvp_preserves_existing_entries() {
     let updated = upsert_syncplay_ini_stored_client_settings_mvp(
         "[misc]\nfoo = bar\n[client_settings]\nname = old\n",
