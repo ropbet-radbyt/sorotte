@@ -2,9 +2,10 @@ name: syncplay-gui release
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches:
-      - main
+      - "**"
     tags:
       - "v*"
 
@@ -32,11 +33,17 @@ jobs:
         shell: pwsh
         run: cargo test -p syncplay-gui update_
 
+      - name: Build GUI release binaries
+        shell: pwsh
+        run: |
+          cargo build --release -p syncplay-gui --bin syncplay-gui
+          cargo build --release -p syncplay-gui --bin syncplay-gui-updater
+
       - name: Package GUI release
         shell: pwsh
         run: |
           $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
-          ./scripts/package-gui-release.ps1 -Channel $channel
+          ./scripts/package-gui-release.ps1 -Channel $channel -SkipBuild
 
       - name: Upload GUI package artifact
         uses: actions/upload-artifact@v4
