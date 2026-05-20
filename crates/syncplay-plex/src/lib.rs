@@ -14,6 +14,7 @@ use syncplay_player_api::LocalFileUpdate;
 const DEFAULT_PLEX_TV_BASE_URL: &str = "https://plex.tv";
 const DEFAULT_PLEX_AUTH_APP_URL: &str = "https://app.plex.tv/auth";
 const DEFAULT_CLIENT_PRODUCT: &str = "Syncplay Rust";
+const DEFAULT_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_TIMELINE_INTERVAL: Duration = Duration::from_secs(10);
 const MATCH_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const SEEK_REPORT_THRESHOLD_MILLIS: i64 = 15_000;
@@ -631,10 +632,39 @@ impl PlexHttpClient {
             HeaderName::from_static("x-plex-product"),
             &self.product,
         );
+        insert_header_value(
+            &mut headers,
+            HeaderName::from_static("x-plex-version"),
+            DEFAULT_CLIENT_VERSION,
+        );
+        insert_header_value(
+            &mut headers,
+            HeaderName::from_static("x-plex-platform"),
+            plex_client_platform(),
+        );
+        insert_header_value(
+            &mut headers,
+            HeaderName::from_static("x-plex-device"),
+            plex_client_platform(),
+        );
+        insert_header_value(
+            &mut headers,
+            HeaderName::from_static("x-plex-device-name"),
+            &self.product,
+        );
         if let Some(token) = token {
             insert_header_value(&mut headers, HeaderName::from_static("x-plex-token"), token);
         }
         headers
+    }
+
+    fn append_plex_identity_query_params(&self, query: &mut Vec<(String, String)>) {
+        push_query_param(query, "X-Plex-Client-Identifier", &self.client_identifier);
+        push_query_param(query, "X-Plex-Product", &self.product);
+        push_query_param(query, "X-Plex-Version", DEFAULT_CLIENT_VERSION);
+        push_query_param(query, "X-Plex-Platform", plex_client_platform());
+        push_query_param(query, "X-Plex-Device", plex_client_platform());
+        push_query_param(query, "X-Plex-Device-Name", &self.product);
     }
 }
 
@@ -686,13 +716,15 @@ impl PlexSyncTransport for PlexHttpClient {
         }
         let url = format!("{}/:/timeline", server_url.trim_end_matches('/'));
         let mut query = vec![
-            ("ratingKey", report.rating_key.as_str()),
-            ("state", report.state.as_plex_value()),
+            ("ratingKey".to_owned(), report.rating_key.clone()),
+            ("state".to_owned(), report.state.as_plex_value().to_owned()),
         ];
-        let time = report.time_millis.to_string();
-        let duration = report.duration_millis.unwrap_or(0).to_string();
-        query.push(("time", &time));
-        query.push(("duration", &duration));
+        query.push(("time".to_owned(), report.time_millis.to_string()));
+        query.push((
+            "duration".to_owned(),
+            report.duration_millis.unwrap_or(0).to_string(),
+        ));
+        self.append_plex_identity_query_params(&mut query);
 
         let response = self
             .client
@@ -1630,6 +1662,28 @@ fn insert_header_value(
     }
 }
 
+fn push_query_param(query: &mut Vec<(String, String)>, name: &str, value: &str) {
+    if !value.trim().is_empty() {
+        query.push((name.to_owned(), value.to_owned()));
+    }
+}
+
+fn plex_client_platform() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "Windows",
+        "macos" => "macOS",
+        "ios" => "iOS",
+        "android" => "Android",
+        "linux" => "Linux",
+        "freebsd" => "FreeBSD",
+        "openbsd" => "OpenBSD",
+        "netbsd" => "NetBSD",
+        "dragonfly" => "DragonFly BSD",
+        "solaris" => "Solaris",
+        _ => std::env::consts::OS,
+    }
+}
+
 fn normalize_path_key(path: &str) -> String {
     path.trim()
         .replace('\\', "/")
@@ -1851,6 +1905,62 @@ mod tests {
         assert_eq!(
             session.auth_url,
             "https://app.plex.tv/auth#?clientID=client%20id&code=ABCD&context%5Bdevice%5D%5Bproduct%5D=Product"
+        );
+    }
+
+    #[test]
+    fn plex_headers_include_play_history_identity_fields() {
+        let client = PlexHttpClient::with_base_urls(
+            "https://plex.invalid",
+            "https://app.plex.tv/auth",
+            "history-client",
+            "SyncplayHistory",
+        )
+        .expect("Plex client should construct");
+
+        let headers = client.plex_headers(Some("server-token"));
+
+        assert_eq!(
+            headers
+                .get("x-plex-client-identifier")
+                .and_then(|value| value.to_str().ok()),
+            Some("history-client")
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-product")
+                .and_then(|value| value.to_str().ok()),
+            Some("SyncplayHistory")
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-version")
+                .and_then(|value| value.to_str().ok()),
+            Some(DEFAULT_CLIENT_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-platform")
+                .and_then(|value| value.to_str().ok()),
+            Some(plex_client_platform())
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-device")
+                .and_then(|value| value.to_str().ok()),
+            Some(plex_client_platform())
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-device-name")
+                .and_then(|value| value.to_str().ok()),
+            Some("SyncplayHistory")
+        );
+        assert_eq!(
+            headers
+                .get("x-plex-token")
+                .and_then(|value| value.to_str().ok()),
+            Some("server-token")
         );
     }
 
@@ -2109,6 +2219,67 @@ mod tests {
             .to_ascii_lowercase();
         assert!(request.starts_with("get / http/1.1"));
         assert!(request.contains("x-plex-token: server-token"));
+    }
+
+    #[test]
+    fn timeline_report_sends_identity_as_headers_and_query_params() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Plex test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("Plex test listener should expose its address");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("Plex test server should accept");
+            let mut buffer = [0_u8; 4096];
+            let read = stream
+                .read(&mut buffer)
+                .expect("Plex test server should read request");
+            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            tx.send(request)
+                .expect("Plex test server should send captured request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                )
+                .expect("Plex test server should write response");
+        });
+        let client = PlexHttpClient::with_base_urls(
+            "https://plex.invalid",
+            "https://app.plex.tv/auth",
+            "history-client",
+            "SyncplayHistory",
+        )
+        .expect("Plex client should construct");
+        let report = PlexTimelineReport {
+            rating_key: "episode-7".to_owned(),
+            state: PlexTimelineState::Playing,
+            time_millis: 42_000,
+            duration_millis: Some(1_200_000),
+        };
+
+        client
+            .report_timeline(&format!("http://{address}"), "server-token", &report)
+            .expect("timeline report should succeed");
+
+        let request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test should capture Plex timeline request");
+        let lower_request = request.to_ascii_lowercase();
+        assert!(request.starts_with("GET /:/timeline?"));
+        assert!(request.contains("ratingKey=episode-7"));
+        assert!(request.contains("state=playing"));
+        assert!(request.contains("time=42000"));
+        assert!(request.contains("duration=1200000"));
+        assert!(request.contains("X-Plex-Client-Identifier=history-client"));
+        assert!(request.contains("X-Plex-Product=SyncplayHistory"));
+        assert!(request.contains("X-Plex-Version="));
+        assert!(request.contains("X-Plex-Platform="));
+        assert!(request.contains("X-Plex-Device="));
+        assert!(request.contains("X-Plex-Device-Name=SyncplayHistory"));
+        assert!(lower_request.contains("x-plex-product: syncplayhistory"));
+        assert!(lower_request.contains("x-plex-platform:"));
+        assert!(lower_request.contains("x-plex-device-name: syncplayhistory"));
+        assert!(lower_request.contains("x-plex-token: server-token"));
     }
 
     #[test]
