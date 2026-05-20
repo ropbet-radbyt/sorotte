@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
 
 #[test]
 fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof() {
@@ -150,6 +151,104 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         1,
         "the EOF auto-advance should stay latched until the player leaves the end-of-file state"
     );
+}
+
+#[test]
+fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced_playlist_item() {
+    #[derive(Debug, Default)]
+    struct RecordingPlayerState {
+        opened_paths: Vec<String>,
+    }
+
+    struct RecordingPlayerAdapter {
+        state: std::sync::Arc<std::sync::Mutex<RecordingPlayerState>>,
+    }
+
+    impl PlayerAdapter for RecordingPlayerAdapter {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn open_file(&mut self, path: &str) -> Result<(), syncplay_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .opened_paths
+                .push(path.to_owned());
+            Ok(())
+        }
+    }
+
+    fn ready_state_from_protocol_line(line: &str) -> Option<bool> {
+        let message = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        message.get("Set")?.get("ready")?.get("isReady")?.as_bool()
+    }
+
+    let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+    let _ = session
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready state should apply");
+
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let root = test_temp_root("auto-advanced-playlist-ready-preserve");
+    let episode_two_path = root.join("episode2.mkv");
+    std::fs::write(&episode_two_path, b"test")
+        .expect("auto-advance ready preservation fixture should be written");
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(session));
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
+        state: player_state.clone(),
+    })));
+    owner.active_shared_playlist_index = Some(0);
+    owner.playlist_auto_advance_eof_latched = true;
+    owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .note_local_playlist_index_reset_intent(true);
+
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettingsMvp::default()
+    });
+    state.apply_shared_playlist_entries(
+        vec![episode_two_path.to_string_lossy().into_owned()],
+        Some(0),
+        false,
+    );
+    let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+
+    assert_eq!(opened, SelectedPlaylistMediaSyncOutcome::OpenedNewMedia);
+    assert_eq!(
+        player_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .opened_paths,
+        vec![episode_two_path.to_string_lossy().into_owned()]
+    );
+    let open_lines = owner
+        .session
+        .as_mut()
+        .expect("session should exist")
+        .flush_outbound_protocol_lines()
+        .expect("open protocol lines should encode");
+    assert!(
+        open_lines
+            .iter()
+            .all(|line| ready_state_from_protocol_line(line) != Some(false)),
+        "opening the auto-advanced playlist item should not cancel readiness/autoplay; lines={open_lines:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

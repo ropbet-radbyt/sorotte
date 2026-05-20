@@ -263,7 +263,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_local_file_placeholder = true;
                 self.player_position_seconds = Some(0.0);
                 self.refresh_player_state_impl();
-                if let Some(session) = self.session.as_mut() {
+                let preserve_ready_for_auto_advanced_playlist_item =
+                    self.playlist_auto_advance_eof_latched
+                        && self.session.as_ref().is_some_and(|session| {
+                            session.has_pending_playlist_index_reset_intent()
+                        });
+                if !preserve_ready_for_auto_advanced_playlist_item
+                    && let Some(session) = self.session.as_mut()
+                {
                     let _ = session.mark_local_media_opened_not_ready();
                 }
                 if browser_is_url(&selected_path) && paths.len() == 1 {
