@@ -17,10 +17,15 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
         label: "Language",
         value: "zz".to_owned(),
     }));
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "System",
+        label: "Update Channel",
+        value: "nightly".to_owned(),
+    }));
 
     assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(state.open_modal, Some(GuiShellModal::About));
-    assert_eq!(state.validation.issues.len(), 2);
+    assert_eq!(state.validation.issues.len(), 3);
     assert!(
         state
             .validation
@@ -35,13 +40,21 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
             .iter()
             .any(|issue| issue.scope == "System" && issue.label == "Language")
     );
+    assert!(
+        state
+            .validation
+            .issues
+            .iter()
+            .any(|issue| issue.scope == "System" && issue.label == "Update Channel")
+    );
 
     let rendered = state.render_lines().join("\n");
-    assert!(rendered.contains("[Validation] status=2 issue(s), last_action_error=(none)"));
+    assert!(rendered.contains("[Validation] status=3 issue(s), last_action_error=(none)"));
     assert!(rendered.contains("Connection / Port: must be a valid TCP port from 1 to 65535."));
     assert!(
         rendered.contains("System / Language: must be one of the supported legacy language tags.")
     );
+    assert!(rendered.contains("System / Update Channel: must be stable or dev."));
     assert!(rendered.contains("active_view=setup"));
     assert!(rendered.contains("open_modal=about"));
 }

@@ -32,6 +32,7 @@ pub(crate) fn persist_syncplay_cli_stored_settings_mvp_legacy_compatible(
     let settings = StoredClientSettingsMvp {
         language: None,
         check_for_updates_automatically: None,
+        update_channel: None,
         last_checked_for_updates: None,
         host: Some(config.host.clone()),
         port: Some(config.port),

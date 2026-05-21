@@ -46,6 +46,9 @@ pub fn parse_syncplay_ini_stored_client_settings_mvp(contents: &str) -> StoredCl
                         settings.check_for_updates_automatically = Some(parsed);
                     }
                 }
+                "updatechannel" if !value.is_empty() => {
+                    settings.update_channel = Some(value.to_ascii_lowercase());
+                }
                 "lastcheckedforupdates" if !value.is_empty() => {
                     settings.last_checked_for_updates = Some(value)
                 }

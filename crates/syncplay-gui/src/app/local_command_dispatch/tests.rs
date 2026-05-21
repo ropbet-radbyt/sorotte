@@ -52,7 +52,12 @@ fn update_candidate() -> UpdateCandidate {
 
 #[test]
 fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
-    let state = runtime_ready_state();
+    let mut state = runtime_ready_state();
+    assert!(state.apply(GuiShellAction::EditConfigurationText {
+        section: "System",
+        label: "Update Channel",
+        value: "dev".to_owned(),
+    }));
     let plan = GuiShellDispatchPlan::from_shell_actions(
         &state,
         vec![GuiShellAction::BeginUpdateCheck {
@@ -70,6 +75,27 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
         plan.runtime_requests,
         vec![GuiRuntimeRequest::CheckForUpdates {
             language: "en".to_owned(),
+            update_channel: Some("dev".to_owned()),
+            user_initiated: true,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_preserves_install_marker_update_channel_fallback() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::BeginUpdateCheck {
+            user_initiated: true,
+        }],
+    );
+
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::CheckForUpdates {
+            language: "en".to_owned(),
+            update_channel: None,
             user_initiated: true,
         }]
     );

@@ -18,6 +18,9 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     let unpause_action = configuration_tree
         .find("config:Readiness:Unpause Action")
         .unwrap();
+    let update_channel = configuration_tree
+        .find("config:System:Update Channel")
+        .unwrap();
 
     assert_eq!(
         GuiWidgetEguiRenderer::actions_for_text_input_node(
@@ -63,6 +66,10 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
             "IfMinUsersReady".to_owned(),
             "Always".to_owned(),
         ])
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::configuration_select_options_for_node(&state, update_channel),
+        Some(vec!["stable".to_owned(), "dev".to_owned()])
     );
 
     let chat_state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {

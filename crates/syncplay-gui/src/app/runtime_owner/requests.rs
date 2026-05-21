@@ -46,10 +46,14 @@ impl GuiPersistedConfigRuntimeOwner {
         match request {
             GuiRuntimeRequest::CheckForUpdates {
                 language,
+                update_channel,
                 user_initiated,
             } => {
-                let result =
-                    remote_services::check_for_updates(Some(language.as_str()), user_initiated);
+                let result = remote_services::check_for_updates(
+                    Some(language.as_str()),
+                    user_initiated,
+                    update_channel.as_deref(),
+                );
                 Self::push_actions_and_project(
                     handle,
                     projected_state,

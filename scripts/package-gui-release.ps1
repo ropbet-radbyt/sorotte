@@ -122,6 +122,7 @@ foreach ($pdbName in @("syncplay_gui.pdb", "syncplay-gui.pdb", "syncplay_gui_upd
 
 $installMarker = [ordered]@{
     app = "syncplay-gui"
+    channel = $Channel
     version = $version
     git_sha = $gitSha
     created_at_utc = $createdAtUtc

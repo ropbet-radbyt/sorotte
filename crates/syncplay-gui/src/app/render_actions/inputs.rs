@@ -248,6 +248,9 @@ impl GuiWidgetEguiRenderer {
                 .split('/')
                 .map(str::to_owned)
                 .collect(),
+            ("System", "Update Channel") => {
+                ["stable", "dev"].into_iter().map(str::to_owned).collect()
+            }
             _ => return None,
         })
     }

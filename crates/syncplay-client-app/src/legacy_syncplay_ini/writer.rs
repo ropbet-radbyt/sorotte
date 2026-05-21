@@ -355,6 +355,9 @@ fn upsert_syncplay_ini_stored_client_settings_mvp_with_plex_identity_clear(
             format_ini_bool_legacy_compatible(value),
         );
     }
+    if let Some(value) = settings.update_channel.as_deref() {
+        upsert_ini_value_legacy_compatible(&mut lines, "general", "updateChannel", value);
+    }
     if let Some(value) = settings.last_checked_for_updates.as_deref() {
         upsert_ini_value_legacy_compatible(&mut lines, "general", "lastCheckedForUpdates", value);
     }

@@ -112,6 +112,15 @@ impl SyncplayGuiShellAppState {
         self.runtime_language_tag_legacy_compatible().to_owned()
     }
 
+    pub(super) fn update_check_channel(&self) -> Option<String> {
+        self.configuration
+            .settings
+            .update_channel
+            .as_deref()
+            .and_then(normalized_editable_text)
+            .map(|value| value.to_ascii_lowercase())
+    }
+
     pub(super) fn begin_update_check(&mut self, user_initiated: bool) -> bool {
         self.update_check.status = Some(remote_services::LegacyUpdateCheckStatus::Checking);
         self.update_check.message = Some("Checking GitHub for Syncplay GUI updates...".to_owned());

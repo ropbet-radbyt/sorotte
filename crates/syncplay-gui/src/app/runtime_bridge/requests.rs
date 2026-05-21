@@ -13,6 +13,7 @@ use super::*;
 pub(in crate::app) enum GuiRuntimeRequest {
     CheckForUpdates {
         language: String,
+        update_channel: Option<String>,
         user_initiated: bool,
     },
     DownloadUpdate(remote_services::UpdateCandidate),

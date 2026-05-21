@@ -394,6 +394,13 @@ impl SyncplayGuiShellAppState {
             |value| normalized_legacy_runtime_language_tag_legacy_compatible(value).is_some(),
             "must be one of the supported legacy language tags.",
         );
+        self.push_parse_validation_issue(
+            &mut issues,
+            "System",
+            "Update Channel",
+            |value| matches!(value.to_ascii_lowercase().as_str(), "stable" | "dev"),
+            "must be stable or dev.",
+        );
 
         let mut seen_directories = std::collections::BTreeSet::new();
         for directory in &self.media_search.directories {

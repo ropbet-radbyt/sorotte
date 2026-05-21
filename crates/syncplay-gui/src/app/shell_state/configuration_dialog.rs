@@ -100,6 +100,7 @@ pub(in crate::app) struct GuiOsdSection {
 pub(in crate::app) struct GuiSystemSection {
     pub(in crate::app) language_tag: String,
     pub(in crate::app) check_for_updates_automatically: bool,
+    pub(in crate::app) update_channel_label: String,
     pub(in crate::app) autosave_joins_to_list: bool,
     pub(in crate::app) force_gui_prompt: bool,
     pub(in crate::app) compatibility_startup_entry_count: usize,

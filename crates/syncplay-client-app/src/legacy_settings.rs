@@ -12,6 +12,7 @@ pub enum AutoplayThresholdOverride {
 pub struct StoredClientSettingsMvp {
     pub language: Option<String>,
     pub check_for_updates_automatically: Option<bool>,
+    pub update_channel: Option<String>,
     pub last_checked_for_updates: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -95,6 +96,7 @@ impl fmt::Debug for StoredClientSettingsMvp {
                 "check_for_updates_automatically",
                 &self.check_for_updates_automatically,
             )
+            .field("update_channel", &self.update_channel)
             .field("last_checked_for_updates", &self.last_checked_for_updates)
             .field("host", &self.host)
             .field("port", &self.port)
