@@ -628,6 +628,7 @@ impl GuiPersistedConfigRuntimeOwner {
             clear_legacy_gui_qsettings_files_at_root(&root)?;
             clear_persisted_media_search_cache_at_root(&root)?;
         }
+        self.clear_persisted_plex_match_cache()?;
         self.session = None;
         self.session_projects_to_shell = false;
         self.session_transport = None;

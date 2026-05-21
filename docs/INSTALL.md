@@ -41,6 +41,7 @@ cargo run --release -p syncplay-gui --bin syncplay-gui
 ```
 
 The GUI supports saved server/user/room settings and GUI-owned `mpv` startup. Configure the `mpv` path in the GUI if automatic discovery does not find it.
+Packaged Windows GUI builds check the public downloads repository at <https://github.com/ropbet-radbyt/syncplay-rs-downloads/releases> for self-updates. Stable builds read the latest non-prerelease release; dev-channel builds read the moving `syncplay-gui-dev` prerelease.
 
 ## Run The CLI Client
 
@@ -97,6 +98,14 @@ powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1
 ```
 
 Artifacts are written under `target/server-release/artifacts/` and include a `.sha256` checksum sidecar.
+
+## Package The GUI
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
+```
+
+Artifacts are written under `target/gui-release/artifacts/` and include the Windows package, a `.sha256` checksum sidecar, and `syncplay-update-manifest.json`. The `syncplay-gui release` workflow also publishes those files to the public downloads repository when `SYNCPLAY_DOWNLOADS_TOKEN` is configured as a repository secret.
 
 ## Docker Server
 

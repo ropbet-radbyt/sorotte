@@ -25,6 +25,10 @@ impl SyncplayGuiShellAppState {
             | GuiShellAction::DismissUpdateNotice
             | GuiShellAction::BeginUpdateCheck { .. }
             | GuiShellAction::ApplyUpdateCheckResult(_)
+            | GuiShellAction::BeginUpdateDownload
+            | GuiShellAction::ApplyUpdateDownloadResult(_)
+            | GuiShellAction::BeginStagedUpdateApply
+            | GuiShellAction::ApplyStagedUpdateLaunchResult(_)
             | GuiShellAction::ApplyStartupPublicServerCache(_)
             | GuiShellAction::TrustTlsCertificatePrompt
             | GuiShellAction::RejectTlsCertificatePrompt

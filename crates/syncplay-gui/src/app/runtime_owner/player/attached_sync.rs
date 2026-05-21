@@ -1,6 +1,90 @@
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
+    fn apply_attached_player_runtime_actions_impl(
+        &mut self,
+        actions: Vec<GuiAttachedPlayerRuntimeAction>,
+        action_description: &str,
+    ) -> bool {
+        let mut state_changed = false;
+        let user_offset_seconds = self.user_offset_seconds;
+        for action in actions {
+            match action {
+                GuiAttachedPlayerRuntimeAction::Paused(paused) => {
+                    if self.player_paused_for_cache == Some(true) && !paused {
+                        self.pending_attached_cache_unpause = true;
+                        continue;
+                    }
+                    let Some(player) = self.player.as_mut() else {
+                        return state_changed;
+                    };
+                    match player.set_paused(paused) {
+                        Ok(()) => {
+                            self.player_paused = Some(paused);
+                            if !paused {
+                                self.pending_attached_cache_unpause = false;
+                            }
+                            state_changed = true;
+                            if let Some(session) = self.session.as_mut()
+                                && let Err(error) = session.sync_local_playback_telemetry(
+                                    Some(paused),
+                                    self.player_position_seconds,
+                                )
+                            {
+                                eprintln!(
+                                    "warning: failed to mirror attached-player {action_description} pause action into the session runtime: {error}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "warning: failed to apply attached-player {action_description} pause action: {error}"
+                            );
+                        }
+                    }
+                }
+                GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
+                    let sync_position_seconds = (position_seconds + user_offset_seconds).max(0.0);
+                    let Some(player) = self.player.as_mut() else {
+                        return state_changed;
+                    };
+                    match player.set_position(sync_position_seconds) {
+                        Ok(()) => {
+                            self.player_position_seconds = Some(position_seconds);
+                            state_changed = true;
+                            if let Some(session) = self.session.as_mut()
+                                && let Err(error) = session.sync_local_playback_telemetry(
+                                    self.player_paused,
+                                    Some(position_seconds),
+                                )
+                            {
+                                eprintln!(
+                                    "warning: failed to mirror attached-player {action_description} position action into the session runtime: {error}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "warning: failed to apply attached-player {action_description} position action: {error}"
+                            );
+                        }
+                    }
+                }
+                GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
+                    let Some(player) = self.player.as_mut() else {
+                        return state_changed;
+                    };
+                    if let Err(error) = player.set_playback_rate(playback_rate) {
+                        eprintln!(
+                            "warning: failed to apply attached-player {action_description} playback-rate action: {error}"
+                        );
+                    }
+                }
+            }
+        }
+        state_changed
+    }
+
     pub(in crate::app::runtime_owner) fn sync_session_playstate_to_attached_player_impl(
         &mut self,
         state: &SyncplayGuiShellAppState,
@@ -22,6 +106,22 @@ impl GuiPersistedConfigRuntimeOwner {
             self.last_applied_attached_room_playstate = None;
             return;
         }
+        let local_runtime_actions = self
+            .session
+            .as_mut()
+            .map(|session| session.take_attached_player_local_runtime_actions());
+        let mut state_changed = match local_runtime_actions {
+            Some(Ok(actions)) => {
+                self.apply_attached_player_runtime_actions_impl(actions, "local runtime")
+            }
+            Some(Err(error)) => {
+                eprintln!(
+                    "warning: failed to drain attached-player local runtime actions: {error}"
+                );
+                false
+            }
+            None => false,
+        };
         let Some((playstate, raw_playstate, local_username)) =
             self.session.as_ref().and_then(|session| {
                 session
@@ -36,6 +136,9 @@ impl GuiPersistedConfigRuntimeOwner {
             })
         else {
             self.last_applied_attached_room_playstate = None;
+            if state_changed {
+                self.refresh_player_state_impl();
+            }
             return;
         };
         if let Some(suppressed_playstate) = self
@@ -86,7 +189,6 @@ impl GuiPersistedConfigRuntimeOwner {
             || sync_paused_state == Some(true)
             || allow_initial_remote_position_sync;
 
-        let mut state_changed = false;
         let mut room_playstate_sync_failed = false;
         if !playstate_unchanged {
             if let Some(position_seconds) = playstate.position_seconds
@@ -167,83 +269,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 .map(|session| session.attached_player_runtime_actions(system_time_seconds()));
             match attached_runtime_actions {
                 Some(Ok(actions)) => {
-                    for action in actions {
-                        match action {
-                            GuiAttachedPlayerRuntimeAction::Paused(paused) => {
-                                if self.player_paused_for_cache == Some(true) && !paused {
-                                    self.pending_attached_cache_unpause = true;
-                                    continue;
-                                }
-                                let Some(player) = self.player.as_mut() else {
-                                    return;
-                                };
-                                match player.set_paused(paused) {
-                                    Ok(()) => {
-                                        self.player_paused = Some(paused);
-                                        if !paused {
-                                            self.pending_attached_cache_unpause = false;
-                                        }
-                                        state_changed = true;
-                                        if let Some(session) = self.session.as_mut()
-                                            && let Err(error) = session
-                                                .sync_local_playback_telemetry(
-                                                    Some(paused),
-                                                    self.player_position_seconds,
-                                                )
-                                        {
-                                            eprintln!(
-                                                "warning: failed to mirror attached-player pause correction into the session runtime: {error}"
-                                            );
-                                        }
-                                    }
-                                    Err(error) => {
-                                        eprintln!(
-                                            "warning: failed to apply attached-player pause correction: {error}"
-                                        );
-                                    }
-                                }
-                            }
-                            GuiAttachedPlayerRuntimeAction::Position(position_seconds) => {
-                                let sync_position_seconds =
-                                    (position_seconds + user_offset_seconds).max(0.0);
-                                let Some(player) = self.player.as_mut() else {
-                                    return;
-                                };
-                                match player.set_position(sync_position_seconds) {
-                                    Ok(()) => {
-                                        self.player_position_seconds = Some(position_seconds);
-                                        state_changed = true;
-                                        if let Some(session) = self.session.as_mut()
-                                            && let Err(error) = session
-                                                .sync_local_playback_telemetry(
-                                                    self.player_paused,
-                                                    Some(position_seconds),
-                                                )
-                                        {
-                                            eprintln!(
-                                                "warning: failed to mirror desync-corrected playback position into the session runtime: {error}"
-                                            );
-                                        }
-                                    }
-                                    Err(error) => {
-                                        eprintln!(
-                                            "warning: failed to apply attached-player desync position correction: {error}"
-                                        );
-                                    }
-                                }
-                            }
-                            GuiAttachedPlayerRuntimeAction::PlaybackRate(playback_rate) => {
-                                let Some(player) = self.player.as_mut() else {
-                                    return;
-                                };
-                                if let Err(error) = player.set_playback_rate(playback_rate) {
-                                    eprintln!(
-                                        "warning: failed to apply attached-player playback-rate correction: {error}"
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    state_changed |=
+                        self.apply_attached_player_runtime_actions_impl(actions, "correction");
                 }
                 Some(Err(error)) => {
                     eprintln!(

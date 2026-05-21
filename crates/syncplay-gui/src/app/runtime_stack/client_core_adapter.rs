@@ -15,6 +15,7 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) pending_startup_protocol_lines: VecDeque<String>,
     pub(super) next_state_sync_heartbeat_at: Option<Instant>,
     pub(super) next_autoplay_tick_at: Option<Instant>,
+    pub(super) pending_attached_player_local_runtime_actions: Vec<GuiAttachedPlayerRuntimeAction>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
     pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
@@ -61,6 +62,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             pending_startup_protocol_lines: VecDeque::from([hello_json]),
             next_state_sync_heartbeat_at: None,
             next_autoplay_tick_at: None,
+            pending_attached_player_local_runtime_actions: Vec::new(),
             tracked_remote_usernames: BTreeSet::new(),
             optimistic_room_playlist: None,
         })
@@ -332,6 +334,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
+        self.pending_attached_player_local_runtime_actions.clear();
         self.pending_ready_at_start_on_server_hello = true;
         self.request_user_list_on_first_state_without_media = true;
         self.tracked_remote_usernames.clear();
@@ -353,6 +356,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .push_back(Self::hello_json(&username, &room, &self.runtime_settings));
         self.next_state_sync_heartbeat_at = None;
         self.next_autoplay_tick_at = None;
+        self.pending_attached_player_local_runtime_actions.clear();
         self.pending_ready_at_start_on_server_hello =
             self.pending_ready_at_start_on_server_hello || !self.server_handshake_completed();
         self.tracked_remote_usernames.clear();
@@ -601,6 +605,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             return;
         }
 
+        let paused_before_tick = self.runtime.session().local_paused();
         if let Err(error) = self.runtime.tick_autoplay(
             readiness_supported,
             local_can_control,
@@ -613,6 +618,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             });
             self.next_autoplay_tick_at = None;
             return;
+        }
+        if paused_before_tick != Some(false) && self.runtime.session().local_paused() == Some(false)
+        {
+            self.pending_attached_player_local_runtime_actions
+                .push(GuiAttachedPlayerRuntimeAction::Paused(false));
         }
 
         self.next_autoplay_tick_at = if self.runtime.session().autoplay_timer_is_running() {

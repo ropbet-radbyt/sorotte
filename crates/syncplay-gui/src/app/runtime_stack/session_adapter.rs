@@ -258,6 +258,12 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
+    fn take_attached_player_local_runtime_actions(
+        &mut self,
+    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        Ok(Vec::new())
+    }
+
     fn attached_player_runtime_actions(
         &mut self,
         _now_seconds: f64,

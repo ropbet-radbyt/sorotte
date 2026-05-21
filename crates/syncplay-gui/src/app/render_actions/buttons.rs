@@ -433,6 +433,8 @@ impl GuiWidgetEguiRenderer {
                     user_initiated: true,
                 }]
             }
+            "shell:modal:update:download" => vec![GuiShellAction::BeginUpdateDownload],
+            "shell:modal:update:restart" => vec![GuiShellAction::BeginStagedUpdateApply],
             "shell:modal:player-setup:autodetect" => {
                 let mut actions = Self::actions_for_player_setup_autodetect();
                 actions.push(GuiShellAction::CloseModal);

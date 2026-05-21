@@ -47,6 +47,10 @@ pub(super) struct GuiUpdateCheckState {
     pub(super) status: Option<remote_services::LegacyUpdateCheckStatus>,
     pub(super) message: Option<String>,
     pub(super) url: Option<String>,
+    pub(super) candidate: Option<remote_services::UpdateCandidate>,
+    pub(super) download_state: remote_services::UpdateDownloadState,
+    pub(super) staged_update: Option<remote_services::StagedUpdate>,
+    pub(super) self_update_supported: bool,
     pub(super) last_checked_for_updates: Option<String>,
     pub(super) user_initiated: bool,
 }
@@ -76,6 +80,9 @@ impl GuiUpdateCheckState {
             Some(remote_services::LegacyUpdateCheckStatus::UpToDate) => {
                 GuiTransientNotificationLevel::Success
             }
+            Some(remote_services::LegacyUpdateCheckStatus::Checking) => {
+                GuiTransientNotificationLevel::Info
+            }
             Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable) => {
                 GuiTransientNotificationLevel::Info
             }
@@ -87,6 +94,19 @@ impl GuiUpdateCheckState {
 
     pub(super) fn should_open_modal(&self) -> bool {
         self.user_initiated || self.url.is_some()
+    }
+
+    pub(super) fn can_download_update(&self) -> bool {
+        self.candidate.is_some()
+            && self.self_update_supported
+            && !matches!(
+                self.download_state,
+                remote_services::UpdateDownloadState::Downloading
+            )
+    }
+
+    pub(super) fn can_restart_to_update(&self) -> bool {
+        self.staged_update.is_some() && self.self_update_supported
     }
 }
 

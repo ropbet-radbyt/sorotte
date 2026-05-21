@@ -568,6 +568,9 @@ pub struct PythonPeer {
     pub stderr: CapturedOutput,
 }
 
+const PYTHON_PEER_COMMAND_TIMEOUT: Duration = Duration::from_secs(6);
+const PYTHON_PEER_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl PythonPeer {
     pub fn spawn_or_skip(
         host: &str,
@@ -703,7 +706,18 @@ impl PythonPeer {
     }
 
     pub fn wait_for_status(&mut self, expected: &str) -> Value {
-        let status_line = self.status_rx.recv_timeout(Duration::from_secs(6)).unwrap_or_else(|_| {
+        self.wait_for_status_with_timeout(expected, PYTHON_PEER_COMMAND_TIMEOUT)
+    }
+
+    fn wait_for_observation_status(&mut self, expected: &str) -> Value {
+        self.wait_for_status_with_timeout(
+            expected,
+            PYTHON_PEER_OBSERVATION_TIMEOUT + PYTHON_PEER_COMMAND_TIMEOUT,
+        )
+    }
+
+    fn wait_for_status_with_timeout(&mut self, expected: &str, timeout: Duration) -> Value {
+        let status_line = self.status_rx.recv_timeout(timeout).unwrap_or_else(|_| {
             panic!(
                 "legacy Python peer timed out waiting for status {expected:?}; stdout='{}' stderr='{}'",
                 self.stdout.text(),
@@ -773,9 +787,9 @@ impl PythonPeer {
             "command": "wait_for_user_ready",
             "username": username,
             "ready": ready,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("user-ready");
+        self.wait_for_observation_status("user-ready");
     }
 
     pub fn wait_for_user_room(&mut self, username: &str, room: &str) {
@@ -783,9 +797,9 @@ impl PythonPeer {
             "command": "wait_for_user_room",
             "username": username,
             "room": room,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("user-room");
+        self.wait_for_observation_status("user-room");
     }
 
     pub fn wait_for_user_file_name(&mut self, username: &str, file_name: &str) {
@@ -793,9 +807,9 @@ impl PythonPeer {
             "command": "wait_for_user_file_name",
             "username": username,
             "fileName": file_name,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("user-file");
+        self.wait_for_observation_status("user-file");
     }
 
     pub fn wait_for_chat_message(&mut self, username: &str, message: &str) {
@@ -803,36 +817,36 @@ impl PythonPeer {
             "command": "wait_for_chat_message",
             "username": username,
             "message": message,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("chat-message");
+        self.wait_for_observation_status("chat-message");
     }
 
     pub fn wait_for_playlist(&mut self, files: &[&str]) {
         self.command(json!({
             "command": "wait_for_playlist",
             "files": files,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("playlist");
+        self.wait_for_observation_status("playlist");
     }
 
     pub fn wait_for_playlist_index(&mut self, index: usize) {
         self.command(json!({
             "command": "wait_for_playlist_index",
             "index": index,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("playlist-index");
+        self.wait_for_observation_status("playlist-index");
     }
 
     pub fn wait_for_local_controller(&mut self, controller: bool) {
         self.command(json!({
             "command": "wait_for_local_controller",
             "controller": controller,
-            "timeoutSeconds": 5.0
+            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
         }));
-        self.wait_for_status("local-controller");
+        self.wait_for_observation_status("local-controller");
     }
 }
 

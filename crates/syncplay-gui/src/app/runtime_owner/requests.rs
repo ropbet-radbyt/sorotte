@@ -17,6 +17,7 @@ use syncplay_client_app::app_boundary::{
 };
 use syncplay_player_api::PlayerAdapter;
 
+use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
@@ -43,6 +44,37 @@ impl GuiPersistedConfigRuntimeOwner {
         request: GuiRuntimeRequest,
     ) -> bool {
         match request {
+            GuiRuntimeRequest::CheckForUpdates {
+                language,
+                user_initiated,
+            } => {
+                let result =
+                    remote_services::check_for_updates(Some(language.as_str()), user_initiated);
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyUpdateCheckResult(result)],
+                );
+            }
+            GuiRuntimeRequest::DownloadUpdate(candidate) => {
+                let result = remote_services::download_and_stage_update(
+                    &candidate,
+                    self.legacy_gui_qsettings_root().as_deref(),
+                );
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
+                );
+            }
+            GuiRuntimeRequest::ApplyStagedUpdate(staged_update) => {
+                let result = remote_services::launch_staged_update(&staged_update);
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
+                );
+            }
             GuiRuntimeRequest::OpenMediaFiles {
                 paths,
                 load_into_shared_playlist: true,

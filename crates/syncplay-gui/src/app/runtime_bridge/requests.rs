@@ -1,3 +1,4 @@
+use super::super::remote_services;
 use super::*;
 
 #[allow(
@@ -10,6 +11,12 @@ use super::*;
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiRuntimeRequest {
+    CheckForUpdates {
+        language: String,
+        user_initiated: bool,
+    },
+    DownloadUpdate(remote_services::UpdateCandidate),
+    ApplyStagedUpdate(remote_services::StagedUpdate),
     OpenMediaFiles {
         paths: Vec<String>,
         load_into_shared_playlist: bool,

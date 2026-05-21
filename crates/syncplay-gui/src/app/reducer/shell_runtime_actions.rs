@@ -26,6 +26,14 @@ impl SyncplayGuiShellAppState {
             GuiShellAction::ApplyUpdateCheckResult(result) => {
                 self.apply_update_check_result(result)
             }
+            GuiShellAction::BeginUpdateDownload => self.begin_update_download(),
+            GuiShellAction::ApplyUpdateDownloadResult(result) => {
+                self.apply_update_download_result(result)
+            }
+            GuiShellAction::BeginStagedUpdateApply => self.begin_staged_update_apply(),
+            GuiShellAction::ApplyStagedUpdateLaunchResult(result) => {
+                self.apply_staged_update_launch_result(result)
+            }
             GuiShellAction::ApplyStartupPublicServerCache(servers) => {
                 self.apply_startup_public_server_cache(servers)
             }

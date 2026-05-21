@@ -384,3 +384,82 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         "second autoplay tick should persist a countdown entry in system chat"
     );
 }
+
+#[test]
+fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_when_autoplay_fires()
+{
+    let mut state = SyncplayGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    });
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    let startup_lines = adapter
+        .flush_outbound_protocol_lines()
+        .expect("startup protocol lines should encode");
+    assert_eq!(startup_lines.len(), 1);
+
+    adapter
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true,"chat":true}}}"#,
+        )
+        .expect("inbound server hello should apply");
+    adapter
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready should apply");
+    adapter
+        .apply_message_json(
+            r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"episode2.mkv"},"isReady":true}}}}"#,
+        )
+        .expect("remote ready user should apply");
+    adapter.runtime.session_mut().set_autoplay_enabled(true);
+    adapter
+        .runtime
+        .session_mut()
+        .readiness_autoplay_config_mut()
+        .auto_play_threshold = Some(2);
+    adapter
+        .runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &syncplay_player_api::PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(0.0),
+        );
+
+    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        assert!(state.apply(action));
+    }
+    assert!(
+        adapter.runtime.session().autoplay_timer_is_running(),
+        "precondition: autoplay countdown should start while both users are ready"
+    );
+
+    for _ in 0..4 {
+        adapter.next_autoplay_tick_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+            assert!(state.apply(action));
+        }
+    }
+
+    assert_eq!(
+        adapter.runtime.session().local_paused(),
+        Some(false),
+        "the client-core autoplay timer should unpause the local session"
+    );
+    assert_eq!(
+        GuiSessionRuntimeAdapter::take_attached_player_local_runtime_actions(&mut adapter)
+            .expect("attached-player local actions should drain"),
+        vec![GuiAttachedPlayerRuntimeAction::Paused(false)],
+        "the GUI adapter must carry the autoplay unpause to the attached player"
+    );
+    assert!(
+        GuiSessionRuntimeAdapter::take_attached_player_local_runtime_actions(&mut adapter)
+            .expect("attached-player local actions should drain")
+            .is_empty(),
+        "attached-player local actions should be consumed once drained"
+    );
+}
