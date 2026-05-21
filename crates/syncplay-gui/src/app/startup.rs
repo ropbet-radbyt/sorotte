@@ -330,7 +330,9 @@ pub(super) fn gui_startup_remote_actions(
     gui_startup_remote_actions_with_fetchers(
         settings,
         SystemTime::now(),
-        |language| remote_services::check_for_updates(Some(language), false),
+        |language, update_channel| {
+            remote_services::check_for_updates(Some(language), false, update_channel)
+        },
         |language| remote_services::fetch_public_servers(Some(language)),
     )
 }
@@ -338,11 +340,11 @@ pub(super) fn gui_startup_remote_actions(
 pub(super) fn gui_startup_remote_actions_with_fetchers<FUpdate, FPublicServers>(
     settings: &StoredClientSettingsMvp,
     now: SystemTime,
-    fetch_update_check: FUpdate,
+    mut fetch_update_check: FUpdate,
     fetch_public_servers: FPublicServers,
 ) -> Vec<GuiShellAction>
 where
-    FUpdate: Fn(&str) -> remote_services::LegacyUpdateCheckResult,
+    FUpdate: FnMut(&str, Option<&str>) -> remote_services::LegacyUpdateCheckResult,
     FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String>,
 {
     if settings.check_for_updates_automatically != Some(true) {
@@ -356,7 +358,7 @@ where
         .unwrap_or("en");
 
     if remote_services::should_run_automatic_update_check(Some(settings), now) {
-        let result = fetch_update_check(language);
+        let result = fetch_update_check(language, settings.update_channel.as_deref());
         return vec![GuiShellAction::ApplyUpdateCheckResult(result)];
     }
 

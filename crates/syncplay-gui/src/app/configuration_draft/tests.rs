@@ -42,6 +42,7 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
     assert!(draft.apply_bool_value("System", "Autosave Joins To List", true));
     assert!(draft.apply_bool_value("System", "Force GUI Prompt", true));
     assert!(draft.apply_text_value("System", "Language", "pt-br"));
+    assert!(draft.apply_text_value("System", "Update Channel", "DEV"));
 
     let saved = draft.to_stored_settings();
     assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
@@ -89,6 +90,7 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
     assert_eq!(saved.autosave_joins_to_list, Some(true));
     assert_eq!(saved.force_gui_prompt, Some(true));
     assert_eq!(saved.language.as_deref(), Some("pt_BR"));
+    assert_eq!(saved.update_channel.as_deref(), Some("dev"));
     assert_eq!(
         draft.control_value("Privacy", "Trusted Domain Count"),
         Some("2")

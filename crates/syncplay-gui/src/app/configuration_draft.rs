@@ -265,6 +265,10 @@ impl FirstRunConfigurationDialogDraft {
                     .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
                     .map(str::to_owned);
             }
+            ("System", "Update Channel") => {
+                self.settings.update_channel =
+                    normalized_editable_text(value).map(|value| value.to_ascii_lowercase());
+            }
             _ => {}
         }
     }

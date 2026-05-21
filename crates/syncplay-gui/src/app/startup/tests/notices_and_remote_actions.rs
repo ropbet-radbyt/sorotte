@@ -74,6 +74,7 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 fn gui_startup_remote_actions_run_due_automatic_update_checks() {
     let settings = StoredClientSettingsMvp {
         check_for_updates_automatically: Some(true),
+        update_channel: Some("dev".to_owned()),
         last_checked_for_updates: None,
         ..StoredClientSettingsMvp::default()
     };
@@ -91,7 +92,10 @@ fn gui_startup_remote_actions_run_due_automatic_update_checks() {
     let actions = super::super::gui_startup_remote_actions_with_fetchers(
         &settings,
         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
-        |_| expected.clone(),
+        |_, update_channel| {
+            assert_eq!(update_channel, Some("dev"));
+            expected.clone()
+        },
         |_| Ok(Vec::new()),
     );
 
@@ -112,7 +116,7 @@ fn gui_startup_remote_actions_seed_public_servers_when_cache_is_empty() {
     let actions = super::super::gui_startup_remote_actions_with_fetchers(
         &settings,
         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000),
-        |_| panic!("update check should not run when the timestamp is still fresh"),
+        |_, _| panic!("update check should not run when the timestamp is still fresh"),
         |_| Ok(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
     );
 

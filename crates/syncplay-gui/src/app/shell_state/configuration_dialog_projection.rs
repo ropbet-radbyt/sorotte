@@ -156,6 +156,13 @@ impl FirstRunConfigurationDialogState {
                 check_for_updates_automatically: settings
                     .check_for_updates_automatically
                     .unwrap_or(false),
+                update_channel_label: settings
+                    .update_channel
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| remote_services::default_update_channel_label())
+                    .to_ascii_lowercase(),
                 autosave_joins_to_list: settings.autosave_joins_to_list.unwrap_or(false),
                 force_gui_prompt: settings.force_gui_prompt.unwrap_or(false),
                 compatibility_startup_entry_count: startup_entries.len(),
@@ -557,6 +564,11 @@ impl FirstRunConfigurationDialogState {
                         label: "Auto Update",
                         kind: GuiDialogControlKind::Checkbox,
                         value: bool_label(self.system.check_for_updates_automatically).to_owned(),
+                    },
+                    GuiDialogControl {
+                        label: "Update Channel",
+                        kind: GuiDialogControlKind::Select,
+                        value: self.system.update_channel_label.clone(),
                     },
                     GuiDialogControl {
                         label: "Autosave Joins To List",

@@ -27,6 +27,7 @@ fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_and_reads_known_sect
     let settings = parse_syncplay_ini_stored_client_settings_mvp(
         "[general]\n\
          language = PT-br\n\
+         updateChannel = DEV\n\
          [server_data]\n\
          port = 8999\n\
          [client_settings]\n\
@@ -42,6 +43,7 @@ fn parse_syncplay_ini_stored_client_settings_mvp_normalizes_and_reads_known_sect
     );
 
     assert_eq!(settings.language.as_deref(), Some("pt_BR"));
+    assert_eq!(settings.update_channel.as_deref(), Some("dev"));
     assert_eq!(settings.port, Some(8999));
     assert_eq!(
         settings.autoplay_min_users,
@@ -87,12 +89,14 @@ fn upsert_syncplay_ini_stored_client_settings_mvp_preserves_existing_entries() {
         "[misc]\nfoo = bar\n[client_settings]\nname = old\n",
         &StoredClientSettingsMvp {
             username: Some("alice".to_owned()),
+            update_channel: Some("dev".to_owned()),
             ..StoredClientSettingsMvp::default()
         },
     );
 
     assert!(updated.contains("[misc]\nfoo = bar\n"));
     assert!(updated.contains("[client_settings]\nname = alice\n"));
+    assert!(updated.contains("updateChannel = dev\n"));
 }
 
 #[test]

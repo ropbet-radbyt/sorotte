@@ -161,6 +161,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
     let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
         language: Some("pt-br".to_owned()),
         check_for_updates_automatically: Some(true),
+        update_channel: Some("dev".to_owned()),
         force_gui_prompt: Some(true),
         host: Some("syncplay.example".to_owned()),
         port: Some(8995),
@@ -231,6 +232,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
 
     assert_eq!(state.launch_mode, GuiLaunchMode::ExistingConfig);
     assert_eq!(state.system.language_tag, "pt_BR");
+    assert_eq!(state.system.update_channel_label, "dev");
     assert_eq!(state.connection.host.as_deref(), Some("syncplay.example"));
     assert_eq!(state.connection.port, Some(8995));
     assert!(state.connection.server_password_set);
@@ -322,6 +324,13 @@ fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
         .expect("privacy section should exist");
     assert!(privacy.controls.iter().any(|control| {
         control.label == "Trusted Domains" && control.kind == GuiDialogControlKind::TextArea
+    }));
+    let system = sections
+        .iter()
+        .find(|section| section.title == "System")
+        .expect("system section should exist");
+    assert!(system.controls.iter().any(|control| {
+        control.label == "Update Channel" && control.kind == GuiDialogControlKind::Select
     }));
 }
 

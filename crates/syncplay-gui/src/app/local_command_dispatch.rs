@@ -39,6 +39,7 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::CheckForUpdates {
                             language: state.update_check_language(),
+                            update_channel: state.update_check_channel(),
                             user_initiated,
                         });
                 }

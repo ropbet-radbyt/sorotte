@@ -87,9 +87,16 @@ pub(crate) enum UpdateChannel {
 }
 
 impl UpdateChannel {
-    fn from_env() -> Result<Self, String> {
+    fn selected(configured_channel: Option<&str>) -> Result<Self, String> {
         if let Some(value) = env_trimmed(SYNCPLAY_GUI_UPDATE_CHANNEL_ENV) {
-            return Self::from_config_value(&value);
+            return Self::from_config_value(&value)
+                .map_err(|error| format!("{SYNCPLAY_GUI_UPDATE_CHANNEL_ENV} {error}"));
+        }
+        if let Some(value) = configured_channel
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Self::from_config_value(value);
         }
         Ok(current_install_marker()
             .and_then(|marker| marker.channel)
@@ -100,9 +107,7 @@ impl UpdateChannel {
         match value.trim().to_ascii_lowercase().as_str() {
             "stable" => Ok(Self::Stable),
             "dev" => Ok(Self::Dev),
-            other => Err(format!(
-                "{SYNCPLAY_GUI_UPDATE_CHANNEL_ENV} must be stable or dev, got {other:?}"
-            )),
+            other => Err(format!("must be stable or dev, got {other:?}")),
         }
     }
 
@@ -297,10 +302,11 @@ fn parse_public_server_response(body: &str) -> Result<Vec<(String, String)>, Str
 pub(crate) fn check_for_updates(
     language: Option<&str>,
     user_initiated: bool,
+    update_channel: Option<&str>,
 ) -> LegacyUpdateCheckResult {
     let checked_at_utc =
         legacy_utc_timestamp_string_legacy_compatible(std::time::SystemTime::now());
-    match check_for_github_update(language, user_initiated) {
+    match check_for_github_update(language, user_initiated, update_channel) {
         Ok(result) => LegacyUpdateCheckResult {
             checked_at_utc,
             user_initiated,
@@ -320,6 +326,15 @@ pub(crate) fn check_for_updates(
             user_initiated,
         },
     }
+}
+
+pub(crate) fn default_update_channel_label() -> &'static str {
+    env_trimmed(SYNCPLAY_GUI_UPDATE_CHANNEL_ENV)
+        .as_deref()
+        .and_then(|value| UpdateChannel::from_config_value(value).ok())
+        .or_else(|| current_install_marker().and_then(|marker| marker.channel))
+        .unwrap_or(UpdateChannel::Stable)
+        .label()
 }
 
 pub(crate) fn download_and_stage_update(
@@ -357,6 +372,7 @@ pub(crate) fn launch_staged_update(staged_update: &StagedUpdate) -> UpdateApplyL
 fn check_for_github_update(
     language: Option<&str>,
     _user_initiated: bool,
+    update_channel: Option<&str>,
 ) -> Result<LegacyUpdateCheckResult, String> {
     if !update_supported_platform() {
         return Ok(LegacyUpdateCheckResult {
@@ -378,7 +394,7 @@ fn check_for_github_update(
         return Ok(result);
     }
 
-    let channel = UpdateChannel::from_env()?;
+    let channel = UpdateChannel::selected(update_channel)?;
     match channel {
         UpdateChannel::Stable => check_stable_release_update(language),
         UpdateChannel::Dev => check_dev_update(language),
@@ -1737,6 +1753,19 @@ mod tests {
             marker.created_at_utc.as_deref(),
             Some("2026-05-21T11:17:13Z")
         );
+    }
+
+    #[test]
+    fn update_channel_config_values_accept_stable_and_dev_only() {
+        assert_eq!(
+            UpdateChannel::from_config_value("stable"),
+            Ok(UpdateChannel::Stable)
+        );
+        assert_eq!(
+            UpdateChannel::from_config_value("DEV"),
+            Ok(UpdateChannel::Dev)
+        );
+        assert!(UpdateChannel::from_config_value("nightly").is_err());
     }
 
     #[test]
