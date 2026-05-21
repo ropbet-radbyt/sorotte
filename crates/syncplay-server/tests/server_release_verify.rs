@@ -1,6 +1,11 @@
 mod support;
 
-use std::{fs, thread, time::Duration};
+use std::{
+    fs,
+    sync::{Mutex, MutexGuard, OnceLock},
+    thread,
+    time::Duration,
+};
 
 use serde_json::{Value, json};
 use syncplay_protocol::{PingPayload, ProtocolMessage, StatePayload, TlsPayload};
@@ -28,8 +33,16 @@ fn message_pointer_contains(message: &ProtocolMessage, pointer: &str, expected: 
         .is_some_and(|actual| actual.contains(expected))
 }
 
+fn release_verify_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("release verify test lock should not be poisoned")
+}
+
 #[test]
 fn release_verify_listener_startup_modes_and_partial_bind() {
+    let _guard = release_verify_test_lock();
     let ipv4_port = reserve_ipv4_port();
     let mut ipv4_server = ServerProcess::spawn(&server_args(
         ipv4_port,
@@ -70,6 +83,7 @@ fn release_verify_listener_startup_modes_and_partial_bind() {
 
 #[test]
 fn release_verify_direct_protocol_room_state_chat_playlist_and_fanout() {
+    let _guard = release_verify_test_lock();
     let port = reserve_ipv4_port();
     let mut server = ServerProcess::spawn(&server_args(
         port,
@@ -134,6 +148,7 @@ fn release_verify_direct_protocol_room_state_chat_playlist_and_fanout() {
 
 #[test]
 fn release_verify_password_motd_and_protocol_errors() {
+    let _guard = release_verify_test_lock();
     let motd_file = temporary_path("release-motd", "txt");
     fs::write(
         &motd_file,
@@ -262,6 +277,7 @@ fn release_verify_password_motd_and_protocol_errors() {
 
 #[test]
 fn release_verify_persistence_permanent_rooms_and_isolation() {
+    let _guard = release_verify_test_lock();
     let rooms_db = temporary_path("release-rooms", "sqlite3");
     let permanent_rooms = temporary_path("release-permanent-rooms", "txt");
     fs::write(&permanent_rooms, "permanent-room\n").expect("permanent rooms file should write");
@@ -383,6 +399,7 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
 
 #[test]
 fn release_verify_tls_and_idle_timeout_behavior() {
+    let _guard = release_verify_test_lock();
     let cert_path = temporary_directory_path("release-tls");
     write_valid_tls_bundle(&cert_path);
     let port = reserve_ipv4_port();
@@ -450,6 +467,7 @@ fn release_verify_tls_and_idle_timeout_behavior() {
 
 #[test]
 fn release_verify_real_python_clients_against_rust_binary() {
+    let _guard = release_verify_test_lock();
     if !strict_release_required() {
         eprintln!("legacy Python client release verification skipped outside strict release runs");
         return;
