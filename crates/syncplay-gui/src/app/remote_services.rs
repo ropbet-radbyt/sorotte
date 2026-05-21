@@ -29,10 +29,11 @@ const LEGACY_SYNCPLAY_VERSION_STATUS_UPDATE_AVAILABLE: &str = "updateavailale";
 const SYNCPLAY_PUBLIC_SERVER_LIST_URL: &str = "https://syncplay.pl/listpublicservers";
 #[cfg(test)]
 const SYNCPLAY_DOWNLOAD_URL: &str = "https://syncplay.pl/download/";
+const GITHUB_RELEASES_PAGE_URL: &str =
+    "https://github.com/ropbet-radbyt/syncplay-rs-downloads/releases";
 const GITHUB_RELEASE_LATEST_URL: &str =
-    "https://api.github.com/repos/ropbet-radbyt/syncplay-rs/releases/latest";
-const GITHUB_ACTIONS_ARTIFACTS_URL: &str =
-    "https://api.github.com/repos/ropbet-radbyt/syncplay-rs/actions/artifacts";
+    "https://api.github.com/repos/ropbet-radbyt/syncplay-rs-downloads/releases/latest";
+const GITHUB_DEV_RELEASE_URL: &str = "https://api.github.com/repos/ropbet-radbyt/syncplay-rs-downloads/releases/tags/syncplay-gui-dev";
 const SYNCPLAY_GUI_APP_NAME: &str = "syncplay-gui";
 const SYNCPLAY_UPDATE_MANIFEST_NAME: &str = "syncplay-update-manifest.json";
 const SYNCPLAY_GUI_TARGET: &str = "windows-x86_64";
@@ -45,6 +46,7 @@ const SYNCPLAY_PUBLIC_SERVER_LIST_URL_ENV: &str = "SYNCPLAY_GUI_PUBLIC_SERVER_LI
 const SYNCPLAY_PUBLIC_SERVER_LIST_RESPONSE_ENV: &str = "SYNCPLAY_GUI_PUBLIC_SERVER_LIST_RESPONSE";
 const SYNCPLAY_UPDATE_CHECK_RESPONSE_ENV: &str = "SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE";
 const SYNCPLAY_GITHUB_RELEASE_LATEST_URL_ENV: &str = "SYNCPLAY_GUI_GITHUB_RELEASE_LATEST_URL";
+const SYNCPLAY_GITHUB_DEV_RELEASE_URL_ENV: &str = "SYNCPLAY_GUI_GITHUB_DEV_RELEASE_URL";
 const SYNCPLAY_GITHUB_ARTIFACTS_URL_ENV: &str = "SYNCPLAY_GUI_GITHUB_ARTIFACTS_URL";
 const SYNCPLAY_GUI_UPDATE_CHANNEL_ENV: &str = "SYNCPLAY_GUI_UPDATE_CHANNEL";
 const SYNCPLAY_GUI_GITHUB_TOKEN_ENV: &str = "SYNCPLAY_GUI_GITHUB_TOKEN";
@@ -296,7 +298,7 @@ pub(crate) fn check_for_updates(
                 "{error}\n-----\n{}",
                 github_update_check_failed_message(language)
             ),
-            url: Some("https://github.com/ropbet-radbyt/syncplay-rs/releases".to_owned()),
+            url: Some(GITHUB_RELEASES_PAGE_URL.to_owned()),
             candidate: None,
             self_update_supported: self_update_supported_current_install(),
             public_servers: None,
@@ -365,7 +367,7 @@ fn check_for_github_update(
     let channel = UpdateChannel::from_env()?;
     match channel {
         UpdateChannel::Stable => check_stable_release_update(language),
-        UpdateChannel::Dev => check_dev_artifact_update(language),
+        UpdateChannel::Dev => check_dev_update(language),
     }
 }
 
@@ -374,24 +376,8 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
     let release_url = env_trimmed(SYNCPLAY_GITHUB_RELEASE_LATEST_URL_ENV)
         .unwrap_or_else(|| GITHUB_RELEASE_LATEST_URL.to_owned());
     let release: GitHubRelease = github_get_json(&client, &release_url)?;
-    let manifest_asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == SYNCPLAY_UPDATE_MANIFEST_NAME)
-        .ok_or_else(|| "latest GitHub Release does not include a GUI update manifest".to_owned())?;
-    let manifest: UpdateManifest = github_get_json(&client, &manifest_asset.browser_download_url)?;
-    validate_manifest(&manifest, UpdateChannel::Stable)?;
-    let package_asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == manifest.package)
-        .or_else(|| select_stable_gui_release_asset(&release.assets, &manifest.version))
-        .ok_or_else(|| {
-            format!(
-                "latest GitHub Release does not include expected GUI package {}",
-                manifest.package
-            )
-        })?;
+    let (manifest, package_download_url) =
+        release_manifest_and_package_url(&client, &release, UpdateChannel::Stable)?;
 
     let current_version = current_semver()?;
     let candidate_version = parse_version(&manifest.version)?;
@@ -410,7 +396,54 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
 
     let candidate = candidate_from_manifest(
         manifest,
-        package_asset.browser_download_url.clone(),
+        package_download_url,
+        release.html_url,
+        UpdateCandidateSource::ReleaseAsset,
+    );
+    Ok(LegacyUpdateCheckResult {
+        status: LegacyUpdateCheckStatus::UpdateAvailable,
+        message: candidate.summary(),
+        url: candidate.details_url.clone(),
+        candidate: Some(candidate),
+        self_update_supported: self_update_supported_current_install(),
+        public_servers: None,
+        checked_at_utc: String::new(),
+        user_initiated: false,
+    })
+}
+
+fn check_dev_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+    if env_trimmed(SYNCPLAY_GITHUB_ARTIFACTS_URL_ENV).is_some() {
+        check_dev_artifact_update(language)
+    } else {
+        check_dev_release_update(language)
+    }
+}
+
+fn check_dev_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+    let client = github_http_client()?;
+    let release_url = env_trimmed(SYNCPLAY_GITHUB_DEV_RELEASE_URL_ENV)
+        .unwrap_or_else(|| GITHUB_DEV_RELEASE_URL.to_owned());
+    let release: GitHubRelease = github_get_json(&client, &release_url)?;
+    let (manifest, package_download_url) =
+        release_manifest_and_package_url(&client, &release, UpdateChannel::Dev)?;
+
+    if !dev_manifest_newer_than_current(&manifest) {
+        return Ok(LegacyUpdateCheckResult {
+            status: LegacyUpdateCheckStatus::UpToDate,
+            message: github_update_up_to_date_message(language, UpdateChannel::Dev),
+            url: release.html_url,
+            candidate: None,
+            self_update_supported: self_update_supported_current_install(),
+            public_servers: None,
+            checked_at_utc: String::new(),
+            user_initiated: false,
+        });
+    }
+
+    let candidate = candidate_from_manifest(
+        manifest,
+        package_download_url,
         release.html_url,
         UpdateCandidateSource::ReleaseAsset,
     );
@@ -429,7 +462,7 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
 fn check_dev_artifact_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
     let client = github_http_client()?;
     let artifacts_url = env_trimmed(SYNCPLAY_GITHUB_ARTIFACTS_URL_ENV)
-        .unwrap_or_else(|| GITHUB_ACTIONS_ARTIFACTS_URL.to_owned());
+        .ok_or_else(|| format!("{SYNCPLAY_GITHUB_ARTIFACTS_URL_ENV} must be set"))?;
     let response: GitHubArtifactsResponse = github_get_json(&client, &artifacts_url)?;
     let Some(artifact) = select_newest_dev_artifact(&response.artifacts) else {
         return Ok(LegacyUpdateCheckResult {
@@ -598,6 +631,32 @@ fn github_download_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> 
         .map_err(|error| format!("failed to read update package bytes: {error}"))
 }
 
+fn release_manifest_and_package_url(
+    client: &Client,
+    release: &GitHubRelease,
+    expected_channel: UpdateChannel,
+) -> Result<(UpdateManifest, String), String> {
+    let manifest_asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == SYNCPLAY_UPDATE_MANIFEST_NAME)
+        .ok_or_else(|| "GitHub Release does not include a GUI update manifest".to_owned())?;
+    let manifest: UpdateManifest = github_get_json(client, &manifest_asset.browser_download_url)?;
+    validate_manifest(&manifest, expected_channel)?;
+    let package_asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == manifest.package)
+        .or_else(|| select_stable_gui_release_asset(&release.assets, &manifest.version))
+        .ok_or_else(|| {
+            format!(
+                "GitHub Release does not include expected GUI package {}",
+                manifest.package
+            )
+        })?;
+    Ok((manifest, package_asset.browser_download_url.clone()))
+}
+
 fn candidate_from_manifest(
     manifest: UpdateManifest,
     download_url: String,
@@ -686,18 +745,31 @@ fn select_newest_dev_artifact(artifacts: &[GitHubArtifact]) -> Option<&GitHubArt
 }
 
 fn dev_artifact_newer_than_current(artifact: &GitHubArtifact) -> bool {
+    dev_candidate_newer_than_current(
+        artifact
+            .workflow_run
+            .as_ref()
+            .and_then(|run| run.head_sha.as_deref()),
+        &artifact.created_at,
+    )
+}
+
+fn dev_manifest_newer_than_current(manifest: &UpdateManifest) -> bool {
+    dev_candidate_newer_than_current(manifest.git_sha.as_deref(), &manifest.created_at_utc)
+}
+
+fn dev_candidate_newer_than_current(
+    candidate_sha: Option<&str>,
+    candidate_created_at: &str,
+) -> bool {
     let current_sha = env_trimmed(SYNCPLAY_GUI_BUILD_GIT_SHA_ENV);
-    let current_created_at = env_trimmed(SYNCPLAY_GUI_BUILD_CREATED_AT_UTC_ENV);
-    let artifact_sha = artifact
-        .workflow_run
-        .as_ref()
-        .and_then(|run| run.head_sha.as_deref())
-        .map(str::to_owned);
-    if artifact_sha.is_some() && artifact_sha == current_sha {
+    if let Some(candidate_sha) = candidate_sha
+        && Some(candidate_sha.to_owned()) == current_sha
+    {
         return false;
     }
-    match current_created_at {
-        Some(current_created_at) => artifact.created_at > current_created_at,
+    match env_trimmed(SYNCPLAY_GUI_BUILD_CREATED_AT_UTC_ENV) {
+        Some(current_created_at) => candidate_created_at > current_created_at.as_str(),
         None => true,
     }
 }
@@ -738,9 +810,11 @@ fn github_update_response_override_result(
     }
     if let Ok(manifest) = serde_json::from_str::<UpdateManifest>(trimmed) {
         validate_manifest(&manifest, manifest.channel)?;
-        let current = current_semver()?;
-        let candidate_version = parse_version(&manifest.version)?;
-        if candidate_version <= current {
+        let update_available = match manifest.channel {
+            UpdateChannel::Stable => parse_version(&manifest.version)? > current_semver()?,
+            UpdateChannel::Dev => dev_manifest_newer_than_current(&manifest),
+        };
+        if !update_available {
             return Ok(Some(LegacyUpdateCheckResult {
                 status: LegacyUpdateCheckStatus::UpToDate,
                 message: github_update_up_to_date_message(language, manifest.channel),
@@ -1575,6 +1649,23 @@ mod tests {
         assert_eq!(
             selected.browser_download_url,
             "https://example.invalid/windows.zip"
+        );
+    }
+
+    #[test]
+    fn update_default_release_urls_use_public_downloads_repo() {
+        assert!(
+            super::GITHUB_RELEASE_LATEST_URL
+                .contains("/repos/ropbet-radbyt/syncplay-rs-downloads/releases/latest")
+        );
+        assert!(
+            super::GITHUB_DEV_RELEASE_URL.contains(
+                "/repos/ropbet-radbyt/syncplay-rs-downloads/releases/tags/syncplay-gui-dev"
+            )
+        );
+        assert_eq!(
+            super::GITHUB_RELEASES_PAGE_URL,
+            "https://github.com/ropbet-radbyt/syncplay-rs-downloads/releases"
         );
     }
 

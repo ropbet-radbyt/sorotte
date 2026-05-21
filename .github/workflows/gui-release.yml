@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+env:
+  SYNCPLAY_GUI_PUBLIC_RELEASE_REPO: ropbet-radbyt/syncplay-rs-downloads
+  SYNCPLAY_GUI_DEV_RELEASE_TAG: syncplay-gui-dev
+
 jobs:
   gui-release:
     runs-on: windows-latest
@@ -66,6 +70,57 @@ jobs:
               }
           }
           gh release upload $tag target/gui-release/artifacts/* --clobber
+          if ($LASTEXITCODE -ne 0) {
+              throw "gh release upload failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Publish package to public downloads repo
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.SYNCPLAY_DOWNLOADS_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+              Write-Warning "SYNCPLAY_DOWNLOADS_TOKEN is not configured; skipping public GUI package publishing."
+              exit 0
+          }
+
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+              $tag = $env:GITHUB_REF_NAME
+              $title = $tag
+              $notes = "Syncplay GUI release $tag"
+              $isPrerelease = $false
+          } else {
+              $tag = $env:SYNCPLAY_GUI_DEV_RELEASE_TAG
+              $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+              $title = "Syncplay GUI dev build"
+              $notes = "Latest dev build from $env:GITHUB_REF_NAME ($shortSha)."
+              $isPrerelease = $true
+          }
+
+          gh release view $tag --repo $env:SYNCPLAY_GUI_PUBLIC_RELEASE_REPO *> $null
+          if ($LASTEXITCODE -ne 0) {
+              $createArgs = @(
+                  "release", "create", $tag,
+                  "--repo", $env:SYNCPLAY_GUI_PUBLIC_RELEASE_REPO,
+                  "--title", $title,
+                  "--notes", $notes
+              )
+              if ($isPrerelease) {
+                  $createArgs += "--prerelease"
+              }
+              gh @createArgs
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release create failed with exit code $LASTEXITCODE"
+              }
+          } elseif ($isPrerelease) {
+              gh release edit $tag --repo $env:SYNCPLAY_GUI_PUBLIC_RELEASE_REPO --title $title --notes $notes --prerelease
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release edit failed with exit code $LASTEXITCODE"
+              }
+          }
+
+          gh release upload $tag target/gui-release/artifacts/* --repo $env:SYNCPLAY_GUI_PUBLIC_RELEASE_REPO --clobber
           if ($LASTEXITCODE -ne 0) {
               throw "gh release upload failed with exit code $LASTEXITCODE"
           }

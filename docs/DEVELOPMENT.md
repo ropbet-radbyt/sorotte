@@ -52,6 +52,16 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -Tim
 
 `scripts/gui-native-smoke.ps1` uses the existing `target/debug/syncplay-gui.exe`, so rebuild first after GUI code changes.
 
+## GUI Release Publishing
+
+GUI packages are built by `.github/workflows/gui-release.yml` and staged locally by:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
+```
+
+The workflow always keeps the private Actions artifact for maintainers. On push events, it also publishes the package, checksum, and `syncplay-update-manifest.json` to the public `ropbet-radbyt/syncplay-rs-downloads` release repository when the private source repository has a `SYNCPLAY_DOWNLOADS_TOKEN` secret with contents write access to that public repository. Version tags `v*` publish stable releases; branch pushes update the `syncplay-gui-dev` prerelease used by dev-channel GUI update checks.
+
 ## Server Release Checks
 
 Install Python prerequisites:
