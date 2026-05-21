@@ -88,15 +88,19 @@ pub(crate) enum UpdateChannel {
 
 impl UpdateChannel {
     fn from_env() -> Result<Self, String> {
-        match std::env::var(SYNCPLAY_GUI_UPDATE_CHANNEL_ENV)
-            .ok()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .as_deref()
-        {
-            None | Some("stable") => Ok(Self::Stable),
-            Some("dev") => Ok(Self::Dev),
-            Some(other) => Err(format!(
+        if let Some(value) = env_trimmed(SYNCPLAY_GUI_UPDATE_CHANNEL_ENV) {
+            return Self::from_config_value(&value);
+        }
+        Ok(current_install_marker()
+            .and_then(|marker| marker.channel)
+            .unwrap_or(Self::Stable))
+    }
+
+    fn from_config_value(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stable" => Ok(Self::Stable),
+            "dev" => Ok(Self::Dev),
+            other => Err(format!(
                 "{SYNCPLAY_GUI_UPDATE_CHANNEL_ENV} must be stable or dev, got {other:?}"
             )),
         }
@@ -128,6 +132,16 @@ pub(crate) struct UpdateManifest {
     pub(crate) target: String,
     pub(crate) package: String,
     pub(crate) sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct GuiInstallMarker {
+    #[serde(default)]
+    channel: Option<UpdateChannel>,
+    #[serde(default)]
+    git_sha: Option<String>,
+    #[serde(default)]
+    created_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,7 +389,22 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
     let client = github_http_client()?;
     let release_url = env_trimmed(SYNCPLAY_GITHUB_RELEASE_LATEST_URL_ENV)
         .unwrap_or_else(|| GITHUB_RELEASE_LATEST_URL.to_owned());
-    let release: GitHubRelease = github_get_json(&client, &release_url)?;
+    let release: GitHubRelease = match github_get_json(&client, &release_url) {
+        Ok(release) => release,
+        Err(error) if error.contains("HTTP 404") => {
+            return Ok(LegacyUpdateCheckResult {
+                status: LegacyUpdateCheckStatus::UpToDate,
+                message: github_update_up_to_date_message(language, UpdateChannel::Stable),
+                url: Some(GITHUB_RELEASES_PAGE_URL.to_owned()),
+                candidate: None,
+                self_update_supported: self_update_supported_current_install(),
+                public_servers: None,
+                checked_at_utc: String::new(),
+                user_initiated: false,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let (manifest, package_download_url) =
         release_manifest_and_package_url(&client, &release, UpdateChannel::Stable)?;
 
@@ -762,13 +791,23 @@ fn dev_candidate_newer_than_current(
     candidate_sha: Option<&str>,
     candidate_created_at: &str,
 ) -> bool {
-    let current_sha = env_trimmed(SYNCPLAY_GUI_BUILD_GIT_SHA_ENV);
+    let install_marker = current_install_marker();
+    let current_sha = env_trimmed(SYNCPLAY_GUI_BUILD_GIT_SHA_ENV).or_else(|| {
+        install_marker
+            .as_ref()
+            .and_then(|marker| marker.git_sha.clone())
+    });
     if let Some(candidate_sha) = candidate_sha
         && Some(candidate_sha.to_owned()) == current_sha
     {
         return false;
     }
-    match env_trimmed(SYNCPLAY_GUI_BUILD_CREATED_AT_UTC_ENV) {
+    let current_created_at = env_trimmed(SYNCPLAY_GUI_BUILD_CREATED_AT_UTC_ENV).or_else(|| {
+        install_marker
+            .as_ref()
+            .and_then(|marker| marker.created_at_utc.clone())
+    });
+    match current_created_at {
         Some(current_created_at) => candidate_created_at > current_created_at.as_str(),
         None => true,
     }
@@ -787,16 +826,25 @@ fn update_supported_platform() -> bool {
     cfg!(all(windows, target_arch = "x86_64"))
 }
 
+fn current_install_marker_path() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join(SYNCPLAY_GUI_INSTALL_MARKER))
+    })
+}
+
+fn current_install_marker() -> Option<GuiInstallMarker> {
+    let path = current_install_marker_path()?;
+    let body = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
 fn self_update_supported_current_install() -> bool {
     if !update_supported_platform() {
         return false;
     }
-    let Ok(current_exe) = std::env::current_exe() else {
-        return false;
-    };
-    current_exe
-        .parent()
-        .map(|parent| parent.join(SYNCPLAY_GUI_INSTALL_MARKER).is_file())
+    current_install_marker_path()
+        .map(|path| path.is_file())
         .unwrap_or(false)
 }
 
@@ -1666,6 +1714,28 @@ mod tests {
         assert_eq!(
             super::GITHUB_RELEASES_PAGE_URL,
             "https://github.com/ropbet-radbyt/syncplay-rs-downloads/releases"
+        );
+    }
+
+    #[test]
+    fn update_install_marker_deserializes_channel_metadata() {
+        let marker: super::GuiInstallMarker = serde_json::from_str(
+            r#"{
+                "app": "syncplay-gui",
+                "channel": "dev",
+                "version": "0.1.0",
+                "git_sha": "abcdef123456",
+                "created_at_utc": "2026-05-21T11:17:13Z",
+                "target": "windows-x86_64"
+            }"#,
+        )
+        .expect("install marker should parse");
+
+        assert_eq!(marker.channel, Some(UpdateChannel::Dev));
+        assert_eq!(marker.git_sha.as_deref(), Some("abcdef123456"));
+        assert_eq!(
+            marker.created_at_utc.as_deref(),
+            Some("2026-05-21T11:17:13Z")
         );
     }
 
