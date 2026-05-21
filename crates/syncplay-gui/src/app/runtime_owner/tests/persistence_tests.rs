@@ -72,6 +72,24 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_plex_cache_uses_syncplay_cache_directory() {
+    let root = test_temp_root("plex-cache-path-owner");
+    let config_path = root.join("syncplay.ini");
+    let owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+
+    assert_eq!(
+        owner.plex_cache_path(),
+        Some(
+            root.join("Syncplay")
+                .join("cache")
+                .join("plex-watch-cache.json")
+        )
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
     let root = test_temp_root("clear-gui-data-owner");
     let path = root.join("syncplay.ini");
@@ -114,6 +132,17 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
         },
     )
     .expect("media-search cache should be written");
+    let plex_cache_path = root
+        .join("Syncplay")
+        .join("cache")
+        .join("plex-watch-cache.json");
+    std::fs::create_dir_all(
+        plex_cache_path
+            .parent()
+            .expect("Plex cache path should have parent"),
+    )
+    .expect("Plex cache directory should be created");
+    std::fs::write(&plex_cache_path, "{}").expect("Plex cache should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let media_root_key = crate::app::media_search_cache::normalized_media_search_root_key(
@@ -180,6 +209,10 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     assert!(
         !crate::app::media_search_cache::persisted_media_search_cache_root_at_root(&root).exists(),
         "clear-GUI-data should remove the persisted media-search cache"
+    );
+    assert!(
+        !plex_cache_path.exists(),
+        "clear-GUI-data should remove the persisted Plex watch cache"
     );
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.active_view, GuiShellView::Setup);

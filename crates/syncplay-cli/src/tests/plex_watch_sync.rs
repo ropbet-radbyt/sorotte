@@ -251,6 +251,18 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
     plex_thread
         .join()
         .expect("Plex test server thread should join");
+    let plex_cache_path = cache_root
+        .join("Syncplay")
+        .join("cache")
+        .join("plex-watch-cache.json");
+    assert!(
+        plex_cache_path.is_file(),
+        "Plex watch cache should be saved under the Syncplay cache directory"
+    );
+    assert!(
+        !cache_root.join("plex-watch-cache.json").exists(),
+        "Plex watch cache should not be written next to syncplay.ini"
+    );
     let _ = std::fs::remove_dir_all(cache_root);
     for (key, value) in prior {
         restore_env_key(&env, key, value);

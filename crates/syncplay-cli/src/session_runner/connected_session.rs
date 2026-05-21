@@ -44,8 +44,12 @@ fn normalized_tls_server_host(host: &str) -> &str {
 
 fn cli_plex_cache_path() -> Option<std::path::PathBuf> {
     crate::config_paths::resolve_syncplay_cli_config_path_legacy_compatible().and_then(|path| {
-        path.parent()
-            .map(|parent| parent.join(CLI_PLEX_CACHE_FILE_NAME))
+        path.parent().map(|parent| {
+            parent
+                .join("Syncplay")
+                .join("cache")
+                .join(CLI_PLEX_CACHE_FILE_NAME)
+        })
     })
 }
 

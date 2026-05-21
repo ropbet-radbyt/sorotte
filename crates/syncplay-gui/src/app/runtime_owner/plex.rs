@@ -9,6 +9,7 @@ use super::*;
 
 const PLEX_AUTH_AUTO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PLEX_WATCH_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
+const PLEX_WATCH_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_start_plex_auth_request(
@@ -622,12 +623,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Result<PlexSyncEngine<PlexHttpClient>, String> {
         if self.plex_sync_engine.is_none() {
             let client = self.ensure_plex_client()?.clone();
-            let cache = self
-                .plex_cache_path()
-                .map(|path| PlexMatchCache::load_from_path(&path))
-                .transpose()
-                .map_err(|error| format!("Failed to load Plex match cache: {error}"))?
-                .unwrap_or_default();
+            let cache = self.load_persisted_plex_match_cache()?;
             self.plex_sync_engine = Some(PlexSyncEngine::new(config.clone(), client, cache));
         }
         let mut engine = self
@@ -902,11 +898,41 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
-    fn plex_cache_path(&self) -> Option<PathBuf> {
+    fn load_persisted_plex_match_cache(&self) -> Result<PlexMatchCache, String> {
+        let Some(cache_path) = self.plex_cache_path() else {
+            return Ok(PlexMatchCache::default());
+        };
+        PlexMatchCache::load_from_path(&cache_path)
+            .map_err(|error| format!("Failed to load Plex match cache: {error}"))
+    }
+
+    pub(super) fn clear_persisted_plex_match_cache(&self) -> Result<bool, String> {
+        let mut changed = false;
+        if let Some(path) = self.plex_cache_path() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => changed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed clearing Plex watch cache {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn plex_cache_path(&self) -> Option<PathBuf> {
         self.config_path
             .as_ref()
             .and_then(|path| path.parent())
-            .map(|parent| parent.join("plex-watch-cache.json"))
+            .map(|parent| {
+                parent
+                    .join("Syncplay")
+                    .join("cache")
+                    .join(PLEX_WATCH_CACHE_FILE_NAME)
+            })
     }
 
     fn schedule_next_plex_auth_poll(&mut self) {
