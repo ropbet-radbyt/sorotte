@@ -388,6 +388,20 @@ fn check_for_github_update(
         });
     }
 
+    if !self_update_supported_current_install() {
+        return Ok(LegacyUpdateCheckResult {
+            status: LegacyUpdateCheckStatus::UpToDate,
+            message: "GitHub self-update is only available for packaged Syncplay GUI installs."
+                .to_owned(),
+            url: None,
+            candidate: None,
+            self_update_supported: false,
+            public_servers: None,
+            checked_at_utc: String::new(),
+            user_initiated: false,
+        });
+    }
+
     if let Some(body) = env_response_override(SYNCPLAY_UPDATE_CHECK_RESPONSE_ENV)
         && let Some(result) = github_update_response_override_result(&body, language)?
     {
@@ -1652,13 +1666,14 @@ mod tests {
 
     use super::{
         GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckStatus,
-        StoredClientSettingsMvp, UpdateChannel, UpdateManifest, default_update_check_message,
-        fetch_public_servers_from_url, fetch_update_check_result_from_url,
-        parse_public_server_response, parse_update_check_response, parse_version,
-        safe_zip_relative_path, sanitize_wordpress_public_server_response,
-        sanitize_wordpress_update_check_response, select_newest_dev_artifact,
-        select_stable_gui_release_asset, should_run_automatic_update_check, validate_manifest,
-        validate_sha256_bytes,
+        StoredClientSettingsMvp, UpdateChannel, UpdateManifest, check_for_github_update,
+        default_update_check_message, fetch_public_servers_from_url,
+        fetch_update_check_result_from_url, parse_public_server_response,
+        parse_update_check_response, parse_version, safe_zip_relative_path,
+        sanitize_wordpress_public_server_response, sanitize_wordpress_update_check_response,
+        select_newest_dev_artifact, select_stable_gui_release_asset,
+        self_update_supported_current_install, should_run_automatic_update_check,
+        update_supported_platform, validate_manifest, validate_sha256_bytes,
     };
 
     fn spawn_single_request_server(body: &'static str) -> (String, thread::JoinHandle<String>) {
@@ -1766,6 +1781,23 @@ mod tests {
             Ok(UpdateChannel::Dev)
         );
         assert!(UpdateChannel::from_config_value("nightly").is_err());
+    }
+
+    #[test]
+    fn update_check_skips_github_for_unpackaged_local_builds() {
+        let result = check_for_github_update(Some("en"), true, Some("dev"))
+            .expect("local update check should return an immediate result");
+
+        if update_supported_platform() && !self_update_supported_current_install() {
+            assert_eq!(result.status, LegacyUpdateCheckStatus::UpToDate);
+            assert_eq!(
+                result.message,
+                "GitHub self-update is only available for packaged Syncplay GUI installs."
+            );
+            assert_eq!(result.url, None);
+            assert_eq!(result.candidate, None);
+            assert!(!result.self_update_supported);
+        }
     }
 
     #[test]
