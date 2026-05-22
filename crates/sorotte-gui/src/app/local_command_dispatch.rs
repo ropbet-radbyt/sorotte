@@ -28,6 +28,7 @@ impl GuiShellDispatchPlan {
         actions: Vec<GuiShellAction>,
     ) -> Self {
         let mut plan = Self::default();
+        let mut selected_menu_action = state.selection.selected_menu_action;
         for action in actions {
             match action {
                 GuiShellAction::BeginLocalChatSend(message) => {
@@ -36,12 +37,24 @@ impl GuiShellDispatchPlan {
                 GuiShellAction::BeginUpdateCheck { user_initiated } => {
                     plan.shell_actions
                         .push(GuiShellAction::BeginUpdateCheck { user_initiated });
-                    plan.runtime_requests
-                        .push(GuiRuntimeRequest::CheckForUpdates {
-                            language: state.update_check_language(),
-                            update_channel: state.update_check_channel(),
-                            user_initiated,
-                        });
+                    push_update_check_request(&mut plan, state, user_initiated);
+                }
+                GuiShellAction::SelectMenuAction {
+                    section_index,
+                    action_index,
+                } => {
+                    selected_menu_action = Some((section_index, action_index));
+                    plan.shell_actions.push(GuiShellAction::SelectMenuAction {
+                        section_index,
+                        action_index,
+                    });
+                }
+                GuiShellAction::TriggerSelectedMenuAction => {
+                    plan.shell_actions
+                        .push(GuiShellAction::TriggerSelectedMenuAction);
+                    if selected_menu_action_starts_update_check(state, selected_menu_action) {
+                        push_update_check_request(&mut plan, state, true);
+                    }
                 }
                 GuiShellAction::BeginUpdateDownload => {
                     plan.shell_actions.push(GuiShellAction::BeginUpdateDownload);
@@ -124,6 +137,39 @@ impl GuiShellDispatchPlan {
         self.shell_actions.extend(other.shell_actions);
         self.runtime_requests.extend(other.runtime_requests);
     }
+}
+
+fn push_update_check_request(
+    plan: &mut GuiShellDispatchPlan,
+    state: &SorotteGuiShellAppState,
+    user_initiated: bool,
+) {
+    plan.runtime_requests
+        .push(GuiRuntimeRequest::CheckForUpdates {
+            language: state.update_check_language(),
+            update_channel: state.update_check_channel(),
+            user_initiated,
+        });
+}
+
+fn selected_menu_action_starts_update_check(
+    state: &SorotteGuiShellAppState,
+    selected_menu_action: Option<(usize, usize)>,
+) -> bool {
+    let Some((section_index, action_index)) = selected_menu_action else {
+        return false;
+    };
+    let Some(section) = state.menus.sections.get(section_index) else {
+        return false;
+    };
+    let Some(action) = section.actions.get(action_index) else {
+        return false;
+    };
+    action.enabled
+        && matches!(
+            (section.title, action.label),
+            ("Advanced", "Update Check") | ("Help", "Check for Updates")
+        )
 }
 
 fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShellDispatchPlan {

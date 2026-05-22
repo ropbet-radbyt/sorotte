@@ -50,6 +50,28 @@ fn update_candidate() -> UpdateCandidate {
     }
 }
 
+fn menu_action_index(
+    state: &SorotteGuiShellAppState,
+    section_title: &str,
+    action_label: &str,
+) -> (usize, usize) {
+    state
+        .menus
+        .sections
+        .iter()
+        .enumerate()
+        .find_map(|(section_index, section)| {
+            (section.title == section_title).then(|| {
+                section
+                    .actions
+                    .iter()
+                    .position(|action| action.label == action_label)
+                    .map(|action_index| (section_index, action_index))
+            })?
+        })
+        .expect("menu action should exist")
+}
+
 #[test]
 fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
     let mut state = runtime_ready_state();
@@ -76,6 +98,36 @@ fn gui_shell_dispatch_plan_routes_update_checks_to_runtime_owner() {
         vec![GuiRuntimeRequest::CheckForUpdates {
             language: "en".to_owned(),
             update_channel: Some("dev".to_owned()),
+            user_initiated: true,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
+    let state = runtime_ready_state();
+    let (section_index, action_index) = menu_action_index(&state, "Help", "Check for Updates");
+    let select_action = GuiShellAction::SelectMenuAction {
+        section_index,
+        action_index,
+    };
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![
+            select_action.clone(),
+            GuiShellAction::TriggerSelectedMenuAction,
+        ],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![select_action, GuiShellAction::TriggerSelectedMenuAction]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::CheckForUpdates {
+            language: "en".to_owned(),
+            update_channel: None,
             user_initiated: true,
         }]
     );
