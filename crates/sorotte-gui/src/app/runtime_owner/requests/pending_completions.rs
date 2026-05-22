@@ -441,7 +441,7 @@ impl GuiPersistedConfigRuntimeOwner {
             "Cannot resolve the default Sorotte config root on this platform.".to_owned()
         })?;
         let install_root = current_sorotte_client_install_root().ok_or_else(|| {
-            "Cannot resolve the Sorotte install folder for syncplay.ini.".to_owned()
+            "Cannot resolve the Sorotte install folder for sorotte.ini.".to_owned()
         })?;
         let current_dir = std::env::current_dir().ok();
         let root = match target {

@@ -148,7 +148,7 @@ impl GuiStartupConfigPathSource {
                 "Startup configuration path uses SOROTTE_CLIENT_CONFIG_ROOT ({rendered_path})."
             ),
             Self::InstallConfigRoot(_) => format!(
-                "Startup configuration path uses install-folder syncplay.ini ({rendered_path})."
+                "Startup configuration path uses install-folder sorotte.ini ({rendered_path})."
             ),
             Self::PersistedConfigRoot(_) => format!(
                 "Startup configuration path uses the saved custom config root ({rendered_path})."

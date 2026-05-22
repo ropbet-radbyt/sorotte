@@ -325,7 +325,7 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_install
     let storage_root = root.join("portable-settings");
     std::fs::create_dir_all(&install_root).expect("install test root should be created");
     std::fs::write(
-        install_root.join("syncplay.ini"),
+        install_root.join("sorotte.ini"),
         format!("[settings]\nconfigRoot = {}\n", storage_root.display()),
     )
     .expect("install locator should be written");
