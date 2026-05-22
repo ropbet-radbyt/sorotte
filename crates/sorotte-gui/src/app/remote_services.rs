@@ -1108,7 +1108,7 @@ fn stage_update_payload(
     client: &Client,
     stage_dir: &Path,
 ) -> Result<StagedUpdate, String> {
-    let downloaded_bytes = github_download_bytes(&client, &candidate.download_url)?;
+    let downloaded_bytes = github_download_bytes(client, &candidate.download_url)?;
     let (package_bytes, staged_candidate) = match candidate.source {
         UpdateCandidateSource::ReleaseAsset => {
             validate_sha256_bytes(&downloaded_bytes, &candidate.sha256)?;
