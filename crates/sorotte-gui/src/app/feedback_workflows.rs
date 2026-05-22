@@ -157,9 +157,6 @@ impl SorotteGuiShellAppState {
             user_initiated: result.user_initiated,
         };
         self.menus.update_notice_expected = self.update_check.should_open_modal();
-        if self.open_modal == Some(GuiShellModal::UpdateNotice) {
-            self.open_modal = None;
-        }
         if matches!(
             self.update_check.status_level(),
             GuiTransientNotificationLevel::Warning | GuiTransientNotificationLevel::Error

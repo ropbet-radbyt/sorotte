@@ -78,6 +78,11 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
+    assert!(state.apply(GuiShellAction::BeginUpdateCheck {
+        user_initiated: true,
+    }));
+    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+
     assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
         LegacyUpdateCheckResult {
             status: LegacyUpdateCheckStatus::UpdateAvailable,
@@ -92,7 +97,7 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
     )));
 
     assert!(state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, None);
+    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
     assert_eq!(
         state.update_check.message.as_deref(),
         Some("A new version of Sorotte is available.")
