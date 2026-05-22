@@ -92,10 +92,13 @@ $version = Get-SorotteGuiVersion
 $target = "windows-x86_64"
 $packageName = "sorotte-gui-$version-$target"
 $archiveFileName = "$packageName.zip"
+$symbolsPackageName = "$packageName-symbols"
+$symbolsArchiveFileName = "$symbolsPackageName.zip"
 $outputRoot = Resolve-PackagePath $OutputDir
 $stagingRoot = Join-Path $outputRoot "staging"
 $artifactsRoot = Join-Path $outputRoot "artifacts"
 $packageRoot = Join-Path $stagingRoot $packageName
+$symbolsRoot = Join-Path $stagingRoot $symbolsPackageName
 $createdAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
 $gitSha = Get-GitSha
 
@@ -103,6 +106,9 @@ Assert-PathInsideRepo $stagingRoot
 Assert-PathInsideRepo $artifactsRoot
 if (Test-Path -LiteralPath $packageRoot) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
+}
+if (Test-Path -LiteralPath $symbolsRoot) {
+    Remove-Item -LiteralPath $symbolsRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $artifactsRoot | Out-Null
@@ -113,10 +119,11 @@ Copy-ReleaseFile (Join-Path $releaseDir "sorotte-gui-updater.exe") (Join-Path $p
 Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "README.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
+$pdbPaths = @()
 foreach ($pdbName in @("sorotte_gui.pdb", "sorotte-gui.pdb", "sorotte_gui_updater.pdb", "sorotte-gui-updater.pdb")) {
     $pdbPath = Join-Path $releaseDir $pdbName
     if (Test-Path -LiteralPath $pdbPath -PathType Leaf) {
-        Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot $pdbName) -Force
+        $pdbPaths += $pdbPath
     }
 }
 
@@ -133,6 +140,14 @@ $installMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $
 $archivePath = Join-Path $artifactsRoot $archiveFileName
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
+}
+$symbolsArchivePath = Join-Path $artifactsRoot $symbolsArchiveFileName
+$symbolsChecksumPath = "$symbolsArchivePath.sha256"
+if (Test-Path -LiteralPath $symbolsArchivePath) {
+    Remove-Item -LiteralPath $symbolsArchivePath -Force
+}
+if (Test-Path -LiteralPath $symbolsChecksumPath) {
+    Remove-Item -LiteralPath $symbolsChecksumPath -Force
 }
 
 Write-Host "==> Creating $archivePath" -ForegroundColor Cyan
@@ -157,8 +172,26 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
+if ($pdbPaths.Count -gt 0) {
+    New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
+    foreach ($pdbPath in $pdbPaths) {
+        Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $symbolsRoot (Split-Path -Leaf $pdbPath)) -Force
+    }
+
+    Write-Host "==> Creating $symbolsArchivePath" -ForegroundColor Cyan
+    $symbolsContents = Get-ChildItem -LiteralPath $symbolsRoot
+    Compress-Archive -LiteralPath $symbolsContents.FullName -DestinationPath $symbolsArchivePath -Force
+
+    $symbolsHash = Get-FileHash -LiteralPath $symbolsArchivePath -Algorithm SHA256
+    "$($symbolsHash.Hash.ToLowerInvariant())  $symbolsArchiveFileName" | Set-Content -LiteralPath $symbolsChecksumPath -Encoding UTF8
+}
+
 Write-Host ""
 Write-Host "GUI release package" -ForegroundColor Cyan
 Write-Host $archivePath
 Write-Host $checksumPath
 Write-Host $manifestPath
+if ($pdbPaths.Count -gt 0) {
+    Write-Host $symbolsArchivePath
+    Write-Host $symbolsChecksumPath
+}

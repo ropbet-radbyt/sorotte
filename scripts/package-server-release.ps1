@@ -82,15 +82,20 @@ $platform = Get-ReleasePlatform
 $packageForWindows = $platform.StartsWith("windows")
 $binaryName = if ($packageForWindows) { "sorotte-server.exe" } else { "sorotte-server" }
 $packageName = "sorotte-server-$version-$platform"
+$symbolsPackageName = "$packageName-symbols"
 $outputRoot = Resolve-PackagePath $OutputDir
 $stagingRoot = Join-Path $outputRoot "staging"
 $artifactsRoot = Join-Path $outputRoot "artifacts"
 $packageRoot = Join-Path $stagingRoot $packageName
+$symbolsRoot = Join-Path $stagingRoot $symbolsPackageName
 
 Assert-PathInsideRepo $stagingRoot
 Assert-PathInsideRepo $artifactsRoot
 if (Test-Path -LiteralPath $packageRoot) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
+}
+if (Test-Path -LiteralPath $symbolsRoot) {
+    Remove-Item -LiteralPath $symbolsRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $artifactsRoot | Out-Null
@@ -101,10 +106,11 @@ Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "READ
 Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $packageRoot "SERVER_RELEASE.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
+$pdbPath = $null
 if ($packageForWindows) {
-    $pdbPath = Join-Path $RepoRoot "target/release/sorotte_server.pdb"
-    if (Test-Path -LiteralPath $pdbPath -PathType Leaf) {
-        Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot "sorotte_server.pdb") -Force
+    $candidatePdbPath = Join-Path $RepoRoot "target/release/sorotte_server.pdb"
+    if (Test-Path -LiteralPath $candidatePdbPath -PathType Leaf) {
+        $pdbPath = $candidatePdbPath
     }
 }
 
@@ -115,6 +121,14 @@ $archivePath = if ($packageForWindows) {
 }
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
+}
+$symbolsArchivePath = Join-Path $artifactsRoot "$symbolsPackageName.zip"
+$symbolsChecksumPath = "$symbolsArchivePath.sha256"
+if (Test-Path -LiteralPath $symbolsArchivePath) {
+    Remove-Item -LiteralPath $symbolsArchivePath -Force
+}
+if (Test-Path -LiteralPath $symbolsChecksumPath) {
+    Remove-Item -LiteralPath $symbolsChecksumPath -Force
 }
 
 Write-Host "==> Creating $archivePath" -ForegroundColor Cyan
@@ -131,7 +145,23 @@ $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 $checksumPath = "$archivePath.sha256"
 "$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $archivePath)" | Set-Content -LiteralPath $checksumPath -Encoding UTF8
 
+if ($null -ne $pdbPath) {
+    New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
+    Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $symbolsRoot "sorotte_server.pdb") -Force
+
+    Write-Host "==> Creating $symbolsArchivePath" -ForegroundColor Cyan
+    $symbolsContents = Get-ChildItem -LiteralPath $symbolsRoot
+    Compress-Archive -LiteralPath $symbolsContents.FullName -DestinationPath $symbolsArchivePath -Force
+
+    $symbolsHash = Get-FileHash -LiteralPath $symbolsArchivePath -Algorithm SHA256
+    "$($symbolsHash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $symbolsArchivePath)" | Set-Content -LiteralPath $symbolsChecksumPath -Encoding UTF8
+}
+
 Write-Host ""
 Write-Host "Server release package" -ForegroundColor Cyan
 Write-Host $archivePath
 Write-Host $checksumPath
+if ($null -ne $pdbPath) {
+    Write-Host $symbolsArchivePath
+    Write-Host $symbolsChecksumPath
+}
