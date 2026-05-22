@@ -21,6 +21,18 @@ impl SorotteGuiShellAppState {
             GuiShellAction::BeginClearGuiData => self.begin_clear_gui_data(),
             GuiShellAction::CompleteClearGuiData => self.complete_clear_gui_data(),
             GuiShellAction::CancelClearGuiData => self.cancel_clear_gui_data(),
+            GuiShellAction::BeginConfigStorageRootChange(root) => {
+                self.begin_config_storage_root_change(root)
+            }
+            GuiShellAction::BeginConfigStorageDefaultReset => {
+                self.begin_config_storage_default_reset()
+            }
+            GuiShellAction::CompleteConfigStorageRootChange { snapshot, settings } => {
+                self.complete_config_storage_root_change(snapshot, settings)
+            }
+            GuiShellAction::CancelConfigStorageRootChange => {
+                self.cancel_config_storage_root_change()
+            }
             _ => unreachable!("action routed to wrong reducer domain"),
         }
     }

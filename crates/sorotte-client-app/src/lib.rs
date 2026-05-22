@@ -1,4 +1,5 @@
 pub mod app_boundary;
+mod client_storage_paths;
 mod legacy_compat;
 mod legacy_ini_serde;
 mod legacy_language;

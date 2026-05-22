@@ -1,16 +1,17 @@
 use super::super::GuiShellModal;
 use super::super::shell_state::{
     GuiCommandAvailabilityRuntimeOverride, GuiCommandRuntimeSnapshot,
-    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiDialogControlKind,
-    GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot,
-    GuiFocusedConfigurationControlState, GuiInteractionRuntimeSnapshot,
-    GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot, GuiPendingOperationKind,
-    GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlayerSetupRuntimeSnapshot,
-    GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot, GuiPlexServerRow,
-    GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot, GuiStreamHelperHealth,
-    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
-    GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationIssue,
-    MenuDialogRuntimeSnapshot, MenuDialogShellState, SorotteGuiShellAppState,
+    GuiConfigStorageRuntimeSnapshot, GuiConfigurationDraftRuntimeSnapshot,
+    GuiConfigurationRuntimeSnapshot, GuiDialogControlKind, GuiDraftRuntimeSnapshot,
+    GuiErrorRuntimeSnapshot, GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlState,
+    GuiInteractionRuntimeSnapshot, GuiMainWindowUserEditSessionState, GuiMediaIndexRuntimeSnapshot,
+    GuiPendingOperationKind, GuiPendingOperationState, GuiPlayerSetupIssue,
+    GuiPlayerSetupRuntimeSnapshot, GuiPlaylistTextEditSessionState, GuiPlexRuntimeSnapshot,
+    GuiPlexServerRow, GuiPublicServerEditSessionState, GuiSavedConfigurationRuntimeSnapshot,
+    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, GuiTextEditSessionState, GuiTransientNotification,
+    GuiUrlEditSessionState, GuiValidationIssue, MenuDialogRuntimeSnapshot, MenuDialogShellState,
+    SorotteGuiShellAppState,
 };
 use super::super::support::normalized_editable_text;
 
@@ -155,6 +156,15 @@ impl SorotteGuiShellAppState {
                 &command_availability,
             );
         self.sync_playback_menu_actions_from_runtime_state(can_toggle_pause);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn apply_gui_config_storage_runtime_snapshot(
+        &mut self,
+        snapshot: GuiConfigStorageRuntimeSnapshot,
+    ) -> bool {
+        self.config_storage = snapshot;
         self.clear_action_error_and_refresh();
         true
     }

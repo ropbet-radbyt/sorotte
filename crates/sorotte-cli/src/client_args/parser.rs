@@ -62,6 +62,12 @@ where
             "--clear-gui-data" => {
                 overrides.clear_gui_data_requested = true;
             }
+            "--config-path" => {
+                overrides.config_path = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
+            "--config-root" => {
+                overrides.config_root = take_next_non_flag_arg_legacy_compatible(&mut iter);
+            }
             "--no-store" => {
                 overrides.no_store = true;
             }

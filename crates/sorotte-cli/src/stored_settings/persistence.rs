@@ -216,7 +216,7 @@ pub(crate) fn clear_sorotte_cli_gui_state() -> anyhow::Result<bool> {
         return clear_sorotte_cli_gui_state_filesystem(&root);
     }
 
-    let Some(root) = default_sorotte_cli_config_root() else {
+    let Some(root) = resolve_sorotte_cli_storage_root() else {
         return Ok(false);
     };
     clear_sorotte_cli_gui_state_filesystem(&root)

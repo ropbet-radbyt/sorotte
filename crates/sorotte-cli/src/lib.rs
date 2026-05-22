@@ -78,6 +78,7 @@ use self::client_config::{
     normalize_controlled_room_input,
     parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
 };
+use self::config_paths::set_sorotte_cli_config_cli_overrides;
 #[cfg(test)]
 use self::diagnostics_config::{
     ClientLoopDiagnosticsConfig, apply_legacy_client_arg_diagnostics_overrides,
@@ -232,6 +233,16 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         eprintln!("error: unrecognized arguments: {unknown_options}");
         return Err(anyhow!("unrecognized arguments"));
     }
+    set_sorotte_cli_config_cli_overrides(
+        client_arg_overrides
+            .config_path
+            .as_ref()
+            .map(std::path::PathBuf::from),
+        client_arg_overrides
+            .config_root
+            .as_ref()
+            .map(std::path::PathBuf::from),
+    );
     if client_arg_overrides.clear_gui_data_requested {
         match clear_sorotte_cli_stored_settings_legacy_compatible() {
             Ok(true) => {

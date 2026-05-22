@@ -14,6 +14,12 @@ use sorotte_client_app::app_boundary::{
         load_sorotte_ini_stored_client_settings_mvp_from_path,
         upsert_sorotte_ini_stored_client_settings_mvp_at_path,
     },
+    storage::{
+        SorotteClientStoragePaths, SorotteClientStorageSource,
+        clear_sorotte_client_config_root_pointer, default_sorotte_client_config_root,
+        ensure_sorotte_client_storage_root, normalize_path,
+        persist_sorotte_client_config_root_pointer,
+    },
 };
 use sorotte_player_api::PlayerAdapter;
 
@@ -24,8 +30,9 @@ use super::super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
-    GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_stream_target_kind,
+    GuiConfigStorageRuntimeSnapshot, GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind,
+    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
@@ -381,6 +388,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 GuiPendingCompletionRequest::ClearGuiData,
             ) => {
                 return self.handle_complete_clear_gui_data_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::CompletePendingOperation(
+                GuiPendingCompletionRequest::ChangeConfigStorageRoot { target, settings },
+            ) => {
+                return self.handle_complete_config_storage_root_change_request(
+                    handle,
+                    projected_state,
+                    target,
+                    settings,
+                );
             }
             GuiRuntimeRequest::CancelPendingOperation(_kind) => {
                 Self::push_actions_and_project(

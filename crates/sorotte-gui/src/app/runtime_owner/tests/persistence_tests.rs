@@ -86,6 +86,147 @@ fn gui_persisted_config_runtime_owner_plex_cache_uses_sorotte_cache_directory() 
 }
 
 #[test]
+fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_known_files() {
+    let env = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
+    let prior_appdata = std::env::var_os("APPDATA");
+    let prior_home = std::env::var_os("HOME");
+    let prior_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+
+    let default_env_parent = test_temp_root("config-storage-default-parent");
+    if cfg!(windows) {
+        env.set_var("APPDATA", &default_env_parent);
+    } else if cfg!(target_os = "macos") {
+        env.set_var("HOME", &default_env_parent);
+    } else {
+        env.set_var("XDG_CONFIG_HOME", &default_env_parent);
+    }
+    let default_root = if cfg!(windows) {
+        default_env_parent.join("Sorotte")
+    } else if cfg!(target_os = "macos") {
+        default_env_parent
+            .join("Library")
+            .join("Application Support")
+            .join("Sorotte")
+    } else {
+        default_env_parent.join("sorotte")
+    };
+
+    let old_root = test_temp_root("config-storage-old-root");
+    let new_root = test_temp_root("config-storage-new-root");
+    let _ = std::fs::remove_dir_all(&new_root);
+    let old_config_path = old_root.join("sorotte.ini");
+    let saved_settings = StoredClientSettingsMvp {
+        host: Some("portable.example".to_owned()),
+        room: Some("Portable".to_owned()),
+        ..StoredClientSettingsMvp::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&old_config_path, &saved_settings)
+        .expect("old config should be written");
+    std::fs::write(
+        legacy_gui_qsettings_store_path(&old_root, "MainWindow"),
+        "[MainWindow]\nactiveView = setup\n",
+    )
+    .expect("old GUI state should be written");
+    std::fs::create_dir_all(old_root.join("cache")).expect("cache directory should be created");
+    std::fs::write(old_root.join("cache").join("plex-watch-cache.json"), "{}")
+        .expect("Plex cache should be written");
+    std::fs::create_dir_all(old_root.join("tools").join("stream-helper"))
+        .expect("tools directory should be created");
+    std::fs::write(
+        old_root
+            .join("tools")
+            .join("stream-helper")
+            .join("helper.txt"),
+        "tool",
+    )
+    .expect("tool file should be written");
+    std::fs::create_dir_all(old_root.join("updates")).expect("updates directory should be created");
+    std::fs::write(old_root.join("updates").join("stage.txt"), "update")
+        .expect("update staging file should be written");
+
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(old_config_path.clone()));
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        new_root.display().to_string(),
+    )));
+    handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
+        GuiPendingCompletionRequest::ChangeConfigStorageRoot {
+            target: GuiConfigStorageChangeTarget::CustomRoot(new_root.display().to_string()),
+            settings: saved_settings.clone(),
+        },
+    ));
+
+    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(
+        actions.iter().any(|action| {
+            matches!(
+                action,
+                GuiShellAction::CompleteConfigStorageRootChange { snapshot, settings }
+                    if snapshot.storage_root.as_deref()
+                        == Some(new_root.to_string_lossy().as_ref())
+                        && settings == &saved_settings
+            )
+        }),
+        "root change should complete with the new storage snapshot"
+    );
+    assert_eq!(owner.config_path, Some(new_root.join("sorotte.ini")));
+    assert!(
+        old_config_path.exists(),
+        "changing storage roots should preserve the old config file"
+    );
+    assert_eq!(
+        load_sorotte_ini_stored_client_settings_mvp_from_path(&new_root.join("sorotte.ini"))
+            .expect("new config should be readable"),
+        Some(saved_settings)
+    );
+    assert!(
+        legacy_gui_qsettings_store_path(&new_root, "MainWindow").exists(),
+        "known GUI state should be copied to the new root"
+    );
+    assert!(
+        new_root
+            .join("cache")
+            .join("plex-watch-cache.json")
+            .exists(),
+        "cache files should be copied to the new root"
+    );
+    assert!(
+        new_root
+            .join("tools")
+            .join("stream-helper")
+            .join("helper.txt")
+            .exists(),
+        "stream-helper tools should be copied to the new root"
+    );
+    assert!(
+        new_root.join("updates").join("stage.txt").exists(),
+        "update staging should be copied to the new root"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sorotte_client_config_root_pointer_path(&default_root))
+            .expect("custom root pointer should be readable"),
+        new_root.to_string_lossy()
+    );
+
+    match prior_appdata {
+        Some(value) => env.set_var("APPDATA", value),
+        None => env.remove_var("APPDATA"),
+    }
+    match prior_home {
+        Some(value) => env.set_var("HOME", value),
+        None => env.remove_var("HOME"),
+    }
+    match prior_xdg_config_home {
+        Some(value) => env.set_var("XDG_CONFIG_HOME", value),
+        None => env.remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&old_root);
+    let _ = std::fs::remove_dir_all(&new_root);
+    let _ = std::fs::remove_dir_all(&default_env_parent);
+}
+
+#[test]
 fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
     let root = test_temp_root("clear-gui-data-owner");
     let path = root.join("sorotte.ini");

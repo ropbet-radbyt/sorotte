@@ -83,6 +83,8 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
             force_gui_prompt_requested: false,
             no_gui_requested: false,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: Some(media_file.to_string_lossy().into_owned()),

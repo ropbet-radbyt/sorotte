@@ -185,6 +185,8 @@ fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args
         force_gui_prompt_requested: false,
         no_gui_requested: false,
         clear_gui_data_requested: false,
+        config_path: None,
+        config_root: None,
         language: None,
         player_path: Some(mpv_bin.to_string_lossy().into_owned()),
         file: Some(media_file.to_string_lossy().into_owned()),

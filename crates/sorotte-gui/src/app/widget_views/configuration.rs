@@ -355,6 +355,83 @@ impl SorotteGuiShellAppState {
                 .collect(),
         );
 
+        let storage_change_enabled =
+            self.pending_operation.is_none() && !self.config_storage.external_override_active;
+        let storage_location_panel = GuiWidgetNode::branch(
+            "config-storage",
+            "Storage Location",
+            GuiWidgetKind::Panel,
+            vec![
+                GuiWidgetNode::layout(
+                    "config-storage:paths",
+                    "Storage Paths",
+                    GuiLayoutMode::FormGrid {
+                        label_width: 132.0,
+                        min_field_width: 160.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "config-storage:config-path",
+                            "Config File",
+                            GuiWidgetKind::ReadOnly,
+                            self.config_storage.config_path.clone(),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-storage:root",
+                            "Storage Root",
+                            GuiWidgetKind::ReadOnly,
+                            self.config_storage.storage_root.clone(),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-storage:source",
+                            "Source",
+                            GuiWidgetKind::ReadOnly,
+                            Some(self.config_storage.source_label.clone()),
+                            true,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-storage:default-root",
+                            "Default Root",
+                            GuiWidgetKind::ReadOnly,
+                            self.config_storage.default_storage_root.clone(),
+                            true,
+                            false,
+                        ),
+                    ],
+                ),
+                GuiWidgetNode::layout(
+                    "config-storage:actions",
+                    "Storage Actions",
+                    GuiLayoutMode::ButtonWrap {
+                        min_button_width: 140.0,
+                    },
+                    vec![
+                        GuiWidgetNode::leaf(
+                            "config-storage:root:browse",
+                            "Browse",
+                            GuiWidgetKind::Button,
+                            None,
+                            storage_change_enabled,
+                            false,
+                        ),
+                        GuiWidgetNode::leaf(
+                            "config-storage:root:default",
+                            "Use Default",
+                            GuiWidgetKind::Button,
+                            None,
+                            storage_change_enabled,
+                            false,
+                        ),
+                    ],
+                ),
+            ],
+        );
+
         let interface_system_content = GuiWidgetNode::layout(
             "configuration:content:interface-system",
             "Interface And System Content",
@@ -365,6 +442,7 @@ impl SorotteGuiShellAppState {
             ["OSD", "System"]
                 .into_iter()
                 .filter_map(section_card)
+                .chain([storage_location_panel])
                 .collect(),
         );
 

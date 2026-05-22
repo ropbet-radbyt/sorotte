@@ -11,6 +11,7 @@ use sorotte_client_app::app_boundary::{
         StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
         privacy_mode_legacy_name_compatible, unpause_action_mode_legacy_name_compatible,
     },
+    storage::SorotteClientStoragePaths,
 };
 use sorotte_plex::PlexServerConnectionKind;
 
@@ -454,8 +455,10 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) main_window_playlist_selection_is_local: bool,
     pub(super) runtime_menu_action_overrides: Vec<MenuActionRuntimeOverride>,
     pub(super) runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride,
+    pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
     pub(super) commands: GuiCommandAvailabilityState,
     pub(super) pending_operation: Option<GuiPendingOperationState>,
+    pub(super) pending_config_storage_target: Option<GuiConfigStorageChangeTarget>,
     pub(super) pending_local_ready_target: Option<bool>,
     pub(super) pending_saved_server_connect_saves_configuration: bool,
     pub(super) outgoing_chat_message: Option<String>,
@@ -533,6 +536,33 @@ pub(super) struct GuiCommandAvailabilityRuntimeOverride {
 pub(super) struct GuiCommandRuntimeSnapshot {
     pub(super) command_availability: GuiCommandAvailabilityState,
     pub(super) pending_operation: Option<GuiPendingOperationKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct GuiConfigStorageRuntimeSnapshot {
+    pub(super) config_path: Option<String>,
+    pub(super) storage_root: Option<String>,
+    pub(super) default_storage_root: Option<String>,
+    pub(super) source_label: String,
+    pub(super) external_override_active: bool,
+}
+
+impl GuiConfigStorageRuntimeSnapshot {
+    pub(super) fn from_storage_paths(paths: &SorotteClientStoragePaths) -> Self {
+        Self {
+            config_path: Some(paths.config_path.to_string_lossy().into_owned()),
+            storage_root: Some(paths.storage_root.to_string_lossy().into_owned()),
+            default_storage_root: Some(paths.default_storage_root.to_string_lossy().into_owned()),
+            source_label: paths.source.label().to_owned(),
+            external_override_active: paths.source.is_external_override(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GuiConfigStorageChangeTarget {
+    CustomRoot(String),
+    DefaultRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,6 +726,7 @@ pub(super) enum GuiPendingOperationKind {
     ResetConfiguration,
     ReloadConfiguration,
     ClearGuiData,
+    ChangeConfigStorageRoot,
     ConnectSavedServer,
     DisconnectSession,
     ConnectPublicServer,
@@ -712,6 +743,7 @@ impl GuiPendingOperationKind {
             Self::ResetConfiguration => "reset-configuration",
             Self::ReloadConfiguration => "reload-configuration",
             Self::ClearGuiData => "clear-gui-data",
+            Self::ChangeConfigStorageRoot => "change-config-storage-root",
             Self::ConnectSavedServer => "connect-saved-server",
             Self::DisconnectSession => "disconnect-session",
             Self::ConnectPublicServer => "connect-public-server",

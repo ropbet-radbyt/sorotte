@@ -8,6 +8,10 @@ use sorotte_client_app::app_boundary::{
     language::normalized_legacy_runtime_language_tag_legacy_compatible,
     persistence::load_sorotte_ini_stored_client_settings_mvp_from_path,
     state::StoredClientSettingsMvp,
+    storage::{
+        SorotteClientStoragePaths, SorotteClientStorageSource,
+        resolve_sorotte_client_storage_paths_from_lookup,
+    },
 };
 
 use super::GuiAppHost;
@@ -16,7 +20,9 @@ use super::native_host::GuiEframeNativeHost;
 use super::native_host::GuiTextPreviewHost;
 use super::remote_services;
 use super::runtime_stack::GuiClientCoreChatSessionRuntimeAdapter;
-use super::shell_state::{GuiShellAction, SorotteGuiShellAppState};
+use super::shell_state::{
+    GuiConfigStorageRuntimeSnapshot, GuiShellAction, SorotteGuiShellAppState,
+};
 use super::startup_support::{
     GuiStartupConfigPathSource, GuiStartupPlayerIpcSource, GuiStartupPublicServerSource,
     env_trimmed, gui_client_core_chat_loopback_bootstrap_from_lookup,
@@ -124,18 +130,6 @@ pub(super) fn gui_startup_host_and_settings()
     Ok((host, settings))
 }
 
-const SOROTTE_CONFIG_FILE_NAME: &str = "sorotte.ini";
-
-fn sorotte_gui_config_path_override_from_lookup<F>(lookup: &F) -> Option<PathBuf>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    lookup("SOROTTE_CLIENT_CONFIG_PATH")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 pub(super) fn explicit_mpv_ipc_path_from_lookup<F>(lookup: &F) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
@@ -143,42 +137,51 @@ where
     GuiStartupPlayerIpcSource::from_lookup(lookup).map(|source| source.ipc_path().to_owned())
 }
 
-fn default_sorotte_gui_config_root_legacy_compatible_from_lookup<F>(lookup: &F) -> Option<PathBuf>
+fn resolve_sorotte_gui_storage_paths_legacy_compatible_with<F, C, I>(
+    lookup: &F,
+    current_dir: C,
+    is_file: I,
+) -> Option<SorotteClientStoragePaths>
 where
     F: Fn(&str) -> Option<String>,
+    C: Fn() -> Option<PathBuf>,
+    I: Fn(&Path) -> bool,
 {
-    if cfg!(windows) {
-        return lookup("APPDATA")
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .map(|root| PathBuf::from(root).join("Sorotte"));
+    resolve_sorotte_client_storage_paths_from_lookup(
+        lookup,
+        current_dir,
+        is_file,
+        |path| std::fs::read_to_string(path).ok(),
+        None,
+        None,
+    )
+}
+
+fn startup_config_path_source_from_storage_paths(
+    paths: SorotteClientStoragePaths,
+) -> GuiStartupConfigPathSource {
+    match paths.source {
+        SorotteClientStorageSource::CliConfigPath | SorotteClientStorageSource::EnvConfigPath => {
+            GuiStartupConfigPathSource::Override(paths.config_path)
+        }
+        SorotteClientStorageSource::CliConfigRoot | SorotteClientStorageSource::EnvConfigRoot => {
+            GuiStartupConfigPathSource::ConfigRootOverride(paths.config_path)
+        }
+        SorotteClientStorageSource::PersistedConfigRoot => {
+            GuiStartupConfigPathSource::PersistedConfigRoot(paths.config_path)
+        }
+        SorotteClientStorageSource::ConfigRootExisting => {
+            GuiStartupConfigPathSource::ConfigRootExisting(paths.config_path)
+        }
+        SorotteClientStorageSource::DefaultConfigTarget => {
+            GuiStartupConfigPathSource::DefaultConfigTarget(paths.config_path)
+        }
     }
-    if cfg!(target_os = "macos") {
-        return lookup("HOME")
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .map(|home| {
-                PathBuf::from(home)
-                    .join("Library")
-                    .join("Application Support")
-                    .join("Sorotte")
-            });
-    }
-    if let Some(xdg_config_home) = lookup("XDG_CONFIG_HOME")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    {
-        return Some(PathBuf::from(xdg_config_home).join("sorotte"));
-    }
-    lookup("HOME")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(|home| PathBuf::from(home).join(".config").join("sorotte"))
 }
 
 pub(super) fn resolve_sorotte_gui_config_path_source_legacy_compatible_with<F, C, I>(
     lookup: &F,
-    _current_dir: C,
+    current_dir: C,
     is_file: I,
 ) -> Option<GuiStartupConfigPathSource>
 where
@@ -186,15 +189,8 @@ where
     C: Fn() -> Option<PathBuf>,
     I: Fn(&Path) -> bool,
 {
-    if let Some(path) = sorotte_gui_config_path_override_from_lookup(lookup) {
-        return Some(GuiStartupConfigPathSource::Override(path));
-    }
-    let root = default_sorotte_gui_config_root_legacy_compatible_from_lookup(lookup)?;
-    let candidate = root.join(SOROTTE_CONFIG_FILE_NAME);
-    if is_file(&candidate) {
-        return Some(GuiStartupConfigPathSource::ConfigRootExisting(candidate));
-    }
-    Some(GuiStartupConfigPathSource::DefaultConfigTarget(candidate))
+    resolve_sorotte_gui_storage_paths_legacy_compatible_with(lookup, current_dir, is_file)
+        .map(startup_config_path_source_from_storage_paths)
 }
 
 pub(super) fn resolve_sorotte_gui_config_path_legacy_compatible() -> Option<PathBuf> {
@@ -248,11 +244,14 @@ pub(super) fn gui_startup_actions_from_lookup<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let config_path_source = resolve_sorotte_gui_config_path_source_legacy_compatible_with(
+    let storage_paths = resolve_sorotte_gui_storage_paths_legacy_compatible_with(
         &lookup,
         || env::current_dir().ok(),
         Path::is_file,
     );
+    let config_path_source = storage_paths
+        .clone()
+        .map(startup_config_path_source_from_storage_paths);
     let mut messages = gui_startup_messages_from_lookup_and_config_path_source(
         &lookup,
         settings,
@@ -261,7 +260,16 @@ where
     if GuiStartupPlayerIpcSource::from_lookup(&lookup).is_none() {
         messages.push(GuiStartupPlayerIpcSource::missing_startup_message());
     }
-    gui_startup_actions_from_messages(messages)
+    storage_paths
+        .as_ref()
+        .map(|paths| {
+            GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
+                GuiConfigStorageRuntimeSnapshot::from_storage_paths(paths),
+            )
+        })
+        .into_iter()
+        .chain(gui_startup_actions_from_messages(messages))
+        .collect()
 }
 
 #[cfg(test)]

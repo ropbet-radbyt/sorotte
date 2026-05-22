@@ -7,11 +7,11 @@ use sorotte_client_app::app_boundary::state::{
 
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind, GuiPlexState,
-    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellModal,
-    GuiShellView, GuiValidationState, MainWindowShellState, MediaSearchWorkflowShellState,
-    MenuActionRuntimeOverride, MenuDialogShellState, PublicServerBrowserShellState,
-    SorotteGuiShellAppState,
+    GuiCommandAvailabilityState, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
+    GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginSelection, GuiSavedSessionConnectTarget,
+    GuiSelectionState, GuiShellModal, GuiShellView, GuiValidationState, MainWindowShellState,
+    MediaSearchWorkflowShellState, MenuActionRuntimeOverride, MenuDialogShellState,
+    PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 use super::support::{
     configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
@@ -37,8 +37,10 @@ impl SorotteGuiShellAppState {
             main_window_playlist_selection_is_local: false,
             runtime_menu_action_overrides: Vec::new(),
             runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
+            config_storage: GuiConfigStorageRuntimeSnapshot::default(),
             commands: GuiCommandAvailabilityState::default(),
             pending_operation: None,
+            pending_config_storage_target: None,
             pending_local_ready_target: None,
             pending_saved_server_connect_saves_configuration: false,
             outgoing_chat_message: None,

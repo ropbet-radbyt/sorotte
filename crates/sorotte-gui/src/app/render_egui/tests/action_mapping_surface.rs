@@ -16,6 +16,56 @@ fn gui_widget_egui_renderer_maps_configuration_tab_buttons_to_shell_actions() {
 }
 
 #[test]
+fn gui_widget_egui_renderer_maps_config_storage_buttons_and_external_override_state() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
+            GuiConfigStorageRuntimeSnapshot {
+                config_path: Some("C:/Sorotte/sorotte.ini".to_owned()),
+                storage_root: Some("C:/Sorotte".to_owned()),
+                default_storage_root: Some("C:/Users/test/AppData/Roaming/Sorotte".to_owned()),
+                source_label: "custom config root".to_owned(),
+                external_override_active: false,
+            },
+        ))
+    );
+    assert!(state.apply(GuiShellAction::SelectConfigurationTab(
+        GuiConfigurationTab::InterfaceSystem,
+    )));
+    let tree = state.configuration_widget_tree();
+    let default_button = tree.find("config-storage:root:default").unwrap();
+    assert!(default_button.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, default_button),
+        vec![GuiShellAction::BeginConfigStorageDefaultReset]
+    );
+
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
+            GuiConfigStorageRuntimeSnapshot {
+                external_override_active: true,
+                source_label: "SOROTTE_CLIENT_CONFIG_ROOT".to_owned(),
+                ..state.config_storage.clone()
+            },
+        ))
+    );
+    let tree = state.configuration_widget_tree();
+    assert!(
+        !tree
+            .find("config-storage:root:browse")
+            .expect("storage Browse button should exist")
+            .enabled
+    );
+    assert!(
+        !tree
+            .find("config-storage:root:default")
+            .expect("storage Use Default button should exist")
+            .enabled
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),

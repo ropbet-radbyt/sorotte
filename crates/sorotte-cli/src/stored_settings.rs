@@ -27,7 +27,7 @@ use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
 use crate::client_args::LegacyClientArgOverrides;
 use crate::client_config::ClientLoopConfig;
 use crate::config_paths::{
-    default_sorotte_cli_config_root, resolve_sorotte_cli_config_path,
+    resolve_sorotte_cli_config_path, resolve_sorotte_cli_storage_root,
     sorotte_cli_gui_state_root_override,
 };
 use crate::env_support::{env_port, env_trimmed};

@@ -284,6 +284,23 @@ impl GuiWidgetEguiRenderer {
             .filter(|paths: &Vec<String>| !paths.is_empty())
     }
 
+    pub(super) fn pick_config_storage_root_directory(
+        state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        if let Some(path) = Self::config_storage_browse_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        let mut dialog = FileDialog::new().set_title("Select Sorotte Config Folder");
+        if let Some(directory) = state.config_storage.storage_root.as_deref() {
+            dialog = dialog.set_directory(directory);
+        } else if let Some(directory) = Self::media_search_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
     pub(super) fn media_search_browse_override_paths_from_lookup<F>(
         lookup: &F,
     ) -> Option<Vec<String>>
@@ -297,6 +314,15 @@ impl GuiWidgetEguiRenderer {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         if paths.is_empty() { None } else { Some(paths) }
+    }
+
+    pub(super) fn config_storage_browse_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
     }
 
     pub(super) fn media_search_dialog_start_directory(

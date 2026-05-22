@@ -287,6 +287,61 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_default
 }
 
 #[test]
+fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_env_root() {
+    let env_root = test_default_sorotte_config_env_root();
+    let env_root_string = env_root.display().to_string();
+    let source = super::super::resolve_sorotte_gui_config_path_source_legacy_compatible_with(
+        &|name| match name {
+            "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
+            "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
+            "SOROTTE_CLIENT_CONFIG_ROOT" => Some("portable-config".to_owned()),
+            _ => None,
+        },
+        || Some(std::path::PathBuf::from("/cwd")),
+        |_path| false,
+    );
+
+    assert_eq!(
+        source,
+        Some(
+            super::super::GuiStartupConfigPathSource::ConfigRootOverride(
+                std::path::PathBuf::from("/cwd")
+                    .join("portable-config")
+                    .join("sorotte.ini"),
+            )
+        )
+    );
+}
+
+#[test]
+fn gui_startup_actions_from_lookup_reports_config_storage_snapshot() {
+    let env_root = test_default_sorotte_config_env_root();
+    let env_root_string = env_root.display().to_string();
+    let actions = super::super::gui_startup_actions_from_lookup(
+        |name| match name {
+            "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
+            "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
+            "SOROTTE_CLIENT_CONFIG_ROOT" => Some(env_root.join("portable").display().to_string()),
+            _ => None,
+        },
+        &StoredClientSettingsMvp::default(),
+    );
+
+    assert!(actions.iter().any(|action| {
+        matches!(
+            action,
+            GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(snapshot)
+                if snapshot.source_label == "SOROTTE_CLIENT_CONFIG_ROOT"
+                    && snapshot.external_override_active
+                    && snapshot
+                        .config_path
+                        .as_deref()
+                        .is_some_and(|path| path.ends_with("sorotte.ini"))
+        )
+    }));
+}
+
+#[test]
 fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
     let override_path = std::path::PathBuf::from("custom-config-root").join("sorotte.ini");
     let expected_message =

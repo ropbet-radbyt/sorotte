@@ -92,6 +92,19 @@ pub mod persistence {
     };
 }
 
+pub mod storage {
+    pub use crate::client_storage_paths::{
+        SOROTTE_CLIENT_CONFIG_PATH_ENV, SOROTTE_CLIENT_CONFIG_ROOT_ENV,
+        SOROTTE_CLIENT_CONFIG_ROOT_POINTER_FILE_NAME, SOROTTE_CONFIG_FILE_NAME,
+        SorotteClientStoragePaths, SorotteClientStorageSource,
+        clear_sorotte_client_config_root_pointer, default_sorotte_client_config_root,
+        default_sorotte_client_config_root_from_lookup, ensure_sorotte_client_storage_root,
+        load_sorotte_client_config_root_pointer_from_path, normalize_path,
+        persist_sorotte_client_config_root_pointer, resolve_sorotte_client_storage_paths,
+        resolve_sorotte_client_storage_paths_from_lookup, sorotte_client_config_root_pointer_path,
+    };
+}
+
 pub mod session {
     pub use crate::legacy_session_loop::{
         ClientNetworkLoopAttemptDisposition, ClientNetworkLoopAttemptExecutionPlan,
@@ -142,6 +155,7 @@ pub mod state {
 mod tests {
     use super::{
         commands, compatibility, diagnostics, language, notifications, persistence, session, state,
+        storage,
     };
 
     #[test]
@@ -150,6 +164,7 @@ mod tests {
         assert!(!compatibility::legacy_configuration_getter_ini_compat_entries().is_empty());
         assert!(language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY.contains("de/en/es"));
         assert!(commands::parse_local_input_command("list").is_some());
+        assert_eq!(storage::SOROTTE_CONFIG_FILE_NAME, "sorotte.ini");
     }
 
     #[test]

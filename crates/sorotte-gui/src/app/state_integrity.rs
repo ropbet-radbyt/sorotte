@@ -262,6 +262,9 @@ impl SorotteGuiShellAppState {
             GuiPendingOperationKind::ResetConfiguration => self.cancel_configuration_reset(),
             GuiPendingOperationKind::ReloadConfiguration => self.cancel_configuration_reload(),
             GuiPendingOperationKind::ClearGuiData => self.cancel_clear_gui_data(),
+            GuiPendingOperationKind::ChangeConfigStorageRoot => {
+                self.cancel_config_storage_root_change()
+            }
             GuiPendingOperationKind::ConnectSavedServer => self.cancel_saved_server_connect(),
             GuiPendingOperationKind::DisconnectSession => self.cancel_session_disconnect(),
             GuiPendingOperationKind::ConnectPublicServer => {

@@ -6,6 +6,8 @@ pub(crate) struct LegacyClientArgOverrides {
     pub(crate) force_gui_prompt_requested: bool,
     pub(crate) no_gui_requested: bool,
     pub(crate) clear_gui_data_requested: bool,
+    pub(crate) config_path: Option<String>,
+    pub(crate) config_root: Option<String>,
     pub(crate) language: Option<String>,
     pub(crate) player_path: Option<String>,
     pub(crate) file: Option<String>,

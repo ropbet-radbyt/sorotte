@@ -94,6 +94,9 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(snapshot) => {
                 self.apply_gui_configuration_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(snapshot) => {
+                self.apply_gui_config_storage_runtime_snapshot(snapshot)
+            }
             _ => unreachable!("action routed to wrong reducer domain"),
         }
     }

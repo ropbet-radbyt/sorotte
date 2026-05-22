@@ -43,6 +43,8 @@ fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
             force_gui_prompt_requested: false,
             no_gui_requested: true,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: None,
@@ -74,6 +76,8 @@ fn parse_legacy_client_arg_overrides_handles_optional_room_and_ipv6_host() {
             force_gui_prompt_requested: false,
             no_gui_requested: false,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: None,
@@ -103,6 +107,8 @@ fn parse_legacy_client_arg_overrides_parses_help_and_version_switches() {
             force_gui_prompt_requested: false,
             no_gui_requested: false,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: None,
@@ -141,6 +147,8 @@ fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash() {
             force_gui_prompt_requested: false,
             no_gui_requested: true,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: None,
@@ -194,6 +202,8 @@ fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
             force_gui_prompt_requested: false,
             no_gui_requested: true,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: Some("value".to_owned()),
@@ -223,6 +233,8 @@ fn parse_legacy_client_arg_overrides_ignores_legacy_psn_arg() {
             force_gui_prompt_requested: false,
             no_gui_requested: true,
             clear_gui_data_requested: false,
+            config_path: None,
+            config_root: None,
             language: None,
             player_path: None,
             file: None,
@@ -255,6 +267,10 @@ fn parse_legacy_client_arg_overrides_parses_legacy_compatibility_flags_without_e
         "--debug",
         "--force-gui-prompt",
         "--clear-gui-data",
+        "--config-path",
+        "custom/sorotte.ini",
+        "--config-root",
+        "portable-config",
         "--language",
         "fr",
         "--load-playlist-from-file",
@@ -263,6 +279,8 @@ fn parse_legacy_client_arg_overrides_parses_legacy_compatibility_flags_without_e
     assert!(overrides.debug_requested);
     assert!(overrides.force_gui_prompt_requested);
     assert!(overrides.clear_gui_data_requested);
+    assert_eq!(overrides.config_path.as_deref(), Some("custom/sorotte.ini"));
+    assert_eq!(overrides.config_root.as_deref(), Some("portable-config"));
     assert_eq!(overrides.language.as_deref(), Some("fr"));
     assert_eq!(
         overrides.load_playlist_from_file.as_deref(),

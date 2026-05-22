@@ -1,6 +1,7 @@
 use std::{
     io::{BufRead, Write},
     path::PathBuf,
+    sync::{Mutex, MutexGuard},
 };
 
 use super::super::runtime_stack::{GuiAttachedPlayerRuntimeAction, GuiSessionRoomPlaystate};
@@ -14,22 +15,59 @@ use crate::app::{
     GuiAttachedMediaSearchBuildProgress, GuiAttachedMediaSearchBuildState,
     GuiAttachedMediaSearchBuildStatus, GuiAttachedMediaSearchIndex,
     GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
-    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiInteractionRuntimeSnapshot,
-    GuiLaunchMode, GuiOwnedPlayer, GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest,
-    GuiPendingOperationKind, GuiPendingRoomChangeRequest, GuiPersistedUiState,
-    GuiPlayerLaunchRuntimeState, GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner,
-    GuiRuntimeRequest, GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView,
-    GuiTestPlayerAdapter, GuiTransientNotificationLevel, MainWindowPlaylistRow,
-    MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
-    legacy_gui_qsettings_store_path, persist_gui_ui_state_at_root,
+    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiConfigStorageChangeTarget,
+    GuiInteractionRuntimeSnapshot, GuiLaunchMode, GuiOwnedPlayer,
+    GuiPendingAttachedMediaResolution, GuiPendingCompletionRequest, GuiPendingOperationKind,
+    GuiPendingRoomChangeRequest, GuiPersistedUiState, GuiPlayerLaunchRuntimeState,
+    GuiQueuedRuntimeBridgeHandle, GuiQueuedRuntimeOwner, GuiRuntimeRequest,
+    GuiSessionRuntimeAdapter, GuiShellAction, GuiShellView, GuiTestPlayerAdapter,
+    GuiTransientNotificationLevel, MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot,
+    MainWindowRuntimeSnapshot, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
+    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, legacy_gui_qsettings_store_path,
+    persist_gui_ui_state_at_root,
 };
 use sorotte_client_app::app_boundary::persistence::{
     load_sorotte_ini_stored_client_settings_mvp_from_path,
     upsert_sorotte_ini_stored_client_settings_mvp_at_path,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::storage::sorotte_client_config_root_pointer_path;
 use sorotte_player_api::PlayerAdapter;
+
+static CONFIG_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct TestEnvGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl<'a> TestEnvGuard<'a> {
+    fn lock(lock: &'a Mutex<()>) -> Self {
+        Self {
+            _guard: lock.lock().expect("lock poisoned"),
+        }
+    }
+
+    fn set_var<K, V>(&self, key: K, value: V)
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        // SAFETY: This guard serializes runtime-owner tests that mutate config-root env vars.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+
+    fn remove_var<K>(&self, key: K)
+    where
+        K: AsRef<std::ffi::OsStr>,
+    {
+        // SAFETY: See set_var; the same guard serializes test-owned removals.
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
+}
 
 fn read_client_hello_after_optional_start_tls<R, W>(
     reader: &mut R,

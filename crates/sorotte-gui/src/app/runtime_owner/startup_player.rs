@@ -191,7 +191,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.playlist_auto_advance_eof_latched = false;
     }
 
-    fn clear_attached_media_search_runtime_cache(&mut self) {
+    pub(super) fn clear_attached_media_search_runtime_cache(&mut self) {
         if let Some(pending_resolution) = self.pending_attached_media_resolution.take() {
             pending_resolution
                 .cancel_flag

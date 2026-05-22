@@ -23,8 +23,31 @@ Use the configuration window to set:
 - optional server password
 - `mpv` path and per-player arguments
 - playback, readiness, playlist, chat, OSD, language, and trusted-domain settings
+- storage location for `sorotte.ini` and colocated GUI data
 
 After connecting, the main window supports room/user/file browsing, chat, readiness, shared playlists, media open/import, controlled rooms, public-server browsing, media search, drag/drop ingest, and runtime-backed connect/disconnect flows.
+
+## Configuration Storage
+
+By default Sorotte stores `sorotte.ini` and appdata-style GUI files in the platform Sorotte folder:
+
+| Platform | Default config file |
+| --- | --- |
+| Windows | `%APPDATA%\Sorotte\sorotte.ini` |
+| Linux/BSD | `${XDG_CONFIG_HOME:-$HOME/.config}/sorotte/sorotte.ini` |
+| macOS | `$HOME/Library/Application Support/Sorotte/sorotte.ini` |
+
+The effective storage root is also used for GUI state `.ini` files, cache files, Plex/media-search cache, stream-helper tools, and update staging. Precedence is:
+
+1. CLI `--config-path <file>` or `--config-root <dir>`
+2. `SOROTTE_CLIENT_CONFIG_PATH=<file>`
+3. `SOROTTE_CLIENT_CONFIG_ROOT=<dir>`
+4. GUI-saved custom root pointer
+5. platform default appdata root
+
+`SOROTTE_CLIENT_CONFIG_PATH` is a full-file override and points directly at `sorotte.ini` or another config file. `SOROTTE_CLIENT_CONFIG_ROOT` is a folder override and Sorotte uses `<dir>\sorotte.ini`.
+
+In the GUI, open `Interface & System` -> `Storage Location`. `Browse` saves the current configuration into the selected root, copies known Sorotte state/cache/tool files from the old root on a best-effort basis, and leaves the old folder untouched. `Use Default` clears the GUI-saved custom root pointer. Persistent GUI changes are disabled while a CLI or environment override is active, because that external override wins on the next launch.
 
 ## mpv Setup
 
@@ -111,6 +134,8 @@ Useful options:
 - `--player-path <path>`
 - `--load-playlist-from-file <path>`
 - `--language <language>`
+- `--config-path <file>`
+- `--config-root <dir>`
 - `--clear-gui-data`
 - `--no-store`
 - `-v, --version`

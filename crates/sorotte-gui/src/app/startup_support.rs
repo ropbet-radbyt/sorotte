@@ -119,6 +119,8 @@ impl GuiStartupPublicServerSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GuiStartupConfigPathSource {
     Override(PathBuf),
+    ConfigRootOverride(PathBuf),
+    PersistedConfigRoot(PathBuf),
     ConfigRootExisting(PathBuf),
     DefaultConfigTarget(PathBuf),
 }
@@ -127,6 +129,8 @@ impl GuiStartupConfigPathSource {
     pub(super) fn resolved_path(&self) -> &Path {
         match self {
             Self::Override(path)
+            | Self::ConfigRootOverride(path)
+            | Self::PersistedConfigRoot(path)
             | Self::ConfigRootExisting(path)
             | Self::DefaultConfigTarget(path) => path.as_path(),
         }
@@ -137,6 +141,12 @@ impl GuiStartupConfigPathSource {
         match self {
             Self::Override(_) => format!(
                 "Startup configuration path uses SOROTTE_CLIENT_CONFIG_PATH ({rendered_path})."
+            ),
+            Self::ConfigRootOverride(_) => format!(
+                "Startup configuration path uses SOROTTE_CLIENT_CONFIG_ROOT ({rendered_path})."
+            ),
+            Self::PersistedConfigRoot(_) => format!(
+                "Startup configuration path uses the saved custom config root ({rendered_path})."
             ),
             Self::ConfigRootExisting(_) => format!(
                 "Startup configuration path uses existing config-root file ({rendered_path})."

@@ -115,6 +115,30 @@ fn gui_widget_egui_renderer_reads_media_search_browse_override_paths_from_lookup
 }
 
 #[test]
+fn gui_widget_egui_renderer_reads_config_storage_browse_override_path_from_lookup() {
+    assert_eq!(
+        GuiWidgetEguiRenderer::config_storage_browse_override_path_from_lookup(&|name| {
+            match name {
+                "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH" => {
+                    Some("  C:/Sorotte Portable  ".to_owned())
+                }
+                _ => None,
+            }
+        }),
+        Some("C:/Sorotte Portable".to_owned())
+    );
+    assert_eq!(
+        GuiWidgetEguiRenderer::config_storage_browse_override_path_from_lookup(&|name| {
+            match name {
+                "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH" => Some("   ".to_owned()),
+                _ => None,
+            }
+        }),
+        None
+    );
+}
+
+#[test]
 fn gui_widget_egui_renderer_reads_media_file_pick_override_paths_from_lookup() {
     assert_eq!(
         GuiWidgetEguiRenderer::media_file_pick_override_paths_from_lookup(&|name| match name {

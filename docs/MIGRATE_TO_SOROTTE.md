@@ -33,6 +33,16 @@ Sorotte writes `sorotte.ini` under an app-scoped folder:
 | Linux/BSD | `${XDG_CONFIG_HOME:-$HOME/.config}/sorotte/sorotte.ini` |
 | macOS | `$HOME/Library/Application Support/Sorotte/sorotte.ini` |
 
+Users can move Sorotte's appdata-style files into a custom folder. The GUI setting stores only a small `config-root.txt` pointer in the default Sorotte appdata folder, so Sorotte can find the custom root before reading `sorotte.ini`. Environment and CLI overrides take precedence:
+
+1. `--config-path <file>` or `--config-root <dir>`
+2. `SOROTTE_CLIENT_CONFIG_PATH=<file>`
+3. `SOROTTE_CLIENT_CONFIG_ROOT=<dir>`
+4. GUI-saved custom root pointer
+5. platform default appdata root
+
+When changing the root from the GUI, Sorotte saves the current configuration into the new root and copies known GUI state, cache, stream-helper, and update-staging files on a best-effort basis. It does not delete or move the old folder.
+
 Manual copy targets:
 
 | Old item | New item |

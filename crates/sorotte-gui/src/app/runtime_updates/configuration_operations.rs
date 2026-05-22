@@ -1,10 +1,11 @@
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 use super::super::shell_state::{
-    GuiConfigurationTab, GuiPendingOperationKind, GuiPendingOperationState,
-    GuiRoomHistoryEditSessionState, GuiShellView, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState,
+    GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
+    GuiPendingOperationKind, GuiPendingOperationState, GuiRoomHistoryEditSessionState,
+    GuiShellView, GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
+use super::super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
     pub(in crate::app) fn begin_room_history_edit(&mut self) -> bool {
@@ -193,6 +194,97 @@ impl SorotteGuiShellAppState {
         self.pending_operation = Some(GuiPendingOperationState {
             kind: GuiPendingOperationKind::ClearGuiData,
         });
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn begin_config_storage_root_change(&mut self, root: String) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if self.config_storage.external_override_active {
+            return self.record_action_error(
+                "The config location is controlled by a CLI or environment override.",
+            );
+        }
+        let Some(root) = normalized_editable_text(&root) else {
+            return self.record_action_error("Choose a non-empty config folder.");
+        };
+        if !self.validation.issues.is_empty() {
+            return self.record_action_error(
+                "Configuration cannot be moved while validation issues remain.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ChangeConfigStorageRoot,
+        });
+        self.pending_config_storage_target = Some(GuiConfigStorageChangeTarget::CustomRoot(root));
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn begin_config_storage_default_reset(&mut self) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if self.config_storage.external_override_active {
+            return self.record_action_error(
+                "The config location is controlled by a CLI or environment override.",
+            );
+        }
+        if !self.validation.issues.is_empty() {
+            return self.record_action_error(
+                "Configuration cannot be moved while validation issues remain.",
+            );
+        }
+
+        self.pending_operation = Some(GuiPendingOperationState {
+            kind: GuiPendingOperationKind::ChangeConfigStorageRoot,
+        });
+        self.pending_config_storage_target = Some(GuiConfigStorageChangeTarget::DefaultRoot);
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn complete_config_storage_root_change(
+        &mut self,
+        snapshot: GuiConfigStorageRuntimeSnapshot,
+        settings: StoredClientSettingsMvp,
+    ) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No config-location change is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ChangeConfigStorageRoot {
+            return self
+                .record_action_error("The active GUI operation is not a config-location change.");
+        }
+
+        self.config_storage = snapshot;
+        self.saved_configuration = settings;
+        self.pending_operation = None;
+        self.pending_config_storage_target = None;
+        self.pending_saved_server_connect_saves_configuration = false;
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(in crate::app) fn cancel_config_storage_root_change(&mut self) -> bool {
+        let Some(pending) = self.pending_operation.as_ref() else {
+            return self.record_action_error("No config-location change is currently in progress.");
+        };
+        if pending.kind != GuiPendingOperationKind::ChangeConfigStorageRoot {
+            return self
+                .record_action_error("The active GUI operation is not a config-location change.");
+        }
+
+        self.pending_operation = None;
+        self.pending_config_storage_target = None;
+        self.pending_saved_server_connect_saves_configuration = false;
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Warning,
+            "Config location change canceled.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }

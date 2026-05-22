@@ -1,3 +1,10 @@
+use std::path::{Path, PathBuf};
+
+use crate::app::{
+    LEGACY_GUI_QSETTINGS_STORE_NAMES, shell_state::GuiConfigStorageChangeTarget,
+    ui_state::legacy_gui_qsettings_store_path,
+};
+
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -349,5 +356,205 @@ impl GuiPersistedConfigRuntimeOwner {
             ),
         }
         true
+    }
+
+    pub(super) fn handle_complete_config_storage_root_change_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        target: GuiConfigStorageChangeTarget,
+        settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+    ) -> bool {
+        let old_root = self.legacy_gui_qsettings_root();
+        let paths = match self.config_storage_paths_for_change_target(target) {
+            Ok(paths) => paths,
+            Err(error) => {
+                return self.cancel_config_storage_change_with_error(
+                    handle,
+                    projected_state,
+                    error,
+                );
+            }
+        };
+
+        if let Err(error) = ensure_sorotte_client_storage_root(&paths.storage_root) {
+            return self.cancel_config_storage_change_with_error(
+                handle,
+                projected_state,
+                error.to_string(),
+            );
+        }
+
+        if let Err(error) =
+            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&paths.config_path, &settings)
+        {
+            return self.cancel_config_storage_change_with_error(
+                handle,
+                projected_state,
+                format!("Configuration save failed: {error}"),
+            );
+        }
+
+        let pointer_result = if paths.source == SorotteClientStorageSource::PersistedConfigRoot {
+            persist_sorotte_client_config_root_pointer(
+                &paths.default_storage_root,
+                &paths.storage_root,
+            )
+            .map(|_| ())
+        } else {
+            clear_sorotte_client_config_root_pointer(&paths.default_storage_root).map(|_| ())
+        };
+        if let Err(error) = pointer_result {
+            return self.cancel_config_storage_change_with_error(
+                handle,
+                projected_state,
+                error.to_string(),
+            );
+        }
+
+        let copy_warnings =
+            Self::copy_known_storage_entries_best_effort(old_root.as_deref(), &paths.storage_root);
+        self.config_path = Some(paths.config_path.clone());
+        self.clear_attached_media_search_runtime_cache();
+        let stream_helper_snapshot = self.refresh_stream_helper_runtime_snapshot_for_target(None);
+        self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
+        let snapshot = GuiConfigStorageRuntimeSnapshot::from_storage_paths(&paths);
+        let mut actions = vec![
+            GuiShellAction::CompleteConfigStorageRootChange { snapshot, settings },
+            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(stream_helper_snapshot),
+            GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Success,
+                message: format!("Config location updated: {}.", paths.storage_root.display()),
+            },
+        ];
+        if !copy_warnings.is_empty() {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Warning,
+                message: format!(
+                    "Config location updated, but {} existing storage item(s) could not be copied.",
+                    copy_warnings.len()
+                ),
+            });
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    fn config_storage_paths_for_change_target(
+        &self,
+        target: GuiConfigStorageChangeTarget,
+    ) -> Result<SorotteClientStoragePaths, String> {
+        let default_root = default_sorotte_client_config_root().ok_or_else(|| {
+            "Cannot resolve the default Sorotte config root on this platform.".to_owned()
+        })?;
+        let current_dir = std::env::current_dir().ok();
+        let root = match target {
+            GuiConfigStorageChangeTarget::CustomRoot(root) => {
+                normalize_path(PathBuf::from(root), current_dir)
+            }
+            GuiConfigStorageChangeTarget::DefaultRoot => default_root.clone(),
+        };
+        let source = if root == default_root {
+            SorotteClientStorageSource::ConfigRootExisting
+        } else {
+            SorotteClientStorageSource::PersistedConfigRoot
+        };
+        Ok(SorotteClientStoragePaths::from_root(
+            root,
+            default_root,
+            source,
+            None,
+        ))
+    }
+
+    fn cancel_config_storage_change_with_error(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        message: String,
+    ) -> bool {
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![
+                GuiShellAction::CancelConfigStorageRootChange,
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: format!("Config location change failed: {message}"),
+                },
+            ],
+        );
+        false
+    }
+
+    fn copy_known_storage_entries_best_effort(
+        old_root: Option<&Path>,
+        new_root: &Path,
+    ) -> Vec<String> {
+        let Some(old_root) = old_root else {
+            return Vec::new();
+        };
+        if old_root == new_root {
+            return Vec::new();
+        }
+
+        let mut warnings = Vec::new();
+        for store_name in LEGACY_GUI_QSETTINGS_STORE_NAMES {
+            Self::copy_storage_path_best_effort(
+                &legacy_gui_qsettings_store_path(old_root, store_name),
+                &legacy_gui_qsettings_store_path(new_root, store_name),
+                &mut warnings,
+            );
+        }
+        for entry_name in ["cache", "tools", "updates"] {
+            Self::copy_storage_path_best_effort(
+                &old_root.join(entry_name),
+                &new_root.join(entry_name),
+                &mut warnings,
+            );
+        }
+        warnings
+    }
+
+    fn copy_storage_path_best_effort(src: &Path, dst: &Path, warnings: &mut Vec<String>) {
+        if !src.exists() {
+            return;
+        }
+        if src.is_file() {
+            if dst.exists() {
+                return;
+            }
+            if let Some(parent) = dst.parent()
+                && let Err(error) = std::fs::create_dir_all(parent)
+            {
+                warnings.push(format!("{}: {error}", dst.display()));
+                return;
+            }
+            if let Err(error) = std::fs::copy(src, dst) {
+                warnings.push(format!("{}: {error}", src.display()));
+            }
+            return;
+        }
+        if !src.is_dir() {
+            return;
+        }
+        if let Err(error) = std::fs::create_dir_all(dst) {
+            warnings.push(format!("{}: {error}", dst.display()));
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(src) else {
+            warnings.push(format!("{}: failed reading directory", src.display()));
+            return;
+        };
+        for entry in entries {
+            match entry {
+                Ok(entry) => Self::copy_storage_path_best_effort(
+                    &entry.path(),
+                    &dst.join(entry.file_name()),
+                    warnings,
+                ),
+                Err(error) => warnings.push(format!("{}: {error}", src.display())),
+            }
+        }
     }
 }

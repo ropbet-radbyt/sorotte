@@ -210,6 +210,8 @@ impl GuiQueuedRuntimeBridge {
                 | GuiShellAction::CancelConfigurationReload
                 | GuiShellAction::CompleteClearGuiData
                 | GuiShellAction::CancelClearGuiData
+                | GuiShellAction::CompleteConfigStorageRootChange { .. }
+                | GuiShellAction::CancelConfigStorageRootChange
                 | GuiShellAction::CompletePendingOperation
                 | GuiShellAction::CancelPendingOperation
                 | GuiShellAction::CompleteSavedServerConnect

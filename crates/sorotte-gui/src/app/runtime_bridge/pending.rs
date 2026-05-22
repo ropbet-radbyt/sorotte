@@ -6,6 +6,10 @@ pub(in crate::app) enum GuiPendingCompletionRequest {
     ResetConfiguration(StoredClientSettingsMvp),
     ReloadConfiguration(StoredClientSettingsMvp),
     ClearGuiData,
+    ChangeConfigStorageRoot {
+        target: GuiConfigStorageChangeTarget,
+        settings: StoredClientSettingsMvp,
+    },
     ConnectSavedServer,
     DisconnectSession,
     ConnectPublicServer,
@@ -29,6 +33,10 @@ impl GuiPendingCompletionRequest {
                 Self::ReloadConfiguration(state.saved_configuration.clone())
             }
             GuiPendingOperationKind::ClearGuiData => Self::ClearGuiData,
+            GuiPendingOperationKind::ChangeConfigStorageRoot => Self::ChangeConfigStorageRoot {
+                target: state.pending_config_storage_target.clone()?,
+                settings: state.configuration.to_stored_settings(),
+            },
             GuiPendingOperationKind::ConnectSavedServer => Self::ConnectSavedServer,
             GuiPendingOperationKind::DisconnectSession => Self::DisconnectSession,
             GuiPendingOperationKind::ConnectPublicServer => Self::ConnectPublicServer,
@@ -60,6 +68,7 @@ impl GuiPendingCompletionRequest {
                 GuiShellAction::CompleteConfigurationReload(settings)
             }
             Self::ClearGuiData => GuiShellAction::CompleteClearGuiData,
+            Self::ChangeConfigStorageRoot { .. } => GuiShellAction::CancelConfigStorageRootChange,
             Self::ConnectSavedServer => GuiShellAction::CompleteSavedServerConnect,
             Self::DisconnectSession => GuiShellAction::CompleteSessionDisconnect,
             Self::ConnectPublicServer => GuiShellAction::CompleteSelectedPublicServerConnect,

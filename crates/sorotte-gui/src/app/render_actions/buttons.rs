@@ -76,6 +76,12 @@ impl GuiWidgetEguiRenderer {
                 .into_iter()
                 .collect();
         }
+        if node.id == "config-storage:root:browse" {
+            return Self::pick_config_storage_root_directory(state)
+                .map(GuiShellAction::BeginConfigStorageRootChange)
+                .into_iter()
+                .collect();
+        }
         if matches!(
             node.id.as_str(),
             "main-window:playlist:load" | "main-window:playlist:load-shuffle"
@@ -149,6 +155,7 @@ impl GuiWidgetEguiRenderer {
             "config-command:reset" => vec![GuiShellAction::BeginConfigurationReset],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],
             "config-command:clear-gui-data" => vec![GuiShellAction::BeginClearGuiData],
+            "config-storage:root:default" => vec![GuiShellAction::BeginConfigStorageDefaultReset],
             "configuration:alert:close" => vec![GuiShellAction::DismissSetupAlert],
             "configuration:alert:fix-player-path" => vec![
                 GuiShellAction::SelectConfigurationTab(GuiConfigurationTab::Connection),
