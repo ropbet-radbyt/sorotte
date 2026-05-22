@@ -42,7 +42,7 @@ Users can move Sorotte's appdata-style files into a custom folder. New installs 
 5. legacy GUI-saved custom root pointer
 6. platform default appdata root
 
-When changing the root from the GUI, Sorotte saves the current configuration into the new root, updates install-folder `sorotte.ini`, and copies known GUI state, cache, stream-helper, and update-staging files on a best-effort basis. It does not delete or move the old folder. If the chosen root is the install folder itself, install-folder `sorotte.ini` is both the locator and normal settings file, and stores `configRoot = .` instead of an absolute path so the folder remains portable.
+When changing the root from the GUI, Sorotte saves the current configuration into the new root, updates install-folder `sorotte.ini`, and copies known GUI state, cache, stream-helper, and update-staging files on a best-effort basis. It does not delete or move the old folder. If the chosen root is the install folder itself, install-folder `sorotte.ini` is both the locator and normal settings file, and stores `configRoot = .` instead of an absolute path so the folder remains portable. If the chosen root is a child of the install folder, Sorotte stores it as a relative path such as `configRoot = data`.
 
 Manual copy targets:
 

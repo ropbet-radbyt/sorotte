@@ -50,7 +50,7 @@ If install-folder `sorotte.ini` already exists, Sorotte leaves it untouched at s
 
 In the GUI, open `Interface & System` -> `Storage Location`. `Browse` selects a root and leaves the normal `Save` button available; saving writes the current configuration into the selected root, updates install-folder `sorotte.ini`, copies known Sorotte state/cache/tool files from the old root on a best-effort basis, and leaves the old folder untouched. `Use Default` selects the platform default root and saving writes that root into install-folder `sorotte.ini`. Persistent GUI changes are disabled while a CLI or environment override is active, because that external override wins on the next launch.
 
-When the selected storage root is the install folder itself, install-folder `sorotte.ini` is both the locator and the normal settings file. Sorotte writes `configRoot = .` into its `[settings]` section instead of an absolute path, so the install folder can be moved as a portable bundle while preserving the rest of the settings.
+When the selected storage root is the install folder itself, install-folder `sorotte.ini` is both the locator and the normal settings file. Sorotte writes `configRoot = .` into its `[settings]` section instead of an absolute path, so the install folder can be moved as a portable bundle while preserving the rest of the settings. If the selected root is inside the install folder, Sorotte writes a relative path such as `configRoot = data` or `configRoot = config\settings`, keeping files like `MainWindow.ini` out of the install root while preserving portability.
 
 ## mpv Setup
 

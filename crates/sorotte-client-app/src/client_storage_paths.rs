@@ -127,6 +127,53 @@ pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
     normalize_for_compare(left) == normalize_for_compare(right)
 }
 
+fn path_component_eq(left: std::path::Component<'_>, right: std::path::Component<'_>) -> bool {
+    let left = left.as_os_str().to_string_lossy();
+    let right = right.as_os_str().to_string_lossy();
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
+    }
+}
+
+fn relative_path_from_base(path: &Path, base: &Path) -> Option<PathBuf> {
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+    if base_components.len() > path_components.len() {
+        return None;
+    }
+    if !base_components
+        .iter()
+        .zip(path_components.iter())
+        .all(|(base, path)| path_component_eq(*base, *path))
+    {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in path_components.iter().skip(base_components.len()) {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        Some(PathBuf::from("."))
+    } else {
+        Some(relative)
+    }
+}
+
+fn install_locator_config_root_value(install_root: &Path, storage_root: &Path) -> String {
+    if let (Ok(storage_root), Ok(install_root)) =
+        (storage_root.canonicalize(), install_root.canonicalize())
+        && let Some(relative) = relative_path_from_base(&storage_root, &install_root)
+    {
+        return relative.to_string_lossy().into_owned();
+    }
+    relative_path_from_base(storage_root, install_root)
+        .unwrap_or_else(|| storage_root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn fallback_storage_root_for_path(path: &Path, current_dir: Option<PathBuf>) -> PathBuf {
     normalize_path(path.to_path_buf(), current_dir.clone())
         .parent()
@@ -281,11 +328,7 @@ pub fn parse_sorotte_client_install_locator_config_root(
 }
 
 pub fn sorotte_client_install_locator_contents(install_root: &Path, storage_root: &Path) -> String {
-    let rendered_root = if paths_equivalent(storage_root, install_root) {
-        ".".to_owned()
-    } else {
-        storage_root.to_string_lossy().into_owned()
-    };
+    let rendered_root = install_locator_config_root_value(install_root, storage_root);
     format!("[settings]\n{SOROTTE_INSTALL_CONFIG_ROOT_KEY} = {rendered_root}\n")
 }
 
@@ -294,11 +337,7 @@ fn upsert_install_locator_config_root(
     install_root: &Path,
     storage_root: &Path,
 ) -> String {
-    let rendered_root = if paths_equivalent(storage_root, install_root) {
-        ".".to_owned()
-    } else {
-        storage_root.to_string_lossy().into_owned()
-    };
+    let rendered_root = install_locator_config_root_value(install_root, storage_root);
     let had_bom = existing_contents.starts_with('\u{feff}');
     let mut lines = existing_contents
         .strip_prefix('\u{feff}')
@@ -888,6 +927,27 @@ mod tests {
         assert!(
             contents.contains("configRoot = ."),
             "install-root selection should use a portable relative locator"
+        );
+
+        let nested_portable_root = install_root.join("data").join("settings");
+        persist_sorotte_client_install_locator(&install_root, &nested_portable_root)
+            .expect("nested portable locator should be writable");
+        let contents = std::fs::read_to_string(&locator_path).expect("locator should be readable");
+        assert_eq!(
+            parse_sorotte_client_install_locator_config_root(&contents, &install_root),
+            Some(nested_portable_root.clone())
+        );
+        let expected_relative = PathBuf::from("data")
+            .join("settings")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            contents.contains(&format!("configRoot = {expected_relative}")),
+            "install-root descendants should be stored as relative paths"
+        );
+        assert!(
+            !contents.contains(&install_root.to_string_lossy().into_owned()),
+            "install-root descendants should not be stored as absolute paths"
         );
 
         std::fs::write(
