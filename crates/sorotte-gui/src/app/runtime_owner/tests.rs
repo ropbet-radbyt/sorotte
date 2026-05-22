@@ -31,7 +31,10 @@ use sorotte_client_app::app_boundary::persistence::{
     upsert_sorotte_ini_stored_client_settings_mvp_at_path,
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-use sorotte_client_app::app_boundary::storage::sorotte_client_config_root_pointer_path;
+use sorotte_client_app::app_boundary::storage::{
+    SOROTTE_CLIENT_INSTALL_ROOT_ENV, parse_sorotte_client_install_locator_config_root,
+    sorotte_client_install_locator_path,
+};
 use sorotte_player_api::PlayerAdapter;
 
 static CONFIG_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());

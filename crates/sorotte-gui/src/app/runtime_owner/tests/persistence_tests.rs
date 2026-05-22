@@ -91,8 +91,11 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
     let prior_appdata = std::env::var_os("APPDATA");
     let prior_home = std::env::var_os("HOME");
     let prior_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+    let prior_install_root = std::env::var_os(SOROTTE_CLIENT_INSTALL_ROOT_ENV);
 
     let default_env_parent = test_temp_root("config-storage-default-parent");
+    let install_root = test_temp_root("config-storage-install-root");
+    env.set_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV, &install_root);
     if cfg!(windows) {
         env.set_var("APPDATA", &default_env_parent);
     } else if cfg!(target_os = "macos") {
@@ -100,16 +103,6 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
     } else {
         env.set_var("XDG_CONFIG_HOME", &default_env_parent);
     }
-    let default_root = if cfg!(windows) {
-        default_env_parent.join("Sorotte")
-    } else if cfg!(target_os = "macos") {
-        default_env_parent
-            .join("Library")
-            .join("Application Support")
-            .join("Sorotte")
-    } else {
-        default_env_parent.join("sorotte")
-    };
 
     let old_root = test_temp_root("config-storage-old-root");
     let new_root = test_temp_root("config-storage-new-root");
@@ -150,6 +143,7 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
     assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
         new_root.display().to_string(),
     )));
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ChangeConfigStorageRoot {
             target: GuiConfigStorageChangeTarget::CustomRoot(new_root.display().to_string()),
@@ -203,10 +197,12 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
         new_root.join("updates").join("stage.txt").exists(),
         "update staging should be copied to the new root"
     );
+    let install_locator_path = sorotte_client_install_locator_path(&install_root);
+    let locator_contents =
+        std::fs::read_to_string(&install_locator_path).expect("install locator should be readable");
     assert_eq!(
-        std::fs::read_to_string(sorotte_client_config_root_pointer_path(&default_root))
-            .expect("custom root pointer should be readable"),
-        new_root.to_string_lossy()
+        parse_sorotte_client_install_locator_config_root(&locator_contents, &install_root),
+        Some(new_root.clone())
     );
 
     match prior_appdata {
@@ -221,9 +217,14 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
         Some(value) => env.set_var("XDG_CONFIG_HOME", value),
         None => env.remove_var("XDG_CONFIG_HOME"),
     }
+    match prior_install_root {
+        Some(value) => env.set_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV, value),
+        None => env.remove_var(SOROTTE_CLIENT_INSTALL_ROOT_ENV),
+    }
     let _ = std::fs::remove_dir_all(&old_root);
     let _ = std::fs::remove_dir_all(&new_root);
     let _ = std::fs::remove_dir_all(&default_env_parent);
+    let _ = std::fs::remove_dir_all(&install_root);
 }
 
 #[test]

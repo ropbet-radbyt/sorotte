@@ -40,6 +40,30 @@ fn gui_widget_egui_renderer_maps_config_storage_buttons_and_external_override_st
         GuiWidgetEguiRenderer::actions_for_button_node(&state, default_button),
         vec![GuiShellAction::BeginConfigStorageDefaultReset]
     );
+    assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
+        "D:/PortableSorotte".to_owned(),
+    )));
+    assert_eq!(state.pending_operation, None);
+    let tree = state.configuration_widget_tree();
+    assert!(
+        tree.find("config-command:save")
+            .expect("Save button should exist")
+            .enabled,
+        "selecting a storage root should leave Save available"
+    );
+    assert_eq!(
+        tree.find("config-storage:source")
+            .expect("storage source should exist")
+            .value
+            .as_deref(),
+        Some("selected custom root (save to apply)")
+    );
+    assert!(state.apply(GuiShellAction::BeginConfigurationSave));
+    assert_eq!(
+        state.pending_operation.as_ref().map(|pending| pending.kind),
+        Some(GuiPendingOperationKind::ChangeConfigStorageRoot)
+    );
+    assert!(state.apply(GuiShellAction::CancelConfigStorageRootChange));
 
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(

@@ -73,9 +73,12 @@ impl SorotteGuiShellAppState {
             );
         }
 
-        self.pending_operation = Some(GuiPendingOperationState {
-            kind: GuiPendingOperationKind::SaveConfiguration,
-        });
+        let pending_kind = if self.pending_config_storage_target.is_some() {
+            GuiPendingOperationKind::ChangeConfigStorageRoot
+        } else {
+            GuiPendingOperationKind::SaveConfiguration
+        };
+        self.pending_operation = Some(GuiPendingOperationState { kind: pending_kind });
         self.clear_action_error_and_refresh();
         true
     }
@@ -210,16 +213,11 @@ impl SorotteGuiShellAppState {
         let Some(root) = normalized_editable_text(&root) else {
             return self.record_action_error("Choose a non-empty config folder.");
         };
-        if !self.validation.issues.is_empty() {
-            return self.record_action_error(
-                "Configuration cannot be moved while validation issues remain.",
-            );
-        }
-
-        self.pending_operation = Some(GuiPendingOperationState {
-            kind: GuiPendingOperationKind::ChangeConfigStorageRoot,
-        });
         self.pending_config_storage_target = Some(GuiConfigStorageChangeTarget::CustomRoot(root));
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Config location selected. Save configuration to apply it.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }
@@ -233,16 +231,11 @@ impl SorotteGuiShellAppState {
                 "The config location is controlled by a CLI or environment override.",
             );
         }
-        if !self.validation.issues.is_empty() {
-            return self.record_action_error(
-                "Configuration cannot be moved while validation issues remain.",
-            );
-        }
-
-        self.pending_operation = Some(GuiPendingOperationState {
-            kind: GuiPendingOperationKind::ChangeConfigStorageRoot,
-        });
         self.pending_config_storage_target = Some(GuiConfigStorageChangeTarget::DefaultRoot);
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Success,
+            "Default config location selected. Save configuration to apply it.".to_owned(),
+        );
         self.clear_action_error_and_refresh();
         true
     }

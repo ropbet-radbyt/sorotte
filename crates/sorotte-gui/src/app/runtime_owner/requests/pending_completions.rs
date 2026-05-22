@@ -366,8 +366,8 @@ impl GuiPersistedConfigRuntimeOwner {
         settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
     ) -> bool {
         let old_root = self.legacy_gui_qsettings_root();
-        let paths = match self.config_storage_paths_for_change_target(target) {
-            Ok(paths) => paths,
+        let (paths, install_root) = match self.config_storage_paths_for_change_target(target) {
+            Ok(resolved) => resolved,
             Err(error) => {
                 return self.cancel_config_storage_change_with_error(
                     handle,
@@ -395,16 +395,9 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
-        let pointer_result = if paths.source == SorotteClientStorageSource::PersistedConfigRoot {
-            persist_sorotte_client_config_root_pointer(
-                &paths.default_storage_root,
-                &paths.storage_root,
-            )
-            .map(|_| ())
-        } else {
-            clear_sorotte_client_config_root_pointer(&paths.default_storage_root).map(|_| ())
-        };
-        if let Err(error) = pointer_result {
+        if let Err(error) =
+            persist_sorotte_client_install_locator(&install_root, &paths.storage_root)
+        {
             return self.cancel_config_storage_change_with_error(
                 handle,
                 projected_state,
@@ -443,9 +436,12 @@ impl GuiPersistedConfigRuntimeOwner {
     fn config_storage_paths_for_change_target(
         &self,
         target: GuiConfigStorageChangeTarget,
-    ) -> Result<SorotteClientStoragePaths, String> {
+    ) -> Result<(SorotteClientStoragePaths, PathBuf), String> {
         let default_root = default_sorotte_client_config_root().ok_or_else(|| {
             "Cannot resolve the default Sorotte config root on this platform.".to_owned()
+        })?;
+        let install_root = current_sorotte_client_install_root().ok_or_else(|| {
+            "Cannot resolve the Sorotte install folder for syncplay.ini.".to_owned()
         })?;
         let current_dir = std::env::current_dir().ok();
         let root = match target {
@@ -454,16 +450,14 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiConfigStorageChangeTarget::DefaultRoot => default_root.clone(),
         };
-        let source = if root == default_root {
-            SorotteClientStorageSource::ConfigRootExisting
-        } else {
-            SorotteClientStorageSource::PersistedConfigRoot
-        };
-        Ok(SorotteClientStoragePaths::from_root(
-            root,
-            default_root,
-            source,
-            None,
+        Ok((
+            SorotteClientStoragePaths::from_root(
+                root,
+                default_root,
+                SorotteClientStorageSource::InstallConfigRoot,
+                None,
+            ),
+            install_root,
         ))
     }
 

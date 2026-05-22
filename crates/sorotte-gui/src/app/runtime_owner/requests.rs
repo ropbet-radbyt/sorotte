@@ -15,10 +15,9 @@ use sorotte_client_app::app_boundary::{
         upsert_sorotte_ini_stored_client_settings_mvp_at_path,
     },
     storage::{
-        SorotteClientStoragePaths, SorotteClientStorageSource,
-        clear_sorotte_client_config_root_pointer, default_sorotte_client_config_root,
-        ensure_sorotte_client_storage_root, normalize_path,
-        persist_sorotte_client_config_root_pointer,
+        SorotteClientStoragePaths, SorotteClientStorageSource, current_sorotte_client_install_root,
+        default_sorotte_client_config_root, ensure_sorotte_client_storage_root, normalize_path,
+        persist_sorotte_client_install_locator,
     },
 };
 use sorotte_player_api::PlayerAdapter;

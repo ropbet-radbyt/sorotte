@@ -33,15 +33,16 @@ Sorotte writes `sorotte.ini` under an app-scoped folder:
 | Linux/BSD | `${XDG_CONFIG_HOME:-$HOME/.config}/sorotte/sorotte.ini` |
 | macOS | `$HOME/Library/Application Support/Sorotte/sorotte.ini` |
 
-Users can move Sorotte's appdata-style files into a custom folder. The GUI setting stores only a small `config-root.txt` pointer in the default Sorotte appdata folder, so Sorotte can find the custom root before reading `sorotte.ini`. Environment and CLI overrides take precedence:
+Users can move Sorotte's appdata-style files into a custom folder. New installs use a small `syncplay.ini` locator in the install folder, so Sorotte can find the custom root before reading `sorotte.ini`. On first startup, Sorotte creates install-folder `syncplay.ini` if it is missing and points it at the platform default Sorotte folder; if the file already exists, startup leaves it untouched. Environment and CLI overrides take precedence:
 
 1. `--config-path <file>` or `--config-root <dir>`
 2. `SOROTTE_CLIENT_CONFIG_PATH=<file>`
 3. `SOROTTE_CLIENT_CONFIG_ROOT=<dir>`
-4. GUI-saved custom root pointer
-5. platform default appdata root
+4. install-folder `syncplay.ini`
+5. legacy GUI-saved custom root pointer
+6. platform default appdata root
 
-When changing the root from the GUI, Sorotte saves the current configuration into the new root and copies known GUI state, cache, stream-helper, and update-staging files on a best-effort basis. It does not delete or move the old folder.
+When changing the root from the GUI, Sorotte saves the current configuration into the new root, updates install-folder `syncplay.ini`, and copies known GUI state, cache, stream-helper, and update-staging files on a best-effort basis. It does not delete or move the old folder. If the chosen root is the install folder itself, `syncplay.ini` stores `configRoot = .` instead of an absolute path so the folder remains portable.
 
 Manual copy targets:
 

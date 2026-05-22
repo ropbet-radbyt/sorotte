@@ -29,7 +29,7 @@ After connecting, the main window supports room/user/file browsing, chat, readin
 
 ## Configuration Storage
 
-By default Sorotte stores `sorotte.ini` and appdata-style GUI files in the platform Sorotte folder:
+Sorotte uses a small `syncplay.ini` locator in the install folder to find the storage root for `sorotte.ini` and appdata-style GUI files. On first startup, Sorotte creates this locator if it is missing and points it at the platform Sorotte folder:
 
 | Platform | Default config file |
 | --- | --- |
@@ -37,17 +37,20 @@ By default Sorotte stores `sorotte.ini` and appdata-style GUI files in the platf
 | Linux/BSD | `${XDG_CONFIG_HOME:-$HOME/.config}/sorotte/sorotte.ini` |
 | macOS | `$HOME/Library/Application Support/Sorotte/sorotte.ini` |
 
-The effective storage root is also used for GUI state `.ini` files, cache files, Plex/media-search cache, stream-helper tools, and update staging. Precedence is:
+If install-folder `syncplay.ini` already exists, Sorotte leaves it untouched at startup. The effective storage root is also used for GUI state `.ini` files, cache files, Plex/media-search cache, stream-helper tools, and update staging. Precedence is:
 
 1. CLI `--config-path <file>` or `--config-root <dir>`
 2. `SOROTTE_CLIENT_CONFIG_PATH=<file>`
 3. `SOROTTE_CLIENT_CONFIG_ROOT=<dir>`
-4. GUI-saved custom root pointer
-5. platform default appdata root
+4. install-folder `syncplay.ini`
+5. legacy GUI-saved custom root pointer in the platform default Sorotte folder
+6. platform default appdata root
 
 `SOROTTE_CLIENT_CONFIG_PATH` is a full-file override and points directly at `sorotte.ini` or another config file. `SOROTTE_CLIENT_CONFIG_ROOT` is a folder override and Sorotte uses `<dir>\sorotte.ini`.
 
-In the GUI, open `Interface & System` -> `Storage Location`. `Browse` saves the current configuration into the selected root, copies known Sorotte state/cache/tool files from the old root on a best-effort basis, and leaves the old folder untouched. `Use Default` clears the GUI-saved custom root pointer. Persistent GUI changes are disabled while a CLI or environment override is active, because that external override wins on the next launch.
+In the GUI, open `Interface & System` -> `Storage Location`. `Browse` selects a root and leaves the normal `Save` button available; saving writes the current configuration into the selected root, updates install-folder `syncplay.ini`, copies known Sorotte state/cache/tool files from the old root on a best-effort basis, and leaves the old folder untouched. `Use Default` selects the platform default root and saving writes that root into `syncplay.ini`. Persistent GUI changes are disabled while a CLI or environment override is active, because that external override wins on the next launch.
+
+When the selected storage root is the install folder itself, Sorotte writes `configRoot = .` into install-folder `syncplay.ini` instead of an absolute path, so the install folder can be moved as a portable bundle.
 
 ## mpv Setup
 

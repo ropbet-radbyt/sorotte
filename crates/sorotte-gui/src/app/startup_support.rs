@@ -120,6 +120,7 @@ impl GuiStartupPublicServerSource {
 pub(super) enum GuiStartupConfigPathSource {
     Override(PathBuf),
     ConfigRootOverride(PathBuf),
+    InstallConfigRoot(PathBuf),
     PersistedConfigRoot(PathBuf),
     ConfigRootExisting(PathBuf),
     DefaultConfigTarget(PathBuf),
@@ -130,6 +131,7 @@ impl GuiStartupConfigPathSource {
         match self {
             Self::Override(path)
             | Self::ConfigRootOverride(path)
+            | Self::InstallConfigRoot(path)
             | Self::PersistedConfigRoot(path)
             | Self::ConfigRootExisting(path)
             | Self::DefaultConfigTarget(path) => path.as_path(),
@@ -144,6 +146,9 @@ impl GuiStartupConfigPathSource {
             ),
             Self::ConfigRootOverride(_) => format!(
                 "Startup configuration path uses SOROTTE_CLIENT_CONFIG_ROOT ({rendered_path})."
+            ),
+            Self::InstallConfigRoot(_) => format!(
+                "Startup configuration path uses install-folder syncplay.ini ({rendered_path})."
             ),
             Self::PersistedConfigRoot(_) => format!(
                 "Startup configuration path uses the saved custom config root ({rendered_path})."

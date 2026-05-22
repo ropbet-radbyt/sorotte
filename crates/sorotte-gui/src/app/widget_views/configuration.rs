@@ -357,6 +357,28 @@ impl SorotteGuiShellAppState {
 
         let storage_change_enabled =
             self.pending_operation.is_none() && !self.config_storage.external_override_active;
+        let mut storage_config_path = self.config_storage.config_path.clone();
+        let mut storage_root = self.config_storage.storage_root.clone();
+        let mut storage_source = self.config_storage.source_label.clone();
+        if let Some(target) = self.pending_config_storage_target.as_ref() {
+            let (target_root, target_source) = match target {
+                GuiConfigStorageChangeTarget::CustomRoot(root) => {
+                    (Some(root.clone()), "selected custom root (save to apply)")
+                }
+                GuiConfigStorageChangeTarget::DefaultRoot => (
+                    self.config_storage.default_storage_root.clone(),
+                    "selected default root (save to apply)",
+                ),
+            };
+            storage_root = target_root.clone();
+            storage_config_path = target_root.map(|root| {
+                std::path::PathBuf::from(root)
+                    .join("sorotte.ini")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            storage_source = target_source.to_owned();
+        }
         let storage_location_panel = GuiWidgetNode::branch(
             "config-storage",
             "Storage Location",
@@ -374,7 +396,7 @@ impl SorotteGuiShellAppState {
                             "config-storage:config-path",
                             "Config File",
                             GuiWidgetKind::ReadOnly,
-                            self.config_storage.config_path.clone(),
+                            storage_config_path,
                             true,
                             false,
                         ),
@@ -382,7 +404,7 @@ impl SorotteGuiShellAppState {
                             "config-storage:root",
                             "Storage Root",
                             GuiWidgetKind::ReadOnly,
-                            self.config_storage.storage_root.clone(),
+                            storage_root,
                             true,
                             false,
                         ),
@@ -390,7 +412,7 @@ impl SorotteGuiShellAppState {
                             "config-storage:source",
                             "Source",
                             GuiWidgetKind::ReadOnly,
-                            Some(self.config_storage.source_label.clone()),
+                            Some(storage_source),
                             true,
                             false,
                         ),

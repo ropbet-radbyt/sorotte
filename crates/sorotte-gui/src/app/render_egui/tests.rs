@@ -7,10 +7,10 @@ use super::GuiWidgetEguiRenderer;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab, GuiDraftRuntimeSnapshot,
-    GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView, GuiStreamHelperHealth,
-    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
-    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    SorotteGuiShellAppState,
+    GuiPendingOperationKind, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
+    GuiStreamHelperHealth, GuiStreamHelperRemediationRuntimeSnapshot,
+    GuiStreamHelperRuntimeSnapshot, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState,
 };
 use crate::app::testing::support::{TEST_USERNAME, browser_runtime_user};
 use crate::app::widget_tree::{GuiWidgetKind, GuiWidgetNode};

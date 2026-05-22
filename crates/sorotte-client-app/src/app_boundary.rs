@@ -95,13 +95,19 @@ pub mod persistence {
 pub mod storage {
     pub use crate::client_storage_paths::{
         SOROTTE_CLIENT_CONFIG_PATH_ENV, SOROTTE_CLIENT_CONFIG_ROOT_ENV,
-        SOROTTE_CLIENT_CONFIG_ROOT_POINTER_FILE_NAME, SOROTTE_CONFIG_FILE_NAME,
-        SorotteClientStoragePaths, SorotteClientStorageSource,
-        clear_sorotte_client_config_root_pointer, default_sorotte_client_config_root,
-        default_sorotte_client_config_root_from_lookup, ensure_sorotte_client_storage_root,
+        SOROTTE_CLIENT_CONFIG_ROOT_POINTER_FILE_NAME, SOROTTE_CLIENT_INSTALL_ROOT_ENV,
+        SOROTTE_CONFIG_FILE_NAME, SOROTTE_INSTALL_CONFIG_LOCATOR_FILE_NAME,
+        SOROTTE_INSTALL_CONFIG_ROOT_KEY, SorotteClientStoragePaths, SorotteClientStorageSource,
+        clear_sorotte_client_config_root_pointer, current_sorotte_client_install_root,
+        default_sorotte_client_config_root, default_sorotte_client_config_root_from_lookup,
+        ensure_sorotte_client_install_locator, ensure_sorotte_client_storage_root,
         load_sorotte_client_config_root_pointer_from_path, normalize_path,
-        persist_sorotte_client_config_root_pointer, resolve_sorotte_client_storage_paths,
-        resolve_sorotte_client_storage_paths_from_lookup, sorotte_client_config_root_pointer_path,
+        parse_sorotte_client_install_locator_config_root, paths_equivalent,
+        persist_sorotte_client_config_root_pointer, persist_sorotte_client_install_locator,
+        resolve_sorotte_client_storage_paths, resolve_sorotte_client_storage_paths_from_lookup,
+        resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
+        sorotte_client_config_root_pointer_path, sorotte_client_install_locator_contents,
+        sorotte_client_install_locator_path, sorotte_client_install_root_from_lookup,
     };
 }
 

@@ -314,6 +314,47 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_env_roo
 }
 
 #[test]
+fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_install_locator() {
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be monotonic enough for test")
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("sorotte-gui-install-locator-test-{unique_suffix}"));
+    let install_root = root.join("install");
+    let storage_root = root.join("portable-settings");
+    std::fs::create_dir_all(&install_root).expect("install test root should be created");
+    std::fs::write(
+        install_root.join("syncplay.ini"),
+        format!("[settings]\nconfigRoot = {}\n", storage_root.display()),
+    )
+    .expect("install locator should be written");
+
+    let env_root = test_default_sorotte_config_env_root();
+    let env_root_string = env_root.display().to_string();
+    let source =
+        super::super::resolve_sorotte_gui_config_path_source_legacy_compatible_with_install_root(
+            &|name| match name {
+                "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
+                "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
+                _ => None,
+            },
+            || None,
+            || Some(install_root.clone()),
+            std::path::Path::is_file,
+        );
+
+    assert_eq!(
+        source,
+        Some(super::super::GuiStartupConfigPathSource::InstallConfigRoot(
+            storage_root.join("sorotte.ini"),
+        ))
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn gui_startup_actions_from_lookup_reports_config_storage_snapshot() {
     let env_root = test_default_sorotte_config_env_root();
     let env_root_string = env_root.display().to_string();
