@@ -371,6 +371,26 @@ pub(crate) fn launch_staged_update(staged_update: &StagedUpdate) -> UpdateApplyL
     }
 }
 
+pub(crate) fn cleanup_update_staging_root(gui_config_root: Option<&Path>) -> Result<(), String> {
+    let Some(gui_config_root) = gui_config_root else {
+        return Ok(());
+    };
+    let updates_root = gui_config_root.join("updates");
+    if !updates_root.exists() {
+        return Ok(());
+    }
+    cleanup_updates_root_entries(&updates_root, None)?;
+    match fs::remove_dir(&updates_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error) => Err(format!(
+            "failed to remove update staging directory {}: {error}",
+            updates_root.display()
+        )),
+    }
+}
+
 fn check_for_github_update(
     language: Option<&str>,
     _user_initiated: bool,
@@ -997,6 +1017,7 @@ fn download_and_stage_update_inner(
         candidate.channel.label(),
         sanitize_stage_name(&candidate.created_at_utc)
     ));
+    cleanup_updates_root(&updates_root, &stage_dir)?;
     if stage_dir.exists() {
         fs::remove_dir_all(&stage_dir).map_err(|error| {
             format!(
@@ -1012,6 +1033,81 @@ fn download_and_stage_update_inner(
         )
     })?;
 
+    stage_update_payload(candidate, &client, &stage_dir)
+        .map_err(|error| cleanup_failed_stage_dir(&stage_dir, error))
+}
+
+fn cleanup_updates_root(updates_root: &Path, active_stage_dir: &Path) -> Result<(), String> {
+    let active_stage_name = active_stage_dir
+        .file_name()
+        .ok_or_else(|| "active update stage directory has no name".to_owned())?;
+    cleanup_updates_root_entries(updates_root, Some(active_stage_name))
+}
+
+fn cleanup_updates_root_entries(
+    updates_root: &Path,
+    active_stage_name: Option<&std::ffi::OsStr>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(updates_root).map_err(|error| {
+        format!(
+            "failed to read update staging directory {}: {error}",
+            updates_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read update staging directory entry in {}: {error}",
+                updates_root.display()
+            )
+        })?;
+        let entry_name = entry.file_name();
+        if active_stage_name.is_some_and(|active_stage_name| entry_name == active_stage_name) {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "failed to inspect stale update staging entry {}: {error}",
+                path.display()
+            )
+        })?;
+        remove_update_staging_entry(&path, file_type)?;
+    }
+    Ok(())
+}
+
+fn remove_update_staging_entry(path: &Path, file_type: fs::FileType) -> Result<(), String> {
+    let result = if file_type.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed to remove stale update staging entry {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn cleanup_failed_stage_dir(stage_dir: &Path, error: String) -> String {
+    match fs::remove_dir_all(stage_dir) {
+        Ok(()) => error,
+        Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup_error) => format!(
+            "{error}; additionally failed to clean partial staged update {}: {cleanup_error}",
+            stage_dir.display()
+        ),
+    }
+}
+
+fn stage_update_payload(
+    candidate: &UpdateCandidate,
+    client: &Client,
+    stage_dir: &Path,
+) -> Result<StagedUpdate, String> {
     let downloaded_bytes = github_download_bytes(&client, &candidate.download_url)?;
     let (package_bytes, staged_candidate) = match candidate.source {
         UpdateCandidateSource::ReleaseAsset => {
@@ -1821,8 +1917,10 @@ mod tests {
     #[cfg(windows)]
     use std::path::Path;
     use std::{
+        fs,
         io::{Read, Write},
         net::TcpListener,
+        path::PathBuf,
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -1830,6 +1928,7 @@ mod tests {
     use super::{
         GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckStatus,
         StoredClientSettingsMvp, UpdateChannel, UpdateManifest, check_for_github_update,
+        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
         default_update_check_message, fetch_public_servers_from_url,
         fetch_update_check_result_from_url, parse_public_server_response,
         parse_update_check_response, parse_version, safe_zip_relative_path,
@@ -1872,6 +1971,20 @@ mod tests {
             request_line
         });
         (format!("http://{address}"), handle)
+    }
+
+    fn temp_update_root(test_name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-{test_name}-{}-{timestamp}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test update root should be created");
+        root
     }
 
     #[test]
@@ -2035,6 +2148,66 @@ mod tests {
             .expect_err("mismatched payload should fail checksum verification");
 
         assert!(error.contains("mismatch"));
+    }
+
+    #[test]
+    fn update_staging_cleanup_removes_stale_entries_and_keeps_active_stage() {
+        let updates_root = temp_update_root("staging-cleanup");
+        let active_stage_dir = updates_root.join("stable-2026-05-22T00-00-00Z");
+        let stale_stage_dir = updates_root.join("dev-2026-05-21T00-00-00Z");
+        let stale_file = updates_root.join("orphaned-package.zip");
+        fs::create_dir_all(active_stage_dir.join("extracted"))
+            .expect("active stage should be created");
+        fs::create_dir_all(stale_stage_dir.join("backup")).expect("stale stage should be created");
+        fs::write(
+            stale_stage_dir.join("backup").join("sorotte-gui.exe"),
+            b"old",
+        )
+        .expect("stale stage file should be written");
+        fs::write(&stale_file, b"old").expect("stale root file should be written");
+
+        cleanup_updates_root(&updates_root, &active_stage_dir)
+            .expect("stale update entries should be removed");
+
+        assert!(active_stage_dir.exists());
+        assert!(!stale_stage_dir.exists());
+        assert!(!stale_file.exists());
+        fs::remove_dir_all(&updates_root).expect("test update root should be removed");
+    }
+
+    #[test]
+    fn update_staging_root_cleanup_removes_completed_update_folder() {
+        let config_root = temp_update_root("staging-root-cleanup");
+        let updates_root = config_root.join("updates");
+        let completed_stage_dir = updates_root.join("stable-2026-05-22T00-00-00Z");
+        fs::create_dir_all(completed_stage_dir.join("backup"))
+            .expect("completed update stage should be created");
+        fs::write(
+            completed_stage_dir.join("sorotte-gui-updater.log"),
+            b"update completed",
+        )
+        .expect("completed update log should be written");
+
+        cleanup_update_staging_root(Some(&config_root))
+            .expect("completed update folder should be removed");
+
+        assert!(!updates_root.exists());
+        fs::remove_dir_all(&config_root).expect("test config root should be removed");
+    }
+
+    #[test]
+    fn failed_update_stage_cleanup_removes_partial_current_stage() {
+        let updates_root = temp_update_root("failed-stage-cleanup");
+        let stage_dir = updates_root.join("dev-2026-05-22T00-00-00Z");
+        fs::create_dir_all(stage_dir.join("artifact")).expect("partial stage should be created");
+        fs::write(stage_dir.join("artifact").join("partial.zip"), b"partial")
+            .expect("partial artifact should be written");
+
+        let error = cleanup_failed_stage_dir(&stage_dir, "download failed".to_owned());
+
+        assert_eq!(error, "download failed");
+        assert!(!stage_dir.exists());
+        fs::remove_dir_all(&updates_root).expect("test update root should be removed");
     }
 
     #[test]

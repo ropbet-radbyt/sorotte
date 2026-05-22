@@ -150,6 +150,8 @@ fn gui_startup_settings_from_env() -> Result<StoredClientSettingsMvp, String> {
 pub(super) fn gui_startup_host_and_settings()
 -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String> {
     let config_path = resolve_sorotte_gui_config_path_legacy_compatible();
+    let _ =
+        remote_services::cleanup_update_staging_root(config_path.as_deref().and_then(Path::parent));
     let settings = gui_startup_settings_from_env()?;
     if let Some(bootstrap) = gui_client_core_chat_loopback_bootstrap_from_lookup(env_trimmed)? {
         let host = GuiEframeNativeHost::with_client_core_chat_loopback_session_for_config_path(
