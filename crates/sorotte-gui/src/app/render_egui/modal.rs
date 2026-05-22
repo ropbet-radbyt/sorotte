@@ -98,8 +98,6 @@ impl GuiWidgetEguiRenderer {
                 ("shell:modal:tls:help", "Open Help"),
             ],
             GuiShellModal::UpdateNotice => vec![
-                ("shell:modal:update:dismiss", "Dismiss Notice"),
-                ("shell:modal:update:help", "Open Help"),
                 ("shell:modal:update:check-again", "Check Again"),
                 ("shell:modal:update:download", "Download Update"),
                 ("shell:modal:update:restart", "Restart to Update"),

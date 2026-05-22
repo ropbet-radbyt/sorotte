@@ -133,10 +133,12 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
         .find("shell:modal:kind")
         .expect("modal kind status should exist");
     assert_eq!(modal_kind.value.as_deref(), Some("update-notice"));
-    let dismiss_notice = tree
-        .find("shell:modal:update:dismiss")
-        .expect("update notice dismiss button should exist");
-    assert_eq!(dismiss_notice.kind, GuiWidgetKind::Button);
+    assert!(tree.find("shell:modal:update:dismiss").is_none());
+    assert!(tree.find("shell:modal:update:help").is_none());
+    let check_again = tree
+        .find("shell:modal:update:check-again")
+        .expect("update notice check-again button should exist");
+    assert_eq!(check_again.kind, GuiWidgetKind::Button);
 
     let notification = tree
         .find("shell:notification:0")
