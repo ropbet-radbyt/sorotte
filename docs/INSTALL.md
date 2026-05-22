@@ -97,7 +97,7 @@ powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1
 powershell -ExecutionPolicy Bypass -File scripts/package-server-release.ps1
 ```
 
-Artifacts are written under `target/server-release/artifacts/` and include a `.sha256` checksum sidecar.
+Artifacts are written under `target/server-release/artifacts/` and include a `.sha256` checksum sidecar. Windows debug symbols are emitted as a separate `*-symbols.zip` sidecar when the release build produced a PDB.
 
 ## Package The GUI
 
@@ -105,7 +105,7 @@ Artifacts are written under `target/server-release/artifacts/` and include a `.s
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
-Artifacts are written under `target/gui-release/artifacts/` and include the Windows package, a `.sha256` checksum sidecar, and `sorotte-update-manifest.json`. The `sorotte-gui release` workflow publishes those files to GitHub Releases in the main `ropbet-radbyt/sorotte` repository.
+Artifacts are written under `target/gui-release/artifacts/` and include the Windows package, a `.sha256` checksum sidecar, and `sorotte-update-manifest.json`. Windows debug symbols are emitted as a separate `*-symbols.zip` sidecar when the release build produced PDBs. The `sorotte-gui release` workflow publishes those files to GitHub Releases in the main `ropbet-radbyt/sorotte` repository.
 
 ## Docker Server
 

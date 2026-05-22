@@ -230,8 +230,9 @@ Supported artifact names:
 
 - `sorotte-server-<version>-windows-x86_64.zip`
 - `sorotte-server-<version>-linux-x86_64.tar.gz`
+- `sorotte-server-<version>-windows-x86_64-symbols.zip` when Windows PDB symbols are available
 
-Each artifact has a `.sha256` sidecar file. Windows packages include `sorotte_server.pdb` when the release build produced one.
+Each artifact has a `.sha256` sidecar file. Windows packages do not include PDB files; `sorotte_server.pdb` is published only in the separate symbols archive when the release build produced one.
 
 Server release packages include:
 
@@ -239,7 +240,10 @@ Server release packages include:
 - `README.md`
 - `SERVER_RELEASE.md`
 - `LICENSE`
-- optional Windows debug symbols
+
+Windows symbols archives include:
+
+- `sorotte_server.pdb`
 
 Packages intentionally exclude `target/release/deps`.
 
