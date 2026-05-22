@@ -1303,13 +1303,17 @@ fn path_is_equal_or_child_case_insensitive(path: &Path, root: &Path) -> bool {
 
 #[cfg(windows)]
 fn normalized_windows_path_text(path: &Path) -> String {
-    fs::canonicalize(path)
+    let mut text = fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .display()
         .to_string()
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_ascii_lowercase()
+        .replace('/', "\\");
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{rest}");
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        text = rest.to_owned();
+    }
+    text.trim_end_matches('\\').to_ascii_lowercase()
 }
 
 #[cfg(windows)]
@@ -2052,6 +2056,10 @@ mod tests {
         assert!(path_is_equal_or_child_case_insensitive(
             Path::new(r"C:\Program Files\Sorotte"),
             Path::new(r"c:\program files")
+        ));
+        assert!(path_is_equal_or_child_case_insensitive(
+            Path::new(r"C:\Program Files\Sorotte"),
+            Path::new(r"\\?\C:\Program Files")
         ));
         assert!(!path_is_equal_or_child_case_insensitive(
             Path::new(r"C:\Program Files Other\Sorotte"),
