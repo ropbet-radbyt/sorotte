@@ -62,6 +62,50 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rechecking stream helper support for the current URL.".to_owned(),
             }],
+            Self::InstallMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing media matching helper tools.".to_owned(),
+            }],
+            Self::ImportMediaMatchFfmpeg(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffmpeg into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFfprobe(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffprobe into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFpcalc(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing fpcalc into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::OpenMediaMatchInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Sorotte's managed media matching install location."
+                        .to_owned(),
+                }]
+            }
+            Self::RecheckMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking media matching helper tools.".to_owned(),
+            }],
+            Self::RebuildMediaMatchIndex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rebuilding the media matching index.".to_owned(),
+            }],
+            Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Clearing media matching cache data.".to_owned(),
+            }],
             Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
@@ -191,6 +235,50 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rechecking stream helper support for the current URL.".to_owned(),
             }],
+            Self::InstallMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Installing media matching helper tools.".to_owned(),
+            }],
+            Self::ImportMediaMatchFfmpeg(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffmpeg into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFfprobe(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing ffprobe into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::ImportMediaMatchFpcalc(_) => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Importing fpcalc into Sorotte's managed media matching tools."
+                        .to_owned(),
+                }]
+            }
+            Self::OpenMediaMatchInstallLocation => {
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Opening Sorotte's managed media matching install location."
+                        .to_owned(),
+                }]
+            }
+            Self::RecheckMediaMatchTools => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rechecking media matching helper tools.".to_owned(),
+            }],
+            Self::RebuildMediaMatchIndex => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Rebuilding the media matching index.".to_owned(),
+            }],
+            Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Clearing media matching cache data.".to_owned(),
+            }],
             Self::RetryPendingStreamMediaOpen => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Retrying the pending media URL open request.".to_owned(),
@@ -242,6 +330,9 @@ impl GuiRuntimeRequest {
             }
             Self::SetAutoplayEnabled(_)
             | Self::SetAutoplayThreshold(_)
+            | Self::SetMediaMatchFingerprintingEnabled(_)
+            | Self::SetMediaMatchRuntimeToleranceEnabled(_)
+            | Self::SetMediaMatchAutoplayPolicy(_)
             | Self::SetReadyForUser { .. }
             | Self::RequestControllerAuth { .. }
             | Self::QueuePlaylistEntry { .. }

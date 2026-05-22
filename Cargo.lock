@@ -3387,6 +3387,7 @@ dependencies = [
  "sorotte-client-app",
  "sorotte-client-core",
  "sorotte-compat",
+ "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-player-mpv",
  "sorotte-plex",
@@ -3395,6 +3396,15 @@ dependencies = [
  "windows 0.61.3",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "sorotte-media-match"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

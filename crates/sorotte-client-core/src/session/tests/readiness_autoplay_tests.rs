@@ -257,6 +257,43 @@ fn autoplay_require_same_filenames_uses_legacy_filename_comparison() {
 }
 
 #[test]
+fn strong_same_media_match_can_satisfy_same_filename_autoplay_gate() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#,
+        )
+        .expect("hello should apply");
+    session
+            .apply_message_json(
+                r#"{"List":{"room1":{"alice":{"isReady":true,"file":{"name":"Movie-Name.mkv"}},"bob":{"isReady":true,"file":{"name":"other-release.mkv"}}}}}"#,
+            )
+            .expect("mismatched filenames list snapshot should apply");
+    session.set_autoplay_enabled(true);
+    session.readiness_autoplay_config_mut().auto_play_threshold = Some(2);
+    session
+        .readiness_autoplay_config_mut()
+        .autoplay_require_same_filenames = true;
+    session.local_paused = Some(true);
+
+    assert!(!session.autoplay_conditions_met(true, true, false, false));
+
+    session.set_strong_same_media_match_satisfies_filename_gate(true);
+
+    assert!(
+        session.autoplay_conditions_met(true, true, false, false),
+        "only an explicit strong same-media match should bypass filename mismatch"
+    );
+
+    session.set_strong_same_media_match_satisfies_filename_gate(false);
+
+    assert!(
+        !session.autoplay_conditions_met(true, true, false, false),
+        "clearing the strong match override restores legacy filename gating"
+    );
+}
+
+#[test]
 fn readiness_autoplay_config_defaults_include_legacy_duration_comparison_settings() {
     let config = ReadinessAutoplayConfig::default();
     assert!(config.show_duration_notification);

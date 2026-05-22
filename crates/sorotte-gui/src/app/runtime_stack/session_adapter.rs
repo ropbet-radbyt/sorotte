@@ -241,6 +241,13 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
+    fn set_strong_same_media_match_satisfies_filename_gate(
+        &mut self,
+        _satisfied: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn sync_runtime_settings(
         &mut self,
         _runtime_settings: &StoredClientSettingsRuntimeSnapshot,

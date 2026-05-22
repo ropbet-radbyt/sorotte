@@ -4,7 +4,7 @@ use super::shell_state::{
     GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiMainWindowUserEditSessionState,
     GuiPendingOperationKind, GuiPendingOperationState, GuiPublicServerEditSessionState,
     GuiShellAction, GuiTextEditSessionState, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState,
+    SorotteGuiShellAppState, apply_media_match_settings_to_stored_settings,
 };
 use super::support::nonempty_room_name_text;
 
@@ -47,6 +47,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(_)
+            | GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_)
+            | GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiPlexRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiDraftRuntimeSnapshot(_)
@@ -199,6 +201,17 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::RecheckStreamHelper
             | GuiShellAction::RetryPendingStreamMediaOpen
             | GuiShellAction::OpenStreamHelperInstallLocation
+            | GuiShellAction::InstallMediaMatchTools
+            | GuiShellAction::ImportMediaMatchFfmpeg(_)
+            | GuiShellAction::ImportMediaMatchFfprobe(_)
+            | GuiShellAction::ImportMediaMatchFpcalc(_)
+            | GuiShellAction::RecheckMediaMatchTools
+            | GuiShellAction::RebuildMediaMatchIndex
+            | GuiShellAction::ClearMediaMatchCache
+            | GuiShellAction::OpenMediaMatchInstallLocation
+            | GuiShellAction::SetMediaMatchFingerprintingEnabled(_)
+            | GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(_)
+            | GuiShellAction::SetMediaMatchAutoplayPolicy(_)
             | GuiShellAction::StartPlexAuth
             | GuiShellAction::PollPlexAuth
             | GuiShellAction::RefreshPlexServers

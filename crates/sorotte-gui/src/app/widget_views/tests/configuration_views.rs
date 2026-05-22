@@ -320,6 +320,159 @@ fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
 }
 
 #[test]
+fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+            GuiMediaMatchRuntimeSnapshot {
+                settings: MediaMatchSettings {
+                    fingerprinting_enabled: true,
+                    runtime_tolerance_enabled: true,
+                    autoplay_policy: MediaMatchAutoplayPolicy::DiagnosticsOnly,
+                    ..MediaMatchSettings::default()
+                },
+                health: GuiMediaMatchToolHealth::Healthy,
+                message: None,
+                install_supported: true,
+                integration_supported: true,
+                install_location: Some(
+                    "C:/Users/test/AppData/Roaming/Sorotte/tools/media-match/bin".to_owned(),
+                ),
+                ffmpeg_status: Some("ffmpeg 7.1 (C:/Tools/ffmpeg.exe)".to_owned()),
+                ffprobe_status: Some("ffprobe 7.1 (C:/Tools/ffprobe.exe)".to_owned()),
+                fpcalc_status: Some("fpcalc 1.5.1 (C:/Tools/fpcalc.exe)".to_owned()),
+                cache_status: Some("2 fingerprint records".to_owned()),
+                current_decision: Some("strong: aligned video hashes".to_owned()),
+                last_evidence: Some("audio=0.94 video=0.82 offset=20s".to_owned()),
+                open_install_location_available: true,
+            },
+        ))
+    );
+
+    let plugins = state.plugins_widget_tree();
+    assert!(
+        plugins
+            .find("plugins:list:media-matching")
+            .expect("media matching list row should exist")
+            .selected
+    );
+    assert!(
+        !plugins
+            .find("plugins:list:stream-support")
+            .unwrap()
+            .selected
+    );
+    let details = plugins
+        .find("plugins:details")
+        .expect("plugin details should exist");
+    assert_eq!(details.children.len(), 1);
+    assert_eq!(details.children[0].id, "plugins:media-matching");
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:health")
+            .and_then(|node| node.value.as_deref()),
+        Some("healthy")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:cache-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("2 fingerprint records")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:current-decision")
+            .and_then(|node| node.value.as_deref()),
+        Some("strong: aligned video hashes")
+    );
+
+    let fingerprinting = plugins
+        .find("plugins:media-matching:setting:fingerprinting")
+        .expect("fingerprinting checkbox should exist");
+    assert_eq!(fingerprinting.kind, GuiWidgetKind::Checkbox);
+    assert_eq!(fingerprinting.value.as_deref(), Some("yes"));
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, fingerprinting, false),
+        Some(GuiShellAction::SetMediaMatchFingerprintingEnabled(false))
+    );
+    let runtime_tolerance = plugins
+        .find("plugins:media-matching:setting:runtime-tolerance")
+        .expect("runtime tolerance checkbox should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, runtime_tolerance, false),
+        Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false))
+    );
+
+    let rebuild = plugins
+        .find("plugins:media-matching:rebuild-index")
+        .expect("rebuild-index button should exist");
+    assert!(rebuild.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, rebuild),
+        vec![GuiShellAction::RebuildMediaMatchIndex]
+    );
+    let clear = plugins
+        .find("plugins:media-matching:clear-cache")
+        .expect("clear-cache button should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, clear),
+        vec![GuiShellAction::ClearMediaMatchCache]
+    );
+    let strong_policy = plugins
+        .find("plugins:media-matching:policy:strong")
+        .expect("strong policy button should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, strong_policy),
+        vec![GuiShellAction::SetMediaMatchAutoplayPolicy(
+            MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+        )]
+    );
+}
+
+#[test]
+fn gui_shell_app_state_projects_media_match_remediation_progress_into_widgets() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(state.apply(
+        GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(
+            GuiMediaMatchRemediationRuntimeSnapshot {
+                active: true,
+                label: Some("Downloading ffmpeg".to_owned()),
+                detail: Some("Saving ffmpeg and ffprobe into Sorotte's tool directory.".to_owned()),
+                progress_fraction: 0.5,
+            },
+        )
+    ));
+
+    let plugins = state.plugins_widget_tree();
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remediation:label")
+            .and_then(|node| node.value.as_deref()),
+        Some("Downloading ffmpeg")
+    );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remediation:progress")
+            .and_then(|node| node.value.as_deref()),
+        Some("50%")
+    );
+    assert!(
+        !plugins
+            .find("plugins:media-matching:install")
+            .expect("install button should exist")
+            .enabled
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_only_selected_plugin_detail() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());

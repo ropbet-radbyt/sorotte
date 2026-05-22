@@ -76,6 +76,12 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyGuiStreamHelperRemediationRuntimeSnapshot(snapshot) => {
                 self.apply_gui_stream_helper_remediation_runtime_snapshot(snapshot)
             }
+            GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot) => {
+                self.apply_gui_media_match_runtime_snapshot(snapshot)
+            }
+            GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(snapshot) => {
+                self.apply_gui_media_match_remediation_runtime_snapshot(snapshot)
+            }
             GuiShellAction::ApplyGuiPlexRuntimeSnapshot(snapshot) => {
                 self.apply_gui_plex_runtime_snapshot(snapshot)
             }

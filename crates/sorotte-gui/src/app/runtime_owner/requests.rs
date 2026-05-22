@@ -1,3 +1,4 @@
+mod media_match;
 mod pending_completions;
 mod playback;
 mod session_controls;
@@ -22,6 +23,12 @@ use sorotte_client_app::app_boundary::{
 };
 use sorotte_player_api::PlayerAdapter;
 
+use super::super::media_match_support::{
+    MediaMatchTool, MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
+    import_managed_media_match_tool_with_progress,
+    install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
+    rebuild_persisted_media_match_index_with_progress,
+};
 use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
@@ -29,9 +36,10 @@ use super::super::runtime_stack::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
 };
 use super::super::shell_state::{
-    GuiConfigStorageRuntimeSnapshot, GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind,
-    GuiTransientNotificationLevel, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    browser_stream_target_kind,
+    GuiConfigStorageRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiMediaMatchToolHealth,
+    GuiShellAction, GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
+    MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
+    apply_media_match_settings_to_stored_settings, browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
@@ -189,6 +197,67 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::RetryPendingStreamMediaOpen => {
                 return self
                     .handle_retry_pending_stream_media_open_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::InstallMediaMatchTools => {
+                return self.handle_install_media_match_tools_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::ImportMediaMatchFfmpeg(source_path) => {
+                return self.handle_import_media_match_tool_request(
+                    handle,
+                    projected_state,
+                    MediaMatchTool::Ffmpeg,
+                    source_path,
+                );
+            }
+            GuiRuntimeRequest::ImportMediaMatchFfprobe(source_path) => {
+                return self.handle_import_media_match_tool_request(
+                    handle,
+                    projected_state,
+                    MediaMatchTool::Ffprobe,
+                    source_path,
+                );
+            }
+            GuiRuntimeRequest::ImportMediaMatchFpcalc(source_path) => {
+                return self.handle_import_media_match_tool_request(
+                    handle,
+                    projected_state,
+                    MediaMatchTool::Fpcalc,
+                    source_path,
+                );
+            }
+            GuiRuntimeRequest::OpenMediaMatchInstallLocation => {
+                return self
+                    .handle_open_media_match_install_location_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::RecheckMediaMatchTools => {
+                return self.handle_recheck_media_match_tools_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::RebuildMediaMatchIndex => {
+                return self.handle_rebuild_media_match_index_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::ClearMediaMatchCache => {
+                return self.handle_clear_media_match_cache_request(handle, projected_state);
+            }
+            GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled) => {
+                return self.handle_set_media_match_fingerprinting_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
+                return self.handle_set_media_match_runtime_tolerance_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(policy) => {
+                return self.handle_set_media_match_autoplay_policy_request(
+                    handle,
+                    projected_state,
+                    policy,
+                );
             }
             GuiRuntimeRequest::StartPlexAuth => {
                 return self.handle_start_plex_auth_request(handle, projected_state);

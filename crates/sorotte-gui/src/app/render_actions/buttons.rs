@@ -202,6 +202,32 @@ impl GuiWidgetEguiRenderer {
             | "plugins:stream-support:alert:retry" => {
                 vec![GuiShellAction::RetryPendingStreamMediaOpen]
             }
+            "plugins:media-matching:install" => vec![GuiShellAction::InstallMediaMatchTools],
+            "plugins:media-matching:import-ffmpeg" => {
+                Self::actions_for_media_match_import_ffmpeg(state)
+            }
+            "plugins:media-matching:import-ffprobe" => {
+                Self::actions_for_media_match_import_ffprobe(state)
+            }
+            "plugins:media-matching:import-fpcalc" => {
+                Self::actions_for_media_match_import_fpcalc(state)
+            }
+            "plugins:media-matching:open-location" => {
+                vec![GuiShellAction::OpenMediaMatchInstallLocation]
+            }
+            "plugins:media-matching:recheck" => vec![GuiShellAction::RecheckMediaMatchTools],
+            "plugins:media-matching:rebuild-index" => vec![GuiShellAction::RebuildMediaMatchIndex],
+            "plugins:media-matching:clear-cache" => vec![GuiShellAction::ClearMediaMatchCache],
+            "plugins:media-matching:policy:diagnostics" => {
+                vec![GuiShellAction::SetMediaMatchAutoplayPolicy(
+                    sorotte_media_match::MediaMatchAutoplayPolicy::DiagnosticsOnly,
+                )]
+            }
+            "plugins:media-matching:policy:strong" => {
+                vec![GuiShellAction::SetMediaMatchAutoplayPolicy(
+                    sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
+                )]
+            }
             "plugins:plex:connect" => vec![GuiShellAction::StartPlexAuth],
             "plugins:plex:poll-auth" => vec![GuiShellAction::PollPlexAuth],
             "plugins:plex:refresh-servers" => vec![GuiShellAction::RefreshPlexServers],
@@ -582,5 +608,32 @@ impl GuiWidgetEguiRenderer {
             return Vec::new();
         };
         vec![GuiShellAction::IntegrateStreamHelperJsRuntime(path)]
+    }
+
+    fn actions_for_media_match_import_ffmpeg(
+        state: &SorotteGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_media_match_ffmpeg_executable(state) else {
+            return Vec::new();
+        };
+        vec![GuiShellAction::ImportMediaMatchFfmpeg(path)]
+    }
+
+    fn actions_for_media_match_import_ffprobe(
+        state: &SorotteGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_media_match_ffprobe_executable(state) else {
+            return Vec::new();
+        };
+        vec![GuiShellAction::ImportMediaMatchFfprobe(path)]
+    }
+
+    fn actions_for_media_match_import_fpcalc(
+        state: &SorotteGuiShellAppState,
+    ) -> Vec<GuiShellAction> {
+        let Some(path) = Self::pick_media_match_fpcalc_executable(state) else {
+            return Vec::new();
+        };
+        vec![GuiShellAction::ImportMediaMatchFpcalc(path)]
     }
 }

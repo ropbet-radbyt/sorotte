@@ -331,7 +331,11 @@ impl ClientSession {
             .readiness_autoplay_config
             .autoplay_require_same_filenames;
         self.all_other_users_in_current_room_ready()
-            && (!require_same_filenames || self.all_users_in_current_room_match_filename())
+            && (!require_same_filenames
+                || self
+                    .readiness_autoplay_config
+                    .strong_same_media_match_satisfies_filename_gate
+                || self.all_users_in_current_room_match_filename())
     }
 
     pub(super) fn all_other_users_in_current_room_ready(&self) -> bool {

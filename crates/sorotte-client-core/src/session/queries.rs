@@ -644,6 +644,11 @@ impl ClientSession {
         }
     }
 
+    pub fn set_strong_same_media_match_satisfies_filename_gate(&mut self, satisfied: bool) {
+        self.readiness_autoplay_config
+            .strong_same_media_match_satisfies_filename_gate = satisfied;
+    }
+
     pub fn autoplay_timer_is_running(&self) -> bool {
         self.autoplay_timer_running
     }

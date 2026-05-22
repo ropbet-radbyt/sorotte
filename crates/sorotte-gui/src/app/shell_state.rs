@@ -13,6 +13,7 @@ use sorotte_client_app::app_boundary::{
     },
     storage::SorotteClientStoragePaths,
 };
+use sorotte_media_match::{MediaMatchAutoplayPolicy, MediaMatchSettings};
 use sorotte_plex::PlexServerConnectionKind;
 
 use super::GuiLaunchMode;
@@ -265,6 +266,132 @@ impl Default for GuiStreamHelperRuntimeSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiMediaMatchToolHealth {
+    Healthy,
+    MissingFfmpeg,
+    MissingFfprobe,
+    MissingFpcalc,
+    Broken,
+}
+
+impl GuiMediaMatchToolHealth {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::MissingFfmpeg => "missing-ffmpeg",
+            Self::MissingFfprobe => "missing-ffprobe",
+            Self::MissingFpcalc => "missing-fpcalc",
+            Self::Broken => "broken",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiMediaMatchState {
+    pub(super) settings: MediaMatchSettings,
+    pub(super) health: GuiMediaMatchToolHealth,
+    pub(super) message: Option<String>,
+    pub(super) install_supported: bool,
+    pub(super) integration_supported: bool,
+    pub(super) install_location: Option<String>,
+    pub(super) ffmpeg_status: Option<String>,
+    pub(super) ffprobe_status: Option<String>,
+    pub(super) fpcalc_status: Option<String>,
+    pub(super) cache_status: Option<String>,
+    pub(super) current_decision: Option<String>,
+    pub(super) last_evidence: Option<String>,
+    pub(super) open_install_location_available: bool,
+}
+
+impl GuiMediaMatchState {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+        Self {
+            settings: media_match_settings_from_stored_settings(settings),
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for GuiMediaMatchState {
+    fn default() -> Self {
+        Self {
+            settings: MediaMatchSettings::default(),
+            health: GuiMediaMatchToolHealth::MissingFfmpeg,
+            message: Some("Media Matching needs ffmpeg for frame extraction.".to_owned()),
+            install_supported: cfg!(windows),
+            integration_supported: true,
+            install_location: None,
+            ffmpeg_status: None,
+            ffprobe_status: None,
+            fpcalc_status: None,
+            cache_status: Some("empty".to_owned()),
+            current_decision: None,
+            last_evidence: None,
+            open_install_location_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct GuiMediaMatchRuntimeSnapshot {
+    pub(super) settings: MediaMatchSettings,
+    pub(super) health: GuiMediaMatchToolHealth,
+    pub(super) message: Option<String>,
+    pub(super) install_supported: bool,
+    pub(super) integration_supported: bool,
+    pub(super) install_location: Option<String>,
+    pub(super) ffmpeg_status: Option<String>,
+    pub(super) ffprobe_status: Option<String>,
+    pub(super) fpcalc_status: Option<String>,
+    pub(super) cache_status: Option<String>,
+    pub(super) current_decision: Option<String>,
+    pub(super) last_evidence: Option<String>,
+    pub(super) open_install_location_available: bool,
+}
+
+impl From<&GuiMediaMatchState> for GuiMediaMatchRuntimeSnapshot {
+    fn from(value: &GuiMediaMatchState) -> Self {
+        Self {
+            settings: value.settings.clone(),
+            health: value.health,
+            message: value.message.clone(),
+            install_supported: value.install_supported,
+            integration_supported: value.integration_supported,
+            install_location: value.install_location.clone(),
+            ffmpeg_status: value.ffmpeg_status.clone(),
+            ffprobe_status: value.ffprobe_status.clone(),
+            fpcalc_status: value.fpcalc_status.clone(),
+            cache_status: value.cache_status.clone(),
+            current_decision: value.current_decision.clone(),
+            last_evidence: value.last_evidence.clone(),
+            open_install_location_available: value.open_install_location_available,
+        }
+    }
+}
+
+impl Default for GuiMediaMatchRuntimeSnapshot {
+    fn default() -> Self {
+        Self::from(&GuiMediaMatchState::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiMediaMatchRemediationState {
+    pub(super) active: bool,
+    pub(super) label: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) progress_fraction: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuiMediaMatchRemediationRuntimeSnapshot {
+    pub(super) active: bool,
+    pub(super) label: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) progress_fraction: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GuiPlexServerRow {
     pub(super) name: String,
@@ -431,6 +558,7 @@ pub(super) struct SorotteGuiRuntimeSnapshot {
 pub(super) enum GuiPluginSelection {
     #[default]
     StreamSupport,
+    MediaMatching,
     Plex,
 }
 
@@ -485,6 +613,8 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) player_setup_issue: Option<GuiPlayerSetupIssue>,
     pub(super) stream_helper: GuiStreamHelperState,
     pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
+    pub(super) media_match: GuiMediaMatchState,
+    pub(super) media_match_remediation: GuiMediaMatchRemediationState,
     pub(super) plex: GuiPlexState,
     pub(super) saved_configuration: StoredClientSettingsMvp,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
@@ -492,6 +622,56 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) menus: MenuDialogShellState,
     pub(super) public_servers: PublicServerBrowserShellState,
     pub(super) media_search: MediaSearchWorkflowShellState,
+}
+
+pub(super) fn media_match_settings_from_stored_settings(
+    settings: &StoredClientSettingsMvp,
+) -> MediaMatchSettings {
+    let mut media_match_settings = MediaMatchSettings::default();
+    if let Some(enabled) = settings.media_match_fingerprinting_enabled {
+        media_match_settings.fingerprinting_enabled = enabled;
+    }
+    if let Some(enabled) = settings.media_match_runtime_tolerance_enabled {
+        media_match_settings.runtime_tolerance_enabled = enabled;
+    }
+    media_match_settings.autoplay_policy = settings
+        .media_match_autoplay_policy
+        .as_deref()
+        .and_then(media_match_autoplay_policy_from_label)
+        .unwrap_or_default();
+    media_match_settings
+}
+
+pub(super) fn apply_media_match_settings_to_stored_settings(
+    settings: &mut StoredClientSettingsMvp,
+    media_match_settings: &MediaMatchSettings,
+) {
+    settings.media_match_fingerprinting_enabled = Some(media_match_settings.fingerprinting_enabled);
+    settings.media_match_runtime_tolerance_enabled =
+        Some(media_match_settings.runtime_tolerance_enabled);
+    settings.media_match_autoplay_policy =
+        Some(media_match_autoplay_policy_label(media_match_settings.autoplay_policy).to_owned());
+}
+
+pub(super) fn media_match_autoplay_policy_label(policy: MediaMatchAutoplayPolicy) -> &'static str {
+    match policy {
+        MediaMatchAutoplayPolicy::DiagnosticsOnly => "DiagnosticsOnly",
+        MediaMatchAutoplayPolicy::AllowStrongSameMedia => "AllowStrongSameMedia",
+    }
+}
+
+pub(super) fn media_match_autoplay_policy_from_label(
+    value: &str,
+) -> Option<MediaMatchAutoplayPolicy> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "diagnosticsonly" | "diagnostics-only" | "diagnostics_only" => {
+            Some(MediaMatchAutoplayPolicy::DiagnosticsOnly)
+        }
+        "allowstrongsamemedia" | "allow-strong-same-media" | "allow_strong_same_media" => {
+            Some(MediaMatchAutoplayPolicy::AllowStrongSameMedia)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

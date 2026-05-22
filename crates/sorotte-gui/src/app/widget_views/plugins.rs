@@ -3,6 +3,7 @@ use super::*;
 impl SorotteGuiShellAppState {
     pub(crate) fn plugins_widget_tree(&self) -> GuiWidgetNode {
         let stream_support_selected = self.selected_plugin == GuiPluginSelection::StreamSupport;
+        let media_matching_selected = self.selected_plugin == GuiPluginSelection::MediaMatching;
         let plex_selected = self.selected_plugin == GuiPluginSelection::Plex;
         let plugin_list = GuiWidgetNode::branch(
             "plugins:list",
@@ -18,6 +19,14 @@ impl SorotteGuiShellAppState {
                     stream_support_selected,
                 ),
                 GuiWidgetNode::leaf(
+                    "plugins:list:media-matching",
+                    "Media Matching",
+                    GuiWidgetKind::ListItem,
+                    Some(self.media_match.health.label().to_owned()),
+                    true,
+                    media_matching_selected,
+                ),
+                GuiWidgetNode::leaf(
                     "plugins:list:plex",
                     "Plex",
                     GuiWidgetKind::ListItem,
@@ -30,6 +39,7 @@ impl SorotteGuiShellAppState {
 
         let selected_detail = match self.selected_plugin {
             GuiPluginSelection::StreamSupport => self.stream_support_plugin_detail_widget_tree(),
+            GuiPluginSelection::MediaMatching => self.media_matching_plugin_detail_widget_tree(),
             GuiPluginSelection::Plex => self.plex_plugin_detail_widget_tree(),
         };
         let detail = GuiWidgetNode::branch(
@@ -117,6 +127,286 @@ impl SorotteGuiShellAppState {
         }
 
         GuiWidgetNode::branch("plugins:plex", "Plex", GuiWidgetKind::Panel, children)
+    }
+
+    fn media_matching_plugin_detail_widget_tree(&self) -> GuiWidgetNode {
+        let mut children = vec![
+            GuiWidgetNode::layout(
+                "plugins:media-matching:status",
+                "Media Matching Status",
+                GuiLayoutMode::KeyValueGrid {
+                    min_pair_width: 260.0,
+                },
+                self.media_matching_plugin_status_rows(),
+            ),
+            GuiWidgetNode::layout(
+                "plugins:media-matching:settings",
+                "Media Matching Settings",
+                GuiLayoutMode::KeyValueGrid {
+                    min_pair_width: 260.0,
+                },
+                self.media_matching_plugin_settings_rows(),
+            ),
+            GuiWidgetNode::layout(
+                "plugins:media-matching:actions",
+                "Media Matching Actions",
+                GuiLayoutMode::ButtonWrap {
+                    min_button_width: 150.0,
+                },
+                vec![
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:install",
+                        "Install Tools",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("install"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:import-ffmpeg",
+                        "Import ffmpeg",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("import"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:import-ffprobe",
+                        "Import ffprobe",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("import"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:import-fpcalc",
+                        "Import fpcalc",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("import"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:open-location",
+                        "Open Install Location",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_match.open_install_location_available,
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:recheck",
+                        "Recheck Tools",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("recheck"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:rebuild-index",
+                        "Rebuild Index",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("index"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
+                        "plugins:media-matching:clear-cache",
+                        "Clear Cache",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("cache"),
+                        false,
+                    ),
+                ],
+            ),
+        ];
+        if self.media_match_remediation.active {
+            children.push(GuiWidgetNode::layout(
+                "plugins:media-matching:remediation",
+                "Media Matching Progress",
+                GuiLayoutMode::KeyValueGrid {
+                    min_pair_width: 260.0,
+                },
+                self.media_matching_plugin_remediation_rows(),
+            ));
+        }
+        GuiWidgetNode::branch(
+            "plugins:media-matching",
+            "Media Matching",
+            GuiWidgetKind::Panel,
+            children,
+        )
+    }
+
+    fn media_matching_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
+        let mut rows = vec![
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:title",
+                "Title",
+                GuiWidgetKind::Status,
+                Some(self.media_match_status_title().to_owned()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:summary",
+                "Summary",
+                GuiWidgetKind::Status,
+                Some(self.media_match_status_summary()),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:health",
+                "Health",
+                GuiWidgetKind::Status,
+                Some(self.media_match.health.label().to_owned()),
+                true,
+                false,
+            ),
+        ];
+        for (id, label, value) in [
+            (
+                "plugins:media-matching:install-location",
+                "Install Location",
+                self.media_match.install_location.clone(),
+            ),
+            (
+                "plugins:media-matching:ffmpeg-status",
+                "ffmpeg",
+                self.media_match.ffmpeg_status.clone(),
+            ),
+            (
+                "plugins:media-matching:ffprobe-status",
+                "ffprobe",
+                self.media_match.ffprobe_status.clone(),
+            ),
+            (
+                "plugins:media-matching:fpcalc-status",
+                "fpcalc",
+                self.media_match.fpcalc_status.clone(),
+            ),
+            (
+                "plugins:media-matching:cache-status",
+                "Cache",
+                self.media_match.cache_status.clone(),
+            ),
+            (
+                "plugins:media-matching:current-decision",
+                "Current File",
+                self.media_match.current_decision.clone(),
+            ),
+            (
+                "plugins:media-matching:last-evidence",
+                "Last Evidence",
+                self.media_match.last_evidence.clone(),
+            ),
+        ] {
+            if let Some(value) = value {
+                rows.push(GuiWidgetNode::leaf(
+                    id,
+                    label,
+                    GuiWidgetKind::Status,
+                    Some(value),
+                    true,
+                    false,
+                ));
+            }
+        }
+        rows
+    }
+
+    fn media_matching_plugin_settings_rows(&self) -> Vec<GuiWidgetNode> {
+        let fingerprinting_enabled = self.media_match.settings.fingerprinting_enabled;
+        let runtime_tolerance_enabled = self.media_match.settings.runtime_tolerance_enabled;
+        let strong_policy = self.media_match.settings.autoplay_policy
+            == sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia;
+        vec![
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:setting:fingerprinting",
+                "Fingerprinting",
+                GuiWidgetKind::Checkbox,
+                Some(bool_label(fingerprinting_enabled).to_owned()),
+                self.pending_operation.is_none(),
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:setting:runtime-tolerance",
+                "Runtime Tolerance",
+                GuiWidgetKind::Checkbox,
+                Some(bool_label(runtime_tolerance_enabled).to_owned()),
+                self.pending_operation.is_none(),
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:policy:diagnostics",
+                "Diagnostics Only",
+                GuiWidgetKind::Button,
+                Some(self.media_match_autoplay_policy_summary()),
+                self.pending_operation.is_none(),
+                !strong_policy,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:policy:strong",
+                "Allow Strong Same-Media",
+                GuiWidgetKind::Button,
+                Some(self.media_match_autoplay_policy_summary()),
+                self.pending_operation.is_none(),
+                strong_policy,
+            ),
+        ]
+    }
+
+    fn media_matching_plugin_remediation_rows(&self) -> Vec<GuiWidgetNode> {
+        let mut rows = vec![
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:remediation:label",
+                "Operation",
+                GuiWidgetKind::Status,
+                self.media_match_remediation.label.clone(),
+                true,
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:remediation:progress",
+                "Progress",
+                GuiWidgetKind::Status,
+                Some(format!(
+                    "{:.0}%",
+                    self.media_match_remediation.progress_fraction * 100.0
+                )),
+                true,
+                false,
+            ),
+        ];
+        if let Some(detail) = self.media_match_remediation.detail.clone() {
+            rows.push(GuiWidgetNode::leaf(
+                "plugins:media-matching:remediation:detail",
+                "Detail",
+                GuiWidgetKind::Status,
+                Some(detail),
+                true,
+                false,
+            ));
+        }
+        rows
+    }
+
+    fn media_matching_plugin_action_enabled(&self, action: &str) -> bool {
+        if self.pending_operation.is_some() || self.media_match_remediation.active {
+            return false;
+        }
+        match action {
+            "install" => self.media_match.install_supported,
+            "import" => self.media_match.integration_supported,
+            "recheck" | "cache" => true,
+            "index" => {
+                self.media_match.settings.fingerprinting_enabled
+                    && self.media_match.health == GuiMediaMatchToolHealth::Healthy
+            }
+            _ => false,
+        }
     }
 
     fn plex_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {

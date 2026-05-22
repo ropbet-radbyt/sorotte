@@ -137,6 +137,60 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RetryPendingStreamMediaOpen);
                 }
+                GuiShellAction::InstallMediaMatchTools => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::InstallMediaMatchTools);
+                }
+                GuiShellAction::ImportMediaMatchFfmpeg(path) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::ImportMediaMatchFfmpeg(path));
+                }
+                GuiShellAction::ImportMediaMatchFfprobe(path) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::ImportMediaMatchFfprobe(path));
+                }
+                GuiShellAction::ImportMediaMatchFpcalc(path) => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::ImportMediaMatchFpcalc(path));
+                }
+                GuiShellAction::OpenMediaMatchInstallLocation => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::OpenMediaMatchInstallLocation);
+                }
+                GuiShellAction::RecheckMediaMatchTools => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RecheckMediaMatchTools);
+                }
+                GuiShellAction::RebuildMediaMatchIndex => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::RebuildMediaMatchIndex);
+                }
+                GuiShellAction::ClearMediaMatchCache => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::ClearMediaMatchCache);
+                }
+                GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled) => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetMediaMatchFingerprintingEnabled(enabled));
+                    plan.runtime_requests.push(
+                        GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled),
+                    );
+                }
+                GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(
+                            enabled,
+                        ));
+                    plan.runtime_requests.push(
+                        GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled),
+                    );
+                }
+                GuiShellAction::SetMediaMatchAutoplayPolicy(policy) => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetMediaMatchAutoplayPolicy(policy));
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(policy));
+                }
                 GuiShellAction::StartPlexAuth => {
                     plan.runtime_requests.push(GuiRuntimeRequest::StartPlexAuth);
                 }

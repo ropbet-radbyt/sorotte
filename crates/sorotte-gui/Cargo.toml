@@ -32,6 +32,7 @@ zip.workspace = true
 sorotte-compat = { path = "../sorotte-compat", optional = true }
 sorotte-client-app = { path = "../sorotte-client-app" }
 sorotte-client-core = { path = "../sorotte-client-core" }
+sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-player-api = { path = "../sorotte-player-api" }
 sorotte-player-mpv = { path = "../sorotte-player-mpv" }
 sorotte-plex = { path = "../sorotte-plex" }

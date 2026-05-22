@@ -39,6 +39,10 @@ use sorotte_plex::{
     plex_server_connection_kind_from_uri,
 };
 
+use super::media_match_support::{
+    clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
+    probe_media_match_startup_snapshot,
+};
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
@@ -54,7 +58,8 @@ use super::runtime_stack::{
     GuiTestPlayerAdapter,
 };
 use super::shell_state::{
-    GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot, GuiPlexRuntimeSnapshot,
+    GuiCommandAvailabilityState, GuiConfigurationRuntimeSnapshot,
+    GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot, GuiPlexRuntimeSnapshot,
     GuiPlexServerReachability, GuiPlexServerRow, GuiShellAction,
     GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
     GuiTransientNotificationLevel, SorotteGuiShellAppState,
@@ -126,6 +131,8 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot,
     pub(super) stream_helper_remediation_runtime_snapshot:
         GuiStreamHelperRemediationRuntimeSnapshot,
+    pub(super) media_match_runtime_snapshot: GuiMediaMatchRuntimeSnapshot,
+    pub(super) media_match_remediation_runtime_snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
     pub(super) plex_auth_start_rx: Option<mpsc::Receiver<Result<PlexAuthSession, String>>>,

@@ -53,6 +53,9 @@ impl GuiPersistedConfigRuntimeOwner {
             stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot::default(),
             stream_helper_remediation_runtime_snapshot:
                 GuiStreamHelperRemediationRuntimeSnapshot::default(),
+            media_match_runtime_snapshot: GuiMediaMatchRuntimeSnapshot::default(),
+            media_match_remediation_runtime_snapshot:
+                GuiMediaMatchRemediationRuntimeSnapshot::default(),
             plex_client: None,
             plex_auth_session: None,
             plex_auth_start_rx: None,
@@ -92,6 +95,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let startup_settings = owner.load_startup_player_settings_from_config_path();
         owner.configure_startup_player_from_lookup_and_settings(lookup, startup_settings.as_ref());
         owner.refresh_startup_stream_helper_snapshot();
+        owner.refresh_startup_media_match_snapshot(startup_settings.as_ref());
         owner
     }
 
@@ -171,6 +175,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
+        self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::default();
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
         self.pending_stream_load_context = None;
@@ -491,6 +496,77 @@ impl GuiPersistedConfigRuntimeOwner {
         self.stream_helper_runtime_snapshot = snapshot;
     }
 
+    pub(super) fn refresh_media_match_runtime_snapshot(
+        &mut self,
+        settings: &sorotte_media_match::MediaMatchSettings,
+    ) -> GuiMediaMatchRuntimeSnapshot {
+        let mut snapshot = probe_media_match_runtime_snapshot(
+            self.legacy_gui_qsettings_root().as_deref(),
+            settings,
+        );
+        snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
+        snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
+        self.media_match_runtime_snapshot = snapshot.clone();
+        snapshot
+    }
+
+    pub(super) fn refresh_startup_media_match_snapshot(
+        &mut self,
+        settings: Option<&StoredClientSettingsMvp>,
+    ) {
+        let snapshot = probe_media_match_startup_snapshot(
+            self.legacy_gui_qsettings_root().as_deref(),
+            settings,
+        );
+        self.media_match_runtime_snapshot = snapshot;
+    }
+
+    pub(super) fn update_media_match_remediation_runtime_snapshot(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
+    ) {
+        self.media_match_remediation_runtime_snapshot = snapshot.clone();
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(snapshot)],
+        );
+    }
+
+    pub(super) fn report_media_match_remediation_progress(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        label: impl Into<String>,
+        detail: Option<String>,
+        progress_fraction: f32,
+    ) {
+        self.update_media_match_remediation_runtime_snapshot(
+            handle,
+            projected_state,
+            GuiMediaMatchRemediationRuntimeSnapshot {
+                active: true,
+                label: Some(label.into()),
+                detail,
+                progress_fraction,
+            },
+        );
+    }
+
+    pub(super) fn clear_media_match_remediation_progress(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        self.update_media_match_remediation_runtime_snapshot(
+            handle,
+            projected_state,
+            GuiMediaMatchRemediationRuntimeSnapshot::default(),
+        );
+    }
+
     pub(super) fn queue_stream_feedback_actions(&mut self, actions: Vec<GuiShellAction>) {
         if actions.is_empty() {
             return;
@@ -629,6 +705,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(root) = self.legacy_gui_qsettings_root() {
             clear_legacy_gui_qsettings_files_at_root(&root)?;
             clear_persisted_media_search_cache_at_root(&root)?;
+            clear_persisted_media_match_cache_at_root(&root)?;
         }
         self.clear_persisted_plex_match_cache()?;
         self.session = None;

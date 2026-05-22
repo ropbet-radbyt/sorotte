@@ -84,6 +84,23 @@ fn parse_sorotte_ini_stored_client_settings_mvp_filters_blank_media_search_direc
 }
 
 #[test]
+fn parse_sorotte_ini_stored_client_settings_mvp_reads_media_match_settings() {
+    let settings = parse_sorotte_ini_stored_client_settings_mvp(
+        "[client_settings]\n\
+         mediaMatchFingerprintingEnabled = True\n\
+         mediaMatchRuntimeToleranceEnabled = False\n\
+         mediaMatchAutoplayPolicy = AllowStrongSameMedia\n",
+    );
+
+    assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    assert_eq!(settings.media_match_runtime_tolerance_enabled, Some(false));
+    assert_eq!(
+        settings.media_match_autoplay_policy.as_deref(),
+        Some("AllowStrongSameMedia")
+    );
+}
+
+#[test]
 fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_existing_entries() {
     let updated = upsert_sorotte_ini_stored_client_settings_mvp(
         "[misc]\nfoo = bar\n[client_settings]\nname = old\n",
@@ -97,6 +114,24 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_existing_entries() {
     assert!(updated.contains("[misc]\nfoo = bar\n"));
     assert!(updated.contains("[client_settings]\nname = alice\n"));
     assert!(updated.contains("updateChannel = dev\n"));
+}
+
+#[test]
+fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
+    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+        "",
+        &StoredClientSettingsMvp {
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_runtime_tolerance_enabled: Some(false),
+            media_match_autoplay_policy: Some("AllowStrongSameMedia".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        },
+    );
+
+    assert!(updated.contains("[client_settings]\n"));
+    assert!(updated.contains("mediaMatchFingerprintingEnabled = True\n"));
+    assert!(updated.contains("mediaMatchRuntimeToleranceEnabled = False\n"));
+    assert!(updated.contains("mediaMatchAutoplayPolicy = AllowStrongSameMedia\n"));
 }
 
 #[test]

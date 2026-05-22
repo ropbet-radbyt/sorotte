@@ -186,6 +186,50 @@ impl GuiWidgetEguiRenderer {
             .map(|path| path.to_string_lossy().into_owned())
     }
 
+    pub(super) fn pick_media_match_ffmpeg_executable(
+        state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        if let Some(path) = Self::media_match_ffmpeg_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        Self::pick_media_match_tool_executable(state, "Select ffmpeg Executable")
+    }
+
+    pub(super) fn pick_media_match_ffprobe_executable(
+        state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        if let Some(path) = Self::media_match_ffprobe_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        Self::pick_media_match_tool_executable(state, "Select ffprobe Executable")
+    }
+
+    pub(super) fn pick_media_match_fpcalc_executable(
+        state: &SorotteGuiShellAppState,
+    ) -> Option<String> {
+        if let Some(path) = Self::media_match_fpcalc_override_path_from_lookup(&env_trimmed) {
+            return Some(path);
+        }
+        Self::pick_media_match_tool_executable(state, "Select fpcalc Executable")
+    }
+
+    fn pick_media_match_tool_executable(
+        state: &SorotteGuiShellAppState,
+        title: &'static str,
+    ) -> Option<String> {
+        let mut dialog = FileDialog::new().set_title(title);
+        if let Some(directory) = Self::player_executable_dialog_start_directory(state) {
+            dialog = dialog.set_directory(directory);
+        }
+        #[cfg(windows)]
+        {
+            dialog = dialog.add_filter("executables", &["exe", "com"]);
+        }
+        dialog
+            .pick_file()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
     pub(super) fn player_executable_override_path_from_lookup<F>(lookup: &F) -> Option<String>
     where
         F: Fn(&str) -> Option<String>,
@@ -213,6 +257,33 @@ impl GuiWidgetEguiRenderer {
         F: Fn(&str) -> Option<String>,
     {
         lookup("SOROTTE_GUI_TEST_STREAM_HELPER_JS_RUNTIME_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(super) fn media_match_ffmpeg_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SOROTTE_GUI_TEST_MEDIA_MATCH_FFMPEG_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(super) fn media_match_ffprobe_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SOROTTE_GUI_TEST_MEDIA_MATCH_FFPROBE_PATH")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub(super) fn media_match_fpcalc_override_path_from_lookup<F>(lookup: &F) -> Option<String>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        lookup("SOROTTE_GUI_TEST_MEDIA_MATCH_FPCALC_PATH")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
     }

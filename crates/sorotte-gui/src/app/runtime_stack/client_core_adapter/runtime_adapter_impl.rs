@@ -679,6 +679,24 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
+    fn set_strong_same_media_match_satisfies_filename_gate(
+        &mut self,
+        satisfied: bool,
+    ) -> Result<(), String> {
+        self.runtime
+            .session_mut()
+            .set_strong_same_media_match_satisfies_filename_gate(satisfied);
+        let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
+            self.autoplay_runtime_flags();
+        self.runtime.update_autoplay_check(
+            readiness_supported,
+            local_can_control,
+            is_playing_music,
+            recently_advanced,
+        );
+        Ok(())
+    }
+
     fn sync_runtime_settings(
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,

@@ -8,7 +8,7 @@ type CachedMissingMediaMatchRank = (usize, usize, usize, usize, String);
 type CachedMissingMediaMatch = (CachedMissingMediaMatchRank, String);
 
 impl GuiPersistedConfigRuntimeOwner {
-    pub(super) fn automatic_media_search_roots(
+    pub(in crate::app::runtime_owner) fn automatic_media_search_roots(
         &self,
         state: &SorotteGuiShellAppState,
     ) -> Vec<PathBuf> {

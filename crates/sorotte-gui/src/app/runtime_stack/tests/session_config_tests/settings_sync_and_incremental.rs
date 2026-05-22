@@ -167,6 +167,46 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
 }
 
 #[test]
+fn gui_client_core_chat_session_runtime_adapter_sets_media_match_autoplay_gate() {
+    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        .expect("client-core chat adapter should bootstrap");
+
+    assert!(
+        !adapter
+            .runtime
+            .session()
+            .readiness_autoplay_config()
+            .strong_same_media_match_satisfies_filename_gate
+    );
+
+    GuiSessionRuntimeAdapter::set_strong_same_media_match_satisfies_filename_gate(
+        &mut adapter,
+        true,
+    )
+    .expect("media-match autoplay gate should update");
+    assert!(
+        adapter
+            .runtime
+            .session()
+            .readiness_autoplay_config()
+            .strong_same_media_match_satisfies_filename_gate
+    );
+
+    GuiSessionRuntimeAdapter::set_strong_same_media_match_satisfies_filename_gate(
+        &mut adapter,
+        false,
+    )
+    .expect("media-match autoplay gate should clear");
+    assert!(
+        !adapter
+            .runtime
+            .session()
+            .readiness_autoplay_config()
+            .strong_same_media_match_satisfies_filename_gate
+    );
+}
+
+#[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runtime_settings_blank()
 {
     let runtime_settings =
