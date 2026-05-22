@@ -117,7 +117,6 @@ impl SorotteGuiShellAppState {
                 true
             }
             ("Advanced", "TLS Certificates") => self.announce_tls_certificate_prompt_required(),
-            ("Advanced", "Update Check") => self.begin_update_check(true),
             ("Window", "Show Chat") => {
                 self.active_view = GuiShellView::Room;
                 self.push_system_chat_message("Main window section opened: Show Chat.".to_owned());

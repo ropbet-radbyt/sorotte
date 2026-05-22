@@ -95,7 +95,6 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn announce_update_notice_available(&mut self) -> bool {
-        self.menus.update_notice_expected = true;
         if self.update_check.message.is_none() {
             self.update_check.message = Some(
                 localized_update_notice_available_message_legacy_compatible(Some(
@@ -123,14 +122,10 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn begin_update_check(&mut self, user_initiated: bool) -> bool {
         self.update_check.status = Some(remote_services::LegacyUpdateCheckStatus::Checking);
-        self.update_check.message = Some("Checking GitHub for Sorotte GUI updates...".to_owned());
+        self.update_check.message = Some("Checking for updates".to_owned());
         self.update_check.user_initiated = user_initiated;
         self.update_check.download_state = remote_services::UpdateDownloadState::Idle;
         self.update_check.staged_update = None;
-        if user_initiated {
-            self.open_modal = Some(GuiShellModal::UpdateNotice);
-            self.menus.update_notice_expected = true;
-        }
         self.clear_action_error_and_refresh();
         true
     }
@@ -156,12 +151,24 @@ impl SorotteGuiShellAppState {
             last_checked_for_updates: Some(result.checked_at_utc.clone()),
             user_initiated: result.user_initiated,
         };
-        self.menus.update_notice_expected = self.update_check.should_open_modal();
+        self.menus.update_notice_expected = false;
         if matches!(
             self.update_check.status_level(),
             GuiTransientNotificationLevel::Warning | GuiTransientNotificationLevel::Error
         ) {
             self.push_transient_notification(self.update_check.status_level(), result.message);
+        }
+        self.clear_action_error_and_refresh();
+        true
+    }
+
+    pub(super) fn activate_update_indicator(&mut self) -> bool {
+        if self
+            .update_check
+            .update_indicator_activation_action()
+            .is_none()
+        {
+            return self.record_action_error("The update action is not available yet.");
         }
         self.clear_action_error_and_refresh();
         true

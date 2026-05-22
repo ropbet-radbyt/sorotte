@@ -12,6 +12,7 @@ impl GuiRuntimeRequest {
                 }]
             }
             Self::DownloadUpdate(_) => vec![GuiShellAction::BeginUpdateDownload],
+            Self::DownloadAndInstallUpdate(_) => vec![GuiShellAction::BeginUpdateInstall],
             Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,
@@ -130,6 +131,7 @@ impl GuiRuntimeRequest {
                 }]
             }
             Self::DownloadUpdate(_) => vec![GuiShellAction::BeginUpdateDownload],
+            Self::DownloadAndInstallUpdate(_) => vec![GuiShellAction::BeginUpdateInstall],
             Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,

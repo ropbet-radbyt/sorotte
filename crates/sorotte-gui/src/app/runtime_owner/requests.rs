@@ -71,6 +71,31 @@ impl GuiPersistedConfigRuntimeOwner {
                     vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
                 );
             }
+            GuiRuntimeRequest::DownloadAndInstallUpdate(candidate) => {
+                let result = remote_services::download_and_stage_update(
+                    &candidate,
+                    self.legacy_gui_qsettings_root().as_deref(),
+                );
+                let staged_update = result.staged_update.clone();
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::ApplyUpdateDownloadResult(result)],
+                );
+                if let Some(staged_update) = staged_update {
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::BeginStagedUpdateApply],
+                    );
+                    let result = remote_services::launch_staged_update(&staged_update);
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::ApplyStagedUpdateLaunchResult(result)],
+                    );
+                }
+            }
             GuiRuntimeRequest::ApplyStagedUpdate(staged_update) => {
                 let result = remote_services::launch_staged_update(&staged_update);
                 Self::push_actions_and_project(

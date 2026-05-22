@@ -23,7 +23,7 @@ use super::child_process::configure_gui_child_process;
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
 const LEGACY_SYNCPLAY_MILESTONE: &str = "Yoitsu";
 const LEGACY_SYNCPLAY_RELEASE_NUMBER: &str = "116";
-const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 7 * 86_400;
+const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 86_400;
 #[cfg(test)]
 const LEGACY_SYNCPLAY_VERSION_STATUS_UP_TO_DATE: &str = "uptodate";
 #[cfg(test)]

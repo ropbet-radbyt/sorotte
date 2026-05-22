@@ -55,6 +55,37 @@ pub(super) struct GuiUpdateCheckState {
     pub(super) user_initiated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiUpdateIndicatorTone {
+    Idle,
+    Progress,
+    Success,
+    Info,
+    Warning,
+    Error,
+}
+
+impl GuiUpdateIndicatorTone {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Progress => "progress",
+            Self::Success => "success",
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiUpdateIndicatorModel {
+    pub(super) title: String,
+    pub(super) detail: String,
+    pub(super) tone: GuiUpdateIndicatorTone,
+    pub(super) enabled: bool,
+}
+
 impl GuiUpdateCheckState {
     pub(super) fn body_lines(&self, language: Option<&str>) -> Vec<String> {
         let mut lines = Vec::new();
@@ -92,22 +123,143 @@ impl GuiUpdateCheckState {
         }
     }
 
-    pub(super) fn should_open_modal(&self) -> bool {
-        self.user_initiated || self.url.is_some()
+    pub(super) fn indicator_model(&self, language: Option<&str>) -> GuiUpdateIndicatorModel {
+        if self.update_install_launching() {
+            return GuiUpdateIndicatorModel {
+                title: "Installing update".to_owned(),
+                detail: "Sorotte will restart.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Progress,
+                enabled: false,
+            };
+        }
+        if matches!(
+            self.download_state,
+            remote_services::UpdateDownloadState::Downloading
+        ) {
+            return GuiUpdateIndicatorModel {
+                title: "Downloading update".to_owned(),
+                detail: "Staging package.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Progress,
+                enabled: false,
+            };
+        }
+        if self.can_restart_to_update() {
+            return GuiUpdateIndicatorModel {
+                title: "Ready to install".to_owned(),
+                detail: "Click to restart Sorotte.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Info,
+                enabled: true,
+            };
+        }
+        match self.status.as_ref() {
+            Some(remote_services::LegacyUpdateCheckStatus::Checking) => GuiUpdateIndicatorModel {
+                title: "Checking for updates".to_owned(),
+                detail: "Please wait.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Progress,
+                enabled: false,
+            },
+            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable)
+                if self.candidate.is_some() && self.self_update_supported =>
+            {
+                GuiUpdateIndicatorModel {
+                    title: "Update available".to_owned(),
+                    detail: "Click to install.".to_owned(),
+                    tone: GuiUpdateIndicatorTone::Info,
+                    enabled: true,
+                }
+            }
+            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable) => {
+                GuiUpdateIndicatorModel {
+                    title: "Manual update available".to_owned(),
+                    detail: "Packaged install required.".to_owned(),
+                    tone: GuiUpdateIndicatorTone::Warning,
+                    enabled: true,
+                }
+            }
+            Some(remote_services::LegacyUpdateCheckStatus::UpToDate)
+                if !self.self_update_supported =>
+            {
+                GuiUpdateIndicatorModel {
+                    title: "Self-update unavailable".to_owned(),
+                    detail: self
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Packaged install required.".to_owned()),
+                    tone: GuiUpdateIndicatorTone::Idle,
+                    enabled: true,
+                }
+            }
+            Some(remote_services::LegacyUpdateCheckStatus::UpToDate) => GuiUpdateIndicatorModel {
+                title: "Up to date".to_owned(),
+                detail: self.indicator_checked_detail(language),
+                tone: GuiUpdateIndicatorTone::Success,
+                enabled: true,
+            },
+            Some(remote_services::LegacyUpdateCheckStatus::Failed)
+            | Some(remote_services::LegacyUpdateCheckStatus::Unknown(_)) => {
+                GuiUpdateIndicatorModel {
+                    title: "Update failed".to_owned(),
+                    detail: "Click to retry.".to_owned(),
+                    tone: GuiUpdateIndicatorTone::Error,
+                    enabled: true,
+                }
+            }
+            None => GuiUpdateIndicatorModel {
+                title: "Update".to_owned(),
+                detail: "Not checked yet.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Idle,
+                enabled: true,
+            },
+        }
     }
 
-    pub(super) fn can_download_update(&self) -> bool {
-        self.candidate.is_some()
-            && self.self_update_supported
-            && !matches!(
+    pub(super) fn update_indicator_activation_action(&self) -> Option<GuiUpdateIndicatorAction> {
+        if self.update_install_launching()
+            || matches!(
+                self.status,
+                Some(remote_services::LegacyUpdateCheckStatus::Checking)
+            )
+            || matches!(
                 self.download_state,
                 remote_services::UpdateDownloadState::Downloading
             )
+        {
+            return None;
+        }
+        if self.can_restart_to_update() {
+            return Some(GuiUpdateIndicatorAction::ApplyStaged);
+        }
+        if self.candidate.is_some() && self.self_update_supported {
+            return Some(GuiUpdateIndicatorAction::InstallAvailable);
+        }
+        Some(GuiUpdateIndicatorAction::Check)
     }
 
     pub(super) fn can_restart_to_update(&self) -> bool {
         self.staged_update.is_some() && self.self_update_supported
     }
+
+    fn indicator_checked_detail(&self, language: Option<&str>) -> String {
+        self.last_checked_for_updates
+            .as_deref()
+            .map(|timestamp| {
+                localized_update_checked_at_line_legacy_compatible(language, timestamp)
+            })
+            .unwrap_or_else(|| "Checked recently.".to_owned())
+    }
+
+    fn update_install_launching(&self) -> bool {
+        self.message.as_deref().is_some_and(|message| {
+            message == "Launching update helper..." || message.starts_with("Update helper started.")
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiUpdateIndicatorAction {
+    Check,
+    InstallAvailable,
+    ApplyStaged,
 }
 
 impl GuiPersistedUiState {

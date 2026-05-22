@@ -26,7 +26,9 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyUpdateCheckResult(result) => {
                 self.apply_update_check_result(result)
             }
+            GuiShellAction::ActivateUpdateIndicator => self.activate_update_indicator(),
             GuiShellAction::BeginUpdateDownload => self.begin_update_download(),
+            GuiShellAction::BeginUpdateInstall => self.begin_update_download(),
             GuiShellAction::ApplyUpdateDownloadResult(result) => {
                 self.apply_update_download_result(result)
             }

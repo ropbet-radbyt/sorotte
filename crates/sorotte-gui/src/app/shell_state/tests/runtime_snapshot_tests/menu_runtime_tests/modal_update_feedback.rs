@@ -39,7 +39,7 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
     assert_chat_pane_ready(&state.main_window.chat);
 
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
-    assert!(state.menus.update_notice_expected);
+    assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
@@ -57,7 +57,7 @@ fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
-    assert!(state.apply(GuiShellAction::DismissUpdateNotice));
+    assert!(!state.apply(GuiShellAction::DismissUpdateNotice));
     assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
     assert!(state.notifications.is_empty());
@@ -81,7 +81,11 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
     assert!(state.apply(GuiShellAction::BeginUpdateCheck {
         user_initiated: true,
     }));
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert_eq!(state.open_modal, None);
+    assert_eq!(
+        state.update_check.indicator_model(None).title,
+        "Checking for updates"
+    );
 
     assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
         LegacyUpdateCheckResult {
@@ -96,8 +100,12 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
         }
     )));
 
-    assert!(state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert!(!state.menus.update_notice_expected);
+    assert_eq!(state.open_modal, None);
+    assert_eq!(
+        state.update_check.indicator_model(None).title,
+        "Manual update available"
+    );
     assert_eq!(
         state.update_check.message.as_deref(),
         Some("A new version of Sorotte is available.")

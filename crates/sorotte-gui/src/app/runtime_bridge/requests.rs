@@ -17,6 +17,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
         user_initiated: bool,
     },
     DownloadUpdate(remote_services::UpdateCandidate),
+    DownloadAndInstallUpdate(remote_services::UpdateCandidate),
     ApplyStagedUpdate(remote_services::StagedUpdate),
     OpenMediaFiles {
         paths: Vec<String>,

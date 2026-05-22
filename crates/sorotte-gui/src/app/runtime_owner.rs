@@ -87,6 +87,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) startup_saved_connect_attempted: bool,
     pub(super) startup_remote_actions_attempted: bool,
     pub(super) startup_remote_actions_rx: Option<mpsc::Receiver<Vec<GuiShellAction>>>,
+    pub(super) background_update_check_rx:
+        Option<mpsc::Receiver<super::remote_services::LegacyUpdateCheckResult>>,
+    pub(super) background_update_check_next_due_at: Option<Instant>,
     pub(super) startup_stream_helper_probe_completed: bool,
     pub(super) startup_stream_helper_probe_rx:
         Option<mpsc::Receiver<GuiStreamHelperRuntimeSnapshot>>,

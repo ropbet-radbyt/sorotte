@@ -95,11 +95,6 @@ impl MenuDialogShellState {
                             enabled: true,
                             is_selected: false,
                         },
-                        MenuActionShellItem {
-                            label: "Update Check",
-                            enabled: true,
-                            is_selected: false,
-                        },
                     ],
                 },
                 MenuSectionShellState {

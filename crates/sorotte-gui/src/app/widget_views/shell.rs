@@ -1,6 +1,45 @@
 use super::*;
 
 impl SorotteGuiShellAppState {
+    pub(crate) fn update_indicator_widget_tree(&self) -> GuiWidgetNode {
+        let model = self
+            .update_check
+            .indicator_model(Some(self.runtime_language_tag_legacy_compatible()));
+        let mut node = GuiWidgetNode::branch(
+            "shell:update-indicator",
+            model.title.clone(),
+            GuiWidgetKind::Button,
+            vec![
+                GuiWidgetNode::leaf(
+                    "shell:update-indicator:title",
+                    "Update Indicator",
+                    GuiWidgetKind::Status,
+                    Some(model.title),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:update-indicator:detail",
+                    "Update Detail",
+                    GuiWidgetKind::Status,
+                    Some(model.detail),
+                    true,
+                    false,
+                ),
+                GuiWidgetNode::leaf(
+                    "shell:update-indicator:tone",
+                    "Update Tone",
+                    GuiWidgetKind::Status,
+                    Some(model.tone.label().to_owned()),
+                    true,
+                    false,
+                ),
+            ],
+        );
+        node.enabled = model.enabled;
+        node
+    }
+
     pub(crate) fn command_status_widget_tree(&self) -> GuiWidgetNode {
         let items = [
             ("busy", "Busy", self.pending_operation.is_some()),
@@ -284,6 +323,7 @@ impl SorotteGuiShellAppState {
                     true,
                     false,
                 ),
+                self.update_indicator_widget_tree(),
                 self.shell_modal_widget_tree(),
                 self.quick_actions_widget_tree(),
                 self.command_status_widget_tree(),

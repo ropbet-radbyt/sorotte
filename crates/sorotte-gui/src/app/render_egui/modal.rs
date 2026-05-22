@@ -97,11 +97,7 @@ impl GuiWidgetEguiRenderer {
                 ("shell:modal:tls:reject", "Reject Certificate"),
                 ("shell:modal:tls:help", "Open Help"),
             ],
-            GuiShellModal::UpdateNotice => vec![
-                ("shell:modal:update:check-again", "Check Again"),
-                ("shell:modal:update:download", "Download Update"),
-                ("shell:modal:update:restart", "Restart to Update"),
-            ],
+            GuiShellModal::UpdateNotice => Vec::new(),
             GuiShellModal::About => vec![
                 ("shell:modal:about:help", "Open Help"),
                 ("shell:modal:about:update", "Check for Updates"),
@@ -135,12 +131,6 @@ impl GuiWidgetEguiRenderer {
 
     pub(in crate::app) fn modal_action_enabled(state: &SorotteGuiShellAppState, id: &str) -> bool {
         match id {
-            "shell:modal:update:check-again" => !matches!(
-                state.update_check.status,
-                Some(super::super::remote_services::LegacyUpdateCheckStatus::Checking)
-            ),
-            "shell:modal:update:download" => state.update_check.can_download_update(),
-            "shell:modal:update:restart" => state.update_check.can_restart_to_update(),
             "shell:modal:player-setup:autodetect"
             | "shell:modal:player-setup:choose-path"
             | "shell:modal:player-setup:open-settings" => state.pending_operation.is_none(),

@@ -1,6 +1,8 @@
 use super::*;
 
-use super::super::remote_services::{UpdateCandidate, UpdateCandidateSource, UpdateChannel};
+use super::super::remote_services::{
+    LegacyUpdateCheckStatus, StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+};
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiRuntimeRequest, GuiShellAction, MainWindowRuntimeSnapshot,
     MainWindowRuntimeUserSnapshot, SorotteGuiShellAppState, StoredClientSettingsMvp,
@@ -47,6 +49,19 @@ fn update_candidate() -> UpdateCandidate {
         download_url: "https://example.invalid/sorotte-gui.zip".to_owned(),
         details_url: Some("https://example.invalid/release".to_owned()),
         source: UpdateCandidateSource::ReleaseAsset,
+    }
+}
+
+fn staged_update(candidate: UpdateCandidate) -> StagedUpdate {
+    StagedUpdate {
+        candidate,
+        package_path: "C:/Temp/sorotte.zip".to_owned(),
+        source_dir: "C:/Temp/sorotte-update".to_owned(),
+        updater_path: "C:/Temp/sorotte-update/sorotte-gui-updater.exe".to_owned(),
+        target_exe_path: "C:/Program Files/Sorotte/sorotte-gui.exe".to_owned(),
+        backup_dir: "C:/Temp/sorotte-backup".to_owned(),
+        log_path: "C:/Temp/sorotte-update.log".to_owned(),
+        restart: true,
     }
 }
 
@@ -134,6 +149,23 @@ fn gui_shell_dispatch_plan_routes_menu_update_checks_to_runtime_owner() {
 }
 
 #[test]
+fn gui_shell_dispatch_plan_does_not_route_removed_advanced_update_check() {
+    let state = runtime_ready_state();
+
+    assert!(
+        state
+            .menus
+            .sections
+            .iter()
+            .find(|section| section.title == "Advanced")
+            .is_some_and(|section| !section
+                .actions
+                .iter()
+                .any(|action| action.label == "Update Check"))
+    );
+}
+
+#[test]
 fn gui_shell_dispatch_plan_preserves_install_marker_update_channel_fallback() {
     let state = runtime_ready_state();
     let plan = GuiShellDispatchPlan::from_shell_actions(
@@ -171,6 +203,101 @@ fn gui_shell_dispatch_plan_routes_update_downloads_to_runtime_owner() {
         plan.runtime_requests,
         vec![GuiRuntimeRequest::DownloadUpdate(candidate)]
     );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_update_indicator_checks() {
+    let state = runtime_ready_state();
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::ActivateUpdateIndicator],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![
+            GuiShellAction::ActivateUpdateIndicator,
+            GuiShellAction::BeginUpdateCheck {
+                user_initiated: true,
+            }
+        ]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::CheckForUpdates {
+            language: "en".to_owned(),
+            update_channel: None,
+            user_initiated: true,
+        }]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_update_indicator_one_click_install() {
+    let mut state = runtime_ready_state();
+    let candidate = update_candidate();
+    state.update_check.status = Some(LegacyUpdateCheckStatus::UpdateAvailable);
+    state.update_check.candidate = Some(candidate.clone());
+    state.update_check.self_update_supported = true;
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::ActivateUpdateIndicator],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![
+            GuiShellAction::ActivateUpdateIndicator,
+            GuiShellAction::BeginUpdateInstall
+        ]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::DownloadAndInstallUpdate(candidate)]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_routes_update_indicator_staged_install() {
+    let mut state = runtime_ready_state();
+    let staged = staged_update(update_candidate());
+    state.update_check.staged_update = Some(staged.clone());
+    state.update_check.self_update_supported = true;
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::ActivateUpdateIndicator],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![
+            GuiShellAction::ActivateUpdateIndicator,
+            GuiShellAction::BeginStagedUpdateApply
+        ]
+    );
+    assert_eq!(
+        plan.runtime_requests,
+        vec![GuiRuntimeRequest::ApplyStagedUpdate(staged)]
+    );
+}
+
+#[test]
+fn gui_shell_dispatch_plan_ignores_update_indicator_while_checking() {
+    let mut state = runtime_ready_state();
+    state.update_check.status = Some(LegacyUpdateCheckStatus::Checking);
+
+    let plan = GuiShellDispatchPlan::from_shell_actions(
+        &state,
+        vec![GuiShellAction::ActivateUpdateIndicator],
+    );
+
+    assert_eq!(
+        plan.shell_actions,
+        vec![GuiShellAction::ActivateUpdateIndicator]
+    );
+    assert!(plan.runtime_requests.is_empty());
 }
 
 #[test]

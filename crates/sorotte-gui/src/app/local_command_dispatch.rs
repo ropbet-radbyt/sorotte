@@ -9,6 +9,7 @@ use sorotte_client_core::ClientSession;
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::shell_state::{GuiDraftRuntimeSnapshot, GuiShellAction, SorotteGuiShellAppState};
 use super::support::{configured_room_name_text, joined_room_name_text, normalized_editable_text};
+use super::ui_state::GuiUpdateIndicatorAction;
 
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
 const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
@@ -39,6 +40,34 @@ impl GuiShellDispatchPlan {
                         .push(GuiShellAction::BeginUpdateCheck { user_initiated });
                     push_update_check_request(&mut plan, state, user_initiated);
                 }
+                GuiShellAction::ActivateUpdateIndicator => {
+                    plan.shell_actions
+                        .push(GuiShellAction::ActivateUpdateIndicator);
+                    match state.update_check.update_indicator_activation_action() {
+                        Some(GuiUpdateIndicatorAction::Check) => {
+                            plan.shell_actions.push(GuiShellAction::BeginUpdateCheck {
+                                user_initiated: true,
+                            });
+                            push_update_check_request(&mut plan, state, true);
+                        }
+                        Some(GuiUpdateIndicatorAction::InstallAvailable) => {
+                            plan.shell_actions.push(GuiShellAction::BeginUpdateInstall);
+                            if let Some(candidate) = state.update_check.candidate.clone() {
+                                plan.runtime_requests
+                                    .push(GuiRuntimeRequest::DownloadAndInstallUpdate(candidate));
+                            }
+                        }
+                        Some(GuiUpdateIndicatorAction::ApplyStaged) => {
+                            plan.shell_actions
+                                .push(GuiShellAction::BeginStagedUpdateApply);
+                            if let Some(staged_update) = state.update_check.staged_update.clone() {
+                                plan.runtime_requests
+                                    .push(GuiRuntimeRequest::ApplyStagedUpdate(staged_update));
+                            }
+                        }
+                        None => {}
+                    }
+                }
                 GuiShellAction::SelectMenuAction {
                     section_index,
                     action_index,
@@ -61,6 +90,15 @@ impl GuiShellDispatchPlan {
                     if let Some(candidate) = state.update_check.candidate.clone() {
                         plan.runtime_requests
                             .push(GuiRuntimeRequest::DownloadUpdate(candidate));
+                    }
+                }
+                GuiShellAction::BeginUpdateInstall => {
+                    plan.shell_actions.push(GuiShellAction::BeginUpdateInstall);
+                    if state.update_check.self_update_supported
+                        && let Some(candidate) = state.update_check.candidate.clone()
+                    {
+                        plan.runtime_requests
+                            .push(GuiRuntimeRequest::DownloadAndInstallUpdate(candidate));
                     }
                 }
                 GuiShellAction::BeginStagedUpdateApply => {
@@ -165,11 +203,7 @@ fn selected_menu_action_starts_update_check(
     let Some(action) = section.actions.get(action_index) else {
         return false;
     };
-    action.enabled
-        && matches!(
-            (section.title, action.label),
-            ("Advanced", "Update Check") | ("Help", "Check for Updates")
-        )
+    action.enabled && matches!((section.title, action.label), ("Help", "Check for Updates"))
 }
 
 fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShellDispatchPlan {

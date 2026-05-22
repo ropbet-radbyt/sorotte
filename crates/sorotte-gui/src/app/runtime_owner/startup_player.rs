@@ -17,6 +17,8 @@ impl GuiPersistedConfigRuntimeOwner {
             startup_saved_connect_attempted: false,
             startup_remote_actions_attempted: false,
             startup_remote_actions_rx: None,
+            background_update_check_rx: None,
+            background_update_check_next_due_at: None,
             startup_stream_helper_probe_completed: false,
             startup_stream_helper_probe_rx: None,
             player: None,

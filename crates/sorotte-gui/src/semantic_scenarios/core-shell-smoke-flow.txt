@@ -14,11 +14,8 @@ activate	menus:action:4:0
 assert-value	shell:active-view	setup
 assert-value	shell:open-modal	(none)
 activate	menus:action:4:2
-assert-value	shell:open-modal	update-notice
-assert-value	shell:modal:kind	update-notice
-activate	shell:modal:close
 assert-value	shell:open-modal	(none)
-assert-value	menus:dialog:update	no
+assert-value	shell:update-indicator:title	Checking for updates
 activate	menus:action:2:4
 assert-value	shell:open-modal	tls-certificate-prompt
 assert-value	shell:modal:kind	tls-certificate-prompt

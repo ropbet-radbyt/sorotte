@@ -25,7 +25,9 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::DismissUpdateNotice
             | GuiShellAction::BeginUpdateCheck { .. }
             | GuiShellAction::ApplyUpdateCheckResult(_)
+            | GuiShellAction::ActivateUpdateIndicator
             | GuiShellAction::BeginUpdateDownload
+            | GuiShellAction::BeginUpdateInstall
             | GuiShellAction::ApplyUpdateDownloadResult(_)
             | GuiShellAction::BeginStagedUpdateApply
             | GuiShellAction::ApplyStagedUpdateLaunchResult(_)

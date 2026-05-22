@@ -425,16 +425,8 @@ impl GuiWidgetEguiRenderer {
             "media-search:command:search" => vec![GuiShellAction::BeginMissingMediaSearch],
             "room-history:edit:commit" => vec![GuiShellAction::CommitRoomHistoryEdit],
             "room-history:edit:cancel" => vec![GuiShellAction::CancelRoomHistoryEdit],
+            "shell:update-indicator" => vec![GuiShellAction::ActivateUpdateIndicator],
             "shell:modal:close" => vec![GuiShellAction::CloseModal],
-            "shell:modal:update:dismiss" => vec![GuiShellAction::DismissUpdateNotice],
-            "shell:modal:update:help" => vec![GuiShellAction::AnnounceHelpRequested],
-            "shell:modal:update:check-again" => {
-                vec![GuiShellAction::BeginUpdateCheck {
-                    user_initiated: true,
-                }]
-            }
-            "shell:modal:update:download" => vec![GuiShellAction::BeginUpdateDownload],
-            "shell:modal:update:restart" => vec![GuiShellAction::BeginStagedUpdateApply],
             "shell:modal:player-setup:autodetect" => {
                 let mut actions = Self::actions_for_player_setup_autodetect();
                 actions.push(GuiShellAction::CloseModal);

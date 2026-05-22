@@ -16,11 +16,7 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::UpdateNotice),
-        vec![
-            ("shell:modal:update:check-again", "Check Again"),
-            ("shell:modal:update:download", "Download Update"),
-            ("shell:modal:update:restart", "Restart to Update"),
-        ]
+        Vec::<(&'static str, &'static str)>::new()
     );
     assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::About),

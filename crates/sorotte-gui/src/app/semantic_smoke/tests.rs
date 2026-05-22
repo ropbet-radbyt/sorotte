@@ -50,7 +50,7 @@ fn gui_semantic_scenarios_expose_named_catalog_and_parse_scripts() {
     assert!(
         gui_semantic_scenario_script("core-shell-smoke-flow")
             .expect("built-in core shell smoke scenario should expose a script")
-            .contains("menus:dialog:update\tyes")
+            .contains("shell:update-indicator:title\tChecking for updates")
     );
     assert!(
         gui_semantic_scenario_script("localized-runtime-flow")

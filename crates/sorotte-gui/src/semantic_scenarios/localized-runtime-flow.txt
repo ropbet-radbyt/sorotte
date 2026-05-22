@@ -13,7 +13,6 @@ complete-pending-runtime
 assert-pending	none
 clear-notifications
 activate	menus:action:4:2
-assert-value	shell:open-modal	update-notice
-assert-value	shell:modal:kind	update-notice
-assert-value	menus:dialog:update	yes
-assert-value	menus:update:message	Checking GitHub for Sorotte GUI updates...
+assert-value	shell:open-modal	(none)
+assert-value	shell:update-indicator:title	Checking for updates
+assert-value	menus:update:message	Checking for updates

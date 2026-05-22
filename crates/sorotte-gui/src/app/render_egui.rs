@@ -348,6 +348,9 @@ impl GuiWidgetEguiRenderer {
         let Some(modal) = state.open_modal else {
             return;
         };
+        if modal == GuiShellModal::UpdateNotice {
+            return;
+        }
         let mut open = true;
         let mut close_clicked = false;
         egui::Window::new(Self::modal_window_title(modal))
@@ -540,6 +543,7 @@ impl GuiWidgetEguiRenderer {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.add_space(12.0);
+                let update_indicator = root.find("shell:update-indicator");
                 for child in &root.children {
                     if Self::is_surface_node(child) {
                         let response = Self::render_navigation_button(ui, child);
@@ -551,12 +555,26 @@ impl GuiWidgetEguiRenderer {
                         ui.add_space(6.0);
                     }
                 }
+                let bottom_reserved_height = update_indicator.map_or(0.0, |_| 66.0);
+                ui.add_space((ui.available_height() - bottom_reserved_height).max(0.0));
+                if let Some(update_indicator) = update_indicator {
+                    let response = Self::render_update_indicator(ui, update_indicator);
+                    if response.clicked() && update_indicator.enabled {
+                        self.actions.push(GuiShellAction::ActivateUpdateIndicator);
+                    }
+                    ui.add_space(8.0);
+                }
                 Self::render_shell_accessibility_markers(ui, root);
             });
     }
 
     fn render_shell_accessibility_markers(ui: &mut egui::Ui, root: &GuiWidgetNode) {
-        for branch_id in ["shell:commands", "shell:validation", "shell:notifications"] {
+        for branch_id in [
+            "shell:update-indicator",
+            "shell:commands",
+            "shell:validation",
+            "shell:notifications",
+        ] {
             let Some(branch) = root.find(branch_id) else {
                 continue;
             };
@@ -668,6 +686,121 @@ impl GuiWidgetEguiRenderer {
         response
     }
 
+    fn render_update_indicator(ui: &mut egui::Ui, node: &GuiWidgetNode) -> egui::Response {
+        let title = node
+            .find("shell:update-indicator:title")
+            .and_then(|child| child.value.as_deref())
+            .unwrap_or(&node.label);
+        let detail = node
+            .find("shell:update-indicator:detail")
+            .and_then(|child| child.value.as_deref())
+            .unwrap_or("");
+        let tone = node
+            .find("shell:update-indicator:tone")
+            .and_then(|child| child.value.as_deref())
+            .unwrap_or("idle");
+
+        let desired_size = egui::vec2(ui.available_width().max(88.0), 52.0);
+        let sense = if node.enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let (rect, response) = ui.allocate_exact_size(desired_size, sense);
+        let response = response.on_hover_text(format!("{title}\n{detail}"));
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, node.enabled, title)
+        });
+
+        let visuals = ui.style().interact(&response);
+        let fill = if response.hovered() && node.enabled {
+            visuals.bg_fill.linear_multiply(1.08)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        let stroke = if response.hovered() && node.enabled {
+            visuals.bg_stroke
+        } else {
+            egui::Stroke::NONE
+        };
+        let accent = Self::update_indicator_accent_color(ui, tone);
+        let text_color = if node.enabled {
+            visuals.text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let icon_color = if tone == "idle" { text_color } else { accent };
+
+        let button_rect = rect.shrink2(egui::vec2(6.0, 3.0));
+        ui.painter()
+            .rect(button_rect, 6, fill, stroke, egui::StrokeKind::Inside);
+
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(button_rect.left() + 10.0, button_rect.center().y - 10.0),
+            egui::vec2(20.0, 20.0),
+        );
+        if tone == "progress" {
+            ui.put(icon_rect, egui::Spinner::new());
+        } else {
+            Self::paint_navigation_icon(ui, icon_rect, node.id.as_str(), icon_color);
+        }
+
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let visible_label = Self::update_indicator_sidebar_label(title, tone);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(visible_label, font_id, text_color);
+        let text_pos = egui::pos2(
+            icon_rect.right() + 10.0,
+            button_rect.center().y - (galley.size().y * 0.5),
+        );
+        ui.painter()
+            .with_clip_rect(button_rect)
+            .galley(text_pos, galley, text_color);
+
+        if tone != "idle" && tone != "progress" {
+            let dot_center = egui::pos2(button_rect.right() - 12.0, button_rect.center().y);
+            ui.painter().circle_filled(dot_center, 4.0, accent);
+        }
+
+        response
+    }
+
+    fn update_indicator_sidebar_label(title: &str, tone: &str) -> String {
+        match tone {
+            "progress" => {
+                if title.starts_with("Downloading") {
+                    "Download".to_owned()
+                } else if title.starts_with("Installing") {
+                    "Install".to_owned()
+                } else {
+                    "Checking".to_owned()
+                }
+            }
+            "error" => "Retry".to_owned(),
+            "success" => "Updated".to_owned(),
+            "info" => {
+                if title.starts_with("Ready") {
+                    "Install".to_owned()
+                } else {
+                    "Update".to_owned()
+                }
+            }
+            _ => "Update".to_owned(),
+        }
+    }
+
+    fn update_indicator_accent_color(ui: &egui::Ui, tone: &str) -> egui::Color32 {
+        match tone {
+            "progress" => egui::Color32::from_rgb(58, 132, 182),
+            "success" => egui::Color32::from_rgb(45, 138, 92),
+            "info" => egui::Color32::from_rgb(34, 135, 150),
+            "warning" => egui::Color32::from_rgb(181, 118, 42),
+            "error" => egui::Color32::from_rgb(185, 70, 70),
+            _ => ui.visuals().weak_text_color(),
+        }
+    }
+
     fn paint_navigation_icon(ui: &egui::Ui, rect: egui::Rect, node_id: &str, color: egui::Color32) {
         let painter = ui.painter();
         let stroke = egui::Stroke::new(2.0, color);
@@ -708,6 +841,18 @@ impl GuiWidgetEguiRenderer {
                     egui::pos2(body.center().x, body.bottom()),
                     egui::pos2(body.center().x, rect.bottom()),
                 ],
+                stroke,
+            );
+        } else if node_id == "shell:update-indicator" {
+            let center = rect.center();
+            painter.circle_stroke(center, 7.0, stroke);
+            let arrow_tip = egui::pos2(center.x + 7.0, center.y - 2.0);
+            painter.line_segment(
+                [egui::pos2(arrow_tip.x - 5.0, arrow_tip.y - 3.0), arrow_tip],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(arrow_tip.x - 1.0, arrow_tip.y - 6.0), arrow_tip],
                 stroke,
             );
         } else {

@@ -12,14 +12,6 @@ impl SorotteGuiShellAppState {
                 self.open_modal == Some(GuiShellModal::TlsCertificatePrompt),
             ),
             GuiWidgetNode::leaf(
-                "menus:dialog:update",
-                "Update Notice",
-                GuiWidgetKind::Status,
-                Some(bool_label(self.menus.update_notice_expected).to_owned()),
-                true,
-                self.open_modal == Some(GuiShellModal::UpdateNotice),
-            ),
-            GuiWidgetNode::leaf(
                 "menus:dialog:about",
                 "About Dialog",
                 GuiWidgetKind::Status,
@@ -149,56 +141,6 @@ impl SorotteGuiShellAppState {
             false,
         )];
         match modal {
-            GuiShellModal::UpdateNotice => {
-                if let Some(message) = self.update_check.message.as_ref() {
-                    children.push(GuiWidgetNode::leaf(
-                        "shell:modal:update:message",
-                        "Message",
-                        GuiWidgetKind::Status,
-                        Some(message.clone()),
-                        true,
-                        false,
-                    ));
-                }
-                if let Some(url) = self.update_check.url.as_ref() {
-                    children.push(GuiWidgetNode::leaf(
-                        "shell:modal:update:url",
-                        "Update URL",
-                        GuiWidgetKind::Status,
-                        Some(url.clone()),
-                        true,
-                        false,
-                    ));
-                }
-                if let Some(candidate) = self.update_check.candidate.as_ref() {
-                    children.push(GuiWidgetNode::leaf(
-                        "shell:modal:update:candidate",
-                        "Candidate",
-                        GuiWidgetKind::Status,
-                        Some(candidate.summary()),
-                        true,
-                        false,
-                    ));
-                }
-                children.push(GuiWidgetNode::leaf(
-                    "shell:modal:update:download-state",
-                    "Download State",
-                    GuiWidgetKind::Status,
-                    Some(format!("{:?}", self.update_check.download_state)),
-                    true,
-                    false,
-                ));
-                if let Some(staged) = self.update_check.staged_update.as_ref() {
-                    children.push(GuiWidgetNode::leaf(
-                        "shell:modal:update:staged-path",
-                        "Staged Update",
-                        GuiWidgetKind::Status,
-                        Some(staged.source_dir.clone()),
-                        true,
-                        false,
-                    ));
-                }
-            }
             GuiShellModal::PlayerSetup => {
                 children.push(GuiWidgetNode::leaf(
                     "shell:modal:player-setup:summary",

@@ -47,7 +47,7 @@ fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuratio
     assert_eq!(state.configuration.to_stored_settings(), draft);
     assert_eq!(state.saved_configuration, saved);
     assert!(state.menus.tls_prompt_expected);
-    assert!(state.menus.update_notice_expected);
+    assert!(!state.menus.update_notice_expected);
 }
 
 #[test]

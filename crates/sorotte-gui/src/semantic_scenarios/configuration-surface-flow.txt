@@ -73,7 +73,7 @@ activate	config:System:Force GUI Prompt
 assert-value	config:Connection:Room History Count	2
 assert-value	config:Media Search:Directory Count	2
 assert-value	menus:dialog:tls	yes
-assert-value	menus:dialog:update	no
+assert-value	shell:update-indicator:title	Update
 enter-text	config:Connection:Port	false	70000
 assert-value	shell:validation:status	1 issue(s)
 assert-label	shell:validation:issue:0	Connection / Port
