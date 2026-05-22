@@ -9,7 +9,7 @@ impl eframe::App for GuiNativeApp {
             &self.state,
             renderer.show(ctx, &self.state, show_manual_pending_controls),
         );
-        let close_requested = renderer.take_close_requested();
+        let mut close_requested = renderer.take_close_requested();
         let selected_media_files = renderer.take_selected_media_files();
         let dropped_files_request = renderer.take_dropped_files_request();
         let pending_completion_requested = renderer.take_pending_completion_requested();
@@ -299,6 +299,9 @@ impl eframe::App for GuiNativeApp {
             }
         }
         for action in self.runtime.drain_runtime_actions() {
+            if Self::action_requests_app_close(&action) {
+                close_requested = true;
+            }
             state_changed |= self.state.apply(action);
         }
         if let Some(paths) = selected_media_files {
@@ -337,6 +340,9 @@ impl eframe::App for GuiNativeApp {
         }
         self.runtime_pump.pump(&self.state);
         for action in self.runtime.drain_runtime_actions() {
+            if Self::action_requests_app_close(&action) {
+                close_requested = true;
+            }
             state_changed |= self.state.apply(action);
         }
         if close_requested {

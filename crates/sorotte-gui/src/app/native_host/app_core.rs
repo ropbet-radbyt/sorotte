@@ -39,6 +39,13 @@ impl GuiNativeApp {
         offset.is_finite().then_some(offset)
     }
 
+    pub(in crate::app) fn action_requests_app_close(action: &GuiShellAction) -> bool {
+        matches!(
+            action,
+            GuiShellAction::ApplyStagedUpdateLaunchResult(result) if result.success
+        )
+    }
+
     pub(in crate::app) fn parse_offset_command(value: &str) -> Option<LocalOffsetCommand> {
         let command = parse_local_input_command(&format!("offset {}", value.trim()))?;
         match command {

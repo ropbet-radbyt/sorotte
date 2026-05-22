@@ -18,6 +18,8 @@ use sorotte_client_app::app_boundary::persistence::parse_serialized_public_serve
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 use zip::ZipArchive;
 
+use super::child_process::configure_gui_child_process;
+
 const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
 const LEGACY_SYNCPLAY_MILESTONE: &str = "Yoitsu";
 const LEGACY_SYNCPLAY_RELEASE_NUMBER: &str = "116";
@@ -1229,27 +1231,183 @@ fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String
     let target_dir = target_exe
         .parent()
         .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?;
-    let mut command = Command::new(&staged_update.updater_path);
-    command
-        .arg("--pid")
-        .arg(current_pid)
-        .arg("--source-dir")
-        .arg(&staged_update.source_dir)
-        .arg("--target-dir")
-        .arg(target_dir)
-        .arg("--target-exe")
-        .arg(SOROTTE_GUI_EXECUTABLE)
-        .arg("--backup-dir")
-        .arg(&staged_update.backup_dir)
-        .arg("--log")
-        .arg(&staged_update.log_path);
-    if staged_update.restart {
-        command.arg("--restart");
+    let helper_args = staged_update_helper_args(staged_update, target_dir, &current_pid);
+    #[cfg(windows)]
+    if path_requires_update_elevation(target_dir) {
+        return launch_staged_update_elevated(
+            Path::new(&staged_update.updater_path),
+            target_dir,
+            &helper_args,
+        );
     }
+    let mut command = Command::new(&staged_update.updater_path);
+    command.args(&helper_args);
+    configure_gui_child_process(&mut command);
     command
         .spawn()
         .map_err(|error| format!("failed to launch update helper: {error}"))?;
     Ok(())
+}
+
+fn staged_update_helper_args(
+    staged_update: &StagedUpdate,
+    target_dir: &Path,
+    current_pid: &str,
+) -> Vec<String> {
+    let mut args = vec![
+        "--pid".to_owned(),
+        current_pid.to_owned(),
+        "--source-dir".to_owned(),
+        staged_update.source_dir.clone(),
+        "--target-dir".to_owned(),
+        target_dir.display().to_string(),
+        "--target-exe".to_owned(),
+        SOROTTE_GUI_EXECUTABLE.to_owned(),
+        "--backup-dir".to_owned(),
+        staged_update.backup_dir.clone(),
+        "--log".to_owned(),
+        staged_update.log_path.clone(),
+    ];
+    if staged_update.restart {
+        args.push("--restart".to_owned());
+    }
+    args
+}
+
+#[cfg(windows)]
+fn path_requires_update_elevation(path: &Path) -> bool {
+    program_files_roots()
+        .iter()
+        .any(|root| path_is_equal_or_child_case_insensitive(path, root))
+}
+
+#[cfg(windows)]
+fn program_files_roots() -> Vec<PathBuf> {
+    ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(windows)]
+fn path_is_equal_or_child_case_insensitive(path: &Path, root: &Path) -> bool {
+    let path = normalized_windows_path_text(path);
+    let root = normalized_windows_path_text(root);
+    path == root
+        || path
+            .strip_prefix(&root)
+            .is_some_and(|suffix| suffix.starts_with('\\'))
+}
+
+#[cfg(windows)]
+fn normalized_windows_path_text(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn launch_staged_update_elevated(
+    updater_path: &Path,
+    working_dir: &Path,
+    args: &[String],
+) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    fn wide_null(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let verb = wide_null(OsStr::new("runas"));
+    let file = wide_null(updater_path.as_os_str());
+    let parameters = windows_command_line_arguments(args);
+    let parameters = wide_null(OsStr::new(&parameters));
+    let directory = wide_null(working_dir.as_os_str());
+    // SAFETY: SHELLEXECUTEINFOW is a plain Win32 struct that is initialized before the API call.
+    let mut execute_info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    execute_info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    execute_info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    execute_info.lpVerb = verb.as_ptr();
+    execute_info.lpFile = file.as_ptr();
+    execute_info.lpParameters = parameters.as_ptr();
+    execute_info.lpDirectory = directory.as_ptr();
+    execute_info.nShow = SW_HIDE;
+
+    // SAFETY: All string pointers refer to null-terminated buffers that outlive the call.
+    let launched = unsafe { ShellExecuteExW(&mut execute_info) };
+    if launched == 0 {
+        return Err(format!(
+            "failed to launch elevated update helper: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if !execute_info.hProcess.is_null() {
+        // SAFETY: hProcess is returned by ShellExecuteExW with SEE_MASK_NOCLOSEPROCESS.
+        unsafe {
+            CloseHandle(execute_info.hProcess);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_command_line_arguments(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| quote_windows_command_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(windows)]
+fn quote_windows_command_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_owned();
+    }
+    if !arg
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '"' | '\t' | '\n' | '\r'))
+    {
+        return arg.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    let mut pending_backslashes = 0;
+    for character in arg.chars() {
+        match character {
+            '\\' => pending_backslashes += 1,
+            '"' => {
+                for _ in 0..(pending_backslashes * 2 + 1) {
+                    quoted.push('\\');
+                }
+                quoted.push('"');
+                pending_backslashes = 0;
+            }
+            _ => {
+                for _ in 0..pending_backslashes {
+                    quoted.push('\\');
+                }
+                pending_backslashes = 0;
+                quoted.push(character);
+            }
+        }
+    }
+    for _ in 0..(pending_backslashes * 2) {
+        quoted.push('\\');
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn sanitize_stage_name(value: &str) -> String {
@@ -1656,6 +1814,8 @@ fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use std::path::Path;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1674,6 +1834,8 @@ mod tests {
         self_update_supported_current_install, should_run_automatic_update_check,
         update_supported_platform, validate_manifest, validate_sha256_bytes,
     };
+    #[cfg(windows)]
+    use super::{path_is_equal_or_child_case_insensitive, quote_windows_command_arg};
 
     fn spawn_single_request_server(body: &'static str) -> (String, thread::JoinHandle<String>) {
         let listener =
@@ -1882,6 +2044,37 @@ mod tests {
         assert!(safe_zip_relative_path(r"C:\Windows\sorotte-gui.exe").is_none());
         assert!(safe_zip_relative_path(r"\Windows\sorotte-gui.exe").is_none());
         assert!(safe_zip_relative_path(r"bin\..\sorotte-gui.exe").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_elevation_detects_program_files_paths_case_insensitively() {
+        assert!(path_is_equal_or_child_case_insensitive(
+            Path::new(r"C:\Program Files\Sorotte"),
+            Path::new(r"c:\program files")
+        ));
+        assert!(!path_is_equal_or_child_case_insensitive(
+            Path::new(r"C:\Program Files Other\Sorotte"),
+            Path::new(r"C:\Program Files")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_helper_arguments_quote_spaced_paths() {
+        assert_eq!(quote_windows_command_arg("plain"), "plain");
+        assert_eq!(
+            quote_windows_command_arg(r"C:\Program Files\Sorotte"),
+            "\"C:\\Program Files\\Sorotte\""
+        );
+        assert_eq!(
+            quote_windows_command_arg(r#"say "hi""#),
+            "\"say \\\"hi\\\"\""
+        );
+        assert_eq!(
+            quote_windows_command_arg(r"C:\Program Files\Sorotte\"),
+            "\"C:\\Program Files\\Sorotte\\\\\""
+        );
     }
 
     #[test]

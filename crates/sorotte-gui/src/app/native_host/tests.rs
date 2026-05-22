@@ -4,6 +4,7 @@ use super::{
     SorotteGuiShellAppState,
 };
 
+use crate::app::remote_services::UpdateApplyLaunchResult;
 use crate::app::render_io::{GuiDroppedFilesRequest, GuiDroppedFilesTarget};
 use crate::app::{
     GuiConfigurationTab, GuiPlayerSetupIssue, GuiPlayerSetupIssueKind,
@@ -42,6 +43,22 @@ fn gui_native_app_and_preview_runtime_map_seek_prompt_input_to_runtime_actions()
             GuiShellAction::AnnounceSystemChatEvent("Seek requested: 12.5 seconds.".to_owned(),),
         ]
     );
+}
+
+#[test]
+fn gui_native_app_closes_after_successful_update_helper_launch() {
+    assert!(GuiNativeApp::action_requests_app_close(
+        &GuiShellAction::ApplyStagedUpdateLaunchResult(UpdateApplyLaunchResult {
+            success: true,
+            message: "Update helper started.".to_owned(),
+        })
+    ));
+    assert!(!GuiNativeApp::action_requests_app_close(
+        &GuiShellAction::ApplyStagedUpdateLaunchResult(UpdateApplyLaunchResult {
+            success: false,
+            message: "failed to launch update helper".to_owned(),
+        })
+    ));
 }
 
 #[test]
