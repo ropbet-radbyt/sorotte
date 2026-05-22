@@ -1,0 +1,111 @@
+name: sorotte-gui release
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  SOROTTE_GUI_DEV_RELEASE_TAG: sorotte-gui-dev
+
+jobs:
+  gui-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        shell: pwsh
+        run: cargo fmt --all --check
+
+      - name: Run GUI updater tests
+        shell: pwsh
+        run: cargo test -p sorotte-gui update_
+
+      - name: Build GUI release binaries
+        shell: pwsh
+        run: |
+          cargo build --release -p sorotte-gui --bin sorotte-gui
+          cargo build --release -p sorotte-gui --bin sorotte-gui-updater
+
+      - name: Package GUI release
+        shell: pwsh
+        run: |
+          $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
+          ./scripts/package-gui-release.ps1 -Channel $channel -SkipBuild
+
+      - name: Upload GUI package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sorotte-gui-windows-x86_64
+          path: target/gui-release/artifacts/*
+
+      - name: Attach package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create $tag --title $tag --notes "Sorotte GUI release $tag"
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release create failed with exit code $LASTEXITCODE"
+              }
+          }
+          gh release upload $tag target/gui-release/artifacts/* --clobber
+          if ($LASTEXITCODE -ne 0) {
+              throw "gh release upload failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Publish dev package to GitHub Release
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:SOROTTE_GUI_DEV_RELEASE_TAG
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $title = "Sorotte GUI dev build"
+          $notes = "Latest dev build from $env:GITHUB_REF_NAME ($shortSha)."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f $tag $env:GITHUB_SHA
+          git push origin "refs/tags/$tag" --force
+          if ($LASTEXITCODE -ne 0) {
+              throw "git push dev release tag failed with exit code $LASTEXITCODE"
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create $tag --title $title --notes $notes --prerelease
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release create failed with exit code $LASTEXITCODE"
+              }
+          } else {
+              gh release edit $tag --title $title --notes $notes --prerelease
+              if ($LASTEXITCODE -ne 0) {
+                  throw "gh release edit failed with exit code $LASTEXITCODE"
+              }
+          }
+
+          gh release upload $tag target/gui-release/artifacts/* --clobber
+          if ($LASTEXITCODE -ne 0) {
+              throw "gh release upload failed with exit code $LASTEXITCODE"
+          }

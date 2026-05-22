@@ -16,23 +16,23 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
     if (-not $NoBuild) {
-        & cargo build --release -p syncplay-gui --bin syncplay-gui
+        & cargo build --release -p sorotte-gui --bin sorotte-gui
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
     }
 
     if (-not $BinaryPath) {
-        $BinaryPath = Join-Path $repoRoot "target\release\syncplay-gui.exe"
+        $BinaryPath = Join-Path $repoRoot "target\release\sorotte-gui.exe"
     }
 
     $benchArgs = @(
         "run",
         "--quiet",
         "-p",
-        "syncplay-gui",
+        "sorotte-gui",
         "--bin",
-        "syncplay-gui-startup-bench",
+        "sorotte-gui-startup-bench",
         "--",
         "--binary",
         $BinaryPath,

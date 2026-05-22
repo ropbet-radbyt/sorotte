@@ -1,4 +1,4 @@
-name: publish syncplay-server container
+name: publish sorotte-server container
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/syncplay-rs-server
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/sorotte-server
 
 jobs:
   publish:
@@ -55,8 +55,8 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=sha-
           labels: |
-            org.opencontainers.image.title=syncplay-rs server
-            org.opencontainers.image.description=Rust Syncplay-compatible server
+            org.opencontainers.image.title=sorotte server
+            org.opencontainers.image.description=Sorotte Syncplay-compatible server
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=Apache-2.0
 

@@ -1,0 +1,72 @@
+[package]
+name = "sorotte-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+gui-semantic-smoke = []
+gui-native-smoke = ["live-python-interop"]
+live-python-interop = ["dep:sorotte-compat"]
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+reqwest.workspace = true
+rfd.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zip.workspace = true
+sorotte-compat = { path = "../sorotte-compat", optional = true }
+sorotte-client-app = { path = "../sorotte-client-app" }
+sorotte-client-core = { path = "../sorotte-client-core" }
+sorotte-player-api = { path = "../sorotte-player-api" }
+sorotte-player-mpv = { path = "../sorotte-player-mpv" }
+sorotte-plex = { path = "../sorotte-plex" }
+sorotte-protocol = { path = "../sorotte-protocol" }
+webpki-roots.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+windows.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0.9"
+
+[[bin]]
+name = "sorotte-gui-semantic-smoke"
+path = "src/bin/sorotte-gui-semantic-smoke.rs"
+test = false
+required-features = ["gui-semantic-smoke", "live-python-interop"]
+
+[[bin]]
+name = "sorotte-gui-semantic-suite"
+path = "src/bin/sorotte-gui-semantic-suite.rs"
+test = false
+required-features = ["gui-semantic-smoke", "live-python-interop"]
+
+[[bin]]
+name = "sorotte-gui-native-smoke"
+path = "src/bin/sorotte-gui-native-smoke.rs"
+test = false
+required-features = ["gui-native-smoke"]
+
+[[bin]]
+name = "sorotte-gui-startup-bench"
+path = "src/bin/sorotte-gui-startup-bench.rs"
+
+[[bin]]
+name = "sorotte-gui-updater"
+path = "src/bin/sorotte-gui-updater.rs"

@@ -229,7 +229,7 @@ function Write-ServerReleaseReports {
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
 
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add("# Syncplay Rust Server Release Verification")
+    $lines.Add("# Sorotte Server Release Verification")
     $lines.Add("")
     $lines.Add("- Status: $status")
     $lines.Add("- Started UTC: $($report.startedAtUtc)")
@@ -266,8 +266,8 @@ try {
     Invoke-ServerReleaseCommand "python prerequisites" $pythonBin @("-c", "import twisted, OpenSSL, service_identity")
 
     Invoke-CargoStep "fmt" @("fmt", "--all", "--", "--check")
-    Invoke-CargoStep "syncplay-server tests" @("test", "-p", "syncplay-server")
-    Invoke-CargoStep "syncplay-compat tests" @("test", "-p", "syncplay-compat")
+    Invoke-CargoStep "sorotte-server tests" @("test", "-p", "sorotte-server")
+    Invoke-CargoStep "sorotte-compat tests" @("test", "-p", "sorotte-compat")
 
     if (-not $NoWorkspace) {
         Invoke-CargoStep "workspace tests" @("test", "--workspace")
@@ -276,10 +276,10 @@ try {
     Invoke-CargoStep "clippy" @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     Invoke-CargoStep `
         "strict server release matrix" `
-        @("test", "-p", "syncplay-server", "--test", "server_release_verify", "--", "--test-threads=1", "--nocapture") `
+        @("test", "-p", "sorotte-server", "--test", "server_release_verify", "--", "--test-threads=1", "--nocapture") `
         @{
             SYNCPLAY_REQUIRE_SERVER_RELEASE_VERIFY = "1"
-            SYNCPLAY_SERVER_RELEASE_VERIFY = "1"
+            SOROTTE_SERVER_RELEASE_VERIFY = "1"
             SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
             SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"
         }

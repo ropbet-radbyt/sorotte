@@ -1,4 +1,4 @@
-name: syncplay-rs Coverage
+name: sorotte Coverage
 
 on:
   workflow_dispatch:
@@ -30,6 +30,6 @@ jobs:
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: syncplay-rs-lcov
+          name: sorotte-lcov
           path: target/lcov.info
           if-no-files-found: error

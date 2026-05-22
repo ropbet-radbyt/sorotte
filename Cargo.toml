@@ -1,17 +1,17 @@
 [workspace]
 members = [
-    "crates/syncplay-protocol",
-    "crates/syncplay-core",
-    "crates/syncplay-server",
-    "crates/syncplay-client-core",
-    "crates/syncplay-client-app",
-    "crates/syncplay-player-api",
-    "crates/syncplay-player-mpv",
-    "crates/syncplay-plex",
-    "crates/syncplay-cli",
-    "crates/syncplay-gui",
-    "crates/syncplay-sim",
-    "crates/syncplay-compat",
+    "crates/sorotte-protocol",
+    "crates/sorotte-core",
+    "crates/sorotte-server",
+    "crates/sorotte-client-core",
+    "crates/sorotte-client-app",
+    "crates/sorotte-player-api",
+    "crates/sorotte-player-mpv",
+    "crates/sorotte-plex",
+    "crates/sorotte-cli",
+    "crates/sorotte-gui",
+    "crates/sorotte-sim",
+    "crates/sorotte-compat",
 ]
 resolver = "2"
 

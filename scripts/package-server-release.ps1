@@ -28,15 +28,15 @@ function Assert-PathInsideRepo {
     }
 }
 
-function Get-SyncplayServerVersion {
+function Get-SorotteServerVersion {
     $metadataJson = & cargo metadata --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
         throw "cargo metadata failed with exit code $LASTEXITCODE"
     }
     $metadata = $metadataJson | ConvertFrom-Json
-    $package = $metadata.packages | Where-Object { $_.name -eq "syncplay-server" } | Select-Object -First 1
+    $package = $metadata.packages | Where-Object { $_.name -eq "sorotte-server" } | Select-Object -First 1
     if ($null -eq $package) {
-        throw "syncplay-server package was not found in cargo metadata"
+        throw "sorotte-server package was not found in cargo metadata"
     }
     return [string]$package.version
 }
@@ -70,18 +70,18 @@ function Copy-ReleaseFile {
 }
 
 if (-not $SkipBuild) {
-    Write-Host "==> Building syncplay-server release binary" -ForegroundColor Cyan
-    & cargo build --release -p syncplay-server --bin syncplay-server
+    Write-Host "==> Building sorotte-server release binary" -ForegroundColor Cyan
+    & cargo build --release -p sorotte-server --bin sorotte-server
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
 }
 
-$version = Get-SyncplayServerVersion
+$version = Get-SorotteServerVersion
 $platform = Get-ReleasePlatform
 $packageForWindows = $platform.StartsWith("windows")
-$binaryName = if ($packageForWindows) { "syncplay-server.exe" } else { "syncplay-server" }
-$packageName = "syncplay-server-$version-$platform"
+$binaryName = if ($packageForWindows) { "sorotte-server.exe" } else { "sorotte-server" }
+$packageName = "sorotte-server-$version-$platform"
 $outputRoot = Resolve-PackagePath $OutputDir
 $stagingRoot = Join-Path $outputRoot "staging"
 $artifactsRoot = Join-Path $outputRoot "artifacts"
@@ -102,9 +102,9 @@ Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $pack
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
 if ($packageForWindows) {
-    $pdbPath = Join-Path $RepoRoot "target/release/syncplay_server.pdb"
+    $pdbPath = Join-Path $RepoRoot "target/release/sorotte_server.pdb"
     if (Test-Path -LiteralPath $pdbPath -PathType Leaf) {
-        Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot "syncplay_server.pdb") -Force
+        Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot "sorotte_server.pdb") -Force
     }
 }
 

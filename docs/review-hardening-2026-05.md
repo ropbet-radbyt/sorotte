@@ -3,10 +3,10 @@
 ## codex/review-hardening-01-protocol-feature-parity
 
 - Changed files:
-  - `crates/syncplay-server/src/messages.rs`
-  - `crates/syncplay-server/src/tests/session_tests.rs`
-  - `crates/syncplay-client-core/src/session/apply.rs`
-  - `crates/syncplay-client-core/src/session/tests/readiness_autoplay_tests.rs`
+  - `crates/sorotte-server/src/messages.rs`
+  - `crates/sorotte-server/src/tests/session_tests.rs`
+  - `crates/sorotte-client-core/src/session/apply.rs`
+  - `crates/sorotte-client-core/src/session/tests/readiness_autoplay_tests.rs`
 - Behavior changed:
   - Server feature lists now advertise `sharedPlaylists: true`.
   - Server feature lists now advertise `setOthersReadiness` only when readiness is enabled.
@@ -17,8 +17,8 @@
   - `client_ready_setby_does_not_become_target_username`
   - `client_ready_missing_username_targets_local_user`
 - Commands run:
-  - `cargo test -p syncplay-server server_feature_list`
-  - `cargo test -p syncplay-client-core readiness`
+  - `cargo test -p sorotte-server server_feature_list`
+  - `cargo test -p sorotte-client-core readiness`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -29,10 +29,10 @@
 ## codex/review-hardening-02-controlled-room-auth
 
 - Changed files:
-  - `crates/syncplay-server/src/auth.rs`
-  - `crates/syncplay-server/src/runtime_handlers.rs`
-  - `crates/syncplay-server/src/tests/controller_playlist_tests.rs`
-  - `crates/syncplay-server/src/tests/runtime_config_tests.rs`
+  - `crates/sorotte-server/src/auth.rs`
+  - `crates/sorotte-server/src/runtime_handlers.rs`
+  - `crates/sorotte-server/src/tests/controller_playlist_tests.rs`
+  - `crates/sorotte-server/src/tests/runtime_config_tests.rs`
 - Behavior changed:
   - `controllerAuth.room` now controls the room used for password validation, controller grants, status payloads, and peer fanout.
   - Omitting `controllerAuth.room` still authenticates against the sender's current room.
@@ -44,8 +44,8 @@
   - `controlled_room_password_rejects_trailing_characters`
   - `controlled_room_password_accepts_exact_legacy_format`
 - Commands run:
-  - `cargo test -p syncplay-server controlled_room`
-  - `cargo test -p syncplay-server controller_auth`
+  - `cargo test -p sorotte-server controlled_room`
+  - `cargo test -p sorotte-server controller_auth`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -57,10 +57,10 @@
 ## codex/review-hardening-03-server-transport-hardening
 
 - Changed files:
-  - `crates/syncplay-server/src/lib.rs`
-  - `crates/syncplay-server/src/network.rs`
-  - `crates/syncplay-server/src/tests.rs`
-  - `crates/syncplay-server/src/tests/network_tests.rs`
+  - `crates/sorotte-server/src/lib.rs`
+  - `crates/sorotte-server/src/network.rs`
+  - `crates/sorotte-server/src/tests.rs`
+  - `crates/sorotte-server/src/tests/network_tests.rs`
 - Behavior changed:
   - Server protocol line reads are capped at 64 KiB and oversized lines receive `Error: Protocol line too long` before the connection closes.
   - Clients that do not send a complete pre-Hello protocol line before `PROTOCOL_TIMEOUT_SECONDS` are closed without creating a runtime session.
@@ -73,8 +73,8 @@
   - `server_network_prunes_finished_session_tasks`
   - `server_network_closes_or_drops_slow_client_when_outbound_queue_full`
 - Commands run:
-  - `cargo test -p syncplay-server network`
-  - `cargo test -p syncplay-server server_release_verify` (completed successfully; 0 tests matched this filter)
+  - `cargo test -p sorotte-server network`
+  - `cargo test -p sorotte-server server_release_verify` (completed successfully; 0 tests matched this filter)
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -85,11 +85,11 @@
 ## codex/review-hardening-04-server-clock-model
 
 - Changed files:
-  - `crates/syncplay-server/src/runtime_api.rs`
-  - `crates/syncplay-server/src/runtime_maintenance.rs`
-  - `crates/syncplay-server/src/network.rs`
-  - `crates/syncplay-server/src/tests/state_tests.rs`
-  - `crates/syncplay-server/src/tests/network_tests.rs`
+  - `crates/sorotte-server/src/runtime_api.rs`
+  - `crates/sorotte-server/src/runtime_maintenance.rs`
+  - `crates/sorotte-server/src/network.rs`
+  - `crates/sorotte-server/src/tests/state_tests.rs`
+  - `crates/sorotte-server/src/tests/network_tests.rs`
 - Behavior changed:
   - Added an absolute-time dispatch path for runtime maintenance.
   - Production network ticks now collect dispatch at the current Unix wall-clock time instead of advancing the runtime's deterministic test override by a fixed interval.
@@ -102,9 +102,9 @@
   - `room_playback_position_ages_by_actual_elapsed_seconds`
   - `state_timeout_uses_actual_elapsed_seconds`
 - Commands run:
-  - `cargo test -p syncplay-server state`
-  - `cargo test -p syncplay-server network`
-  - `cargo test -p syncplay-compat state_fanout`
+  - `cargo test -p sorotte-server state`
+  - `cargo test -p sorotte-server network`
+  - `cargo test -p sorotte-compat state_fanout`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -115,13 +115,13 @@
 ## codex/review-hardening-05-tls-and-persistence
 
 - Changed files:
-  - `crates/syncplay-server/src/tls.rs`
-  - `crates/syncplay-server/src/runtime_maintenance.rs`
-  - `crates/syncplay-server/src/lib.rs`
-  - `crates/syncplay-server/src/persistence.rs`
-  - `crates/syncplay-server/src/compat.rs`
-  - `crates/syncplay-server/src/tests/runtime_config_tests.rs`
-  - `crates/syncplay-server/src/tests/persistence_tests.rs`
+  - `crates/sorotte-server/src/tls.rs`
+  - `crates/sorotte-server/src/runtime_maintenance.rs`
+  - `crates/sorotte-server/src/lib.rs`
+  - `crates/sorotte-server/src/persistence.rs`
+  - `crates/sorotte-server/src/compat.rs`
+  - `crates/sorotte-server/src/tests/runtime_config_tests.rs`
+  - `crates/sorotte-server/src/tests/persistence_tests.rs`
 - Behavior changed:
   - TLS rotation now tracks the max modified time across readable required bundle files: `privkey.pem`, `cert.pem`, and `chain.pem`.
   - Room persistence SQLite connections set a busy timeout and initialize WAL journal mode.
@@ -134,8 +134,8 @@
   - `permanent_rooms_file_ignores_blank_lines`
   - `permanent_rooms_file_ignores_comment_lines`
 - Commands run:
-  - `cargo test -p syncplay-server tls`
-  - `cargo test -p syncplay-server persistence`
+  - `cargo test -p sorotte-server tls`
+  - `cargo test -p sorotte-server persistence`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -148,13 +148,13 @@
 ## codex/review-hardening-06-client-transport-hardening
 
 - Changed files:
-  - `crates/syncplay-protocol/src/codec.rs`
-  - `crates/syncplay-protocol/src/lib.rs`
-  - `crates/syncplay-cli/src/protocol_io.rs`
-  - `crates/syncplay-cli/src/session_runner.rs`
-  - `crates/syncplay-cli/src/session_runner/connected_session.rs`
-  - `crates/syncplay-gui/src/app/runtime_stack/transport/tcp.rs`
-  - `crates/syncplay-gui/src/app/runtime_stack/transport/tests.rs`
+  - `crates/sorotte-protocol/src/codec.rs`
+  - `crates/sorotte-protocol/src/lib.rs`
+  - `crates/sorotte-cli/src/protocol_io.rs`
+  - `crates/sorotte-cli/src/session_runner.rs`
+  - `crates/sorotte-cli/src/session_runner/connected_session.rs`
+  - `crates/sorotte-gui/src/app/runtime_stack/transport/tcp.rs`
+  - `crates/sorotte-gui/src/app/runtime_stack/transport/tests.rs`
 - Behavior changed:
   - Added a shared default protocol line limit of 64 KiB.
   - GUI TCP transport disconnects with a clear error when an inbound protocol line exceeds the limit before parsing.
@@ -165,8 +165,8 @@
   - `cli_connected_session_rejects_inbound_line_over_max_bytes`
   - `cli_connected_session_accepts_batched_valid_line`
 - Commands run:
-  - `cargo test -p syncplay-gui transport`
-  - `cargo test -p syncplay-cli connected_session`
+  - `cargo test -p sorotte-gui transport`
+  - `cargo test -p sorotte-cli connected_session`
   - `cargo fmt --all`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
@@ -179,9 +179,9 @@
 ## codex/review-hardening-07-mpv-ipc-timeouts
 
 - Changed files:
-  - `crates/syncplay-player-mpv/src/ipc.rs`
-  - `crates/syncplay-player-mpv/src/adapter.rs`
-  - `crates/syncplay-player-mpv/src/tests/ipc_tests.rs`
+  - `crates/sorotte-player-mpv/src/ipc.rs`
+  - `crates/sorotte-player-mpv/src/adapter.rs`
+  - `crates/sorotte-player-mpv/src/tests/ipc_tests.rs`
 - Behavior changed:
   - mpv IPC command execution now runs through a worker thread and returns a timeout error after 5 seconds without a matching response.
   - mpv IPC line reads are capped at 1 MiB in both the buffered pipe reader and IPC client response handling.
@@ -193,8 +193,8 @@
   - `mpv_ipc_ignores_response_for_other_request_id`
   - `mpv_adapter_surfaces_timeout_as_player_error`
 - Commands run:
-  - `cargo test -p syncplay-player-mpv ipc`
-  - `cargo test -p syncplay-player-mpv adapter`
+  - `cargo test -p sorotte-player-mpv ipc`
+  - `cargo test -p sorotte-player-mpv adapter`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
 - Commands not run and why:
@@ -226,10 +226,10 @@
 ## codex/review-hardening-08-server-io-timeouts
 
 - Changed files:
-  - `crates/syncplay-server/src/lib.rs`
-  - `crates/syncplay-server/src/network.rs`
-  - `crates/syncplay-server/src/tests.rs`
-  - `crates/syncplay-server/src/tests/network_tests.rs`
+  - `crates/sorotte-server/src/lib.rs`
+  - `crates/sorotte-server/src/network.rs`
+  - `crates/sorotte-server/src/tests.rs`
+  - `crates/sorotte-server/src/tests/network_tests.rs`
 - Behavior changed:
   - Server StartTLS handshakes now time out after `TLS_HANDSHAKE_TIMEOUT_SECONDS` and close the session on timeout.
   - Server protocol writes now time out after `SERVER_WRITE_TIMEOUT_SECONDS` for direct responses, queued outbound events, protocol error responses, and TLS negotiation responses.
@@ -243,8 +243,8 @@
   - `server_network_direct_response_write_timeout_does_not_block_loop`
   - `server_network_accept_queue_is_bounded`
 - Commands run:
-  - `cargo test -p syncplay-server network`
-  - `cargo test -p syncplay-server tls`
+  - `cargo test -p sorotte-server network`
+  - `cargo test -p sorotte-server tls`
   - `cargo fmt --all`
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
@@ -267,8 +267,8 @@
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace`
-  - `cargo test -p syncplay-server network`
-  - `cargo test -p syncplay-server tls`
+  - `cargo test -p sorotte-server network`
+  - `cargo test -p sorotte-server tls`
   - `python -m pip install -r requirements/legacy-python-interop.txt`
   - `powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1`
 - Commands not run and why:

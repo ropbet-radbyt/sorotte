@@ -26,16 +26,16 @@ $cargoArgs = @(
     "run",
     "--quiet",
     "-p",
-    "syncplay-gui",
+    "sorotte-gui",
     "--features",
     "gui-semantic-smoke,live-python-interop",
     "--bin",
-    "syncplay-gui-semantic-suite",
+    "sorotte-gui-semantic-suite",
     "--"
 ) + $suiteArgs
 
-$stdoutPath = Join-Path $env:TEMP ("syncplay-gui-semantic-suite-stdout-" + [guid]::NewGuid().ToString("N") + ".log")
-$stderrPath = Join-Path $env:TEMP ("syncplay-gui-semantic-suite-stderr-" + [guid]::NewGuid().ToString("N") + ".log")
+$stdoutPath = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-stdout-" + [guid]::NewGuid().ToString("N") + ".log")
+$stderrPath = Join-Path $env:TEMP ("sorotte-gui-semantic-suite-stderr-" + [guid]::NewGuid().ToString("N") + ".log")
 
 $process = Start-Process -FilePath "cargo" `
     -ArgumentList $cargoArgs `

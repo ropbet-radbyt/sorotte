@@ -1,0 +1,14 @@
+[package]
+name = "sorotte-player-mpv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+sorotte-player-api = { path = "../sorotte-player-api" }

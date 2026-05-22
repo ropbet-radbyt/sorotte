@@ -36,11 +36,11 @@ $cargoArgs = @(
     "run",
     "--quiet",
     "-p",
-    "syncplay-gui",
+    "sorotte-gui",
     "--features",
     "gui-native-smoke,live-python-interop",
     "--bin",
-    "syncplay-gui-native-smoke",
+    "sorotte-gui-native-smoke",
     "--"
 ) + $suiteArgs
 

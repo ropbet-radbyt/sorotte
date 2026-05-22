@@ -41,7 +41,7 @@ $outputRoot = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 
 if (-not $BinaryPath) {
-    $BinaryPath = Join-Path $repoRoot "target\debug\syncplay-gui.exe"
+    $BinaryPath = Join-Path $repoRoot "target\debug\sorotte-gui.exe"
 }
 $binaryFullPath = if ([System.IO.Path]::IsPathRooted($BinaryPath)) {
     $BinaryPath
@@ -52,7 +52,7 @@ $binaryFullPath = if ([System.IO.Path]::IsPathRooted($BinaryPath)) {
 if (-not $NoBuild) {
     Push-Location $repoRoot
     try {
-        & cargo build -p syncplay-gui --bin syncplay-gui
+        & cargo build -p sorotte-gui --bin sorotte-gui
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build failed with exit code $LASTEXITCODE"
         }
@@ -62,7 +62,7 @@ if (-not $NoBuild) {
 }
 
 if (-not (Test-Path -LiteralPath $binaryFullPath)) {
-    throw "syncplay-gui binary does not exist at $binaryFullPath"
+    throw "sorotte-gui binary does not exist at $binaryFullPath"
 }
 
 $captureTypeDefinition = @"
@@ -75,7 +75,7 @@ using System.Threading;
 using System.Windows.Forms;
 using System.Windows.Automation;
 
-public static class SyncplayWindowCapture
+public static class SorotteWindowCapture
 {
     public struct Rect
     {
@@ -199,7 +199,7 @@ public static class SyncplayWindowCapture
         SetForegroundWindow(hwnd);
         if (!SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW))
         {
-            throw new InvalidOperationException("failed to position the Syncplay GUI window");
+            throw new InvalidOperationException("failed to position the Sorotte GUI window");
         }
         Thread.Sleep(500);
         SetForegroundWindow(hwnd);
@@ -225,11 +225,11 @@ public static class SyncplayWindowCapture
         Rect rect;
         if (!GetWindowRect(hwnd, out rect))
         {
-            throw new InvalidOperationException("failed to read the Syncplay GUI window bounds");
+            throw new InvalidOperationException("failed to read the Sorotte GUI window bounds");
         }
         if (rect.Right <= rect.Left || rect.Bottom <= rect.Top)
         {
-            throw new InvalidOperationException("Syncplay GUI window bounds were empty");
+            throw new InvalidOperationException("Sorotte GUI window bounds were empty");
         }
         return rect;
     }
@@ -277,7 +277,7 @@ public static class SyncplayWindowCapture
         AutomationElement root = AutomationElement.FromHandle(hwnd);
         if (root == null)
         {
-            throw new InvalidOperationException("could not inspect the Syncplay GUI accessibility tree");
+            throw new InvalidOperationException("could not inspect the Sorotte GUI accessibility tree");
         }
 
         AutomationElement element = root.FindFirst(
@@ -285,7 +285,7 @@ public static class SyncplayWindowCapture
             new PropertyCondition(AutomationElement.NameProperty, name));
         if (element == null)
         {
-            throw new InvalidOperationException("could not find Syncplay GUI control named '" + name + "'");
+            throw new InvalidOperationException("could not find Sorotte GUI control named '" + name + "'");
         }
 
         object invokePattern;
@@ -307,7 +307,7 @@ public static class SyncplayWindowCapture
         System.Windows.Rect bounds = element.Current.BoundingRectangle;
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
-            throw new InvalidOperationException("Syncplay GUI control named '" + name + "' had no clickable bounds");
+            throw new InvalidOperationException("Sorotte GUI control named '" + name + "' had no clickable bounds");
         }
         int x = (int)(bounds.Left + bounds.Width / 2.0);
         int y = (int)(bounds.Top + bounds.Height / 2.0);
@@ -324,7 +324,7 @@ public static class SyncplayWindowCapture
         AutomationElement root = AutomationElement.FromHandle(hwnd);
         if (root == null)
         {
-            throw new InvalidOperationException("could not inspect the Syncplay GUI accessibility tree");
+            throw new InvalidOperationException("could not inspect the Sorotte GUI accessibility tree");
         }
 
         AutomationElement element = root.FindFirst(
@@ -340,7 +340,7 @@ public static class SyncplayWindowCapture
         }
         if (element == null)
         {
-            throw new InvalidOperationException("could not find Syncplay GUI edit control named '" + name + "'");
+            throw new InvalidOperationException("could not find Sorotte GUI edit control named '" + name + "'");
         }
 
         try
@@ -368,7 +368,7 @@ public static class SyncplayWindowCapture
         object valuePattern;
         if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out valuePattern))
         {
-            throw new InvalidOperationException("Syncplay GUI edit control named '" + name + "' does not support direct value setting or keyboard focus");
+            throw new InvalidOperationException("Sorotte GUI edit control named '" + name + "' does not support direct value setting or keyboard focus");
         }
 
         ((ValuePattern)valuePattern).SetValue(value);
@@ -420,7 +420,7 @@ function Write-CaptureConfig {
     )
 
     New-Item -ItemType Directory -Force -Path $Root | Out-Null
-    $configPath = Join-Path $Root "syncplay.ini"
+    $configPath = Join-Path $Root "sorotte.ini"
     @"
 [client_settings]
 name = smoke-user
@@ -434,7 +434,7 @@ folderSearchWarningThreshold = 7.5
 checkforupdatesautomatically = false
 "@ | Set-Content -LiteralPath $configPath -Encoding UTF8
 
-    $qsettingsRoot = Join-Path $Root "Syncplay"
+    $qsettingsRoot = $Root
     New-Item -ItemType Directory -Force -Path $qsettingsRoot | Out-Null
     @"
 [MainWindow]
@@ -459,45 +459,45 @@ foreach ($activeView in $captureViews) {
         $startInfo.FileName = $binaryFullPath
         $startInfo.WorkingDirectory = (Split-Path -Parent $binaryFullPath)
         $startInfo.UseShellExecute = $false
-        $startInfo.Environment["SYNCPLAY_CLIENT_CONFIG_PATH"] = $configPath
-        $startInfo.Environment["SYNCPLAY_GUI_ENABLE_TEST_PLAYER"] = "true"
+        $startInfo.Environment["SOROTTE_CLIENT_CONFIG_PATH"] = $configPath
+        $startInfo.Environment["SOROTTE_GUI_ENABLE_TEST_PLAYER"] = "true"
         if ($activeView -eq "room" -or $activeView -eq "room-change" -or $activeView -eq "playlist-urls") {
-            $startInfo.Environment["SYNCPLAY_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK"] = "true"
-            $startInfo.Environment["SYNCPLAY_CLIENT_USERNAME"] = "smoke-user"
-            $startInfo.Environment["SYNCPLAY_CLIENT_ROOM"] = "smoke-room"
+            $startInfo.Environment["SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_LOOPBACK"] = "true"
+            $startInfo.Environment["SOROTTE_CLIENT_USERNAME"] = "smoke-user"
+            $startInfo.Environment["SOROTTE_CLIENT_ROOM"] = "smoke-room"
         }
-        $startInfo.Environment["SYNCPLAY_GUI_REFRESH_PUBLIC_SERVERS"] = "[['Alpha', 'alpha.example:8999'], ['Beta', 'beta.example:9000']]"
-        $startInfo.Environment["SYNCPLAY_GUI_UPDATE_CHECK_RESPONSE"] = '{"version-status":"uptodate","version-message":"Syncplay is up to date."}'
-        $startInfo.Environment["SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH"] = Join-Path $profileRoot "media-search"
-        $startInfo.Environment["SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS"] = Join-Path $profileRoot "open-target.mkv"
-        New-Item -ItemType Directory -Force -Path $startInfo.Environment["SYNCPLAY_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH"] | Out-Null
-        Set-Content -LiteralPath $startInfo.Environment["SYNCPLAY_GUI_TEST_OPEN_MEDIA_FILE_PATHS"] -Value "open-target" -Encoding ASCII
+        $startInfo.Environment["SOROTTE_GUI_REFRESH_PUBLIC_SERVERS"] = "[['Alpha', 'alpha.example:8999'], ['Beta', 'beta.example:9000']]"
+        $startInfo.Environment["SOROTTE_GUI_UPDATE_CHECK_RESPONSE"] = '{"version-status":"uptodate","version-message":"Sorotte is up to date."}'
+        $startInfo.Environment["SOROTTE_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH"] = Join-Path $profileRoot "media-search"
+        $startInfo.Environment["SOROTTE_GUI_TEST_OPEN_MEDIA_FILE_PATHS"] = Join-Path $profileRoot "open-target.mkv"
+        New-Item -ItemType Directory -Force -Path $startInfo.Environment["SOROTTE_GUI_TEST_MEDIA_SEARCH_BROWSE_PATH"] | Out-Null
+        Set-Content -LiteralPath $startInfo.Environment["SOROTTE_GUI_TEST_OPEN_MEDIA_FILE_PATHS"] -Value "open-target" -Encoding ASCII
 
         $process = [System.Diagnostics.Process]::Start($startInfo)
-        $hwnd = [SyncplayWindowCapture]::FindMainWindowForProcess($process.Id, $TimeoutMs)
+        $hwnd = [SorotteWindowCapture]::FindMainWindowForProcess($process.Id, $TimeoutMs)
         if ($hwnd -eq [IntPtr]::Zero) {
-            throw "timed out waiting for Syncplay GUI window for pid $($process.Id)"
+            throw "timed out waiting for Sorotte GUI window for pid $($process.Id)"
         }
 
-        $bounds = [SyncplayWindowCapture]::PrepareWindow($hwnd, $WindowX, $WindowY, $WindowWidth, $WindowHeight)
+        $bounds = [SorotteWindowCapture]::PrepareWindow($hwnd, $WindowX, $WindowY, $WindowWidth, $WindowHeight)
         if ($activeView -eq "room") {
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Room")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Room")
         } elseif ($activeView -eq "room-change") {
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Room")
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Change Room")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Room")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Change Room")
         } elseif ($activeView -eq "plugins") {
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Plugins")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Plugins")
         } elseif ($activeView -eq "setup") {
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Setup")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Setup")
         } elseif ($activeView -eq "playlist-urls") {
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Room")
-            [SyncplayWindowCapture]::InvokeNamedControl($hwnd, "Paste URLs...")
-            [SyncplayWindowCapture]::SetNamedEditValue($hwnd, "URLs", $SampleUrls)
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Room")
+            [SorotteWindowCapture]::InvokeNamedControl($hwnd, "Paste URLs...")
+            [SorotteWindowCapture]::SetNamedEditValue($hwnd, "URLs", $SampleUrls)
         }
         Start-Sleep -Milliseconds 900
 
-        $outputPath = Join-Path $outputRoot ("syncplay-gui-{0}-{1}x{2}-{3}.png" -f $activeView, $WindowWidth, $WindowHeight, $timestamp)
-        [SyncplayWindowCapture]::CaptureWindow($hwnd, $outputPath)
+        $outputPath = Join-Path $outputRoot ("sorotte-gui-{0}-{1}x{2}-{3}.png" -f $activeView, $WindowWidth, $WindowHeight, $timestamp)
+        [SorotteWindowCapture]::CaptureWindow($hwnd, $outputPath)
 
         $captures += [pscustomobject]@{
             view = $activeView
@@ -511,12 +511,12 @@ foreach ($activeView in $captureViews) {
     } finally {
         if ($hwnd -ne [IntPtr]::Zero) {
             try {
-                [SyncplayWindowCapture]::ClearTopmost($hwnd)
+                [SorotteWindowCapture]::ClearTopmost($hwnd)
             } catch {
             }
         }
         if (-not $KeepOpen -and $hwnd -ne [IntPtr]::Zero) {
-            [SyncplayWindowCapture]::CloseWindow($hwnd)
+            [SorotteWindowCapture]::CloseWindow($hwnd)
         }
         if (-not $KeepOpen -and $process -ne $null -and -not $process.HasExited) {
             if (-not $process.WaitForExit(3000)) {

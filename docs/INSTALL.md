@@ -28,34 +28,34 @@ cargo build --release
 
 Release binaries are written to `target/release/`:
 
-- `syncplay-gui.exe` / `syncplay-gui`
-- `syncplay-cli.exe` / `syncplay-cli`
-- `syncplay-server.exe` / `syncplay-server`
+- `sorotte-gui.exe` / `sorotte-gui`
+- `sorotte-cli.exe` / `sorotte-cli`
+- `sorotte-server.exe` / `sorotte-server`
 
 For faster local iteration, omit `--release`.
 
 ## Run The GUI Client
 
 ```powershell
-cargo run --release -p syncplay-gui --bin syncplay-gui
+cargo run --release -p sorotte-gui --bin sorotte-gui
 ```
 
 The GUI supports saved server/user/room settings and GUI-owned `mpv` startup. Configure the `mpv` path in the GUI if automatic discovery does not find it.
-Packaged Windows GUI builds check the public downloads repository at <https://github.com/ropbet-radbyt/syncplay-rs-downloads/releases> for self-updates. Stable builds read the latest non-prerelease release; dev-channel builds read the moving `syncplay-gui-dev` prerelease.
+Packaged Windows GUI builds check <https://github.com/ropbet-radbyt/sorotte/releases> for self-updates. Stable builds read the latest non-prerelease release; dev-channel builds read the moving `sorotte-gui-dev` prerelease.
 
 ## Run The CLI Client
 
 Managed `mpv` launch:
 
 ```powershell
-$env:SYNCPLAY_CLIENT_MPV_MANAGED_LAUNCH = "1"
-$env:SYNCPLAY_CLIENT_MPV_MANAGED_BIN = "C:\path\to\mpv.exe"
-$env:SYNCPLAY_CLIENT_MPV_MANAGED_MEDIA = "C:\media\clip.mkv"
-$env:SYNCPLAY_CLIENT_HOST = "127.0.0.1"
-$env:SYNCPLAY_CLIENT_PORT = "8999"
-$env:SYNCPLAY_CLIENT_NAME = "alice"
-$env:SYNCPLAY_CLIENT_ROOM = "demo"
-cargo run --release -p syncplay-cli -- --no-gui
+$env:SOROTTE_CLIENT_MPV_MANAGED_LAUNCH = "1"
+$env:SOROTTE_CLIENT_MPV_MANAGED_BIN = "C:\path\to\mpv.exe"
+$env:SOROTTE_CLIENT_MPV_MANAGED_MEDIA = "C:\media\clip.mkv"
+$env:SOROTTE_CLIENT_HOST = "127.0.0.1"
+$env:SOROTTE_CLIENT_PORT = "8999"
+$env:SOROTTE_CLIENT_NAME = "alice"
+$env:SOROTTE_CLIENT_ROOM = "demo"
+cargo run --release -p sorotte-cli -- --no-gui
 ```
 
 Attach to an existing `mpv` instance:
@@ -64,28 +64,28 @@ Attach to an existing `mpv` instance:
 & "C:\path\to\mpv.exe" `
   --pause `
   --idle=yes `
-  --input-ipc-server="\\.\pipe\syncplay-rs-mpv" `
+  --input-ipc-server="\\.\pipe\sorotte-mpv" `
   "C:\media\clip.mkv"
 
-$env:SYNCPLAY_CLIENT_MPV_IPC_PATH = "\\.\pipe\syncplay-rs-mpv"
-cargo run --release -p syncplay-cli -- --no-gui -a 127.0.0.1:8999 -n alice -r demo
+$env:SOROTTE_CLIENT_MPV_IPC_PATH = "\\.\pipe\sorotte-mpv"
+cargo run --release -p sorotte-cli -- --no-gui -a 127.0.0.1:8999 -n alice -r demo
 ```
 
-On Unix-like systems, use a Unix socket path for `--input-ipc-server` and `SYNCPLAY_CLIENT_MPV_IPC_PATH`.
+On Unix-like systems, use a Unix socket path for `--input-ipc-server` and `SOROTTE_CLIENT_MPV_IPC_PATH`.
 
 ## Run The Server
 
 ```powershell
-cargo run --release -p syncplay-server -- --port 8999
+cargo run --release -p sorotte-server -- --port 8999
 ```
 
 Common options:
 
 ```powershell
-cargo run --release -p syncplay-server -- `
+cargo run --release -p sorotte-server -- `
   --port 8999 `
   --password "change-me" `
-  --rooms-db-file "syncplay-rooms.sqlite3"
+  --rooms-db-file "sorotte-rooms.sqlite3"
 ```
 
 See [Server Guide](SERVER_RELEASE.md) for persistence, TLS, MOTD, Docker, and release packaging.
@@ -105,13 +105,13 @@ Artifacts are written under `target/server-release/artifacts/` and include a `.s
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
-Artifacts are written under `target/gui-release/artifacts/` and include the Windows package, a `.sha256` checksum sidecar, and `syncplay-update-manifest.json`. The `syncplay-gui release` workflow also publishes those files to the public downloads repository when `SYNCPLAY_DOWNLOADS_TOKEN` is configured as a repository secret.
+Artifacts are written under `target/gui-release/artifacts/` and include the Windows package, a `.sha256` checksum sidecar, and `sorotte-update-manifest.json`. The `sorotte-gui release` workflow publishes those files to GitHub Releases in the main `ropbet-radbyt/sorotte` repository.
 
 ## Docker Server
 
 ```powershell
-docker build -f Dockerfile.server -t syncplay-rs-server:local .
-docker run --rm -p 8999:8999/tcp syncplay-rs-server:local
+docker build -f Dockerfile.server -t sorotte-server:local .
+docker run --rm -p 8999:8999/tcp sorotte-server:local
 ```
 
 For persistent rooms:
@@ -119,8 +119,8 @@ For persistent rooms:
 ```powershell
 docker run --rm `
   -p 8999:8999/tcp `
-  -v ${PWD}/syncplay-data:/data `
-  syncplay-rs-server:local `
+  -v ${PWD}/sorotte-data:/data `
+  sorotte-server:local `
   --port 8999 --ipv4-only --interface-ipv4 0.0.0.0 --rooms-db-file /data/rooms.sqlite3
 ```
 
@@ -129,7 +129,7 @@ docker run --rm `
 Standard local validation:
 
 ```powershell
-cargo fmt --all -- --check
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
@@ -138,6 +138,6 @@ GUI validation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
-cargo build -p syncplay-gui --bin syncplay-gui
+cargo build -p sorotte-gui --bin sorotte-gui
 powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
 ```

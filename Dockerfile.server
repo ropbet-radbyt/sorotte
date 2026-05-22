@@ -5,34 +5,34 @@ FROM rust:1.95-bookworm AS builder
 WORKDIR /src
 COPY . .
 
-RUN cargo build --release -p syncplay-server --bin syncplay-server
+RUN cargo build --release -p sorotte-server --bin sorotte-server
 
 FROM debian:bookworm-slim AS runtime
 
 ARG BUILD_DATE
 ARG VCS_REF
-ARG SOURCE_REPOSITORY="https://github.com/ropbet-radbyt/syncplay-rs"
+ARG SOURCE_REPOSITORY="https://github.com/ropbet-radbyt/sorotte"
 
-LABEL org.opencontainers.image.title="syncplay-rs server" \
-      org.opencontainers.image.description="Rust Syncplay-compatible server" \
+LABEL org.opencontainers.image.title="sorotte server" \
+      org.opencontainers.image.description="Sorotte Syncplay-compatible server" \
       org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}"
 
 RUN set -eux; \
-    groupadd --system --gid 10001 syncplay; \
-    useradd --system --uid 10001 --gid syncplay --home-dir /data --shell /usr/sbin/nologin syncplay; \
+    groupadd --system --gid 10001 sorotte; \
+    useradd --system --uid 10001 --gid sorotte --home-dir /data --shell /usr/sbin/nologin sorotte; \
     mkdir -p /data /tls; \
-    chown -R syncplay:syncplay /data /tls
+    chown -R sorotte:sorotte /data /tls
 
-COPY --from=builder /src/target/release/syncplay-server /usr/local/bin/syncplay-server
+COPY --from=builder /src/target/release/sorotte-server /usr/local/bin/sorotte-server
 
-USER syncplay
+USER sorotte
 WORKDIR /data
 
 EXPOSE 8999/tcp
 VOLUME ["/data", "/tls"]
 
-ENTRYPOINT ["syncplay-server"]
+ENTRYPOINT ["sorotte-server"]
 CMD ["--port", "8999", "--ipv4-only", "--interface-ipv4", "0.0.0.0"]

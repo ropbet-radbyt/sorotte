@@ -1,0 +1,24 @@
+[package]
+name = "sorotte-compat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+trace-capture = []
+
+[dependencies]
+serde_json.workspace = true
+sorotte-protocol = { path = "../sorotte-protocol" }
+sorotte-server = { path = "../sorotte-server" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
+rustls-pemfile.workspace = true
+sorotte-client-core = { path = "../sorotte-client-core" }

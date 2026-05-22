@@ -1,0 +1,32 @@
+#[cfg(test)]
+mod tests;
+
+use sorotte_client_app::app_boundary::{
+    commands::LocalOffsetCommand, state::StoredClientSettingsMvp,
+};
+
+use super::render_io::GuiDroppedFilesRequest;
+use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
+use super::shell_state::{
+    GuiPendingOperationKind, GuiSavedConfigurationRuntimeSnapshot, GuiShellAction, GuiShellView,
+    GuiTransientNotificationLevel, SorotteGuiShellAppState,
+};
+use super::support::format_offset_command;
+
+mod pending;
+mod preview_bridge;
+mod request_preview;
+mod requests;
+mod traits;
+
+pub(in crate::app) use pending::{
+    GuiPendingCompletionRequest, GuiPendingRoomChangeRequest, GuiSharedPlaylistOpenDispatch,
+};
+pub(in crate::app) use preview_bridge::GuiPreviewRuntimeBridge;
+pub(in crate::app) use requests::GuiRuntimeRequest;
+#[cfg(test)]
+pub(in crate::app) use traits::GuiPreviewRuntimeOwner;
+pub(in crate::app) use traits::{
+    GuiNativeRuntimeBridge, GuiNativeRuntimePump, GuiNoopRuntimePump, GuiQueuedRuntimeOwner,
+};

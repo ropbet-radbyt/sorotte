@@ -1,4 +1,4 @@
-name: syncplay-rs CI
+name: sorotte CI
 
 on:
   push:
@@ -64,7 +64,7 @@ jobs:
         env:
           SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
-        run: cargo test -p syncplay-compat legacy_server_live_tls_ -- --nocapture
+        run: cargo test -p sorotte-compat legacy_server_live_tls_ -- --nocapture
 
   nightly-deep:
     if: github.event_name == 'schedule'
@@ -106,7 +106,7 @@ jobs:
         env:
           SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY: "1"
           SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY: "1"
-        run: cargo test -p syncplay-compat legacy_server_live_tls_ -- --nocapture
+        run: cargo test -p sorotte-compat legacy_server_live_tls_ -- --nocapture
 
   server-release-verify:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

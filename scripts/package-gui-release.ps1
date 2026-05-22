@@ -30,15 +30,15 @@ function Assert-PathInsideRepo {
     }
 }
 
-function Get-SyncplayGuiVersion {
+function Get-SorotteGuiVersion {
     $metadataJson = & cargo metadata --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
         throw "cargo metadata failed with exit code $LASTEXITCODE"
     }
     $metadata = $metadataJson | ConvertFrom-Json
-    $package = $metadata.packages | Where-Object { $_.name -eq "syncplay-gui" } | Select-Object -First 1
+    $package = $metadata.packages | Where-Object { $_.name -eq "sorotte-gui" } | Select-Object -First 1
     if ($null -eq $package) {
-        throw "syncplay-gui package was not found in cargo metadata"
+        throw "sorotte-gui package was not found in cargo metadata"
     }
     return [string]$package.version
 }
@@ -77,20 +77,20 @@ function Copy-ReleaseFile {
 Assert-WindowsX64
 
 if (-not $SkipBuild) {
-    Write-Host "==> Building syncplay-gui release binaries" -ForegroundColor Cyan
-    & cargo build --release -p syncplay-gui --bin syncplay-gui
+    Write-Host "==> Building sorotte-gui release binaries" -ForegroundColor Cyan
+    & cargo build --release -p sorotte-gui --bin sorotte-gui
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build syncplay-gui failed with exit code $LASTEXITCODE"
+        throw "cargo build sorotte-gui failed with exit code $LASTEXITCODE"
     }
-    & cargo build --release -p syncplay-gui --bin syncplay-gui-updater
+    & cargo build --release -p sorotte-gui --bin sorotte-gui-updater
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build syncplay-gui-updater failed with exit code $LASTEXITCODE"
+        throw "cargo build sorotte-gui-updater failed with exit code $LASTEXITCODE"
     }
 }
 
-$version = Get-SyncplayGuiVersion
+$version = Get-SorotteGuiVersion
 $target = "windows-x86_64"
-$packageName = "syncplay-gui-$version-$target"
+$packageName = "sorotte-gui-$version-$target"
 $archiveFileName = "$packageName.zip"
 $outputRoot = Resolve-PackagePath $OutputDir
 $stagingRoot = Join-Path $outputRoot "staging"
@@ -108,12 +108,12 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $artifactsRoot | Out-Null
 
 $releaseDir = Join-Path $RepoRoot "target/release"
-Copy-ReleaseFile (Join-Path $releaseDir "syncplay-gui.exe") (Join-Path $packageRoot "syncplay-gui.exe")
-Copy-ReleaseFile (Join-Path $releaseDir "syncplay-gui-updater.exe") (Join-Path $packageRoot "syncplay-gui-updater.exe")
+Copy-ReleaseFile (Join-Path $releaseDir "sorotte-gui.exe") (Join-Path $packageRoot "sorotte-gui.exe")
+Copy-ReleaseFile (Join-Path $releaseDir "sorotte-gui-updater.exe") (Join-Path $packageRoot "sorotte-gui-updater.exe")
 Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "README.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
-foreach ($pdbName in @("syncplay_gui.pdb", "syncplay-gui.pdb", "syncplay_gui_updater.pdb", "syncplay-gui-updater.pdb")) {
+foreach ($pdbName in @("sorotte_gui.pdb", "sorotte-gui.pdb", "sorotte_gui_updater.pdb", "sorotte-gui-updater.pdb")) {
     $pdbPath = Join-Path $releaseDir $pdbName
     if (Test-Path -LiteralPath $pdbPath -PathType Leaf) {
         Copy-Item -LiteralPath $pdbPath -Destination (Join-Path $packageRoot $pdbName) -Force
@@ -121,14 +121,14 @@ foreach ($pdbName in @("syncplay_gui.pdb", "syncplay-gui.pdb", "syncplay_gui_upd
 }
 
 $installMarker = [ordered]@{
-    app = "syncplay-gui"
+    app = "sorotte-gui"
     channel = $Channel
     version = $version
     git_sha = $gitSha
     created_at_utc = $createdAtUtc
     target = $target
 }
-$installMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot "syncplay-install.json") -Encoding UTF8
+$installMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot "sorotte-install.json") -Encoding UTF8
 
 $archivePath = Join-Path $artifactsRoot $archiveFileName
 if (Test-Path -LiteralPath $archivePath) {
@@ -143,10 +143,10 @@ $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 $checksumPath = "$archivePath.sha256"
 "$($hash.Hash.ToLowerInvariant())  $archiveFileName" | Set-Content -LiteralPath $checksumPath -Encoding UTF8
 
-$manifestPath = Join-Path $artifactsRoot "syncplay-update-manifest.json"
+$manifestPath = Join-Path $artifactsRoot "sorotte-update-manifest.json"
 $manifest = [ordered]@{
-    schema = "syncplay-gui-update-manifest-v1"
-    app = "syncplay-gui"
+    schema = "sorotte-gui-update-manifest-v1"
+    app = "sorotte-gui"
     channel = $Channel
     version = $version
     git_sha = $gitSha

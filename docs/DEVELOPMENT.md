@@ -1,20 +1,20 @@
 # Development Guide
 
-This guide covers the local workflow for contributors and agents working on `syncplay-rs`.
+This guide covers the local workflow for contributors and agents working on `sorotte`.
 
 ## Workspace Layout
 
-- `syncplay-protocol`: typed protocol models and fixture coverage
-- `syncplay-core`: shared domain helpers
-- `syncplay-server`: server runtime library and executable
-- `syncplay-client-core`: client session/runtime logic
-- `syncplay-client-app`: app-level settings, compatibility, local commands, and shared client behavior
-- `syncplay-player-api`: player abstraction
-- `syncplay-player-mpv`: `mpv` JSON IPC adapter
-- `syncplay-cli`: headless client binary
-- `syncplay-gui`: desktop client
-- `syncplay-compat`: Python Syncplay interop and compatibility support
-- `syncplay-sim`: deterministic simulation helpers
+- `sorotte-protocol`: typed protocol models and fixture coverage
+- `sorotte-core`: shared domain helpers
+- `sorotte-server`: server runtime library and executable
+- `sorotte-client-core`: client session/runtime logic
+- `sorotte-client-app`: app-level settings, compatibility, local commands, and shared client behavior
+- `sorotte-player-api`: player abstraction
+- `sorotte-player-mpv`: `mpv` JSON IPC adapter
+- `sorotte-cli`: headless client binary
+- `sorotte-gui`: desktop client
+- `sorotte-compat`: Python Syncplay interop and compatibility support
+- `sorotte-sim`: deterministic simulation helpers
 
 Use the sibling Python checkout in `../syncplay/` as the behavioral reference for compatibility work.
 
@@ -46,21 +46,21 @@ powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 Run Windows native smoke coverage for rendering, accessibility, startup, and end-to-end GUI changes:
 
 ```powershell
-cargo build -p syncplay-gui --bin syncplay-gui
+cargo build -p sorotte-gui --bin sorotte-gui
 powershell -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 50000
 ```
 
-`scripts/gui-native-smoke.ps1` uses the existing `target/debug/syncplay-gui.exe`, so rebuild first after GUI code changes.
+`scripts/gui-native-smoke.ps1` uses the existing `target/debug/sorotte-gui.exe`, so rebuild first after GUI code changes.
 
 ## GUI Release Publishing
 
-GUI packages are built by `.github/workflows/gui-release.yml` and staged locally by:
+GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged locally by:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
 ```
 
-The workflow always keeps the private Actions artifact for maintainers. On push events, it also publishes the package, checksum, and `syncplay-update-manifest.json` to the public `ropbet-radbyt/syncplay-rs-downloads` release repository when the private source repository has a `SYNCPLAY_DOWNLOADS_TOKEN` secret with contents write access to that public repository. Version tags `v*` publish stable releases; branch pushes update the `syncplay-gui-dev` prerelease used by dev-channel GUI update checks.
+The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; branch pushes update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks.
 
 ## Server Release Checks
 
@@ -105,16 +105,16 @@ Useful Python reference files:
 
 ## Test Placement
 
-- Protocol, wire format, server state, room fanout, and TLS behavior: `syncplay-protocol`, `syncplay-server`, or `syncplay-compat`
-- Client session, reconnect, readiness, playlist, controller, and desync behavior: `syncplay-client-core`
-- CLI parsing, stored settings, `syncplay.ini`, local commands, language, and startup compatibility: `syncplay-client-app` or `syncplay-cli`
-- GUI workflows and rendering state: `syncplay-gui` semantic scenarios and app tests
-- Real player behavior: `syncplay-player-mpv` plus ignored/manual real-`mpv` smoke tests when local `mpv` and media fixtures are available
+- Protocol, wire format, server state, room fanout, and TLS behavior: `sorotte-protocol`, `sorotte-server`, or `sorotte-compat`
+- Client session, reconnect, readiness, playlist, controller, and desync behavior: `sorotte-client-core`
+- CLI parsing, stored settings, `sorotte.ini`, local commands, language, and startup compatibility: `sorotte-client-app` or `sorotte-cli`
+- GUI workflows and rendering state: `sorotte-gui` semantic scenarios and app tests
+- Real player behavior: `sorotte-player-mpv` plus ignored/manual real-`mpv` smoke tests when local `mpv` and media fixtures are available
 
 ## Coding Rules
 
 - Use Rust `1.95.0` and edition `2024`.
-- Keep public API surfaces narrow. Add shared CLI/GUI behavior to `syncplay-client-app::app_boundary` where a cross-crate API is needed.
+- Keep public API surfaces narrow. Add shared CLI/GUI behavior to `sorotte-client-app::app_boundary` where a cross-crate API is needed.
 - Prefer small, test-backed vertical slices over broad refactors.
 - Do not add non-`mpv` player backend work unless product scope is explicitly changed.
 - Do not use old planning docs as source of truth; use live code, tests, and the current docs.
