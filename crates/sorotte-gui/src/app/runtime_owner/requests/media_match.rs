@@ -1,3 +1,6 @@
+use std::{sync::mpsc, thread};
+
+use super::super::GuiMediaMatchToolWorkerEvent;
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -102,11 +105,84 @@ impl GuiPersistedConfigRuntimeOwner {
                 .is_some_and(|decision| decision.starts_with("strong:"))
     }
 
+    fn media_match_tool_worker_busy_notification(
+        &self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        if self.media_match_tool_worker_rx.is_none() {
+            return false;
+        }
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Media Matching tool installation or import is already running."
+                    .to_owned(),
+            }],
+        );
+        true
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_media_match_tool_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        let Some(rx) = self.media_match_tool_worker_rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        loop {
+            match rx.try_recv() {
+                Ok(GuiMediaMatchToolWorkerEvent::Progress(progress)) => {
+                    self.apply_media_match_progress(handle, projected_state, progress);
+                }
+                Ok(GuiMediaMatchToolWorkerEvent::Finished {
+                    result,
+                    failure_label,
+                }) => {
+                    keep_rx = false;
+                    match result {
+                        Ok(message) => {
+                            self.finish_media_match_tool_success(handle, projected_state, message)
+                        }
+                        Err(error) => self.finish_media_match_tool_error(
+                            handle,
+                            projected_state,
+                            failure_label,
+                            error,
+                        ),
+                    }
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.finish_media_match_tool_error(
+                        handle,
+                        projected_state,
+                        "Media Matching tool operation failed",
+                        "worker stopped before reporting a result".to_owned(),
+                    );
+                    break;
+                }
+            }
+        }
+        if keep_rx {
+            self.media_match_tool_worker_rx = Some(rx);
+        }
+    }
+
     pub(super) fn handle_install_media_match_tools_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        if self.media_match_tool_worker_busy_notification(handle, projected_state) {
+            return true;
+        }
         let Some(root) = self.legacy_gui_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
@@ -125,15 +201,28 @@ impl GuiPersistedConfigRuntimeOwner {
             ),
             0.02,
         );
-        match install_or_update_managed_media_match_tools_with_progress(&root, |progress| {
-            self.apply_media_match_progress(handle, projected_state, progress);
-        }) {
-            Ok(message) => self.finish_media_match_tool_success(handle, projected_state, message),
+        let (tx, rx) = mpsc::channel();
+        match thread::Builder::new()
+            .name("sorotte-gui-media-match-install".to_owned())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let result =
+                    install_or_update_managed_media_match_tools_with_progress(&root, |progress| {
+                        let _ = progress_tx.send(GuiMediaMatchToolWorkerEvent::Progress(progress));
+                    });
+                let _ = tx.send(GuiMediaMatchToolWorkerEvent::Finished {
+                    result,
+                    failure_label: "Media Matching tool install failed",
+                });
+            }) {
+            Ok(_thread) => {
+                self.media_match_tool_worker_rx = Some(rx);
+            }
             Err(error) => self.finish_media_match_tool_error(
                 handle,
                 projected_state,
                 "Media Matching tool install failed",
-                error,
+                format!("could not start worker: {error}"),
             ),
         }
         true
@@ -146,6 +235,9 @@ impl GuiPersistedConfigRuntimeOwner {
         tool: MediaMatchTool,
         source_path: String,
     ) -> bool {
+        if self.media_match_tool_worker_busy_notification(handle, projected_state) {
+            return true;
+        }
         let Some(root) = self.legacy_gui_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
@@ -161,20 +253,35 @@ impl GuiPersistedConfigRuntimeOwner {
             Some(source_path.clone()),
             0.02,
         );
-        match import_managed_media_match_tool_with_progress(
-            &root,
-            tool,
-            Path::new(&source_path),
-            |progress| {
-                self.apply_media_match_progress(handle, projected_state, progress);
-            },
-        ) {
-            Ok(message) => self.finish_media_match_tool_success(handle, projected_state, message),
+        let (tx, rx) = mpsc::channel();
+        match thread::Builder::new()
+            .name(format!(
+                "sorotte-gui-media-match-import-{}",
+                tool.display_name()
+            ))
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let result = import_managed_media_match_tool_with_progress(
+                    &root,
+                    tool,
+                    Path::new(&source_path),
+                    |progress| {
+                        let _ = progress_tx.send(GuiMediaMatchToolWorkerEvent::Progress(progress));
+                    },
+                );
+                let _ = tx.send(GuiMediaMatchToolWorkerEvent::Finished {
+                    result,
+                    failure_label: "Media Matching tool import failed",
+                });
+            }) {
+            Ok(_thread) => {
+                self.media_match_tool_worker_rx = Some(rx);
+            }
             Err(error) => self.finish_media_match_tool_error(
                 handle,
                 projected_state,
                 "Media Matching tool import failed",
-                error,
+                format!("could not start worker: {error}"),
             ),
         }
         true

@@ -122,6 +122,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         stream_helper_remediation_runtime_snapshot: Default::default(),
         media_match_runtime_snapshot: Default::default(),
         media_match_remediation_runtime_snapshot: Default::default(),
+        media_match_tool_worker_rx: None,
         plex_client: None,
         plex_auth_session: None,
         plex_auth_start_rx: None,

@@ -80,7 +80,7 @@ struct MediaMatchToolProbe {
 }
 
 impl MediaMatchTool {
-    fn display_name(self) -> &'static str {
+    pub(super) fn display_name(self) -> &'static str {
         match self {
             Self::Ffmpeg => "ffmpeg",
             Self::Ffprobe => "ffprobe",

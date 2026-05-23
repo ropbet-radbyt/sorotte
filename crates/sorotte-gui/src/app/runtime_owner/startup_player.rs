@@ -56,6 +56,7 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_runtime_snapshot: GuiMediaMatchRuntimeSnapshot::default(),
             media_match_remediation_runtime_snapshot:
                 GuiMediaMatchRemediationRuntimeSnapshot::default(),
+            media_match_tool_worker_rx: None,
             plex_client: None,
             plex_auth_session: None,
             plex_auth_start_rx: None,
