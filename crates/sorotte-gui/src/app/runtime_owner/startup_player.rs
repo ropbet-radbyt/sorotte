@@ -176,7 +176,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_cache_unpause = false;
         self.pending_attached_player_pause_confirmation_pump = None;
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
-        self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::default();
+        self.media_match_runtime_snapshot.current_decision = None;
+        self.media_match_runtime_snapshot.last_evidence = None;
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
         self.pending_stream_load_context = None;

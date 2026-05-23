@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
     process::Command,
@@ -11,7 +12,7 @@ use std::{io::Read, time::Duration};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintRecord,
-    MediaMatchCacheV1, MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths,
+    MediaMatchCacheV1, MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, decide_media_match,
     fingerprint_media_file, normalize_media_path, rank_media_match_candidates,
 };
 
@@ -25,6 +26,8 @@ use zip::ZipArchive;
 
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
 const MEDIA_MATCH_CACHE_FILE: &str = "media-match-cache-v1.json";
+const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
+const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
 #[cfg(windows)]
 const MEDIA_MATCH_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 #[cfg(windows)]
@@ -393,14 +396,18 @@ where
         0.05,
     ));
     let candidates = collect_media_match_candidates(search_roots);
+    let selected = select_media_match_rebuild_candidates(&candidates, current_player_path);
     let existing_cache = load_media_match_cache(root).unwrap_or_default();
-    let mut next_cache = MediaMatchCacheV1::default();
+    let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut reused = 0usize;
     let mut fingerprinted = 0usize;
     let mut skipped = 0usize;
-    let total = candidates.len().max(1);
+    let total = selected.paths.len().max(1);
+    let mut query_record = None;
+    let normalized_current_path = current_player_path.map(normalize_media_path);
+    let mut strong_match_found = false;
 
-    for (index, path) in candidates.iter().enumerate() {
+    for (index, path) in selected.paths.iter().enumerate() {
         let progress_fraction = 0.1 + (0.82 * (index as f32 / total as f32));
         progress(MediaMatchToolProgress::new(
             "Fingerprinting media",
@@ -415,7 +422,18 @@ where
                 } else {
                     fingerprinted += 1;
                 }
+                if normalized_current_path.as_deref()
+                    == Some(record.identity.normalized_path.as_str())
+                {
+                    query_record = Some(record.clone());
+                } else if let Some(query) = query_record.as_ref() {
+                    let decision = decide_media_match(query, &record, settings);
+                    strong_match_found = decision.tier == MediaMatchTier::Strong;
+                }
                 next_cache.insert(record);
+                if strong_match_found {
+                    break;
+                }
             }
             Err(_) => {
                 skipped += 1;
@@ -427,12 +445,18 @@ where
     let (current_decision, last_evidence) =
         summarize_current_media_match(current_player_path, &next_cache, settings);
     let cache_status = format!("{} fingerprint records", next_cache.records.len());
+    let attempted = reused + fingerprinted + skipped;
+    let scope = if selected.prefiltered {
+        format!(
+            "{} of {} discovered files",
+            attempted, selected.discovered_files
+        )
+    } else {
+        format!("{} files", selected.discovered_files)
+    };
     let message = format!(
-        "Media Matching indexed {} files ({} reused, {} fingerprinted, {} skipped).",
-        candidates.len(),
-        reused,
-        fingerprinted,
-        skipped
+        "Media Matching indexed {scope} ({} reused, {} fingerprinted, {} skipped).",
+        reused, fingerprinted, skipped
     );
     progress(MediaMatchToolProgress::new(
         "Media Matching index rebuilt",
@@ -446,6 +470,17 @@ where
         current_decision,
         last_evidence,
     })
+}
+
+fn initial_media_match_rebuild_cache(
+    existing_cache: &MediaMatchCacheV1,
+    prefiltered: bool,
+) -> MediaMatchCacheV1 {
+    if prefiltered {
+        existing_cache.clone()
+    } else {
+        MediaMatchCacheV1::default()
+    }
 }
 
 fn probe_tool(root: Option<&Path>, tool: MediaMatchTool) -> MediaMatchToolProbe {
@@ -585,6 +620,259 @@ fn collect_media_match_candidates(search_roots: &[PathBuf]) -> Vec<PathBuf> {
             .then_with(|| left.cmp(right))
     });
     files
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaMatchRebuildCandidateSelection {
+    paths: Vec<PathBuf>,
+    discovered_files: usize,
+    prefiltered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaMatchFilenameProfile {
+    series_tokens: BTreeSet<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    numbers: BTreeSet<u32>,
+}
+
+fn select_media_match_rebuild_candidates(
+    candidates: &[PathBuf],
+    current_player_path: Option<&str>,
+) -> MediaMatchRebuildCandidateSelection {
+    let normalized_current_path = current_player_path.map(normalize_media_path);
+    let current_path = current_player_path
+        .map(PathBuf::from)
+        .filter(|path| path.is_file() && media_match_candidate_extension(path));
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(path) = current_path {
+        seen.insert(normalize_media_path(&path));
+        paths.push(path);
+    }
+
+    let root_candidates = candidates
+        .iter()
+        .filter(|path| {
+            normalized_current_path
+                .as_deref()
+                .is_none_or(|current| normalize_media_path(path) != current)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let prefiltered = normalized_current_path.is_some()
+        && root_candidates.len() > MEDIA_MATCH_PREFILTER_THRESHOLD;
+    let selected_root_candidates = if prefiltered {
+        prefilter_media_match_candidates(
+            &root_candidates,
+            current_player_path.expect("prefilter requires a current path"),
+        )
+    } else {
+        root_candidates
+    };
+
+    for path in selected_root_candidates {
+        if seen.insert(normalize_media_path(&path)) {
+            paths.push(path);
+        }
+    }
+
+    MediaMatchRebuildCandidateSelection {
+        paths,
+        discovered_files: candidates.len(),
+        prefiltered,
+    }
+}
+
+fn prefilter_media_match_candidates(
+    candidates: &[PathBuf],
+    current_player_path: &str,
+) -> Vec<PathBuf> {
+    let query = media_match_filename_profile(Path::new(current_player_path));
+    let mut scored = candidates
+        .iter()
+        .map(|path| {
+            (
+                media_match_filename_score(&query, &media_match_filename_profile(path)),
+                path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    let mut selected = scored
+        .iter()
+        .filter(|(score, _)| *score > 0)
+        .take(MEDIA_MATCH_PREFILTER_LIMIT)
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        selected = scored
+            .into_iter()
+            .take(MEDIA_MATCH_PREFILTER_LIMIT)
+            .map(|(_, path)| path)
+            .collect();
+    }
+    selected
+}
+
+fn media_match_filename_profile(path: &Path) -> MediaMatchFilenameProfile {
+    let tokens = media_match_filename_tokens(path);
+    let mut series_tokens = BTreeSet::new();
+    let mut numbers = BTreeSet::new();
+    let mut season = None;
+    let mut episode = None;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some((parsed_season, parsed_episode)) = parse_season_episode_token(token) {
+            season.get_or_insert(parsed_season);
+            episode.get_or_insert(parsed_episode);
+            continue;
+        }
+        if token == "season" {
+            if index > 0
+                && let Some(parsed_season) = parse_ordinal_or_number(&tokens[index - 1])
+            {
+                season.get_or_insert(parsed_season);
+            }
+            if episode.is_none() {
+                episode = tokens
+                    .iter()
+                    .skip(index + 1)
+                    .find_map(|candidate| parse_ordinal_or_number(candidate));
+            }
+            continue;
+        }
+        if let Some(number) = parse_ordinal_or_number(token) {
+            numbers.insert(number);
+            continue;
+        }
+        if is_media_match_filename_noise_token(token) {
+            continue;
+        }
+        series_tokens.insert(token.clone());
+    }
+
+    MediaMatchFilenameProfile {
+        series_tokens,
+        season,
+        episode,
+        numbers,
+    }
+}
+
+fn media_match_filename_score(
+    query: &MediaMatchFilenameProfile,
+    candidate: &MediaMatchFilenameProfile,
+) -> i32 {
+    let mut score = 0;
+    if query.season.is_some() && query.season == candidate.season {
+        score += 50;
+    }
+    if query.episode.is_some() && query.episode == candidate.episode {
+        score += 120;
+    } else if query
+        .episode
+        .is_some_and(|episode| candidate.numbers.contains(&episode))
+    {
+        score += 40;
+    }
+    if query.season.is_some()
+        && query.season == candidate.season
+        && query.episode.is_some()
+        && query.episode == candidate.episode
+    {
+        score += 80;
+    }
+    let overlap = query
+        .series_tokens
+        .intersection(&candidate.series_tokens)
+        .count();
+    if !query.series_tokens.is_empty() {
+        score += ((overlap * 100) / query.series_tokens.len()) as i32;
+        if overlap == 0 {
+            score -= 40;
+        }
+    }
+    score
+}
+
+fn media_match_filename_tokens(path: &Path) -> Vec<String> {
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut without_groups = String::new();
+    let mut square_depth = 0u32;
+    for character in stem.chars() {
+        match character {
+            '[' => square_depth = square_depth.saturating_add(1),
+            ']' => square_depth = square_depth.saturating_sub(1),
+            _ if square_depth > 0 => {}
+            _ if character.is_ascii_alphanumeric() => {
+                without_groups.push(character.to_ascii_lowercase());
+            }
+            _ => without_groups.push(' '),
+        }
+    }
+    without_groups
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn parse_season_episode_token(token: &str) -> Option<(u32, u32)> {
+    let lower = token.to_ascii_lowercase();
+    let rest = lower.strip_prefix('s')?;
+    let (season_text, episode_text) = rest.split_once('e')?;
+    let season = season_text.parse::<u32>().ok()?;
+    let episode = episode_text.parse::<u32>().ok()?;
+    Some((season, episode))
+}
+
+fn parse_ordinal_or_number(token: &str) -> Option<u32> {
+    let trimmed = token
+        .strip_suffix("st")
+        .or_else(|| token.strip_suffix("nd"))
+        .or_else(|| token.strip_suffix("rd"))
+        .or_else(|| token.strip_suffix("th"))
+        .unwrap_or(token);
+    if trimmed.len() > 3
+        || trimmed.is_empty()
+        || !trimmed.chars().all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    trimmed.parse::<u32>().ok()
+}
+
+fn is_media_match_filename_noise_token(token: &str) -> bool {
+    matches!(
+        token,
+        "bd" | "bdrip"
+            | "webrip"
+            | "web"
+            | "dl"
+            | "hevc"
+            | "x264"
+            | "x265"
+            | "h264"
+            | "h265"
+            | "aac"
+            | "flac"
+            | "dual"
+            | "audio"
+            | "multi"
+            | "multisub"
+            | "sub"
+            | "subs"
+            | "raws"
+    ) || token.ends_with('p')
+        && token[..token.len() - 1]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        || token.len() == 8 && token.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn media_match_candidate_extension(path: &Path) -> bool {
@@ -940,6 +1228,18 @@ mod tests {
         root
     }
 
+    fn fake_media_match_record(path: &str) -> MediaFingerprintRecord {
+        MediaFingerprintRecord {
+            identity: sorotte_media_match::MediaFileIdentity::new(path, 1000, 2000),
+            algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings: MediaExtractionSettings::default(),
+            duration_seconds: Some(1200.0),
+            container_fingerprint: format!("container:{path}"),
+            audio: None,
+            video: None,
+        }
+    }
+
     #[test]
     fn media_match_clear_persisted_cache_removes_cache_and_tool_metadata() {
         let root = unique_media_match_test_root("clear");
@@ -973,5 +1273,89 @@ mod tests {
             1_048_576,
         );
         assert_eq!(detail, "www.gyan.dev: 1.0 MiB of 2.0 MiB");
+    }
+
+    #[test]
+    fn media_match_prefiltered_rebuild_preserves_existing_cache_records() {
+        let mut existing = MediaMatchCacheV1::default();
+        existing.insert(fake_media_match_record("E:/Anime/Re Zero/episode-01.mkv"));
+        existing.insert(fake_media_match_record("E:/Anime/Re Zero/episode-02.mkv"));
+
+        let prefiltered = initial_media_match_rebuild_cache(&existing, true);
+        let full = initial_media_match_rebuild_cache(&existing, false);
+
+        assert_eq!(prefiltered.records.len(), 2);
+        assert!(full.records.is_empty());
+    }
+
+    #[test]
+    fn media_match_filename_profile_matches_s04e07_to_4th_season_07() {
+        let query = media_match_filename_profile(Path::new("[Judas] Re.Zero - S04E07.mkv"));
+        let matching_candidate = media_match_filename_profile(Path::new(
+            "[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 07 [1080p CR WEBRip HEVC AAC][MultiSub][5CA89B15].mkv",
+        ));
+        let wrong_candidate = media_match_filename_profile(Path::new(
+            "[Erai-raws] Medalist 2nd Season - 07 [1080p CR WEBRip HEVC AAC][MultiSub].mkv",
+        ));
+
+        let matching_score = media_match_filename_score(&query, &matching_candidate);
+        let wrong_score = media_match_filename_score(&query, &wrong_candidate);
+
+        assert_eq!(query.season, Some(4));
+        assert_eq!(query.episode, Some(7));
+        assert_eq!(matching_candidate.season, Some(4));
+        assert_eq!(matching_candidate.episode, Some(7));
+        assert!(matching_score > wrong_score);
+        assert!(matching_score > 0);
+    }
+
+    #[test]
+    fn media_match_rebuild_selection_prefilters_large_roots_for_current_file() {
+        let root = unique_media_match_test_root("prefilter");
+        let current_dir = root.join("downloads");
+        std::fs::create_dir_all(&current_dir).expect("current dir should be created");
+        let current_path = current_dir.join("[Judas] Re.Zero - S04E07.mkv");
+        std::fs::write(&current_path, b"test")
+            .expect("current media placeholder should be written");
+        let matching_path = root.join("anime").join("Re Zero kara Hajimeru Isekai Seikatsu (2026)").join(
+            "[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 07 [1080p CR WEBRip HEVC AAC][MultiSub][5CA89B15].mkv",
+        );
+        let mut candidates = vec![matching_path.clone()];
+        candidates.extend((0..MEDIA_MATCH_PREFILTER_THRESHOLD + 10).map(|index| {
+            PathBuf::from(format!(
+                "E:/Anime/Unrelated Series {index:03}/[Example] Other Show - {index:02}.mkv"
+            ))
+        }));
+
+        let selection = select_media_match_rebuild_candidates(&candidates, current_path.to_str());
+
+        assert!(selection.prefiltered);
+        assert_eq!(selection.discovered_files, candidates.len());
+        assert_eq!(selection.paths.first(), Some(&current_path));
+        assert!(selection.paths.contains(&matching_path));
+        assert!(selection.paths.len() <= MEDIA_MATCH_PREFILTER_LIMIT + 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_rebuild_selection_keeps_all_candidates_for_small_roots() {
+        let root = unique_media_match_test_root("small-root-selection");
+        let current_dir = root.join("downloads");
+        std::fs::create_dir_all(&current_dir).expect("current dir should be created");
+        let current_path = current_dir.join("[Judas] Re.Zero - S04E07.mkv");
+        std::fs::write(&current_path, b"test")
+            .expect("current media placeholder should be written");
+        let candidates = vec![
+            PathBuf::from("E:/Anime/Re Zero/[Erai-raws] Re Zero 4th Season - 07.mkv"),
+            PathBuf::from("E:/Anime/Re Zero/[Erai-raws] Re Zero 4th Season - 08.mkv"),
+        ];
+
+        let selection = select_media_match_rebuild_candidates(&candidates, current_path.to_str());
+
+        assert!(!selection.prefiltered);
+        assert_eq!(selection.discovered_files, candidates.len());
+        assert_eq!(selection.paths.first(), Some(&current_path));
+        assert_eq!(selection.paths.len(), candidates.len() + 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

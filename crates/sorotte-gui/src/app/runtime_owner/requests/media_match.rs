@@ -125,6 +125,31 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    fn media_match_config_path_for_request(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<PathBuf> {
+        if let Some(config_path) = self.config_path.clone() {
+            return Some(config_path);
+        }
+        let config_path = projected_state
+            .config_storage
+            .config_path
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(resolve_sorotte_gui_config_path_legacy_compatible)?;
+        self.config_path = Some(config_path.clone());
+        Some(config_path)
+    }
+
+    fn media_match_root_for_request(
+        &mut self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> Option<PathBuf> {
+        self.media_match_config_path_for_request(projected_state)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+    }
+
     pub(in crate::app::runtime_owner) fn pump_media_match_tool_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -183,7 +208,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.media_match_tool_worker_busy_notification(handle, projected_state) {
             return true;
         }
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -238,7 +263,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.media_match_tool_worker_busy_notification(handle, projected_state) {
             return true;
         }
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -292,7 +317,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -322,6 +347,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        let _ = self.media_match_config_path_for_request(projected_state);
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
         let mut actions = vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
@@ -350,7 +376,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -430,7 +456,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        if let Some(root) = self.legacy_gui_qsettings_root()
+        if let Some(root) = self.media_match_root_for_request(projected_state)
             && let Err(error) = clear_persisted_media_match_cache_at_root(&root)
         {
             Self::push_runtime_error_notification(handle, projected_state, error);
@@ -503,12 +529,19 @@ impl GuiPersistedConfigRuntimeOwner {
             &mut projected_state.configuration.settings,
             &projected_state.media_match.settings,
         );
-        if let Some(config_path) = self.config_path.as_ref()
-            && let Err(error) = upsert_sorotte_ini_stored_client_settings_mvp_at_path(
-                config_path,
-                &projected_state.configuration.settings,
-            )
-        {
+        let Some(config_path) = self.media_match_config_path_for_request(projected_state) else {
+            Self::push_runtime_error_notification(
+                handle,
+                projected_state,
+                "Could not persist Media Matching settings: no writable GUI config path is available."
+                    .to_owned(),
+            );
+            return false;
+        };
+        if let Err(error) = upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+            &config_path,
+            &projected_state.configuration.settings,
+        ) {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,

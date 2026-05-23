@@ -4,7 +4,7 @@ mod playback;
 mod session_controls;
 mod stream_helper;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sorotte_client_app::app_boundary::{
     commands::{
@@ -41,6 +41,7 @@ use super::super::shell_state::{
     MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
     apply_media_match_settings_to_stored_settings, browser_stream_target_kind,
 };
+use super::super::startup::resolve_sorotte_gui_config_path_legacy_compatible;
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
     StreamHelperRemediationProgress, import_managed_stream_helper_downloader_with_progress,
