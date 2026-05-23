@@ -30,6 +30,7 @@ pub struct StoredClientSettingsMvp {
     pub plex_selected_server_url: Option<String>,
     pub plex_selected_server_token: Option<String>,
     pub media_match_fingerprinting_enabled: Option<bool>,
+    pub media_match_background_warmup_enabled: Option<bool>,
     pub media_match_runtime_tolerance_enabled: Option<bool>,
     pub media_match_autoplay_policy: Option<String>,
     pub folder_search_first_file_timeout_seconds: Option<f64>,
@@ -125,6 +126,10 @@ impl fmt::Debug for StoredClientSettingsMvp {
             .field(
                 "media_match_fingerprinting_enabled",
                 &self.media_match_fingerprinting_enabled,
+            )
+            .field(
+                "media_match_background_warmup_enabled",
+                &self.media_match_background_warmup_enabled,
             )
             .field(
                 "media_match_runtime_tolerance_enabled",

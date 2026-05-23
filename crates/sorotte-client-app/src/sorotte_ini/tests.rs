@@ -88,11 +88,13 @@ fn parse_sorotte_ini_stored_client_settings_mvp_reads_media_match_settings() {
     let settings = parse_sorotte_ini_stored_client_settings_mvp(
         "[client_settings]\n\
          mediaMatchFingerprintingEnabled = True\n\
+         mediaMatchBackgroundWarmupEnabled = False\n\
          mediaMatchRuntimeToleranceEnabled = False\n\
          mediaMatchAutoplayPolicy = AllowStrongSameMedia\n",
     );
 
     assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    assert_eq!(settings.media_match_background_warmup_enabled, Some(false));
     assert_eq!(settings.media_match_runtime_tolerance_enabled, Some(false));
     assert_eq!(
         settings.media_match_autoplay_policy.as_deref(),
@@ -122,6 +124,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
         "",
         &StoredClientSettingsMvp {
             media_match_fingerprinting_enabled: Some(true),
+            media_match_background_warmup_enabled: Some(false),
             media_match_runtime_tolerance_enabled: Some(false),
             media_match_autoplay_policy: Some("AllowStrongSameMedia".to_owned()),
             ..StoredClientSettingsMvp::default()
@@ -130,6 +133,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
 
     assert!(updated.contains("[client_settings]\n"));
     assert!(updated.contains("mediaMatchFingerprintingEnabled = True\n"));
+    assert!(updated.contains("mediaMatchBackgroundWarmupEnabled = False\n"));
     assert!(updated.contains("mediaMatchRuntimeToleranceEnabled = False\n"));
     assert!(updated.contains("mediaMatchAutoplayPolicy = AllowStrongSameMedia\n"));
 }

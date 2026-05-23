@@ -111,6 +111,14 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_with_plex_identity_clear(
             format_ini_bool_legacy_compatible(value),
         );
     }
+    if let Some(value) = settings.media_match_background_warmup_enabled {
+        upsert_ini_value_legacy_compatible(
+            &mut lines,
+            "client_settings",
+            "mediaMatchBackgroundWarmupEnabled",
+            format_ini_bool_legacy_compatible(value),
+        );
+    }
     if let Some(value) = settings.media_match_runtime_tolerance_enabled {
         upsert_ini_value_legacy_compatible(
             &mut lines,

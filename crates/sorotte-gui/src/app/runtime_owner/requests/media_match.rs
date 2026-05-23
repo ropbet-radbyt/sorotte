@@ -1,6 +1,13 @@
-use std::{sync::mpsc, thread};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+};
 
-use super::super::GuiMediaMatchToolWorkerEvent;
+use super::super::{GuiMediaMatchBackgroundWorkerEvent, GuiMediaMatchToolWorkerEvent};
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -200,6 +207,505 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
+    fn media_match_background_progress_status(progress: &MediaMatchToolProgress) -> String {
+        match progress
+            .detail
+            .as_deref()
+            .filter(|detail| !detail.is_empty())
+        {
+            Some(detail) => format!(
+                "{} ({:.0}%): {detail}",
+                progress.label,
+                progress.progress_fraction.clamp(0.0, 1.0) * 100.0
+            ),
+            None => format!(
+                "{} ({:.0}%)",
+                progress.label,
+                progress.progress_fraction.clamp(0.0, 1.0) * 100.0
+            ),
+        }
+    }
+
+    fn publish_media_match_background_status(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        status: impl Into<String>,
+    ) {
+        let mut snapshot = self.media_match_runtime_snapshot.clone();
+        snapshot.background_status = Some(status.into());
+        self.media_match_runtime_snapshot = snapshot.clone();
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+        );
+    }
+
+    fn cancel_media_match_background_worker(&mut self) {
+        if let Some(cancel_flag) = self.media_match_background_worker_cancel.take() {
+            cancel_flag.store(true, Ordering::Relaxed);
+        }
+        self.media_match_background_worker_rx = None;
+        self.media_match_background_trigger_key = None;
+        self.media_match_runtime_snapshot.background_status = Some("idle".to_owned());
+    }
+
+    fn media_match_background_trigger_key(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+        search_roots: &[PathBuf],
+    ) -> String {
+        let current_player_path = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone())
+            .unwrap_or_default();
+        let shared_target = self
+            .current_shared_playlist_target(projected_state)
+            .unwrap_or_default();
+        let roots = search_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        let settings = &projected_state.media_match.settings;
+        format!(
+            "current={current_player_path}\ntarget={shared_target}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
+            settings.fingerprinting_enabled,
+            settings.runtime_tolerance_enabled,
+            settings.autoplay_policy,
+            settings.background_warmup_enabled,
+        )
+    }
+
+    fn attached_media_match_candidate_paths(&self, roots: &[String]) -> Option<Vec<PathBuf>> {
+        let index = self
+            .attached_media_search_index
+            .as_ref()
+            .filter(|index| index.roots == roots)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut paths = Vec::new();
+
+        for root_key in roots {
+            let Some(root_index) = index.root_indexes_by_key.get(root_key) else {
+                continue;
+            };
+            for relative_paths in root_index.candidates_by_name.values() {
+                for relative_path in relative_paths {
+                    let candidate = if cfg!(windows) || !relative_path.contains('\\') {
+                        root_index.root_path.join(relative_path)
+                    } else {
+                        root_index.root_path.join(relative_path.replace('\\', "/"))
+                    };
+                    if !candidate.is_file() {
+                        continue;
+                    }
+                    let mut key = candidate.to_string_lossy().replace('\\', "/");
+                    if cfg!(windows) {
+                        key = key.to_ascii_lowercase();
+                    }
+                    if seen.insert(key) {
+                        paths.push(candidate);
+                    }
+                }
+            }
+        }
+
+        (!paths.is_empty()).then_some(paths)
+    }
+
+    fn queue_media_match_background_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        reason: &'static str,
+        force_restart: bool,
+        notify_on_finish: bool,
+    ) -> bool {
+        if !projected_state.media_match.settings.fingerprinting_enabled {
+            if notify_on_finish {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    "Enable Media Matching fingerprinting before rebuilding the index.".to_owned(),
+                );
+            }
+            return false;
+        }
+        if self.media_match_tool_worker_rx.is_some() {
+            if notify_on_finish {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: "Media Matching tools are installing or importing; background matching will wait.".to_owned(),
+                    }],
+                );
+            }
+            return false;
+        }
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
+            if notify_on_finish {
+                Self::push_runtime_error_notification(
+                    handle,
+                    projected_state,
+                    "Media Matching background work requires a writable GUI config root."
+                        .to_owned(),
+                );
+            }
+            return false;
+        };
+        let tool_snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        if tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
+            if notify_on_finish {
+                let message = tool_snapshot.message.unwrap_or_else(|| {
+                    "Media Matching tools are not ready for fingerprint extraction.".to_owned()
+                });
+                Self::push_runtime_error_notification(handle, projected_state, message);
+            }
+            return false;
+        }
+
+        let search_roots = self.automatic_media_search_roots(projected_state);
+        if search_roots.is_empty() {
+            if notify_on_finish {
+                Self::push_actions_and_project(
+                    handle,
+                    projected_state,
+                    vec![GuiShellAction::PushTransientNotification {
+                        level: GuiTransientNotificationLevel::Info,
+                        message: "Media Matching has no media-search roots to warm.".to_owned(),
+                    }],
+                );
+            }
+            return false;
+        }
+
+        let trigger_key = self.media_match_background_trigger_key(projected_state, &search_roots);
+        if self.media_match_background_worker_rx.is_some() {
+            if !force_restart
+                && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
+            {
+                return true;
+            }
+            self.cancel_media_match_background_worker();
+        } else if !force_restart
+            && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
+        {
+            return true;
+        }
+
+        let root_keys = Self::automatic_media_search_root_keys(&search_roots);
+        let candidates = self.attached_media_match_candidate_paths(&root_keys);
+        let current_player_path = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone());
+        let settings = projected_state.media_match.settings.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let worker_cancel_flag = Arc::clone(&cancel_flag);
+        let (tx, rx) = mpsc::channel();
+
+        match thread::Builder::new()
+            .name("sorotte-gui-media-match-background".to_owned())
+            .spawn(move || {
+                let progress_tx = tx.clone();
+                let hardening_candidates = candidates.clone();
+                let fast_result = if let Some(candidates) = candidates {
+                    media_match_tool_paths(&root).and_then(|tools| {
+                        let extraction_settings =
+                            sorotte_media_match::MediaExtractionSettings::fast_v1();
+                        rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                            MediaMatchCandidateRebuildRequest {
+                                root: &root,
+                                candidates,
+                                current_player_path: current_player_path.as_deref(),
+                                settings: &settings,
+                                tools: &tools,
+                                extraction_settings: &extraction_settings,
+                                cancel_flag: Some(worker_cancel_flag.as_ref()),
+                            },
+                            |progress| {
+                                let _ = progress_tx
+                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                            },
+                        )
+                    })
+                } else {
+                    let extraction_settings =
+                        sorotte_media_match::MediaExtractionSettings::full_v1();
+                    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+                        &root,
+                        &search_roots,
+                        current_player_path.as_deref(),
+                        &settings,
+                        &extraction_settings,
+                        Some(worker_cancel_flag.as_ref()),
+                        |progress| {
+                            let _ = progress_tx
+                                .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                        },
+                    )
+                };
+                let strong_fast_match = fast_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|result| result.current_decision.as_deref())
+                    .is_some_and(|decision| decision.starts_with("strong:"));
+                if !strong_fast_match {
+                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
+                    return;
+                }
+                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::FastResult(
+                    fast_result.clone(),
+                ));
+                if worker_cancel_flag.load(Ordering::Relaxed) {
+                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(Err(
+                        "Media Matching index rebuild was canceled.".to_owned(),
+                    )));
+                    return;
+                }
+                let full_result = if let Some(candidates) = hardening_candidates {
+                    media_match_tool_paths(&root).and_then(|tools| {
+                        let extraction_settings =
+                            sorotte_media_match::MediaExtractionSettings::full_v1();
+                        rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                            MediaMatchCandidateRebuildRequest {
+                                root: &root,
+                                candidates,
+                                current_player_path: current_player_path.as_deref(),
+                                settings: &settings,
+                                tools: &tools,
+                                extraction_settings: &extraction_settings,
+                                cancel_flag: Some(worker_cancel_flag.as_ref()),
+                            },
+                            |progress| {
+                                let _ = progress_tx
+                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                            },
+                        )
+                    })
+                } else {
+                    rebuild_persisted_media_match_index_with_progress_and_cancel(
+                        &root,
+                        &search_roots,
+                        current_player_path.as_deref(),
+                        &settings,
+                        Some(worker_cancel_flag.as_ref()),
+                        |progress| {
+                            let _ = progress_tx
+                                .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                        },
+                    )
+                };
+                let full_result = full_result.map(|mut result| {
+                    result.message =
+                        format!("Media Matching full hardening complete. {}", result.message);
+                    result
+                });
+                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(full_result));
+            }) {
+            Ok(_thread) => {
+                self.media_match_background_worker_rx = Some(rx);
+                self.media_match_background_worker_cancel = Some(cancel_flag);
+                self.media_match_background_trigger_key = Some(trigger_key);
+                self.publish_media_match_background_status(
+                    handle,
+                    projected_state,
+                    format!("queued: {reason}"),
+                );
+                true
+            }
+            Err(error) => {
+                self.media_match_background_worker_cancel = None;
+                self.media_match_background_worker_rx = None;
+                if notify_on_finish {
+                    Self::push_runtime_error_notification(
+                        handle,
+                        projected_state,
+                        format!("Could not start Media Matching background worker: {error}"),
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    fn apply_media_match_background_result(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        result: MediaMatchIndexRebuildResult,
+        notify: bool,
+        background_status: impl Into<String>,
+    ) -> bool {
+        let mut snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        snapshot.cache_status = Some(result.cache_status);
+        snapshot.current_decision = result.current_decision;
+        snapshot.last_evidence = result.last_evidence.or_else(|| {
+            Some("Fingerprint evidence is local-only; nothing is sent over Syncplay.".to_owned())
+        });
+        snapshot.background_status = Some(background_status.into());
+        self.media_match_runtime_snapshot = snapshot.clone();
+        let strong_same_media = projected_state
+            .media_match
+            .settings
+            .autoplay_allows_strong_same_media()
+            && snapshot
+                .current_decision
+                .as_deref()
+                .is_some_and(|decision| decision.starts_with("strong:"));
+        if !self.set_media_match_autoplay_gate(handle, projected_state, strong_same_media) {
+            return false;
+        }
+        let mut actions = vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)];
+        if notify {
+            actions.push(GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: result.message.clone(),
+            });
+            actions.push(GuiShellAction::AnnounceSystemChatEvent(result.message));
+        }
+        Self::push_actions_and_project(handle, projected_state, actions);
+        true
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_media_match_background_worker(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        let Some(rx) = self.media_match_background_worker_rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        loop {
+            match rx.try_recv() {
+                Ok(GuiMediaMatchBackgroundWorkerEvent::Progress(progress)) => {
+                    self.publish_media_match_background_status(
+                        handle,
+                        projected_state,
+                        Self::media_match_background_progress_status(&progress),
+                    );
+                }
+                Ok(GuiMediaMatchBackgroundWorkerEvent::FastResult(result)) => match result {
+                    Ok(result) => {
+                        if !self.apply_media_match_background_result(
+                            handle,
+                            projected_state,
+                            result,
+                            false,
+                            "full hardening queued",
+                        ) {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let mut snapshot = self.refresh_media_match_runtime_snapshot(
+                            &projected_state.media_match.settings,
+                        );
+                        snapshot.message = Some(error.clone());
+                        snapshot.background_status = Some("failed".to_owned());
+                        self.media_match_runtime_snapshot = snapshot.clone();
+                        Self::push_actions_and_project(
+                            handle,
+                            projected_state,
+                            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+                        );
+                    }
+                },
+                Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
+                    keep_rx = false;
+                    self.media_match_background_worker_cancel = None;
+                    match result {
+                        Ok(result) => {
+                            if !self.apply_media_match_background_result(
+                                handle,
+                                projected_state,
+                                result,
+                                true,
+                                "idle",
+                            ) {
+                                break;
+                            }
+                        }
+                        Err(error) if error.contains("canceled") => {
+                            self.publish_media_match_background_status(
+                                handle,
+                                projected_state,
+                                "idle",
+                            );
+                        }
+                        Err(error) => {
+                            let mut snapshot = self.refresh_media_match_runtime_snapshot(
+                                &projected_state.media_match.settings,
+                            );
+                            snapshot.message = Some(error.clone());
+                            snapshot.background_status = Some("failed".to_owned());
+                            self.media_match_runtime_snapshot = snapshot.clone();
+                            Self::push_actions_and_project(
+                                handle,
+                                projected_state,
+                                vec![
+                                    GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
+                                    GuiShellAction::PushTransientNotification {
+                                        level: GuiTransientNotificationLevel::Warning,
+                                        message: error,
+                                    },
+                                ],
+                            );
+                        }
+                    }
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.media_match_background_worker_cancel = None;
+                    self.publish_media_match_background_status(handle, projected_state, "failed");
+                    break;
+                }
+            }
+        }
+        if keep_rx {
+            self.media_match_background_worker_rx = Some(rx);
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn maybe_queue_media_match_background_warmup(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) {
+        if !projected_state.media_match.settings.fingerprinting_enabled {
+            return;
+        }
+        if !projected_state
+            .media_match
+            .settings
+            .background_warmup_enabled
+        {
+            return;
+        }
+        if self.media_match_background_worker_rx.is_some() {
+            return;
+        }
+        if self.media_match_runtime_snapshot.health != GuiMediaMatchToolHealth::Healthy {
+            return;
+        }
+        let _ = self.queue_media_match_background_worker(
+            handle,
+            projected_state,
+            "background warmup",
+            false,
+            false,
+        );
+    }
+
     pub(super) fn handle_install_media_match_tools_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -376,78 +882,13 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        let Some(root) = self.media_match_root_for_request(projected_state) else {
-            Self::push_runtime_error_notification(
-                handle,
-                projected_state,
-                "Media Matching index rebuild requires a writable GUI config root.".to_owned(),
-            );
-            return false;
-        };
-        let search_roots = self.automatic_media_search_roots(projected_state);
-        let current_player_path = self
-            .player_local_file
-            .as_ref()
-            .and_then(|file| file.path.clone());
-        let settings = projected_state.media_match.settings.clone();
-        self.report_media_match_remediation_progress(
+        let _ = self.queue_media_match_background_worker(
             handle,
             projected_state,
-            "Preparing Media Matching index",
-            Some(format!("{} media-search roots", search_roots.len())),
-            0.02,
+            "manual rebuild",
+            true,
+            true,
         );
-        let result = rebuild_persisted_media_match_index_with_progress(
-            &root,
-            &search_roots,
-            current_player_path.as_deref(),
-            &settings,
-            |progress| {
-                self.apply_media_match_progress(handle, projected_state, progress);
-            },
-        );
-        self.clear_media_match_remediation_progress(handle, projected_state);
-        match result {
-            Ok(result) => {
-                let mut snapshot = self
-                    .refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
-                snapshot.cache_status = Some(result.cache_status);
-                snapshot.current_decision = result.current_decision;
-                snapshot.last_evidence = result.last_evidence.or_else(|| {
-                    Some(
-                        "Fingerprint evidence is local-only; nothing is sent over Syncplay."
-                            .to_owned(),
-                    )
-                });
-                self.media_match_runtime_snapshot = snapshot.clone();
-                let strong_same_media = projected_state
-                    .media_match
-                    .settings
-                    .autoplay_allows_strong_same_media()
-                    && snapshot
-                        .current_decision
-                        .as_deref()
-                        .is_some_and(|decision| decision.starts_with("strong:"));
-                if !self.set_media_match_autoplay_gate(handle, projected_state, strong_same_media) {
-                    return true;
-                }
-                Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![
-                        GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
-                        GuiShellAction::PushTransientNotification {
-                            level: GuiTransientNotificationLevel::Info,
-                            message: result.message.clone(),
-                        },
-                        GuiShellAction::AnnounceSystemChatEvent(result.message),
-                    ],
-                );
-            }
-            Err(error) => {
-                Self::push_runtime_error_notification(handle, projected_state, error);
-            }
-        }
         true
     }
 
@@ -456,6 +897,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
+        self.cancel_media_match_background_worker();
         if let Some(root) = self.media_match_root_for_request(projected_state)
             && let Err(error) = clear_persisted_media_match_cache_at_root(&root)
         {
@@ -467,6 +909,7 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.cache_status = Some("empty".to_owned());
         snapshot.current_decision = None;
         snapshot.last_evidence = None;
+        snapshot.background_status = Some("idle".to_owned());
         self.media_match_runtime_snapshot = snapshot.clone();
         if !self.set_media_match_autoplay_gate(handle, projected_state, false) {
             return true;
@@ -493,7 +936,26 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         enabled: bool,
     ) -> bool {
+        if !enabled {
+            self.cancel_media_match_background_worker();
+        }
         projected_state.media_match.settings.fingerprinting_enabled = enabled;
+        self.persist_media_match_settings_request(handle, projected_state)
+    }
+
+    pub(super) fn handle_set_media_match_background_warmup_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        enabled: bool,
+    ) -> bool {
+        projected_state
+            .media_match
+            .settings
+            .background_warmup_enabled = enabled;
+        if !enabled {
+            self.cancel_media_match_background_worker();
+        }
         self.persist_media_match_settings_request(handle, projected_state)
     }
 
@@ -568,6 +1030,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 ),
             ],
         );
+        self.maybe_queue_media_match_background_warmup(handle, projected_state);
         true
     }
 }

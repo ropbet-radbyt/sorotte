@@ -15,6 +15,9 @@ impl GuiWidgetEguiRenderer {
         if node.id == "plugins:media-matching:setting:fingerprinting" {
             return Some(GuiShellAction::SetMediaMatchFingerprintingEnabled(value));
         }
+        if node.id == "plugins:media-matching:setting:background-warmup" {
+            return Some(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(value));
+        }
         if node.id == "plugins:media-matching:setting:runtime-tolerance" {
             return Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(value));
         }

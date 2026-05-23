@@ -210,6 +210,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ClearMediaMatchCache
             | GuiShellAction::OpenMediaMatchInstallLocation
             | GuiShellAction::SetMediaMatchFingerprintingEnabled(_)
+            | GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(_)
             | GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(_)
             | GuiShellAction::SetMediaMatchAutoplayPolicy(_)
             | GuiShellAction::StartPlexAuth

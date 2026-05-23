@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,11 @@ pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 1;
 const FRAME_HASH_BITS: u32 = 64;
 const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
 const DEFAULT_ALIGNMENT_TOLERANCE_SECONDS: f64 = 1.25;
+const FAST_VIDEO_SAMPLE_FRAMES: usize = 12;
+const VIDEO_FRAME_WIDTH: usize = 32;
+const VIDEO_FRAME_HEIGHT: usize = 32;
+const VIDEO_FRAME_BYTES: usize = VIDEO_FRAME_WIDTH * VIDEO_FRAME_HEIGHT;
+const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -33,9 +41,15 @@ pub enum MediaMatchAutoplayPolicy {
     AllowStrongSameMedia,
 }
 
+fn default_media_match_background_warmup_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaMatchSettings {
     pub fingerprinting_enabled: bool,
+    #[serde(default = "default_media_match_background_warmup_enabled")]
+    pub background_warmup_enabled: bool,
     pub runtime_tolerance_enabled: bool,
     pub runtime_tolerance_seconds: f64,
     pub autoplay_policy: MediaMatchAutoplayPolicy,
@@ -51,6 +65,7 @@ impl Default for MediaMatchSettings {
     fn default() -> Self {
         Self {
             fingerprinting_enabled: false,
+            background_warmup_enabled: true,
             runtime_tolerance_enabled: true,
             runtime_tolerance_seconds: 3.0,
             autoplay_policy: MediaMatchAutoplayPolicy::DiagnosticsOnly,
@@ -162,20 +177,67 @@ impl MediaFileIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaFingerprintProfile {
+    FastV1,
+    FullV1,
+}
+
+impl MediaFingerprintProfile {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FastV1 => "fast-v1",
+            Self::FullV1 => "full-v1",
+        }
+    }
+}
+
+fn default_media_fingerprint_profile() -> MediaFingerprintProfile {
+    MediaFingerprintProfile::FullV1
+}
+
+fn default_audio_sample_seconds() -> u32 {
+    0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaExtractionSettings {
+    #[serde(default = "default_media_fingerprint_profile")]
+    pub profile: MediaFingerprintProfile,
     pub frame_sample_interval_seconds: u32,
     pub max_frames: usize,
+    #[serde(default = "default_audio_sample_seconds")]
+    pub audio_sample_seconds: u32,
     pub audio_algorithm: String,
     pub video_algorithm: String,
 }
 
 impl Default for MediaExtractionSettings {
     fn default() -> Self {
+        Self::full_v1()
+    }
+}
+
+impl MediaExtractionSettings {
+    pub fn fast_v1() -> Self {
         Self {
+            profile: MediaFingerprintProfile::FastV1,
+            frame_sample_interval_seconds: 0,
+            max_frames: FAST_VIDEO_SAMPLE_FRAMES,
+            audio_sample_seconds: FAST_AUDIO_SAMPLE_SECONDS,
+            audio_algorithm: format!("chromaprint-fpcalc-{FAST_AUDIO_SAMPLE_SECONDS}s"),
+            video_algorithm: "sorotte-pdq-style-fast-v1".to_owned(),
+        }
+    }
+
+    pub fn full_v1() -> Self {
+        Self {
+            profile: MediaFingerprintProfile::FullV1,
             frame_sample_interval_seconds: 10,
             max_frames: 720,
+            audio_sample_seconds: 0,
             audio_algorithm: "chromaprint-fpcalc".to_owned(),
-            video_algorithm: "sorotte-pdq-style-v1".to_owned(),
+            video_algorithm: "sorotte-pdq-style-full-v1".to_owned(),
         }
     }
 }
@@ -209,6 +271,9 @@ pub enum MediaFingerprintError {
         status: Option<i32>,
         stderr: String,
     },
+    Cancelled {
+        tool: &'static str,
+    },
     InvalidToolOutput {
         tool: &'static str,
         reason: String,
@@ -233,6 +298,9 @@ impl fmt::Display for MediaFingerprintError {
                     .map(|status| status.to_string())
                     .unwrap_or_else(|| "terminated".to_owned());
                 write!(formatter, "{tool} failed with status {status}: {stderr}")
+            }
+            Self::Cancelled { tool } => {
+                write!(formatter, "{tool} was canceled during media fingerprinting")
             }
             Self::InvalidToolOutput { tool, reason } => {
                 write!(formatter, "{tool} output could not be parsed: {reason}")
@@ -378,6 +446,24 @@ pub fn fingerprint_media_file(
     tools: &MediaMatchToolPaths,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<MediaFingerprintRecord, MediaFingerprintError> {
+    fingerprint_media_file_with_cancellation(path, tools, extraction_settings, None)
+}
+
+pub fn fingerprint_media_file_cancellable(
+    path: impl AsRef<Path>,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: &AtomicBool,
+) -> Result<MediaFingerprintRecord, MediaFingerprintError> {
+    fingerprint_media_file_with_cancellation(path, tools, extraction_settings, Some(cancel_flag))
+}
+
+fn fingerprint_media_file_with_cancellation(
+    path: impl AsRef<Path>,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<MediaFingerprintRecord, MediaFingerprintError> {
     let path = path.as_ref();
     let metadata =
         std::fs::metadata(path).map_err(|error| MediaFingerprintError::FileMetadata {
@@ -399,9 +485,21 @@ pub fn fingerprint_media_file(
         size_bytes,
         duration_seconds,
     );
-    let audio = extract_audio_fingerprint(&tools.fpcalc, path).ok();
-    let video =
-        extract_video_fingerprint(&tools.ffmpeg, path, duration_seconds, extraction_settings).ok();
+    let audio = extract_audio_fingerprint_with_length(
+        &tools.fpcalc,
+        path,
+        extraction_settings,
+        cancel_flag,
+    )
+    .ok();
+    let video = extract_video_fingerprint_with_cancellation(
+        &tools.ffmpeg,
+        path,
+        duration_seconds,
+        extraction_settings,
+        cancel_flag,
+    )
+    .ok();
 
     Ok(MediaFingerprintRecord {
         identity: MediaFileIdentity {
@@ -422,20 +520,20 @@ pub fn probe_media_duration_seconds(
     ffprobe: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
 ) -> Result<Option<f64>, MediaFingerprintError> {
-    let output = Command::new(ffprobe.as_ref())
-        .arg("-v")
-        .arg("error")
-        .arg("-show_entries")
-        .arg("format=duration")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
-        .arg(media_path.as_ref())
-        .output()
-        .map_err(|error| MediaFingerprintError::ToolFailed {
-            tool: "ffprobe",
-            status: None,
-            stderr: error.to_string(),
-        })?;
+    let output = run_tool_output(
+        "ffprobe",
+        ffprobe.as_ref(),
+        [
+            "-v".into(),
+            "error".into(),
+            "-show_entries".into(),
+            "format=duration".into(),
+            "-of".into(),
+            "default=noprint_wrappers=1:nokey=1".into(),
+            media_path.as_ref().as_os_str().to_os_string(),
+        ],
+        None,
+    )?;
     ensure_tool_success("ffprobe", &output)?;
     let text = String::from_utf8_lossy(&output.stdout);
     let value = text
@@ -449,15 +547,27 @@ pub fn extract_audio_fingerprint(
     fpcalc: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
 ) -> Result<AudioFingerprint, MediaFingerprintError> {
-    let output = Command::new(fpcalc.as_ref())
-        .arg("-raw")
-        .arg(media_path.as_ref())
-        .output()
-        .map_err(|error| MediaFingerprintError::ToolFailed {
-            tool: "fpcalc",
-            status: None,
-            stderr: error.to_string(),
-        })?;
+    extract_audio_fingerprint_with_length(
+        fpcalc,
+        media_path,
+        &MediaExtractionSettings::full_v1(),
+        None,
+    )
+}
+
+fn extract_audio_fingerprint_with_length(
+    fpcalc: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<AudioFingerprint, MediaFingerprintError> {
+    let mut args = vec!["-raw".into()];
+    if extraction_settings.audio_sample_seconds > 0 {
+        args.push("-length".into());
+        args.push(extraction_settings.audio_sample_seconds.to_string().into());
+    }
+    args.push(media_path.as_ref().as_os_str().to_os_string());
+    let output = run_tool_output("fpcalc", fpcalc.as_ref(), args, cancel_flag)?;
     ensure_tool_success("fpcalc", &output)?;
     let text = String::from_utf8_lossy(&output.stdout);
     parse_fpcalc_output(&text).ok_or_else(|| MediaFingerprintError::InvalidToolOutput {
@@ -472,44 +582,84 @@ pub fn extract_video_fingerprint(
     duration_seconds: Option<f64>,
     extraction_settings: &MediaExtractionSettings,
 ) -> Result<VideoFingerprint, MediaFingerprintError> {
-    const FRAME_WIDTH: usize = 32;
-    const FRAME_HEIGHT: usize = 32;
-    const FRAME_BYTES: usize = FRAME_WIDTH * FRAME_HEIGHT;
+    extract_video_fingerprint_with_cancellation(
+        ffmpeg,
+        media_path,
+        duration_seconds,
+        extraction_settings,
+        None,
+    )
+}
 
+fn extract_video_fingerprint_with_cancellation(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<VideoFingerprint, MediaFingerprintError> {
+    match extraction_settings.profile {
+        MediaFingerprintProfile::FastV1 => extract_fast_video_fingerprint(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            extraction_settings,
+            cancel_flag,
+        ),
+        MediaFingerprintProfile::FullV1 => extract_full_video_fingerprint(
+            ffmpeg,
+            media_path,
+            duration_seconds,
+            extraction_settings,
+            cancel_flag,
+        ),
+    }
+}
+
+fn extract_full_video_fingerprint(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<VideoFingerprint, MediaFingerprintError> {
     let interval = extraction_settings.frame_sample_interval_seconds.max(1);
-    let output = Command::new(ffmpeg.as_ref())
-        .arg("-v")
-        .arg("error")
-        .arg("-i")
-        .arg(media_path.as_ref())
-        .arg("-vf")
-        .arg(format!(
-            "fps=1/{interval},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=bicubic,format=gray"
-        ))
-        .arg("-frames:v")
-        .arg(extraction_settings.max_frames.max(1).to_string())
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("gray")
-        .arg("-")
-        .output()
-        .map_err(|error| MediaFingerprintError::ToolFailed {
-            tool: "ffmpeg",
-            status: None,
-            stderr: error.to_string(),
-        })?;
+    let output = run_tool_output(
+        "ffmpeg",
+        ffmpeg.as_ref(),
+        [
+            "-v".into(),
+            "error".into(),
+            "-i".into(),
+            media_path.as_ref().as_os_str().to_os_string(),
+            "-vf".into(),
+            format!(
+                "fps=1/{interval},scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
+            )
+            .into(),
+            "-frames:v".into(),
+            extraction_settings.max_frames.max(1).to_string().into(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-pix_fmt".into(),
+            "gray".into(),
+            "-".into(),
+        ],
+        cancel_flag,
+    )?;
     ensure_tool_success("ffmpeg", &output)?;
 
     let mut frames = Vec::new();
-    for (index, chunk) in output.stdout.chunks_exact(FRAME_BYTES).enumerate() {
-        let hash = pdq_style_luma_hash(FRAME_WIDTH, FRAME_HEIGHT, chunk).ok_or_else(|| {
-            MediaFingerprintError::InvalidToolOutput {
-                tool: "ffmpeg",
-                reason: "raw grayscale frame size did not match the requested extraction geometry"
-                    .to_owned(),
-            }
-        })?;
+    for (index, chunk) in output.stdout.chunks_exact(VIDEO_FRAME_BYTES).enumerate() {
+        let hash =
+            pdq_style_luma_hash(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, chunk).ok_or_else(|| {
+                MediaFingerprintError::InvalidToolOutput {
+                    tool: "ffmpeg",
+                    reason:
+                        "raw grayscale frame size did not match the requested extraction geometry"
+                            .to_owned(),
+                }
+            })?;
         frames.push(FrameFingerprint::new(
             index as f64 * f64::from(interval),
             hash,
@@ -529,6 +679,99 @@ pub fn extract_video_fingerprint(
             .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
         frames,
     })
+}
+
+fn extract_fast_video_fingerprint(
+    ffmpeg: impl AsRef<Path>,
+    media_path: impl AsRef<Path>,
+    duration_seconds: Option<f64>,
+    extraction_settings: &MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<VideoFingerprint, MediaFingerprintError> {
+    let timestamps = fast_video_sample_timestamps(duration_seconds, extraction_settings.max_frames);
+    let mut frames = Vec::new();
+    for timestamp in timestamps {
+        if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(MediaFingerprintError::Cancelled { tool: "ffmpeg" });
+        }
+        let output = run_tool_output(
+            "ffmpeg",
+            ffmpeg.as_ref(),
+            [
+                "-v".into(),
+                "error".into(),
+                "-ss".into(),
+                format!("{timestamp:.3}").into(),
+                "-i".into(),
+                media_path.as_ref().as_os_str().to_os_string(),
+                "-frames:v".into(),
+                "1".into(),
+                "-vf".into(),
+                format!("scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray")
+                    .into(),
+                "-f".into(),
+                "rawvideo".into(),
+                "-pix_fmt".into(),
+                "gray".into(),
+                "-".into(),
+            ],
+            cancel_flag,
+        )?;
+        ensure_tool_success("ffmpeg", &output)?;
+        let Some(chunk) = output.stdout.chunks_exact(VIDEO_FRAME_BYTES).next() else {
+            continue;
+        };
+        let hash =
+            pdq_style_luma_hash(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, chunk).ok_or_else(|| {
+                MediaFingerprintError::InvalidToolOutput {
+                    tool: "ffmpeg",
+                    reason:
+                        "raw grayscale frame size did not match the requested extraction geometry"
+                            .to_owned(),
+                }
+            })?;
+        frames.push(FrameFingerprint::new(timestamp, hash));
+    }
+
+    if frames.is_empty() {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "no raw grayscale frames were extracted".to_owned(),
+        });
+    }
+
+    Ok(VideoFingerprint {
+        duration_seconds: duration_seconds
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
+        frames,
+    })
+}
+
+pub fn fast_video_sample_timestamps(
+    duration_seconds: Option<f64>,
+    requested_frames: usize,
+) -> Vec<f64> {
+    let count = requested_frames.clamp(1, FAST_VIDEO_SAMPLE_FRAMES);
+    let Some(duration) = duration_seconds.filter(|value| value.is_finite() && *value > 0.0) else {
+        return (0..count).map(|index| (index as f64) * 60.0).collect();
+    };
+    if count == 1 {
+        return vec![(duration / 2.0).max(0.0)];
+    }
+    let edge_margin = if duration >= 300.0 {
+        duration.mul_add(0.10, 0.0).min(120.0)
+    } else if duration >= 120.0 {
+        duration * 0.08
+    } else {
+        0.0
+    };
+    let start = edge_margin.min(duration / 3.0);
+    let end = (duration - edge_margin).max(start);
+    let step = (end - start) / ((count - 1) as f64);
+    (0..count)
+        .map(|index| start + (step * index as f64))
+        .collect()
 }
 
 pub fn rank_media_match_candidates<'a>(
@@ -675,6 +918,51 @@ pub fn decide_media_match(
     let video_probable =
         video_coverage.is_some_and(|value| value >= settings.video_probable_coverage);
     let video_weak = video_coverage.is_some_and(|value| value >= settings.video_weak_coverage);
+    let fast_profile = matches!(
+        query.extraction_settings.profile,
+        MediaFingerprintProfile::FastV1
+    ) || matches!(
+        candidate.extraction_settings.profile,
+        MediaFingerprintProfile::FastV1
+    );
+    let strict_runtime_ok = settings.runtime_tolerance_enabled
+        && evidence.metadata.duration_within_tolerance == Some(true);
+
+    if fast_profile {
+        if audio_strong && video_strong && strict_runtime_ok {
+            return decision(
+                MediaMatchTier::Strong,
+                evidence,
+                "fast fingerprint strong match: runtime tolerance, audio, and sparse video agree",
+            );
+        }
+        if audio_probable && (strict_runtime_ok || video_probable) || video_strong {
+            return decision(
+                MediaMatchTier::Probable,
+                evidence,
+                "fast fingerprint evidence is consistent but not strong enough for autoplay",
+            );
+        }
+        if audio_probable || video_probable || video_weak {
+            return decision(
+                MediaMatchTier::Weak,
+                evidence,
+                "partial fast fingerprint evidence; keep diagnostic only",
+            );
+        }
+        if evidence.audio.is_none() && evidence.video.is_none() {
+            return decision(
+                MediaMatchTier::Unknown,
+                evidence,
+                "no comparable fingerprints",
+            );
+        }
+        return decision(
+            MediaMatchTier::Reject,
+            evidence,
+            "fast fingerprints do not support same-media match",
+        );
+    }
 
     if audio_strong && video_strong {
         return decision(
@@ -856,6 +1144,54 @@ pub fn parse_fpcalc_output(output: &str) -> Option<AudioFingerprint> {
         duration_seconds,
         fingerprint_tokens: tokens,
     })
+}
+
+fn run_tool_output<I>(
+    tool: &'static str,
+    executable: &Path,
+    args: I,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<Output, MediaFingerprintError>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    let mut child = Command::new(executable)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| MediaFingerprintError::ToolFailed {
+            tool,
+            status: None,
+            stderr: error.to_string(),
+        })?;
+
+    loop {
+        if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(MediaFingerprintError::Cancelled { tool });
+        }
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child.wait_with_output().map_err(|error| {
+                    MediaFingerprintError::ToolFailed {
+                        tool,
+                        status: None,
+                        stderr: error.to_string(),
+                    }
+                });
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                return Err(MediaFingerprintError::ToolFailed {
+                    tool,
+                    status: None,
+                    stderr: error.to_string(),
+                });
+            }
+        }
+    }
 }
 
 pub fn pdq_style_luma_hash(width: usize, height: usize, luma: &[u8]) -> Option<u64> {
@@ -1100,6 +1436,19 @@ mod tests {
         }
     }
 
+    fn record_with_extraction_settings(
+        path: &str,
+        size: u64,
+        duration: Option<f64>,
+        audio: Option<AudioFingerprint>,
+        video: Option<VideoFingerprint>,
+        extraction_settings: MediaExtractionSettings,
+    ) -> MediaFingerprintRecord {
+        let mut record = record(path, size, duration, audio, video);
+        record.extraction_settings = extraction_settings;
+        record
+    }
+
     fn audio(tokens: &[u32]) -> AudioFingerprint {
         AudioFingerprint {
             duration_seconds: Some(tokens.len() as f64),
@@ -1177,6 +1526,70 @@ mod tests {
 
         assert_eq!(decision.tier, MediaMatchTier::Strong);
         assert!(decision.evidence.video.unwrap().best_offset_seconds > 19.0);
+    }
+
+    #[test]
+    fn fast_strong_requires_audio_video_and_runtime_evidence() {
+        let hashes = synthetic_hashes(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let fast_settings = MediaExtractionSettings::fast_v1();
+        let query = record_with_extraction_settings(
+            "[Judas] Show - 07.mkv",
+            100,
+            Some(1200.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(0, &hashes)),
+            fast_settings.clone(),
+        );
+        let candidate = record_with_extraction_settings(
+            "[Erai-raws] Show - 07.mkv",
+            120,
+            Some(1201.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(20, &hashes)),
+            fast_settings.clone(),
+        );
+        let no_audio = record_with_extraction_settings(
+            "[Erai-raws] Show - 07 no-audio.mkv",
+            121,
+            Some(1201.0),
+            None,
+            Some(shifted_video(20, &hashes)),
+            fast_settings.clone(),
+        );
+        let no_video = record_with_extraction_settings(
+            "[Erai-raws] Show - 07 no-video.mkv",
+            122,
+            Some(1201.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            None,
+            fast_settings.clone(),
+        );
+        let wrong_runtime = record_with_extraction_settings(
+            "[Erai-raws] Show - 07 long.mkv",
+            123,
+            Some(1210.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(20, &hashes)),
+            fast_settings,
+        );
+        let settings = enabled_settings();
+
+        assert_eq!(
+            decide_media_match(&query, &candidate, &settings).tier,
+            MediaMatchTier::Strong
+        );
+        assert_ne!(
+            decide_media_match(&query, &no_audio, &settings).tier,
+            MediaMatchTier::Strong
+        );
+        assert_ne!(
+            decide_media_match(&query, &no_video, &settings).tier,
+            MediaMatchTier::Strong
+        );
+        assert_ne!(
+            decide_media_match(&query, &wrong_runtime, &settings).tier,
+            MediaMatchTier::Strong
+        );
     }
 
     #[test]
@@ -1324,6 +1737,7 @@ mod tests {
     #[test]
     fn cache_invalidates_on_identity_and_algorithm_inputs() {
         let settings = MediaExtractionSettings::default();
+        let fast_settings = MediaExtractionSettings::fast_v1();
         let mut cache = MediaMatchCacheV1::default();
         let record = record("movie.mkv", 100, Some(10.0), None, None);
         cache.insert(record);
@@ -1372,6 +1786,17 @@ mod tests {
                 )
                 .is_none()
         );
+        assert!(
+            cache
+                .get_valid(
+                    "movie.mkv",
+                    1000,
+                    100,
+                    MEDIA_MATCH_ALGORITHM_VERSION,
+                    &fast_settings
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -1381,6 +1806,20 @@ mod tests {
 
         assert_eq!(parsed.duration_seconds, Some(123.45));
         assert_eq!(parsed.fingerprint_tokens, vec![1, 2, 3, 5, 8]);
+    }
+
+    #[test]
+    fn fast_video_sample_timestamps_are_sparse_and_skip_stable_edges() {
+        let timestamps = fast_video_sample_timestamps(Some(1800.0), 12);
+
+        assert_eq!(timestamps.len(), 12);
+        assert!(timestamps[0] >= 120.0);
+        assert!(timestamps[11] <= 1680.0);
+        assert!(
+            timestamps
+                .windows(2)
+                .all(|pair| pair[0] < pair[1] && pair[1] - pair[0] > 60.0)
+        );
     }
 
     #[test]

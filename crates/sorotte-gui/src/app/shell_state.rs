@@ -301,6 +301,7 @@ pub(super) struct GuiMediaMatchState {
     pub(super) cache_status: Option<String>,
     pub(super) current_decision: Option<String>,
     pub(super) last_evidence: Option<String>,
+    pub(super) background_status: Option<String>,
     pub(super) open_install_location_available: bool,
 }
 
@@ -328,6 +329,7 @@ impl Default for GuiMediaMatchState {
             cache_status: Some("empty".to_owned()),
             current_decision: None,
             last_evidence: None,
+            background_status: Some("idle".to_owned()),
             open_install_location_available: false,
         }
     }
@@ -347,6 +349,7 @@ pub(super) struct GuiMediaMatchRuntimeSnapshot {
     pub(super) cache_status: Option<String>,
     pub(super) current_decision: Option<String>,
     pub(super) last_evidence: Option<String>,
+    pub(super) background_status: Option<String>,
     pub(super) open_install_location_available: bool,
 }
 
@@ -365,6 +368,7 @@ impl From<&GuiMediaMatchState> for GuiMediaMatchRuntimeSnapshot {
             cache_status: value.cache_status.clone(),
             current_decision: value.current_decision.clone(),
             last_evidence: value.last_evidence.clone(),
+            background_status: value.background_status.clone(),
             open_install_location_available: value.open_install_location_available,
         }
     }
@@ -631,6 +635,9 @@ pub(super) fn media_match_settings_from_stored_settings(
     if let Some(enabled) = settings.media_match_fingerprinting_enabled {
         media_match_settings.fingerprinting_enabled = enabled;
     }
+    if let Some(enabled) = settings.media_match_background_warmup_enabled {
+        media_match_settings.background_warmup_enabled = enabled;
+    }
     if let Some(enabled) = settings.media_match_runtime_tolerance_enabled {
         media_match_settings.runtime_tolerance_enabled = enabled;
     }
@@ -647,6 +654,8 @@ pub(super) fn apply_media_match_settings_to_stored_settings(
     media_match_settings: &MediaMatchSettings,
 ) {
     settings.media_match_fingerprinting_enabled = Some(media_match_settings.fingerprinting_enabled);
+    settings.media_match_background_warmup_enabled =
+        Some(media_match_settings.background_warmup_enabled);
     settings.media_match_runtime_tolerance_enabled =
         Some(media_match_settings.runtime_tolerance_enabled);
     settings.media_match_autoplay_policy =

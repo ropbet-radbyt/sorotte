@@ -98,6 +98,11 @@ pub fn parse_sorotte_ini_stored_client_settings_mvp(contents: &str) -> StoredCli
                         settings.media_match_fingerprinting_enabled = Some(parsed);
                     }
                 }
+                "mediamatchbackgroundwarmupenabled" => {
+                    if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
+                        settings.media_match_background_warmup_enabled = Some(parsed);
+                    }
+                }
                 "mediamatchruntimetoleranceenabled" => {
                     if let Some(parsed) = parse_ini_bool_legacy_compatible(&value) {
                         settings.media_match_runtime_tolerance_enabled = Some(parsed);

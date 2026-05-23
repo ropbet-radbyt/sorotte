@@ -44,6 +44,7 @@ pub(crate) fn persist_sorotte_cli_stored_settings_mvp_legacy_compatible(
         per_player_arguments: None,
         media_search_directories: None,
         media_match_fingerprinting_enabled: None,
+        media_match_background_warmup_enabled: None,
         media_match_runtime_tolerance_enabled: None,
         media_match_autoplay_policy: None,
         public_servers: None,

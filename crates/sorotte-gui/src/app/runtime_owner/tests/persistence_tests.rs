@@ -96,6 +96,10 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
 
     handle.push_request(GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    handle.push_request(GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(
+        false,
+    ));
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     handle.push_request(GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(
         false,
     ));
@@ -109,6 +113,7 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
         .expect("media-match settings config should be readable")
         .expect("media-match settings config should exist");
     assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
+    assert_eq!(settings.media_match_background_warmup_enabled, Some(false));
     assert_eq!(settings.media_match_runtime_tolerance_enabled, Some(false));
     assert_eq!(
         settings.media_match_autoplay_policy.as_deref(),
@@ -122,6 +127,12 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
             .media_match_runtime_snapshot
             .settings
             .fingerprinting_enabled
+    );
+    assert!(
+        !restarted_owner
+            .media_match_runtime_snapshot
+            .settings
+            .background_warmup_enabled
     );
     assert!(
         !restarted_owner

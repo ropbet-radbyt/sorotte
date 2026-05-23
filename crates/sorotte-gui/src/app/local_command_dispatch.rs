@@ -176,6 +176,15 @@ impl GuiShellDispatchPlan {
                         GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled),
                     );
                 }
+                GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(
+                            enabled,
+                        ));
+                    plan.runtime_requests.push(
+                        GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled),
+                    );
+                }
                 GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
                     plan.shell_actions
                         .push(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(

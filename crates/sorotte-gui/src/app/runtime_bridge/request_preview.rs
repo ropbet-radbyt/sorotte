@@ -331,6 +331,7 @@ impl GuiRuntimeRequest {
             Self::SetAutoplayEnabled(_)
             | Self::SetAutoplayThreshold(_)
             | Self::SetMediaMatchFingerprintingEnabled(_)
+            | Self::SetMediaMatchBackgroundWarmupEnabled(_)
             | Self::SetMediaMatchRuntimeToleranceEnabled(_)
             | Self::SetMediaMatchAutoplayPolicy(_)
             | Self::SetReadyForUser { .. }

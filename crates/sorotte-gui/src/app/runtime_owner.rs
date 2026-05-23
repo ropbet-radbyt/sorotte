@@ -40,8 +40,9 @@ use sorotte_plex::{
 };
 
 use super::media_match_support::{
-    MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
-    probe_media_match_runtime_snapshot, probe_media_match_startup_snapshot,
+    MediaMatchIndexRebuildResult, MediaMatchToolProgress,
+    clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
+    probe_media_match_startup_snapshot,
 };
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
@@ -134,6 +135,10 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) media_match_runtime_snapshot: GuiMediaMatchRuntimeSnapshot,
     pub(super) media_match_remediation_runtime_snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
     pub(super) media_match_tool_worker_rx: Option<mpsc::Receiver<GuiMediaMatchToolWorkerEvent>>,
+    pub(super) media_match_background_worker_rx:
+        Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
+    pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
+    pub(super) media_match_background_trigger_key: Option<String>,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
     pub(super) plex_auth_start_rx: Option<mpsc::Receiver<Result<PlexAuthSession, String>>>,
@@ -182,6 +187,12 @@ pub(super) enum GuiMediaMatchToolWorkerEvent {
         result: Result<String, String>,
         failure_label: &'static str,
     },
+}
+
+pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
+    Progress(MediaMatchToolProgress),
+    FastResult(Result<MediaMatchIndexRebuildResult, String>),
+    Finished(Result<MediaMatchIndexRebuildResult, String>),
 }
 
 pub(super) struct GuiAttachedMediaSearchIndex {

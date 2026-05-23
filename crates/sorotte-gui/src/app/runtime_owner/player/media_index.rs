@@ -47,7 +47,9 @@ impl GuiPersistedConfigRuntimeOwner {
         roots
     }
 
-    pub(super) fn automatic_media_search_root_keys(search_roots: &[PathBuf]) -> Vec<String> {
+    pub(in crate::app::runtime_owner) fn automatic_media_search_root_keys(
+        search_roots: &[PathBuf],
+    ) -> Vec<String> {
         search_roots
             .iter()
             .map(|path| normalized_media_search_root_key(path))

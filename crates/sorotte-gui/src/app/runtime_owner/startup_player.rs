@@ -57,6 +57,9 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_remediation_runtime_snapshot:
                 GuiMediaMatchRemediationRuntimeSnapshot::default(),
             media_match_tool_worker_rx: None,
+            media_match_background_worker_rx: None,
+            media_match_background_worker_cancel: None,
+            media_match_background_trigger_key: None,
             plex_client: None,
             plex_auth_session: None,
             plex_auth_start_rx: None,
@@ -508,6 +511,7 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
         snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
+        snapshot.background_status = self.media_match_runtime_snapshot.background_status.clone();
         self.media_match_runtime_snapshot = snapshot.clone();
         snapshot
     }

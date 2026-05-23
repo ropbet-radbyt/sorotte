@@ -437,6 +437,9 @@ impl SorotteGuiShellAppState {
         self.media_match.last_evidence = snapshot
             .last_evidence
             .and_then(|value| normalized_editable_text(&value));
+        self.media_match.background_status = snapshot
+            .background_status
+            .and_then(|value| normalized_editable_text(&value));
         self.media_match.open_install_location_available = snapshot.open_install_location_available;
         self.clear_action_error_and_refresh();
         true

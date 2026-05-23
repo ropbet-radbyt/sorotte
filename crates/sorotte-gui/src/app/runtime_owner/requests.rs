@@ -24,10 +24,13 @@ use sorotte_client_app::app_boundary::{
 use sorotte_player_api::PlayerAdapter;
 
 use super::super::media_match_support::{
-    MediaMatchTool, MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
+    MediaMatchCandidateRebuildRequest, MediaMatchIndexRebuildResult, MediaMatchTool,
+    MediaMatchToolProgress, clear_persisted_media_match_cache_at_root,
     import_managed_media_match_tool_with_progress,
     install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
-    rebuild_persisted_media_match_index_with_progress,
+    media_match_tool_paths, rebuild_persisted_media_match_candidates_with_progress_and_cancel,
+    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
+    rebuild_persisted_media_match_index_with_progress_and_cancel,
 };
 use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};
@@ -241,6 +244,13 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(enabled) => {
                 return self.handle_set_media_match_fingerprinting_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
+            GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled) => {
+                return self.handle_set_media_match_background_warmup_request(
                     handle,
                     projected_state,
                     enabled,

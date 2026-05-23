@@ -22,6 +22,7 @@ eframe.workspace = true
 egui.workspace = true
 reqwest.workspace = true
 rfd.workspace = true
+rusqlite.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 semver.workspace = true
