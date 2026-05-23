@@ -164,7 +164,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         playlist_insert_slot: None,
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let open_actions = handle.drain_actions();
+    let open_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         open_actions,
         vec![

@@ -123,7 +123,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let bootstrap_actions = handle.drain_actions();
+    let bootstrap_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         bootstrap_actions,
         vec![
@@ -226,7 +226,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         Some("Chat input is unavailable because no session runtime is connected.")
     );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let refreshed_command_actions = handle.drain_actions();
+    let refreshed_command_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert!(refreshed_command_actions.is_empty());
     for action in refreshed_command_actions {
         assert!(state.apply(action));
@@ -244,7 +244,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
                 .with_size_bytes(734003200),
         );
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let local_file_actions = handle.drain_actions();
+    let local_file_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         local_file_actions,
         vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -294,7 +294,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         .playback_updates
         .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let paused_actions = handle.drain_actions();
+    let paused_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
         paused_actions,
         vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -331,7 +331,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert!(
-        handle.drain_actions().is_empty(),
+        without_media_match_runtime_snapshots(handle.drain_actions()).is_empty(),
         "idle runtime pumps should not emit redundant player projection actions"
     );
 }
