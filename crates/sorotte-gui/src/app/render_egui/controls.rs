@@ -763,7 +763,10 @@ impl GuiWidgetEguiRenderer {
             | "plugins:stream-support:install"
             | "plugins:stream-support:alert:install"
             | "plugins:stream-support:recheck"
-            | "plugins:stream-support:alert:recheck" => {
+            | "plugins:stream-support:alert:recheck"
+            | "plugins:media-matching:install"
+            | "plugins:media-matching:recheck"
+            | "plugins:media-matching:rebuild-index" => {
                 Some((palette.primary, palette.primary_hover, palette.primary_text))
             }
             "config-command:disconnect"

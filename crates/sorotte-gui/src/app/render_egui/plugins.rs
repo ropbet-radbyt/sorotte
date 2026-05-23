@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::super::shell_state::SorotteGuiShellAppState;
-use super::super::widget_tree::GuiWidgetNode;
+use super::super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 use super::{GuiPanelShellOptions, GuiWidgetEguiRenderer};
 
 impl GuiWidgetEguiRenderer {
@@ -116,6 +116,8 @@ impl GuiWidgetEguiRenderer {
         for (index, child) in node.children.iter().enumerate() {
             if child.id == "plugins:stream-support" {
                 self.render_stream_support_plugin_panel(ui, child, state, panel_width);
+            } else if child.id == "plugins:media-matching" {
+                self.render_media_matching_plugin_panel(ui, child, state, panel_width);
             } else if child.id == "plugins:plex" {
                 self.render_plex_plugin_panel(ui, child, state, panel_width);
             } else {
@@ -281,6 +283,47 @@ impl GuiWidgetEguiRenderer {
         );
     }
 
+    fn render_media_matching_plugin_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+        panel_width: f32,
+    ) {
+        let status_node = node.find("plugins:media-matching:status");
+        let settings_node = node.find("plugins:media-matching:settings");
+        let remediation_node = node.find("plugins:media-matching:remediation");
+        let actions_node = node.find("plugins:media-matching:actions");
+
+        self.render_panel_shell(
+            ui,
+            node,
+            state,
+            GuiPanelShellOptions::new(panel_width)
+                .body_margin(egui::Margin::symmetric(12, 8))
+                .body_horizontal_margin(24.0),
+            |renderer, ui, _body_width| {
+                if let Some(status_node) = status_node {
+                    renderer.render_media_matching_overview(ui, status_node);
+                    ui.add_space(8.0);
+                    renderer.render_media_matching_status_cards(ui, status_node);
+                }
+                if let Some(remediation_node) = remediation_node {
+                    ui.add_space(8.0);
+                    renderer.render_plugin_status_cards(ui, remediation_node, &[]);
+                }
+                if let Some(settings_node) = settings_node {
+                    ui.add_space(8.0);
+                    renderer.render_media_matching_settings_cards(ui, settings_node, state);
+                }
+                if let Some(actions_node) = actions_node {
+                    ui.add_space(8.0);
+                    renderer.render_plugin_action_buttons(ui, actions_node, state);
+                }
+            },
+        );
+    }
+
     fn render_stream_support_overview(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
         self.render_plugin_overview(
             ui,
@@ -300,6 +343,17 @@ impl GuiWidgetEguiRenderer {
             "plugins:plex:summary",
             "plugins:plex:health",
             "Plex watch sync",
+        );
+    }
+
+    fn render_media_matching_overview(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_overview(
+            ui,
+            status_node,
+            "plugins:media-matching:title",
+            "plugins:media-matching:summary",
+            "plugins:media-matching:health",
+            "Media matching status",
         );
     }
 
@@ -410,6 +464,18 @@ impl GuiWidgetEguiRenderer {
         );
     }
 
+    fn render_media_matching_status_cards(&self, ui: &mut egui::Ui, status_node: &GuiWidgetNode) {
+        self.render_plugin_status_cards(
+            ui,
+            status_node,
+            &[
+                "plugins:media-matching:title",
+                "plugins:media-matching:summary",
+                "plugins:media-matching:health",
+            ],
+        );
+    }
+
     fn render_plugin_status_cards(
         &self,
         ui: &mut egui::Ui,
@@ -484,6 +550,252 @@ impl GuiWidgetEguiRenderer {
                     response.on_hover_text(value);
                 }
             });
+    }
+
+    fn render_media_matching_settings_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings_node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+    ) {
+        let toggle_nodes = settings_node
+            .children
+            .iter()
+            .filter(|child| matches!(child.kind, GuiWidgetKind::Checkbox))
+            .collect::<Vec<_>>();
+        let policy_nodes = settings_node
+            .children
+            .iter()
+            .filter(|child| child.id.starts_with("plugins:media-matching:policy:"))
+            .collect::<Vec<_>>();
+
+        if !toggle_nodes.is_empty() {
+            self.render_media_matching_toggle_cards(ui, &toggle_nodes, state);
+        }
+        if !policy_nodes.is_empty() {
+            if !toggle_nodes.is_empty() {
+                ui.add_space(8.0);
+            }
+            self.render_media_matching_policy_card(ui, &policy_nodes, state);
+        }
+    }
+
+    fn render_media_matching_toggle_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        toggle_nodes: &[&GuiWidgetNode],
+        state: &SorotteGuiShellAppState,
+    ) {
+        let gap = 8.0;
+        let available_width = Self::visible_available_width(ui);
+        let columns: usize = if available_width >= 720.0 { 2 } else { 1 };
+        let card_width = ((available_width - (gap * columns.saturating_sub(1) as f32))
+            / columns as f32)
+            .max(0.0);
+        let row_count = toggle_nodes.len().div_ceil(columns);
+        for (row_index, chunk) in toggle_nodes.chunks(columns).enumerate() {
+            ui.horizontal_top(|ui| {
+                let mut spacing = ui.spacing().item_spacing;
+                spacing.x = gap;
+                ui.spacing_mut().item_spacing = spacing;
+                for child in chunk {
+                    Self::allocate_plugin_width(ui, card_width, |ui| {
+                        self.render_media_matching_setting_card(ui, child, state, card_width);
+                    });
+                }
+            });
+            if row_index + 1 < row_count {
+                ui.add_space(gap);
+            }
+        }
+    }
+
+    fn render_media_matching_setting_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+        card_width: f32,
+    ) {
+        let palette = Self::palette_for_ui(ui);
+        egui::Frame::new()
+            .fill(palette.surface_muted.gamma_multiply(0.84))
+            .stroke(egui::Stroke::new(1.0, palette.border))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let inner_width = Self::width_inside_horizontal_margin(card_width, 20.0);
+                ui.set_width(inner_width);
+                ui.set_max_width(inner_width);
+                ui.set_min_height(32.0);
+                self.render_field_control(ui, node, state, false);
+            });
+    }
+
+    fn render_media_matching_policy_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        policy_nodes: &[&GuiWidgetNode],
+        state: &SorotteGuiShellAppState,
+    ) {
+        let palette = Self::palette_for_ui(ui);
+        let available_width = Self::visible_available_width(ui);
+        egui::Frame::new()
+            .fill(palette.surface_muted.gamma_multiply(0.84))
+            .stroke(egui::Stroke::new(1.0, palette.border))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let inner_width = Self::width_inside_horizontal_margin(available_width, 20.0);
+                ui.set_width(inner_width);
+                ui.set_max_width(inner_width);
+                ui.label(
+                    egui::RichText::new("Autoplay Policy")
+                        .small()
+                        .strong()
+                        .color(palette.muted_text),
+                );
+                if let Some(summary) = policy_nodes
+                    .iter()
+                    .find_map(|node| node.value.as_ref())
+                    .filter(|summary| !summary.is_empty())
+                {
+                    let font_id = egui::TextStyle::Small.resolve(ui.style());
+                    let (display_summary, truncated) = Self::truncate_single_line_text_for_width(
+                        ui,
+                        summary,
+                        font_id.clone(),
+                        palette.muted_text,
+                        inner_width,
+                    );
+                    let response = ui.label(
+                        egui::RichText::new(display_summary)
+                            .small()
+                            .color(palette.muted_text),
+                    );
+                    if truncated {
+                        response.on_hover_text(summary.clone());
+                    }
+                    ui.add_space(4.0);
+                } else {
+                    ui.add_space(4.0);
+                }
+                self.render_media_matching_policy_buttons(ui, policy_nodes, state);
+            });
+    }
+
+    fn render_media_matching_policy_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        policy_nodes: &[&GuiWidgetNode],
+        state: &SorotteGuiShellAppState,
+    ) {
+        let available_width = Self::visible_available_width(ui);
+        let gap = 8.0;
+        let columns: usize = if available_width >= 520.0 { 2 } else { 1 };
+        let button_width = ((available_width - (gap * columns.saturating_sub(1) as f32))
+            / columns as f32)
+            .max(0.0);
+        let row_count = policy_nodes.len().div_ceil(columns);
+        for (row_index, chunk) in policy_nodes.chunks(columns).enumerate() {
+            ui.horizontal_top(|ui| {
+                let mut spacing = ui.spacing().item_spacing;
+                spacing.x = gap;
+                ui.spacing_mut().item_spacing = spacing;
+                for child in chunk {
+                    Self::allocate_plugin_width(ui, button_width, |ui| {
+                        self.render_media_matching_policy_button(ui, child, state, button_width);
+                    });
+                }
+            });
+            if row_index + 1 < row_count {
+                ui.add_space(4.0);
+            }
+        }
+    }
+
+    fn render_media_matching_policy_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &GuiWidgetNode,
+        state: &SorotteGuiShellAppState,
+        button_width: f32,
+    ) {
+        let button_height = 36.0;
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(button_width, button_height),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+        });
+        let response = Self::attach_node_tooltip(response, node);
+        if node.enabled && response.clicked() {
+            self.handle_button_node_click(state, node);
+        }
+
+        let palette = Self::palette_for_ui(ui);
+        let visuals = ui.visuals();
+        let hovered = response.hovered();
+        let fill = if !node.enabled {
+            visuals.widgets.inactive.bg_fill.gamma_multiply(0.55)
+        } else if node.selected {
+            palette.info_bg
+        } else if hovered {
+            palette.surface_muted
+        } else {
+            visuals.widgets.inactive.bg_fill
+        };
+        let stroke = if !node.enabled {
+            egui::Stroke::new(
+                1.0,
+                visuals
+                    .widgets
+                    .inactive
+                    .bg_stroke
+                    .color
+                    .gamma_multiply(0.65),
+            )
+        } else if node.selected {
+            egui::Stroke::new(1.5, palette.info_border)
+        } else if hovered {
+            egui::Stroke::new(1.0, palette.primary)
+        } else {
+            egui::Stroke::new(1.0, palette.border)
+        };
+        let text_color = if !node.enabled {
+            visuals.weak_text_color()
+        } else if node.selected {
+            palette.info_text
+        } else {
+            palette.neutral_text
+        };
+        let button_rect = rect.shrink2(egui::vec2(0.5, 0.5));
+        ui.painter()
+            .rect(button_rect, 5, fill, stroke, egui::StrokeKind::Inside);
+        let text_width = (button_rect.width() - 22.0).max(0.0);
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let (display_label, truncated) = Self::truncate_single_line_text_for_width(
+            ui,
+            &node.label,
+            font_id.clone(),
+            text_color,
+            text_width,
+        );
+        let galley = ui
+            .painter()
+            .layout_no_wrap(display_label, font_id, text_color);
+        ui.painter().with_clip_rect(button_rect).galley(
+            egui::pos2(
+                button_rect.left() + 11.0,
+                button_rect.center().y - (galley.size().y * 0.5),
+            ),
+            galley,
+            text_color,
+        );
+        if truncated {
+            response.on_hover_text(node.label.clone());
+        }
     }
 
     fn render_stream_support_plugin_actions(
