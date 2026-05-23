@@ -415,10 +415,7 @@ impl SorotteGuiShellAppState {
             "install" => self.media_match.install_supported,
             "import" => self.media_match.integration_supported,
             "recheck" | "cache" => true,
-            "index" => {
-                self.media_match.settings.fingerprinting_enabled
-                    && self.media_match.health == GuiMediaMatchToolHealth::Healthy
-            }
+            "index" => self.media_match.integration_supported,
             _ => false,
         }
     }

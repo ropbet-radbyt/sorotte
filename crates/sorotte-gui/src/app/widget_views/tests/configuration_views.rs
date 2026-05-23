@@ -487,6 +487,36 @@ fn gui_shell_app_state_projects_media_match_remediation_progress_into_widgets() 
 }
 
 #[test]
+fn gui_shell_app_state_keeps_media_match_rebuild_index_clickable_when_tools_missing() {
+    let mut state =
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    assert!(state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    )));
+    assert!(
+        state.apply(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
+            GuiMediaMatchRuntimeSnapshot {
+                settings: MediaMatchSettings::default(),
+                health: crate::app::shell_state::GuiMediaMatchToolHealth::MissingFfmpeg,
+                integration_supported: true,
+                ..GuiMediaMatchRuntimeSnapshot::default()
+            },
+        ))
+    );
+
+    let plugins = state.plugins_widget_tree();
+    let rebuild = plugins
+        .find("plugins:media-matching:rebuild-index")
+        .expect("rebuild-index button should exist");
+
+    assert!(rebuild.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, rebuild),
+        vec![GuiShellAction::RebuildMediaMatchIndex]
+    );
+}
+
+#[test]
 fn gui_shell_app_state_projects_only_selected_plugin_detail() {
     let mut state =
         SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
