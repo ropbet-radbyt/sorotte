@@ -48,6 +48,15 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
+            GuiShellAction::SetMediaMatchWireSharingEnabled(enabled) => {
+                self.media_match.settings.wire_sharing_enabled = enabled;
+                apply_media_match_settings_to_stored_settings(
+                    &mut self.configuration.settings,
+                    &self.media_match.settings,
+                );
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
                 self.media_match.settings.runtime_tolerance_enabled = enabled;
                 apply_media_match_settings_to_stored_settings(

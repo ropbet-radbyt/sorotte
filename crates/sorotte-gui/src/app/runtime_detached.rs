@@ -9,8 +9,10 @@ use sorotte_client_app::app_boundary::{
     },
 };
 use sorotte_client_core::PrivacyMode;
+use sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 
+use super::media_match_support::media_match_wire_value_for_path;
 #[cfg(not(test))]
 use super::remote_services;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
@@ -81,6 +83,37 @@ impl GuiPersistedConfigRuntimeOwner {
             payload.insert("path".to_owned(), Value::String(path.clone()));
         }
         Value::Object(payload)
+    }
+
+    fn attach_media_match_wire_signature_to_file_payload(
+        &self,
+        state: &SorotteGuiShellAppState,
+        payload: &mut Value,
+    ) {
+        if !state.media_match.settings.fingerprinting_enabled
+            || !state.media_match.settings.wire_sharing_enabled
+            || self.media_match_runtime_snapshot.health
+                != super::shell_state::GuiMediaMatchToolHealth::Healthy
+        {
+            return;
+        }
+        let root = self.legacy_gui_qsettings_root();
+        let Some(root) = root.as_deref() else {
+            return;
+        };
+        let Some(path) = self
+            .player_local_file
+            .as_ref()
+            .and_then(|local_file| local_file.path.as_deref())
+        else {
+            return;
+        };
+        let Some(signature) = media_match_wire_value_for_path(root, path) else {
+            return;
+        };
+        if let Value::Object(entries) = payload {
+            entries.insert(MEDIA_MATCH_FILE_PAYLOAD_KEY.to_owned(), signature);
+        }
     }
 
     fn should_defer_attached_player_pause_sync(
@@ -245,14 +278,25 @@ impl GuiPersistedConfigRuntimeOwner {
         if auto_advance_playlist_at_eof {
             self.advance_playlist_index_for_attached_player_impl()?;
         }
-        let Some(session) = self.session.as_mut() else {
-            return Ok(());
-        };
-        session.set_autoplay_enabled(state.main_window.autoplay_active)?;
-        session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
-        if file_publish_pending && session.server_handshake_completed() {
-            let file_payload =
+        {
+            let Some(session) = self.session.as_mut() else {
+                return Ok(());
+            };
+            session.set_autoplay_enabled(state.main_window.autoplay_active)?;
+            session.set_autoplay_threshold(state.main_window.autoplay_threshold)?;
+        }
+        let publish_file = file_publish_pending
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.server_handshake_completed());
+        if publish_file {
+            let mut file_payload =
                 Self::local_file_payload_legacy_compatible(player_local_file.as_ref());
+            self.attach_media_match_wire_signature_to_file_payload(state, &mut file_payload);
+            let Some(session) = self.session.as_mut() else {
+                return Ok(());
+            };
             session.publish_local_file_legacy_compatible(
                 &file_payload,
                 filename_privacy_mode,

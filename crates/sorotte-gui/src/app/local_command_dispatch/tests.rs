@@ -572,6 +572,7 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
         vec![
             GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
             GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
             GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
             GuiShellAction::SetMediaMatchAutoplayPolicy(
                 sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
@@ -584,6 +585,7 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
         vec![
             GuiShellAction::SetMediaMatchFingerprintingEnabled(true),
             GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiShellAction::SetMediaMatchWireSharingEnabled(false),
             GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(false),
             GuiShellAction::SetMediaMatchAutoplayPolicy(
                 sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,
@@ -595,6 +597,7 @@ fn gui_shell_dispatch_plan_routes_media_match_settings_to_shell_and_runtime() {
         vec![
             GuiRuntimeRequest::SetMediaMatchFingerprintingEnabled(true),
             GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(false),
+            GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(false),
             GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(false),
             GuiRuntimeRequest::SetMediaMatchAutoplayPolicy(
                 sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia,

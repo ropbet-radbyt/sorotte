@@ -8,10 +8,14 @@ use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const MEDIA_MATCH_CACHE_VERSION: u32 = 1;
 pub const MEDIA_MATCH_ALGORITHM_VERSION: u32 = 1;
+pub const MEDIA_MATCH_FILE_PAYLOAD_KEY: &str = "mediaMatch";
+pub const MEDIA_MATCH_WIRE_SCHEMA_V1: &str = "sorotte.mediaMatch.v1";
+pub const MEDIA_MATCH_WIRE_MAX_BYTES: usize = 32 * 1024;
 
 const FRAME_HASH_BITS: u32 = 64;
 const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
@@ -50,6 +54,8 @@ pub struct MediaMatchSettings {
     pub fingerprinting_enabled: bool,
     #[serde(default = "default_media_match_background_warmup_enabled")]
     pub background_warmup_enabled: bool,
+    #[serde(default = "default_media_match_background_warmup_enabled")]
+    pub wire_sharing_enabled: bool,
     pub runtime_tolerance_enabled: bool,
     pub runtime_tolerance_seconds: f64,
     pub autoplay_policy: MediaMatchAutoplayPolicy,
@@ -66,6 +72,7 @@ impl Default for MediaMatchSettings {
         Self {
             fingerprinting_enabled: false,
             background_warmup_enabled: true,
+            wire_sharing_enabled: true,
             runtime_tolerance_enabled: true,
             runtime_tolerance_seconds: 3.0,
             autoplay_policy: MediaMatchAutoplayPolicy::DiagnosticsOnly,
@@ -371,6 +378,50 @@ impl FrameFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchWireSignatureV1 {
+    pub schema: String,
+    pub profiles: Vec<MediaMatchWireProfile>,
+}
+
+impl Default for MediaMatchWireSignatureV1 {
+    fn default() -> Self {
+        Self {
+            schema: MEDIA_MATCH_WIRE_SCHEMA_V1.to_owned(),
+            profiles: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaMatchWireProfile {
+    pub profile: String,
+    pub algorithm_version: u32,
+    pub duration_seconds: Option<f64>,
+    pub audio: Option<MediaMatchWireAudioFingerprint>,
+    pub video: Option<MediaMatchWireVideoFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaMatchWireAudioFingerprint {
+    pub algorithm: String,
+    pub tokens: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaMatchWireVideoFingerprint {
+    pub algorithm: String,
+    pub frames: Vec<MediaMatchWireVideoFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaMatchWireVideoFrame {
+    pub second: f64,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaMatchCacheV1 {
     pub version: u32,
     pub records: BTreeMap<String, MediaFingerprintRecord>,
@@ -439,6 +490,172 @@ impl MediaMatchCacheV1 {
     pub fn clear(&mut self) {
         self.records.clear();
     }
+}
+
+pub fn media_match_wire_signature_from_records(
+    records: &[MediaFingerprintRecord],
+) -> MediaMatchWireSignatureV1 {
+    let mut signature = MediaMatchWireSignatureV1::default();
+    for record in records {
+        if let Some(profile) = media_match_wire_profile_from_record(record) {
+            signature.profiles.push(profile);
+        }
+    }
+    signature
+}
+
+pub fn media_match_wire_value_from_records(records: &[MediaFingerprintRecord]) -> Option<Value> {
+    let signature = media_match_wire_signature_from_records(records);
+    if signature.profiles.is_empty() {
+        return None;
+    }
+    let value = serde_json::to_value(&signature).ok()?;
+    let bytes = serde_json::to_vec(&value).ok()?;
+    (bytes.len() <= MEDIA_MATCH_WIRE_MAX_BYTES).then_some(value)
+}
+
+pub fn media_match_wire_signature_from_value(
+    value: &Value,
+) -> Result<MediaMatchWireSignatureV1, String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("media match wire signature could not serialize: {error}"))?;
+    if bytes.len() > MEDIA_MATCH_WIRE_MAX_BYTES {
+        return Err("media match wire signature exceeds the payload limit".to_owned());
+    }
+    let signature: MediaMatchWireSignatureV1 = serde_json::from_value(value.clone())
+        .map_err(|error| format!("media match wire signature is invalid: {error}"))?;
+    if signature.schema != MEDIA_MATCH_WIRE_SCHEMA_V1 {
+        return Err("media match wire signature schema is unsupported".to_owned());
+    }
+    if signature.profiles.is_empty() {
+        return Err("media match wire signature has no profiles".to_owned());
+    }
+    Ok(signature)
+}
+
+pub fn media_match_wire_records_from_signature(
+    signature: &MediaMatchWireSignatureV1,
+) -> Vec<MediaFingerprintRecord> {
+    if signature.schema != MEDIA_MATCH_WIRE_SCHEMA_V1 {
+        return Vec::new();
+    }
+    signature
+        .profiles
+        .iter()
+        .filter_map(media_match_wire_record_from_profile)
+        .collect()
+}
+
+pub fn decide_media_match_against_wire_signature(
+    query: &MediaFingerprintRecord,
+    signature: &MediaMatchWireSignatureV1,
+    settings: &MediaMatchSettings,
+) -> MediaMatchDecision {
+    let records = media_match_wire_records_from_signature(signature);
+    let Some(best) = rank_media_match_candidates(query, records.iter(), settings)
+        .into_iter()
+        .next()
+    else {
+        return MediaMatchDecision::unknown("no comparable media match wire profiles");
+    };
+    best.decision
+}
+
+fn media_match_wire_profile_from_record(
+    record: &MediaFingerprintRecord,
+) -> Option<MediaMatchWireProfile> {
+    if record.audio.is_none() && record.video.is_none() {
+        return None;
+    }
+    Some(MediaMatchWireProfile {
+        profile: record.extraction_settings.profile.label().to_owned(),
+        algorithm_version: record.algorithm_version,
+        duration_seconds: record.duration_seconds,
+        audio: record
+            .audio
+            .as_ref()
+            .map(|audio| MediaMatchWireAudioFingerprint {
+                algorithm: record.extraction_settings.audio_algorithm.clone(),
+                tokens: audio.fingerprint_tokens.clone(),
+            }),
+        video: record
+            .video
+            .as_ref()
+            .map(|video| MediaMatchWireVideoFingerprint {
+                algorithm: record.extraction_settings.video_algorithm.clone(),
+                frames: video
+                    .frames
+                    .iter()
+                    .map(|frame| MediaMatchWireVideoFrame {
+                        second: frame.timestamp_seconds(),
+                        hash: format!("{:016x}", frame.hash),
+                    })
+                    .collect(),
+            }),
+    })
+}
+
+fn media_match_wire_record_from_profile(
+    profile: &MediaMatchWireProfile,
+) -> Option<MediaFingerprintRecord> {
+    let fingerprint_profile = match profile.profile.as_str() {
+        "fast-v1" => MediaFingerprintProfile::FastV1,
+        "full-v1" => MediaFingerprintProfile::FullV1,
+        _ => return None,
+    };
+    let extraction_settings = match fingerprint_profile {
+        MediaFingerprintProfile::FastV1 => MediaExtractionSettings::fast_v1(),
+        MediaFingerprintProfile::FullV1 => MediaExtractionSettings::full_v1(),
+    };
+    if profile.algorithm_version != MEDIA_MATCH_ALGORITHM_VERSION {
+        return None;
+    }
+    let audio = profile.audio.as_ref().and_then(|audio| {
+        (audio.algorithm == extraction_settings.audio_algorithm && !audio.tokens.is_empty()).then(
+            || AudioFingerprint {
+                duration_seconds: profile.duration_seconds,
+                fingerprint_tokens: audio.tokens.clone(),
+            },
+        )
+    });
+    let video = profile.video.as_ref().and_then(|video| {
+        if video.algorithm != extraction_settings.video_algorithm || video.frames.is_empty() {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(video.frames.len());
+        for frame in &video.frames {
+            let hash = u64::from_str_radix(frame.hash.trim(), 16).ok()?;
+            frames.push(FrameFingerprint::new(frame.second, hash));
+        }
+        Some(VideoFingerprint {
+            duration_seconds: profile.duration_seconds.and_then(|duration| {
+                (duration.is_finite() && duration >= 0.0).then_some(duration.round() as u32)
+            }),
+            frames,
+        })
+    });
+    if audio.is_none() && video.is_none() {
+        return None;
+    }
+    let normalized_path = format!("wire://media-match/{}", profile.profile);
+    Some(MediaFingerprintRecord {
+        identity: MediaFileIdentity {
+            normalized_path: normalized_path.clone(),
+            modified_unix_millis: 0,
+            size_bytes: 0,
+        },
+        algorithm_version: profile.algorithm_version,
+        extraction_settings,
+        duration_seconds: profile.duration_seconds,
+        container_fingerprint: container_fingerprint_from_metadata(
+            &normalized_path,
+            0,
+            0,
+            profile.duration_seconds,
+        ),
+        audio,
+        video,
+    })
 }
 
 pub fn fingerprint_media_file(
@@ -1492,6 +1709,92 @@ mod tests {
             fingerprinting_enabled: true,
             ..MediaMatchSettings::default()
         }
+    }
+
+    #[test]
+    fn wire_signature_round_trips_fast_profile() {
+        let hashes = synthetic_hashes(&[1, 2, 3, 4]);
+        let record = record_with_extraction_settings(
+            "[Judas] Show - S01E07.mkv",
+            100,
+            Some(1412.37),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(30, &hashes)),
+            MediaExtractionSettings::fast_v1(),
+        );
+
+        let value = media_match_wire_value_from_records(std::slice::from_ref(&record))
+            .expect("wire value should serialize");
+        let signature =
+            media_match_wire_signature_from_value(&value).expect("wire signature should parse");
+        let records = media_match_wire_records_from_signature(&signature);
+
+        assert_eq!(signature.schema, MEDIA_MATCH_WIRE_SCHEMA_V1);
+        assert_eq!(signature.profiles[0].profile, "fast-v1");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].extraction_settings,
+            MediaExtractionSettings::fast_v1()
+        );
+        assert_eq!(
+            records[0]
+                .audio
+                .as_ref()
+                .expect("audio should round-trip")
+                .fingerprint_tokens,
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn wire_signature_compares_local_record_to_remote_profile() {
+        let hashes = synthetic_hashes(&[1, 2, 3, 4, 5, 6]);
+        let query = record_with_extraction_settings(
+            "[Judas] Show - S01E07.mkv",
+            100,
+            Some(1412.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(0, &hashes)),
+            MediaExtractionSettings::fast_v1(),
+        );
+        let remote = record_with_extraction_settings(
+            "[Erai-raws] Show - 07.mkv",
+            200,
+            Some(1413.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(20, &hashes)),
+            MediaExtractionSettings::fast_v1(),
+        );
+        let value =
+            media_match_wire_value_from_records(&[remote]).expect("wire value should serialize");
+        let signature =
+            media_match_wire_signature_from_value(&value).expect("wire signature should parse");
+
+        let decision =
+            decide_media_match_against_wire_signature(&query, &signature, &enabled_settings());
+
+        assert_eq!(decision.tier, MediaMatchTier::Strong);
+    }
+
+    #[test]
+    fn malformed_wire_signatures_are_ignored_for_autoplay() {
+        let unsupported = serde_json::json!({
+            "schema": "sorotte.mediaMatch.v999",
+            "profiles": []
+        });
+        assert!(media_match_wire_signature_from_value(&unsupported).is_err());
+
+        let no_evidence = MediaMatchWireSignatureV1 {
+            profiles: vec![MediaMatchWireProfile {
+                profile: "fast-v1".to_owned(),
+                algorithm_version: MEDIA_MATCH_ALGORITHM_VERSION,
+                duration_seconds: Some(120.0),
+                audio: None,
+                video: None,
+            }],
+            ..MediaMatchWireSignatureV1::default()
+        };
+        assert!(media_match_wire_records_from_signature(&no_evidence).is_empty());
     }
 
     #[test]

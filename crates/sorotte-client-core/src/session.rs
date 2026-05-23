@@ -25,6 +25,7 @@ pub struct ClientSession {
     last_advanced_at_seconds: Option<f64>,
     last_rewound_at_seconds: Option<f64>,
     user_views: BTreeMap<String, ClientUserView>,
+    media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     known_rooms: BTreeSet<String>,
     room_playlists: BTreeMap<String, RoomPlaylistView>,
     room_playstates: BTreeMap<String, RoomPlaystateView>,
@@ -83,6 +84,7 @@ pub struct ClientSession {
 #[derive(Debug, Clone)]
 pub(crate) struct ClientSessionLocalActionSnapshot {
     user_views: BTreeMap<String, ClientUserView>,
+    media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     local_position: Option<f64>,
     local_paused: Option<bool>,
     local_paused_for_cache: Option<bool>,
@@ -124,6 +126,7 @@ impl Default for ClientSession {
             last_advanced_at_seconds: None,
             last_rewound_at_seconds: None,
             user_views: BTreeMap::new(),
+            media_match_peer_tiers: BTreeMap::new(),
             known_rooms: BTreeSet::new(),
             room_playlists: BTreeMap::new(),
             room_playstates: BTreeMap::new(),

@@ -303,6 +303,11 @@ impl SorotteGuiShellAppState {
                 self.media_match.current_decision.clone(),
             ),
             (
+                "plugins:media-matching:remote-status",
+                "Room Matches",
+                self.media_match.remote_status.clone(),
+            ),
+            (
                 "plugins:media-matching:last-evidence",
                 "Last Evidence",
                 self.media_match.last_evidence.clone(),
@@ -325,6 +330,7 @@ impl SorotteGuiShellAppState {
     fn media_matching_plugin_settings_rows(&self) -> Vec<GuiWidgetNode> {
         let fingerprinting_enabled = self.media_match.settings.fingerprinting_enabled;
         let background_warmup_enabled = self.media_match.settings.background_warmup_enabled;
+        let wire_sharing_enabled = self.media_match.settings.wire_sharing_enabled;
         let runtime_tolerance_enabled = self.media_match.settings.runtime_tolerance_enabled;
         let strong_policy = self.media_match.settings.autoplay_policy
             == sorotte_media_match::MediaMatchAutoplayPolicy::AllowStrongSameMedia;
@@ -342,6 +348,14 @@ impl SorotteGuiShellAppState {
                 "Background Warmup",
                 GuiWidgetKind::Checkbox,
                 Some(bool_label(background_warmup_enabled).to_owned()),
+                self.pending_operation.is_none(),
+                false,
+            ),
+            GuiWidgetNode::leaf(
+                "plugins:media-matching:setting:wire-sharing",
+                "Share Raw Fingerprints",
+                GuiWidgetKind::Checkbox,
+                Some(bool_label(wire_sharing_enabled).to_owned()),
                 self.pending_operation.is_none(),
                 false,
             ),

@@ -5,6 +5,7 @@ use md5::Md5;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sorotte_core::SyncDomain;
+use sorotte_media_match::{MEDIA_MATCH_FILE_PAYLOAD_KEY, MediaMatchTier};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
 };
@@ -103,4 +104,6 @@ pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
 pub use self::runtime::ClientRuntime;
 pub use self::session::ClientSession;
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
-pub use self::views::{ClientUserView, RoomPlaylistView, RoomPlaystateView};
+pub use self::views::{
+    ClientMediaMatchPeerFileState, ClientUserView, RoomPlaylistView, RoomPlaystateView,
+};

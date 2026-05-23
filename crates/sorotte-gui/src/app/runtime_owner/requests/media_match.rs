@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -6,6 +7,13 @@ use std::{
     },
     thread,
 };
+
+use sorotte_media_match::{
+    MediaExtractionSettings, MediaMatchDecision, MediaMatchTier,
+    decide_media_match_against_wire_signature, media_match_wire_signature_from_value,
+};
+
+use crate::app::media_match_support::{media_match_record_for_path, media_match_tier_label};
 
 use super::super::{GuiMediaMatchBackgroundWorkerEvent, GuiMediaMatchToolWorkerEvent};
 use super::*;
@@ -41,6 +49,8 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        self.last_published_local_file = None;
+        self.media_match_wire_sync_token = None;
         let actions = vec![
             GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
             GuiShellAction::PushTransientNotification {
@@ -80,15 +90,14 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
-    fn set_media_match_autoplay_gate(
+    fn set_media_match_peer_tiers(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        strong_same_media: bool,
+        tiers: BTreeMap<String, MediaMatchTier>,
     ) -> bool {
         if let Some(session) = self.session.as_mut()
-            && let Err(error) =
-                session.set_strong_same_media_match_satisfies_filename_gate(strong_same_media)
+            && let Err(error) = session.set_media_match_peer_tiers(tiers)
         {
             Self::push_runtime_error_notification(
                 handle,
@@ -100,16 +109,169 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
-    fn current_media_match_strong_for_autoplay(state: &SorotteGuiShellAppState) -> bool {
-        state
+    fn summarize_media_match_wire_decision(
+        username: &str,
+        decision: &MediaMatchDecision,
+    ) -> String {
+        let tier = media_match_tier_label(decision.tier);
+        format!("{username}: {tier}")
+    }
+
+    fn sync_media_match_wire_decisions(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        self.media_match_wire_sync_token =
+            Some(self.media_match_wire_sync_token_for_state(projected_state));
+        let mut tiers = BTreeMap::new();
+        let status = if !projected_state.media_match.settings.fingerprinting_enabled {
+            "disabled: fingerprinting off".to_owned()
+        } else if !projected_state.media_match.settings.wire_sharing_enabled {
+            "disabled: sharing off".to_owned()
+        } else if self.media_match_runtime_snapshot.health != GuiMediaMatchToolHealth::Healthy {
+            "unavailable: tools unhealthy".to_owned()
+        } else {
+            let Some(root) = self.media_match_root_for_request(projected_state) else {
+                let status = "unavailable: no storage root".to_owned();
+                let gate_tiers = BTreeMap::new();
+                if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
+                    return false;
+                }
+                self.update_media_match_remote_status(handle, projected_state, status);
+                return true;
+            };
+            let Some(current_path) = self
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.as_deref())
+            else {
+                let status = "unavailable: no current file".to_owned();
+                let gate_tiers = BTreeMap::new();
+                if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
+                    return false;
+                }
+                self.update_media_match_remote_status(handle, projected_state, status);
+                return true;
+            };
+            let Some(local_record) = media_match_record_for_path(
+                &root,
+                current_path,
+                &MediaExtractionSettings::fast_v1(),
+            ) else {
+                let status = "pending local fingerprint".to_owned();
+                let gate_tiers = BTreeMap::new();
+                if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
+                    return false;
+                }
+                self.update_media_match_remote_status(handle, projected_state, status);
+                return true;
+            };
+            let remote_peer_states = self
+                .session
+                .as_ref()
+                .map(|session| session.current_room_media_match_peer_file_states())
+                .unwrap_or_default();
+            if remote_peer_states.is_empty() {
+                "unavailable: no room peers".to_owned()
+            } else {
+                let mut summaries = Vec::new();
+                for peer_state in remote_peer_states {
+                    let username = peer_state.username;
+                    let Some(value) = peer_state.media_match_signature else {
+                        summaries.push(format!("{username}: unavailable"));
+                        continue;
+                    };
+                    match media_match_wire_signature_from_value(&value) {
+                        Ok(signature) => {
+                            let decision = decide_media_match_against_wire_signature(
+                                &local_record,
+                                &signature,
+                                &projected_state.media_match.settings,
+                            );
+                            tiers.insert(username.clone(), decision.tier);
+                            summaries.push(Self::summarize_media_match_wire_decision(
+                                &username, &decision,
+                            ));
+                        }
+                        Err(_) => summaries.push(format!("{username}: incompatible")),
+                    }
+                }
+                summaries.join(", ")
+            }
+        };
+
+        let gate_tiers = if projected_state
             .media_match
             .settings
             .autoplay_allows_strong_same_media()
-            && state
-                .media_match
-                .current_decision
-                .as_deref()
-                .is_some_and(|decision| decision.starts_with("strong:"))
+        {
+            tiers
+        } else {
+            BTreeMap::new()
+        };
+        if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
+            return false;
+        }
+        self.update_media_match_remote_status(handle, projected_state, status);
+        true
+    }
+
+    pub(in crate::app::runtime_owner) fn maybe_sync_media_match_wire_decisions(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        let token = self.media_match_wire_sync_token_for_state(projected_state);
+        if self.media_match_wire_sync_token.as_deref() == Some(token.as_str()) {
+            return true;
+        }
+        self.sync_media_match_wire_decisions(handle, projected_state)
+    }
+
+    fn media_match_wire_sync_token_for_state(
+        &self,
+        projected_state: &SorotteGuiShellAppState,
+    ) -> String {
+        let current_path = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref())
+            .unwrap_or_default();
+        let remote_peer_states = self
+            .session
+            .as_ref()
+            .map(|session| session.current_room_media_match_peer_file_states())
+            .unwrap_or_default();
+        let remote_signature_token = format!("{remote_peer_states:?}");
+        format!(
+            "{}|{}|{}|{:?}|{:?}|{}",
+            current_path,
+            projected_state.media_match.settings.fingerprinting_enabled,
+            projected_state.media_match.settings.wire_sharing_enabled,
+            projected_state.media_match.settings.autoplay_policy,
+            self.media_match_runtime_snapshot.health,
+            remote_signature_token
+        )
+    }
+
+    fn update_media_match_remote_status(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        status: String,
+    ) {
+        if self.media_match_runtime_snapshot.remote_status.as_deref() == Some(status.as_str()) {
+            return;
+        }
+        let mut snapshot = self.media_match_runtime_snapshot.clone();
+        snapshot.remote_status = Some(status);
+        self.media_match_runtime_snapshot = snapshot.clone();
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+        );
     }
 
     fn media_match_tool_worker_busy_notification(
@@ -149,7 +311,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Some(config_path)
     }
 
-    fn media_match_root_for_request(
+    pub(in crate::app) fn media_match_root_for_request(
         &mut self,
         projected_state: &SorotteGuiShellAppState,
     ) -> Option<PathBuf> {
@@ -547,21 +709,19 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.cache_status = Some(result.cache_status);
         snapshot.current_decision = result.current_decision;
         snapshot.last_evidence = result.last_evidence.or_else(|| {
-            Some("Fingerprint evidence is local-only; nothing is sent over Syncplay.".to_owned())
+            Some(
+                "Fingerprint evidence is local; optional raw wire signatures are shared only with room peers."
+                    .to_owned(),
+            )
         });
         snapshot.background_status = Some(background_status.into());
         self.media_match_runtime_snapshot = snapshot.clone();
-        let strong_same_media = projected_state
-            .media_match
-            .settings
-            .autoplay_allows_strong_same_media()
-            && snapshot
-                .current_decision
-                .as_deref()
-                .is_some_and(|decision| decision.starts_with("strong:"));
-        if !self.set_media_match_autoplay_gate(handle, projected_state, strong_same_media) {
+        self.last_published_local_file = None;
+        self.media_match_wire_sync_token = None;
+        if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return false;
         }
+        let snapshot = self.media_match_runtime_snapshot.clone();
         let mut actions = vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)];
         if notify {
             actions.push(GuiShellAction::PushTransientNotification {
@@ -911,9 +1071,12 @@ impl GuiPersistedConfigRuntimeOwner {
         snapshot.last_evidence = None;
         snapshot.background_status = Some("idle".to_owned());
         self.media_match_runtime_snapshot = snapshot.clone();
-        if !self.set_media_match_autoplay_gate(handle, projected_state, false) {
+        self.last_published_local_file = None;
+        self.media_match_wire_sync_token = None;
+        if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return true;
         }
+        let snapshot = self.media_match_runtime_snapshot.clone();
         let message = "Media Matching cache cleared.".to_owned();
         Self::push_actions_and_project(
             handle,
@@ -956,6 +1119,17 @@ impl GuiPersistedConfigRuntimeOwner {
         if !enabled {
             self.cancel_media_match_background_worker();
         }
+        self.persist_media_match_settings_request(handle, projected_state)
+    }
+
+    pub(super) fn handle_set_media_match_wire_sharing_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        enabled: bool,
+    ) -> bool {
+        projected_state.media_match.settings.wire_sharing_enabled = enabled;
+        self.last_published_local_file = None;
         self.persist_media_match_settings_request(handle, projected_state)
     }
 
@@ -1013,10 +1187,13 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
-        let strong_same_media = Self::current_media_match_strong_for_autoplay(projected_state);
-        if !self.set_media_match_autoplay_gate(handle, projected_state, strong_same_media) {
+        self.media_match_runtime_snapshot = snapshot.clone();
+        self.last_published_local_file = None;
+        self.media_match_wire_sync_token = None;
+        if !self.sync_media_match_wire_decisions(handle, projected_state) {
             return false;
         }
+        let snapshot = self.media_match_runtime_snapshot.clone();
         Self::push_actions_and_project(
             handle,
             projected_state,

@@ -4,6 +4,7 @@ impl ClientSession {
     pub(crate) fn snapshot_local_action_state(&self) -> ClientSessionLocalActionSnapshot {
         ClientSessionLocalActionSnapshot {
             user_views: self.user_views.clone(),
+            media_match_peer_tiers: self.media_match_peer_tiers.clone(),
             local_position: self.local_position,
             local_paused: self.local_paused,
             local_paused_for_cache: self.local_paused_for_cache,
@@ -22,6 +23,7 @@ impl ClientSession {
         snapshot: ClientSessionLocalActionSnapshot,
     ) {
         self.user_views = snapshot.user_views;
+        self.media_match_peer_tiers = snapshot.media_match_peer_tiers;
         self.local_position = snapshot.local_position;
         self.local_paused = snapshot.local_paused;
         self.local_paused_for_cache = snapshot.local_paused_for_cache;

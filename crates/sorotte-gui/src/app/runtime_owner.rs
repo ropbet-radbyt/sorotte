@@ -139,6 +139,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
     pub(super) media_match_background_trigger_key: Option<String>,
+    pub(super) media_match_wire_sync_token: Option<String>,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
     pub(super) plex_auth_start_rx: Option<mpsc::Receiver<Result<PlexAuthSession, String>>>,

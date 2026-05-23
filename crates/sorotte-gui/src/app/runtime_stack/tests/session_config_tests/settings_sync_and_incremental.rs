@@ -167,42 +167,46 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_sets_media_match_autoplay_gate() {
+fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
     assert!(
-        !adapter
+        adapter
             .runtime
             .session()
-            .readiness_autoplay_config()
-            .strong_same_media_match_satisfies_filename_gate
+            .media_match_peer_tiers()
+            .is_empty()
     );
 
-    GuiSessionRuntimeAdapter::set_strong_same_media_match_satisfies_filename_gate(
+    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
         &mut adapter,
-        true,
+        std::collections::BTreeMap::from([(
+            "bob".to_owned(),
+            sorotte_media_match::MediaMatchTier::Strong,
+        )]),
     )
-    .expect("media-match autoplay gate should update");
+    .expect("media-match peer tiers should update");
+    assert_eq!(
+        adapter
+            .runtime
+            .session()
+            .media_match_peer_tiers()
+            .get("bob"),
+        Some(&sorotte_media_match::MediaMatchTier::Strong)
+    );
+
+    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
+        &mut adapter,
+        std::collections::BTreeMap::new(),
+    )
+    .expect("media-match peer tiers should clear");
     assert!(
         adapter
             .runtime
             .session()
-            .readiness_autoplay_config()
-            .strong_same_media_match_satisfies_filename_gate
-    );
-
-    GuiSessionRuntimeAdapter::set_strong_same_media_match_satisfies_filename_gate(
-        &mut adapter,
-        false,
-    )
-    .expect("media-match autoplay gate should clear");
-    assert!(
-        !adapter
-            .runtime
-            .session()
-            .readiness_autoplay_config()
-            .strong_same_media_match_satisfies_filename_gate
+            .media_match_peer_tiers()
+            .is_empty()
     );
 }
 

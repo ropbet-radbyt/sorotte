@@ -17,6 +17,7 @@ use super::{
     ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification, RoomPlaystateView,
     UnpauseActionMode, UserChangeNotification, unix_wall_clock_time_seconds_legacy_compatible,
 };
+use sorotte_media_match::MediaMatchTier;
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
 };

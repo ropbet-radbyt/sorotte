@@ -3344,6 +3344,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sorotte-core",
+ "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-protocol",
  "tokio",

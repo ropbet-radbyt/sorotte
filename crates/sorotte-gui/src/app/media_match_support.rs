@@ -16,7 +16,7 @@ use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintProfile,
     MediaFingerprintRecord, MediaMatchCacheV1, MediaMatchSettings, MediaMatchTier,
     MediaMatchToolPaths, decide_media_match, fingerprint_media_file_cancellable,
-    normalize_media_path, rank_media_match_candidates,
+    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
 };
 
 use super::shell_state::{
@@ -235,6 +235,7 @@ pub(super) fn probe_media_match_runtime_snapshot(
         cache_status: root.map(media_match_cache_status),
         current_decision: None,
         last_evidence: None,
+        remote_status: Some("unavailable".to_owned()),
         background_status: Some("idle".to_owned()),
         open_install_location_available: root.is_some(),
     }
@@ -1079,7 +1080,7 @@ fn summarize_current_media_match(
     )
 }
 
-fn media_match_tier_label(tier: MediaMatchTier) -> &'static str {
+pub(super) fn media_match_tier_label(tier: MediaMatchTier) -> &'static str {
     match tier {
         MediaMatchTier::Exact => "exact",
         MediaMatchTier::Strong => "strong",
@@ -1218,7 +1219,7 @@ fn media_match_profile_label(settings: &MediaExtractionSettings) -> &'static str
     settings.profile.label()
 }
 
-fn load_media_match_cache_for_settings(
+pub(super) fn load_media_match_cache_for_settings(
     root: &Path,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaMatchCacheV1> {
@@ -1245,6 +1246,54 @@ fn load_media_match_cache_for_settings(
         }
     }
     Some(cache)
+}
+
+pub(super) fn media_match_wire_value_for_path(
+    root: &Path,
+    current_player_path: &str,
+) -> Option<serde_json::Value> {
+    let fast_record = media_match_record_for_path(
+        root,
+        current_player_path,
+        &MediaExtractionSettings::fast_v1(),
+    )?;
+    let mut records = vec![fast_record.clone()];
+    if let Some(full_record) = media_match_record_for_path(
+        root,
+        current_player_path,
+        &MediaExtractionSettings::full_v1(),
+    ) {
+        records.push(full_record);
+    }
+    media_match_wire_value_from_records(&records)
+        .or_else(|| media_match_wire_value_from_records(std::slice::from_ref(&fast_record)))
+}
+
+pub(super) fn media_match_record_for_path(
+    root: &Path,
+    current_player_path: &str,
+    extraction_settings: &MediaExtractionSettings,
+) -> Option<MediaFingerprintRecord> {
+    let normalized_path = normalize_media_path(current_player_path);
+    let metadata = fs::metadata(current_player_path).ok()?;
+    let modified_unix_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    let size_bytes = metadata.len();
+    load_media_match_cache_for_settings(root, extraction_settings)
+        .and_then(|cache| cache.records.get(&normalized_path).cloned())
+        .filter(|record| {
+            record.valid_for(
+                &normalized_path,
+                modified_unix_millis,
+                size_bytes,
+                MEDIA_MATCH_ALGORITHM_VERSION,
+                extraction_settings,
+            )
+        })
 }
 
 fn save_media_match_cache(root: &Path, cache: &MediaMatchCacheV1) -> Result<(), String> {

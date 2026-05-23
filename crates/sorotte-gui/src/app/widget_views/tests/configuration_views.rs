@@ -348,6 +348,7 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
                 cache_status: Some("2 fingerprint records".to_owned()),
                 current_decision: Some("strong: aligned video hashes".to_owned()),
                 last_evidence: Some("audio=0.94 video=0.82 offset=20s".to_owned()),
+                remote_status: Some("bob: strong".to_owned()),
                 background_status: Some("idle".to_owned()),
                 open_install_location_available: true,
             },
@@ -396,6 +397,12 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
             .and_then(|node| node.value.as_deref()),
         Some("idle")
     );
+    assert_eq!(
+        plugins
+            .find("plugins:media-matching:remote-status")
+            .and_then(|node| node.value.as_deref()),
+        Some("bob: strong")
+    );
 
     let fingerprinting = plugins
         .find("plugins:media-matching:setting:fingerprinting")
@@ -412,6 +419,13 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
     assert_eq!(
         GuiWidgetEguiRenderer::action_for_checkbox_node(&state, background_warmup, false),
         Some(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(false))
+    );
+    let wire_sharing = plugins
+        .find("plugins:media-matching:setting:wire-sharing")
+        .expect("wire sharing checkbox should exist");
+    assert_eq!(
+        GuiWidgetEguiRenderer::action_for_checkbox_node(&state, wire_sharing, false),
+        Some(GuiShellAction::SetMediaMatchWireSharingEnabled(false))
     );
     let runtime_tolerance = plugins
         .find("plugins:media-matching:setting:runtime-tolerance")

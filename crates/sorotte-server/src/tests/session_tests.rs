@@ -70,7 +70,7 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
     let directed_lines = runtime
         .handle_line_fanout(
             "client-1",
-            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789}}}"#,
+            r#"{"Set":{"file":{"name":"movie.mkv","duration":95.5,"size":123456789,"mediaMatch":{"schema":"sorotte.mediaMatch.v1","profiles":[{"profile":"fast-v1","algorithmVersion":1,"durationSeconds":95.5,"audio":{"algorithm":"chromaprint-fpcalc-120s","tokens":[1,2,3]},"video":{"algorithm":"sorotte-pdq-style-fast-v1","frames":[{"second":20.0,"hash":"0123abcd89ef4567"}]}}]}}}}"#,
         )
         .expect("set file should fan out");
     let directed_messages = decode_directed_lines(&directed_lines);
@@ -96,6 +96,25 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
         assert_eq!(file.get("name").and_then(Value::as_str), Some("movie.mkv"));
         assert_eq!(file.get("duration").and_then(Value::as_f64), Some(95.5));
         assert_eq!(file.get("size").and_then(Value::as_i64), Some(123456789));
+        assert_eq!(
+            file.get("mediaMatch"),
+            Some(&json!({
+                "schema": "sorotte.mediaMatch.v1",
+                "profiles": [{
+                    "profile": "fast-v1",
+                    "algorithmVersion": 1,
+                    "durationSeconds": 95.5,
+                    "audio": {
+                        "algorithm": "chromaprint-fpcalc-120s",
+                        "tokens": [1, 2, 3]
+                    },
+                    "video": {
+                        "algorithm": "sorotte-pdq-style-fast-v1",
+                        "frames": [{"second": 20.0, "hash": "0123abcd89ef4567"}]
+                    }
+                }]
+            }))
+        );
     }
 
     let outbound_lines = runtime
@@ -119,6 +138,25 @@ fn set_file_broadcasts_user_file_update_and_list_includes_file() {
     assert_eq!(
         alice_file.get("duration").and_then(Value::as_f64),
         Some(95.5)
+    );
+    assert_eq!(
+        alice_file.get("mediaMatch"),
+        Some(&json!({
+            "schema": "sorotte.mediaMatch.v1",
+            "profiles": [{
+                "profile": "fast-v1",
+                "algorithmVersion": 1,
+                "durationSeconds": 95.5,
+                "audio": {
+                    "algorithm": "chromaprint-fpcalc-120s",
+                    "tokens": [1, 2, 3]
+                },
+                "video": {
+                    "algorithm": "sorotte-pdq-style-fast-v1",
+                    "frames": [{"second": 20.0, "hash": "0123abcd89ef4567"}]
+                }
+            }]
+        }))
     );
 }
 
@@ -234,12 +272,14 @@ fn set_file_truncates_filename_to_legacy_limit() {
         .expect("alice hello should establish session");
 
     let long_name = "x".repeat(DEFAULT_MAX_FILENAME_LENGTH + 10);
-    let set_file = format!(r#"{{"Set":{{"file":{{"name":"{long_name}"}}}}}}"#);
+    let set_file = format!(
+        r#"{{"Set":{{"file":{{"name":"{long_name}","mediaMatch":{{"schema":"sorotte.mediaMatch.v1","profiles":[{{"profile":"fast-v1"}}]}}}}}}}}"#
+    );
     let directed_lines = runtime
         .handle_line_fanout("client-1", &set_file)
         .expect("set file should succeed");
     let directed_messages = decode_directed_lines(&directed_lines);
-    let file_name = directed_messages
+    let file = directed_messages
         .iter()
         .find_map(|(_, message)| {
             let ProtocolMessage::Set(payload) = message else {
@@ -251,12 +291,21 @@ fn set_file_truncates_filename_to_legacy_limit() {
                 .as_ref()
                 .and_then(|users| users.get("alice"))
                 .and_then(|user| user.file.as_ref())
-                .and_then(|file| file.get("name"))
-                .and_then(Value::as_str)
         })
-        .expect("file update should include a name");
+        .expect("file update should include file payload");
 
+    let file_name = file
+        .get("name")
+        .and_then(Value::as_str)
+        .expect("file update should include a name");
     assert_eq!(file_name.chars().count(), DEFAULT_MAX_FILENAME_LENGTH);
+    assert_eq!(
+        file.get("mediaMatch"),
+        Some(&json!({
+            "schema": "sorotte.mediaMatch.v1",
+            "profiles": [{"profile": "fast-v1"}]
+        }))
+    );
 }
 
 #[test]

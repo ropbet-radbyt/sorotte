@@ -241,11 +241,19 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    fn set_strong_same_media_match_satisfies_filename_gate(
+    fn set_media_match_peer_tiers(
         &mut self,
-        _satisfied: bool,
+        _tiers: BTreeMap<String, MediaMatchTier>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+        Vec::new()
+    }
+
+    fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
+        Vec::new()
     }
 
     fn sync_runtime_settings(

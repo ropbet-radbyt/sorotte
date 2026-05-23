@@ -95,6 +95,7 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         media_match_background_worker_rx: None,
         media_match_background_worker_cancel: None,
         media_match_background_trigger_key: None,
+        media_match_wire_sync_token: None,
         plex_client: None,
         plex_auth_session: None,
         plex_auth_start_rx: None,

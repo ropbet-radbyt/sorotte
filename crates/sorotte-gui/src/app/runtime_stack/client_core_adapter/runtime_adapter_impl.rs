@@ -679,13 +679,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn set_strong_same_media_match_satisfies_filename_gate(
+    fn set_media_match_peer_tiers(
         &mut self,
-        satisfied: bool,
+        tiers: BTreeMap<String, MediaMatchTier>,
     ) -> Result<(), String> {
-        self.runtime
-            .session_mut()
-            .set_strong_same_media_match_satisfies_filename_gate(satisfied);
+        self.runtime.session_mut().set_media_match_peer_tiers(tiers);
         let (readiness_supported, local_can_control, is_playing_music, recently_advanced) =
             self.autoplay_runtime_flags();
         self.runtime.update_autoplay_check(
@@ -695,6 +693,16 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             recently_advanced,
         );
         Ok(())
+    }
+
+    fn current_room_media_match_signatures(&self) -> Vec<(String, Value)> {
+        self.runtime.session().current_room_media_match_signatures()
+    }
+
+    fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
+        self.runtime
+            .session()
+            .current_room_media_match_peer_file_states()
     }
 
     fn sync_runtime_settings(

@@ -60,6 +60,7 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_background_worker_rx: None,
             media_match_background_worker_cancel: None,
             media_match_background_trigger_key: None,
+            media_match_wire_sync_token: None,
             plex_client: None,
             plex_auth_session: None,
             plex_auth_start_rx: None,
@@ -181,6 +182,8 @@ impl GuiPersistedConfigRuntimeOwner {
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.last_evidence = None;
+        self.media_match_runtime_snapshot.remote_status = Some("unavailable".to_owned());
+        self.media_match_wire_sync_token = None;
         self.pending_stream_retry_target = None;
         self.pending_stream_feedback.clear();
         self.pending_stream_load_context = None;
@@ -460,7 +463,7 @@ impl GuiPersistedConfigRuntimeOwner {
         ));
     }
 
-    pub(super) fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
+    pub(in crate::app) fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
         self.config_path
             .as_ref()
             .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -511,6 +514,7 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
         snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
+        snapshot.remote_status = self.media_match_runtime_snapshot.remote_status.clone();
         snapshot.background_status = self.media_match_runtime_snapshot.background_status.clone();
         self.media_match_runtime_snapshot = snapshot.clone();
         snapshot

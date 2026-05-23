@@ -11,15 +11,22 @@ impl ClientSession {
 
     pub(super) fn list_payload_file_info(
         file: Option<&Value>,
-    ) -> (bool, Option<String>, Option<Value>, Option<Value>) {
+    ) -> (
+        bool,
+        Option<String>,
+        Option<Value>,
+        Option<Value>,
+        Option<Value>,
+    ) {
         match file {
-            Some(Value::Null) | None => (false, None, None, None),
-            Some(Value::Object(entries)) if entries.is_empty() => (false, None, None, None),
+            Some(Value::Null) | None => (false, None, None, None, None),
+            Some(Value::Object(entries)) if entries.is_empty() => (false, None, None, None, None),
             Some(value) => (
                 Self::list_payload_has_file(Some(value)),
                 Self::file_name_from_payload(value),
                 Self::file_size_from_payload(value),
                 Self::file_duration_from_payload(value),
+                Self::media_match_signature_from_payload(value),
             ),
         }
     }
@@ -49,13 +56,24 @@ impl ClientSession {
         }
     }
 
+    pub(super) fn media_match_signature_from_payload(file: &Value) -> Option<Value> {
+        match file {
+            Value::Object(entries) => entries
+                .get(MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                .filter(|value| matches!(value, Value::Object(_)))
+                .cloned(),
+            _ => None,
+        }
+    }
+
     pub(super) fn file_metadata_from_payload(
         file: &Value,
-    ) -> (Option<String>, Option<Value>, Option<Value>) {
+    ) -> (Option<String>, Option<Value>, Option<Value>, Option<Value>) {
         (
             Self::file_name_from_payload(file),
             Self::file_size_from_payload(file),
             Self::file_duration_from_payload(file),
+            Self::media_match_signature_from_payload(file),
         )
     }
 
@@ -330,6 +348,12 @@ impl ClientSession {
         }
         if let Some(file_duration) = user_view.file_duration.as_ref() {
             payload.insert("duration".to_owned(), file_duration.clone());
+        }
+        if let Some(media_match_signature) = user_view.media_match_signature.as_ref() {
+            payload.insert(
+                MEDIA_MATCH_FILE_PAYLOAD_KEY.to_owned(),
+                media_match_signature.clone(),
+            );
         }
 
         Some(Value::Object(payload))

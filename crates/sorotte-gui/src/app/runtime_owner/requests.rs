@@ -256,6 +256,13 @@ impl GuiPersistedConfigRuntimeOwner {
                     enabled,
                 );
             }
+            GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(enabled) => {
+                return self.handle_set_media_match_wire_sharing_request(
+                    handle,
+                    projected_state,
+                    enabled,
+                );
+            }
             GuiRuntimeRequest::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
                 return self.handle_set_media_match_runtime_tolerance_request(
                     handle,

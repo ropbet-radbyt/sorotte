@@ -235,6 +235,7 @@ pub(in crate::app) enum GuiShellAction {
     OpenMediaMatchInstallLocation,
     SetMediaMatchFingerprintingEnabled(bool),
     SetMediaMatchBackgroundWarmupEnabled(bool),
+    SetMediaMatchWireSharingEnabled(bool),
     SetMediaMatchRuntimeToleranceEnabled(bool),
     SetMediaMatchAutoplayPolicy(MediaMatchAutoplayPolicy),
     StartPlexAuth,

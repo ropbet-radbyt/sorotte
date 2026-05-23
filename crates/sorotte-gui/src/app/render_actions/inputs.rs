@@ -18,6 +18,9 @@ impl GuiWidgetEguiRenderer {
         if node.id == "plugins:media-matching:setting:background-warmup" {
             return Some(GuiShellAction::SetMediaMatchBackgroundWarmupEnabled(value));
         }
+        if node.id == "plugins:media-matching:setting:wire-sharing" {
+            return Some(GuiShellAction::SetMediaMatchWireSharingEnabled(value));
+        }
         if node.id == "plugins:media-matching:setting:runtime-tolerance" {
             return Some(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(value));
         }

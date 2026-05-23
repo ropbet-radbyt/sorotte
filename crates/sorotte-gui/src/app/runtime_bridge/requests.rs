@@ -71,6 +71,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
     ClearMediaMatchCache,
     SetMediaMatchFingerprintingEnabled(bool),
     SetMediaMatchBackgroundWarmupEnabled(bool),
+    SetMediaMatchWireSharingEnabled(bool),
     SetMediaMatchRuntimeToleranceEnabled(bool),
     SetMediaMatchAutoplayPolicy(sorotte_media_match::MediaMatchAutoplayPolicy),
     StartPlexAuth,

@@ -185,6 +185,12 @@ impl GuiShellDispatchPlan {
                         GuiRuntimeRequest::SetMediaMatchBackgroundWarmupEnabled(enabled),
                     );
                 }
+                GuiShellAction::SetMediaMatchWireSharingEnabled(enabled) => {
+                    plan.shell_actions
+                        .push(GuiShellAction::SetMediaMatchWireSharingEnabled(enabled));
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::SetMediaMatchWireSharingEnabled(enabled));
+                }
                 GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(enabled) => {
                     plan.shell_actions
                         .push(GuiShellAction::SetMediaMatchRuntimeToleranceEnabled(

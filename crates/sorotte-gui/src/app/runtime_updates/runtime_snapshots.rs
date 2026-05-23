@@ -437,6 +437,9 @@ impl SorotteGuiShellAppState {
         self.media_match.last_evidence = snapshot
             .last_evidence
             .and_then(|value| normalized_editable_text(&value));
+        self.media_match.remote_status = snapshot
+            .remote_status
+            .and_then(|value| normalized_editable_text(&value));
         self.media_match.background_status = snapshot
             .background_status
             .and_then(|value| normalized_editable_text(&value));
