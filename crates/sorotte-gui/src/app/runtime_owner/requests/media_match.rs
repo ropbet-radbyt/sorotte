@@ -43,6 +43,33 @@ impl GuiPersistedConfigRuntimeOwner {
         self.clear_media_match_remediation_progress(handle, projected_state);
     }
 
+    fn finish_media_match_tool_error(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        failure_label: &str,
+        error: String,
+    ) {
+        let message = format!("{failure_label}: {error}");
+        let mut snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        snapshot.message = Some(message.clone());
+        self.media_match_runtime_snapshot = snapshot.clone();
+        self.clear_media_match_remediation_progress(handle, projected_state);
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![
+                GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    message: message.clone(),
+                },
+                GuiShellAction::AnnounceSystemChatEvent(message),
+            ],
+        );
+    }
+
     fn set_media_match_autoplay_gate(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -102,10 +129,12 @@ impl GuiPersistedConfigRuntimeOwner {
             self.apply_media_match_progress(handle, projected_state, progress);
         }) {
             Ok(message) => self.finish_media_match_tool_success(handle, projected_state, message),
-            Err(error) => {
-                self.clear_media_match_remediation_progress(handle, projected_state);
-                Self::push_runtime_error_notification(handle, projected_state, error);
-            }
+            Err(error) => self.finish_media_match_tool_error(
+                handle,
+                projected_state,
+                "Media Matching tool install failed",
+                error,
+            ),
         }
         true
     }
@@ -141,10 +170,12 @@ impl GuiPersistedConfigRuntimeOwner {
             },
         ) {
             Ok(message) => self.finish_media_match_tool_success(handle, projected_state, message),
-            Err(error) => {
-                self.clear_media_match_remediation_progress(handle, projected_state);
-                Self::push_runtime_error_notification(handle, projected_state, error);
-            }
+            Err(error) => self.finish_media_match_tool_error(
+                handle,
+                projected_state,
+                "Media Matching tool import failed",
+                error,
+            ),
         }
         true
     }

@@ -5,6 +5,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::{io::Read, time::Duration};
+
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintRecord,
@@ -22,6 +25,16 @@ use zip::ZipArchive;
 
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
 const MEDIA_MATCH_CACHE_FILE: &str = "media-match-cache-v1.json";
+#[cfg(windows)]
+const MEDIA_MATCH_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+#[cfg(windows)]
+const MEDIA_MATCH_DOWNLOAD_PROGRESS_STEP_BYTES: u64 = 1024 * 1024;
+#[cfg(windows)]
+const MEDIA_MATCH_DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
+const MEDIA_MATCH_DOWNLOAD_PREALLOC_MAX_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(windows)]
+const MEDIA_MATCH_USER_AGENT: &str = concat!("sorotte-gui/", env!("CARGO_PKG_VERSION"));
 #[cfg(windows)]
 const FFMPEG_WINDOWS_ZIP_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
@@ -285,12 +298,20 @@ where
                 bin_dir.display()
             )
         })?;
-        progress(MediaMatchToolProgress::new(
+        let client = media_match_http_client()?;
+        let ffmpeg_zip = download_bytes_with_progress(
+            &client,
+            FFMPEG_WINDOWS_ZIP_URL,
             "Downloading ffmpeg tools",
-            Some(FFMPEG_WINDOWS_ZIP_URL.to_owned()),
             0.08,
+            0.54,
+            &mut progress,
+        )?;
+        progress(MediaMatchToolProgress::new(
+            "Extracting ffmpeg tools",
+            Some("Installing ffmpeg.exe and ffprobe.exe.".to_owned()),
+            0.55,
         ));
-        let ffmpeg_zip = download_bytes(FFMPEG_WINDOWS_ZIP_URL)?;
         extract_zip_entry(
             &ffmpeg_zip,
             "ffmpeg.exe",
@@ -301,12 +322,19 @@ where
             "ffprobe.exe",
             &managed_media_match_tool_path(root, MediaMatchTool::Ffprobe),
         )?;
-        progress(MediaMatchToolProgress::new(
+        let fpcalc_zip = download_bytes_with_progress(
+            &client,
+            FPCALC_WINDOWS_ZIP_URL,
             "Downloading fpcalc",
-            Some(FPCALC_WINDOWS_ZIP_URL.to_owned()),
             0.58,
+            0.72,
+            &mut progress,
+        )?;
+        progress(MediaMatchToolProgress::new(
+            "Extracting fpcalc",
+            Some("Installing fpcalc.exe.".to_owned()),
+            0.73,
         ));
-        let fpcalc_zip = download_bytes(FPCALC_WINDOWS_ZIP_URL)?;
         extract_zip_entry(
             &fpcalc_zip,
             "fpcalc.exe",
@@ -743,20 +771,134 @@ fn current_unix_seconds() -> u64 {
 }
 
 #[cfg(windows)]
-fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let response = reqwest::blocking::Client::builder()
-        .user_agent(concat!("sorotte-gui/", env!("CARGO_PKG_VERSION")))
+fn media_match_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(MEDIA_MATCH_DOWNLOAD_TIMEOUT)
+        .user_agent(MEDIA_MATCH_USER_AGENT)
         .build()
-        .map_err(|error| format!("failed creating HTTP client: {error}"))?
+        .map_err(|error| format!("failed creating Media Matching HTTP client: {error}"))
+}
+
+#[cfg(windows)]
+fn download_bytes_with_progress<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    label: &str,
+    progress_start: f32,
+    progress_end: f32,
+    progress: &mut F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    let mut response = client
         .get(url)
         .send()
         .map_err(|error| format!("failed downloading {url}: {error}"))?
         .error_for_status()
         .map_err(|error| format!("failed downloading {url}: {error}"))?;
-    response
-        .bytes()
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| format!("failed reading {url}: {error}"))
+    let total_bytes = response.content_length();
+    let capacity = total_bytes
+        .and_then(|total| usize::try_from(total).ok())
+        .map(|total| total.min(MEDIA_MATCH_DOWNLOAD_PREALLOC_MAX_BYTES))
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut buffer = [0u8; MEDIA_MATCH_DOWNLOAD_BUFFER_BYTES];
+    let mut downloaded_bytes = 0u64;
+    let mut next_progress_report = 0u64;
+
+    loop {
+        let read = response.read(&mut buffer).map_err(|error| {
+            format!(
+                "failed reading {url} after {}: {error}",
+                format_downloaded_bytes(total_bytes, downloaded_bytes)
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        downloaded_bytes = downloaded_bytes.saturating_add(read as u64);
+        if downloaded_bytes >= next_progress_report
+            || total_bytes.is_some_and(|total| downloaded_bytes >= total)
+        {
+            progress(MediaMatchToolProgress::new(
+                label,
+                Some(download_progress_detail(url, total_bytes, downloaded_bytes)),
+                download_progress_fraction(
+                    progress_start,
+                    progress_end,
+                    total_bytes,
+                    downloaded_bytes,
+                ),
+            ));
+            next_progress_report =
+                downloaded_bytes.saturating_add(MEDIA_MATCH_DOWNLOAD_PROGRESS_STEP_BYTES);
+        }
+    }
+
+    if let Some(total) = total_bytes
+        && downloaded_bytes < total
+    {
+        return Err(format!(
+            "download from {url} ended early after {}",
+            format_downloaded_bytes(total_bytes, downloaded_bytes)
+        ));
+    }
+    progress(MediaMatchToolProgress::new(
+        label,
+        Some(download_progress_detail(url, total_bytes, downloaded_bytes)),
+        progress_end,
+    ));
+    Ok(bytes)
+}
+
+#[cfg(any(windows, test))]
+fn download_progress_fraction(
+    progress_start: f32,
+    progress_end: f32,
+    total_bytes: Option<u64>,
+    downloaded_bytes: u64,
+) -> f32 {
+    let span = (progress_end - progress_start).max(0.0);
+    let fraction = total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    (progress_start + (span * fraction)).clamp(progress_start, progress_end)
+}
+
+#[cfg(any(windows, test))]
+fn download_progress_detail(url: &str, total_bytes: Option<u64>, downloaded_bytes: u64) -> String {
+    format!(
+        "{}: {}",
+        download_source_label(url),
+        format_downloaded_bytes(total_bytes, downloaded_bytes)
+    )
+}
+
+#[cfg(any(windows, test))]
+fn download_source_label(url: &str) -> String {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or(url)
+        .to_owned()
+}
+
+#[cfg(any(windows, test))]
+fn format_downloaded_bytes(total_bytes: Option<u64>, downloaded_bytes: u64) -> String {
+    let downloaded = format_mib(downloaded_bytes);
+    match total_bytes {
+        Some(total) if total > 0 => format!("{downloaded} of {}", format_mib(total)),
+        _ => downloaded,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn format_mib(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
 }
 
 #[cfg(windows)]
@@ -814,5 +956,22 @@ mod tests {
         assert!(!cache_path.exists());
         assert!(!metadata_path.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_download_progress_fraction_scales_between_bounds() {
+        let progress = download_progress_fraction(0.08, 0.54, Some(100), 25);
+        assert!((progress - 0.195).abs() < 0.0001);
+        assert_eq!(download_progress_fraction(0.08, 0.54, Some(100), 150), 0.54);
+    }
+
+    #[test]
+    fn media_match_download_progress_detail_uses_host_and_mib() {
+        let detail = download_progress_detail(
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+            Some(2 * 1_048_576),
+            1_048_576,
+        );
+        assert_eq!(detail, "www.gyan.dev: 1.0 MiB of 2.0 MiB");
     }
 }
