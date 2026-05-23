@@ -1418,11 +1418,16 @@ where
     }
 }
 
+#[cfg(windows)]
 fn hidden_media_match_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
-    #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+#[cfg(not(windows))]
+fn hidden_media_match_command(executable: &Path) -> Command {
+    Command::new(executable)
 }
 
 pub fn pdq_style_luma_hash(width: usize, height: usize, luma: &[u8]) -> Option<u64> {

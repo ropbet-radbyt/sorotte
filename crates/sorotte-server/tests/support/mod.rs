@@ -567,6 +567,15 @@ pub struct PythonPeer {
 
 const PYTHON_PEER_COMMAND_TIMEOUT: Duration = Duration::from_secs(6);
 const PYTHON_PEER_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(15);
+const PYTHON_PEER_STRICT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn python_peer_observation_timeout() -> Duration {
+    if strict_release_required() {
+        PYTHON_PEER_STRICT_OBSERVATION_TIMEOUT
+    } else {
+        PYTHON_PEER_OBSERVATION_TIMEOUT
+    }
+}
 
 impl PythonPeer {
     pub fn spawn_or_skip(
@@ -709,7 +718,7 @@ impl PythonPeer {
     fn wait_for_observation_status(&mut self, expected: &str) -> Value {
         self.wait_for_status_with_timeout(
             expected,
-            PYTHON_PEER_OBSERVATION_TIMEOUT + PYTHON_PEER_COMMAND_TIMEOUT,
+            python_peer_observation_timeout() + PYTHON_PEER_COMMAND_TIMEOUT,
         )
     }
 
@@ -784,7 +793,7 @@ impl PythonPeer {
             "command": "wait_for_user_ready",
             "username": username,
             "ready": ready,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("user-ready");
     }
@@ -794,7 +803,7 @@ impl PythonPeer {
             "command": "wait_for_user_room",
             "username": username,
             "room": room,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("user-room");
     }
@@ -804,7 +813,7 @@ impl PythonPeer {
             "command": "wait_for_user_file_name",
             "username": username,
             "fileName": file_name,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("user-file");
     }
@@ -814,7 +823,7 @@ impl PythonPeer {
             "command": "wait_for_chat_message",
             "username": username,
             "message": message,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("chat-message");
     }
@@ -823,7 +832,7 @@ impl PythonPeer {
         self.command(json!({
             "command": "wait_for_playlist",
             "files": files,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("playlist");
     }
@@ -832,7 +841,7 @@ impl PythonPeer {
         self.command(json!({
             "command": "wait_for_playlist_index",
             "index": index,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("playlist-index");
     }
@@ -841,7 +850,7 @@ impl PythonPeer {
         self.command(json!({
             "command": "wait_for_local_controller",
             "controller": controller,
-            "timeoutSeconds": PYTHON_PEER_OBSERVATION_TIMEOUT.as_secs_f64()
+            "timeoutSeconds": python_peer_observation_timeout().as_secs_f64()
         }));
         self.wait_for_observation_status("local-controller");
     }

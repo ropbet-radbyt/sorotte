@@ -492,7 +492,10 @@ def _wait_for_playlist(client, playlist, timeout_seconds, error_holder):
         time.sleep(0.05)
     if error_holder:
         raise RuntimeError(error_holder[0])
-    raise RuntimeError("python live peer timed out waiting for the requested playlist state")
+    raise RuntimeError(
+        "python live peer timed out waiting for the requested playlist state; "
+        f"observed={_playlist_snapshot(client)!r}"
+    )
 
 
 def _wait_for_playlist_index(client, index, timeout_seconds, error_holder):
@@ -505,7 +508,10 @@ def _wait_for_playlist_index(client, index, timeout_seconds, error_holder):
         time.sleep(0.05)
     if error_holder:
         raise RuntimeError(error_holder[0])
-    raise RuntimeError("python live peer timed out waiting for the requested playlist index")
+    raise RuntimeError(
+        "python live peer timed out waiting for the requested playlist index; "
+        f"observed={_playlist_index_snapshot(client)!r}"
+    )
 
 
 def _handle_command(client, protocol, command, error_holder):

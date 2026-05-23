@@ -1265,11 +1265,16 @@ fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String
     Ok(first_line.to_owned())
 }
 
+#[cfg(windows)]
 fn hidden_media_match_command(path: &Path) -> Command {
     let mut command = Command::new(path);
-    #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+#[cfg(not(windows))]
+fn hidden_media_match_command(path: &Path) -> Command {
+    Command::new(path)
 }
 
 fn load_managed_media_match_metadata(root: &Path) -> Option<ManagedMediaMatchMetadata> {
