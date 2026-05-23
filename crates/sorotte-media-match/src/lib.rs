@@ -5,6 +5,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::UNIX_EPOCH;
 
 #[cfg(windows)]
@@ -28,6 +29,11 @@ const VIDEO_FRAME_WIDTH: usize = 32;
 const VIDEO_FRAME_HEIGHT: usize = 32;
 const VIDEO_FRAME_BYTES: usize = VIDEO_FRAME_WIDTH * VIDEO_FRAME_HEIGHT;
 const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
+const MEDIA_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const FPCALC_TIMEOUT: Duration = Duration::from_secs(90);
+const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(12);
+const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -283,6 +289,10 @@ pub enum MediaFingerprintError {
         status: Option<i32>,
         stderr: String,
     },
+    TimedOut {
+        tool: &'static str,
+        timeout_seconds: u64,
+    },
     Cancelled {
         tool: &'static str,
     },
@@ -310,6 +320,15 @@ impl fmt::Display for MediaFingerprintError {
                     .map(|status| status.to_string())
                     .unwrap_or_else(|| "terminated".to_owned());
                 write!(formatter, "{tool} failed with status {status}: {stderr}")
+            }
+            Self::TimedOut {
+                tool,
+                timeout_seconds,
+            } => {
+                write!(
+                    formatter,
+                    "{tool} timed out after {timeout_seconds} seconds during media fingerprinting"
+                )
             }
             Self::Cancelled { tool } => {
                 write!(formatter, "{tool} was canceled during media fingerprinting")
@@ -755,6 +774,7 @@ pub fn probe_media_duration_seconds(
             media_path.as_ref().as_os_str().to_os_string(),
         ],
         None,
+        FFPROBE_TIMEOUT,
     )?;
     ensure_tool_success("ffprobe", &output)?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -789,7 +809,7 @@ fn extract_audio_fingerprint_with_length(
         args.push(extraction_settings.audio_sample_seconds.to_string().into());
     }
     args.push(media_path.as_ref().as_os_str().to_os_string());
-    let output = run_tool_output("fpcalc", fpcalc.as_ref(), args, cancel_flag)?;
+    let output = run_tool_output("fpcalc", fpcalc.as_ref(), args, cancel_flag, FPCALC_TIMEOUT)?;
     ensure_tool_success("fpcalc", &output)?;
     let text = String::from_utf8_lossy(&output.stdout);
     parse_fpcalc_output(&text).ok_or_else(|| MediaFingerprintError::InvalidToolOutput {
@@ -852,6 +872,7 @@ fn extract_full_video_fingerprint(
         [
             "-v".into(),
             "error".into(),
+            "-nostdin".into(),
             "-i".into(),
             media_path.as_ref().as_os_str().to_os_string(),
             "-vf".into(),
@@ -868,6 +889,7 @@ fn extract_full_video_fingerprint(
             "-".into(),
         ],
         cancel_flag,
+        FFMPEG_FULL_VIDEO_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
 
@@ -922,6 +944,7 @@ fn extract_fast_video_fingerprint(
             [
                 "-v".into(),
                 "error".into(),
+                "-nostdin".into(),
                 "-ss".into(),
                 format!("{timestamp:.3}").into(),
                 "-i".into(),
@@ -938,6 +961,7 @@ fn extract_fast_video_fingerprint(
                 "-".into(),
             ],
             cancel_flag,
+            FFMPEG_FAST_FRAME_TIMEOUT,
         )?;
         ensure_tool_success("ffmpeg", &output)?;
         let Some(chunk) = output.stdout.chunks_exact(VIDEO_FRAME_BYTES).next() else {
@@ -1373,6 +1397,7 @@ fn run_tool_output<I>(
     executable: &Path,
     args: I,
     cancel_flag: Option<&AtomicBool>,
+    timeout: Duration,
 ) -> Result<Output, MediaFingerprintError>
 where
     I: IntoIterator<Item = std::ffi::OsString>,
@@ -1389,12 +1414,21 @@ where
             status: None,
             stderr: error.to_string(),
         })?;
+    let started_at = Instant::now();
 
     loop {
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(MediaFingerprintError::Cancelled { tool });
+        }
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(MediaFingerprintError::TimedOut {
+                tool,
+                timeout_seconds: timeout.as_secs().max(1),
+            });
         }
         match child.try_wait() {
             Ok(Some(_status)) => {
@@ -1406,7 +1440,7 @@ where
                     }
                 });
             }
-            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
             Err(error) => {
                 return Err(MediaFingerprintError::ToolFailed {
                     tool,
@@ -2128,6 +2162,44 @@ mod tests {
 
         assert_eq!(parsed.duration_seconds, Some(123.45));
         assert_eq!(parsed.fingerprint_tokens, vec![1, 2, 3, 5, 8]);
+    }
+
+    #[test]
+    fn media_tool_runner_times_out_long_running_processes() {
+        #[cfg(windows)]
+        let (executable, args) = (
+            Path::new("powershell.exe"),
+            vec![
+                std::ffi::OsString::from("-NoProfile"),
+                std::ffi::OsString::from("-Command"),
+                std::ffi::OsString::from("Start-Sleep -Seconds 2"),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (executable, args) = (
+            Path::new("/bin/sh"),
+            vec![
+                std::ffi::OsString::from("-c"),
+                std::ffi::OsString::from("sleep 2"),
+            ],
+        );
+
+        let error = run_tool_output(
+            "test-tool",
+            executable,
+            args,
+            None,
+            Duration::from_millis(75),
+        )
+        .expect_err("long-running media helper should time out");
+
+        assert_eq!(
+            error,
+            MediaFingerprintError::TimedOut {
+                tool: "test-tool",
+                timeout_seconds: 1,
+            }
+        );
     }
 
     #[test]

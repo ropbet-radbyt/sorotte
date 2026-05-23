@@ -495,29 +495,6 @@ where
     }
 }
 
-pub(super) fn rebuild_persisted_media_match_index_with_progress_and_cancel<F>(
-    root: &Path,
-    search_roots: &[PathBuf],
-    current_player_path: Option<&str>,
-    settings: &MediaMatchSettings,
-    cancel_flag: Option<&AtomicBool>,
-    progress: F,
-) -> Result<MediaMatchIndexRebuildResult, String>
-where
-    F: FnMut(MediaMatchToolProgress),
-{
-    let extraction_settings = MediaExtractionSettings::fast_v1();
-    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
-        root,
-        search_roots,
-        current_player_path,
-        settings,
-        &extraction_settings,
-        cancel_flag,
-        progress,
-    )
-}
-
 pub(super) fn rebuild_persisted_media_match_index_with_extraction_settings_and_cancel<F>(
     root: &Path,
     search_roots: &[PathBuf],

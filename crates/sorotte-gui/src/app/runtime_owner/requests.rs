@@ -30,7 +30,6 @@ use super::super::media_match_support::{
     install_or_update_managed_media_match_tools_with_progress, managed_media_match_bin_dir,
     media_match_tool_paths, rebuild_persisted_media_match_candidates_with_progress_and_cancel,
     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel,
-    rebuild_persisted_media_match_index_with_progress_and_cancel,
 };
 use super::super::remote_services;
 use super::super::runtime_bridge::{GuiPendingCompletionRequest, GuiRuntimeRequest};

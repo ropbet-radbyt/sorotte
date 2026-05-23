@@ -644,7 +644,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                 } else {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::full_v1();
+                        sorotte_media_match::MediaExtractionSettings::fast_v1();
                     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                         &root,
                         &search_roots,
@@ -667,6 +667,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
                     return;
                 }
+                let Some(hardening_candidates) = hardening_candidates else {
+                    let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
+                    return;
+                };
                 let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::FastResult(
                     fast_result.clone(),
                 ));
@@ -676,39 +680,25 @@ impl GuiPersistedConfigRuntimeOwner {
                     )));
                     return;
                 }
-                let full_result = if let Some(candidates) = hardening_candidates {
-                    media_match_tool_paths(&root).and_then(|tools| {
-                        let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::full_v1();
-                        rebuild_persisted_media_match_candidates_with_progress_and_cancel(
-                            MediaMatchCandidateRebuildRequest {
-                                root: &root,
-                                candidates,
-                                current_player_path: current_player_path.as_deref(),
-                                settings: &settings,
-                                tools: &tools,
-                                extraction_settings: &extraction_settings,
-                                cancel_flag: Some(worker_cancel_flag.as_ref()),
-                            },
-                            |progress| {
-                                let _ = progress_tx
-                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
-                            },
-                        )
-                    })
-                } else {
-                    rebuild_persisted_media_match_index_with_progress_and_cancel(
-                        &root,
-                        &search_roots,
-                        current_player_path.as_deref(),
-                        &settings,
-                        Some(worker_cancel_flag.as_ref()),
+                let full_result = media_match_tool_paths(&root).and_then(|tools| {
+                    let extraction_settings =
+                        sorotte_media_match::MediaExtractionSettings::full_v1();
+                    rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                        MediaMatchCandidateRebuildRequest {
+                            root: &root,
+                            candidates: hardening_candidates,
+                            current_player_path: current_player_path.as_deref(),
+                            settings: &settings,
+                            tools: &tools,
+                            extraction_settings: &extraction_settings,
+                            cancel_flag: Some(worker_cancel_flag.as_ref()),
+                        },
                         |progress| {
                             let _ = progress_tx
                                 .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
                         },
                     )
-                };
+                });
                 let full_result = full_result.map(|mut result| {
                     result.message =
                         format!("Media Matching full hardening complete. {}", result.message);
