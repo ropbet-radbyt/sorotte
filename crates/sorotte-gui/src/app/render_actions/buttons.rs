@@ -217,6 +217,9 @@ impl GuiWidgetEguiRenderer {
             }
             "plugins:media-matching:recheck" => vec![GuiShellAction::RecheckMediaMatchTools],
             "plugins:media-matching:rebuild-index" => vec![GuiShellAction::RebuildMediaMatchIndex],
+            "plugins:media-matching:cancel-rebuild" => {
+                vec![GuiShellAction::CancelMediaMatchRebuild]
+            }
             "plugins:media-matching:clear-cache" => vec![GuiShellAction::ClearMediaMatchCache],
             "plugins:media-matching:policy:diagnostics" => {
                 vec![GuiShellAction::SetMediaMatchAutoplayPolicy(

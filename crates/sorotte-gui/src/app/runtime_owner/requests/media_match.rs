@@ -13,9 +13,16 @@ use sorotte_media_match::{
     decide_media_match_against_wire_signature, media_match_wire_signature_from_value,
 };
 
-use crate::app::media_match_support::{media_match_record_for_path, media_match_tier_label};
+use crate::app::media_match_support::{
+    discard_media_match_index_rebuild_backup, media_match_record_for_path,
+    media_match_sqlite_index_exists, media_match_tier_label,
+    prepare_media_match_index_rebuild_backup, restore_media_match_index_rebuild_backup,
+};
 
-use super::super::{GuiMediaMatchBackgroundWorkerEvent, GuiMediaMatchToolWorkerEvent};
+use super::super::{
+    GuiMediaMatchBackgroundCancelDisposition, GuiMediaMatchBackgroundWorkerEvent,
+    GuiMediaMatchIndexRebuildBackup, GuiMediaMatchToolWorkerEvent,
+};
 use super::*;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -375,16 +382,8 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_deref()
             .filter(|detail| !detail.is_empty())
         {
-            Some(detail) => format!(
-                "{} ({:.0}%): {detail}",
-                progress.label,
-                progress.progress_fraction.clamp(0.0, 1.0) * 100.0
-            ),
-            None => format!(
-                "{} ({:.0}%)",
-                progress.label,
-                progress.progress_fraction.clamp(0.0, 1.0) * 100.0
-            ),
+            Some(detail) => format!("{}: {detail}", progress.label),
+            None => progress.label.clone(),
         }
     }
 
@@ -404,13 +403,34 @@ impl GuiPersistedConfigRuntimeOwner {
         );
     }
 
-    fn cancel_media_match_background_worker(&mut self) {
-        if let Some(cancel_flag) = self.media_match_background_worker_cancel.take() {
+    fn request_media_match_background_worker_cancel(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+        disposition: GuiMediaMatchBackgroundCancelDisposition,
+        status: impl Into<String>,
+    ) -> bool {
+        if let Some(cancel_flag) = self.media_match_background_worker_cancel.as_ref() {
             cancel_flag.store(true, Ordering::Relaxed);
+            self.media_match_background_cancel_disposition = Some(disposition);
+            self.publish_media_match_background_status(handle, projected_state, status);
+            return true;
         }
-        self.media_match_background_worker_rx = None;
-        self.media_match_background_trigger_key = None;
-        self.media_match_runtime_snapshot.background_status = Some("idle".to_owned());
+        false
+    }
+
+    fn finish_media_match_background_index_backup(
+        &mut self,
+        preserve_new_index: bool,
+    ) -> Result<(), String> {
+        let Some(backup) = self.media_match_background_index_backup.take() else {
+            return Ok(());
+        };
+        if preserve_new_index {
+            discard_media_match_index_rebuild_backup(&backup.root)
+        } else {
+            restore_media_match_index_rebuild_backup(&backup.root, backup.backup_existed)
+        }
     }
 
     fn media_match_background_trigger_key(
@@ -553,7 +573,23 @@ impl GuiPersistedConfigRuntimeOwner {
             {
                 return true;
             }
-            self.cancel_media_match_background_worker();
+            let disposition = if force_restart {
+                GuiMediaMatchBackgroundCancelDisposition::RestorePrevious
+            } else {
+                GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint
+            };
+            let status = if force_restart {
+                "canceling current rebuild before restart"
+            } else {
+                "canceling current rebuild after input change"
+            };
+            self.request_media_match_background_worker_cancel(
+                handle,
+                projected_state,
+                disposition,
+                status,
+            );
+            return true;
         } else if !force_restart
             && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
         {
@@ -570,6 +606,16 @@ impl GuiPersistedConfigRuntimeOwner {
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
         let (tx, rx) = mpsc::channel();
+        let backup_existed = match prepare_media_match_index_rebuild_backup(&root) {
+            Ok(backup_existed) => backup_existed,
+            Err(error) => {
+                if notify_on_finish {
+                    Self::push_runtime_error_notification(handle, projected_state, error);
+                }
+                return false;
+            }
+        };
+        let backup_root = root.clone();
 
         match thread::Builder::new()
             .name("sorotte-gui-media-match-background".to_owned())
@@ -674,6 +720,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.media_match_background_worker_rx = Some(rx);
                 self.media_match_background_worker_cancel = Some(cancel_flag);
                 self.media_match_background_trigger_key = Some(trigger_key);
+                self.media_match_background_index_backup = Some(GuiMediaMatchIndexRebuildBackup {
+                    root: backup_root.clone(),
+                    backup_existed,
+                });
+                self.media_match_background_cancel_disposition = None;
                 self.publish_media_match_background_status(
                     handle,
                     projected_state,
@@ -684,6 +735,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.media_match_background_worker_cancel = None;
                 self.media_match_background_worker_rx = None;
+                let _ = discard_media_match_index_rebuild_backup(&backup_root);
                 if notify_on_finish {
                     Self::push_runtime_error_notification(
                         handle,
@@ -781,8 +833,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
+                    self.media_match_background_trigger_key = None;
+                    if !matches!(&result, Err(error) if error.contains("canceled")) {
+                        self.media_match_background_cancel_disposition = None;
+                    }
                     match result {
                         Ok(result) => {
+                            let backup_warning =
+                                self.finish_media_match_background_index_backup(true).err();
                             if !self.apply_media_match_background_result(
                                 handle,
                                 projected_state,
@@ -792,19 +850,64 @@ impl GuiPersistedConfigRuntimeOwner {
                             ) {
                                 break;
                             }
+                            if let Some(error) = backup_warning {
+                                Self::push_runtime_error_notification(
+                                    handle,
+                                    projected_state,
+                                    error,
+                                );
+                            }
                         }
                         Err(error) if error.contains("canceled") => {
-                            self.publish_media_match_background_status(
-                                handle,
-                                projected_state,
-                                "idle",
+                            let disposition = self
+                                .media_match_background_cancel_disposition
+                                .take()
+                                .unwrap_or(
+                                    GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
+                                );
+                            let restore_result = self.finish_media_match_background_index_backup(
+                                disposition
+                                    == GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
                             );
-                        }
-                        Err(error) => {
+                            let status = match (disposition, restore_result) {
+                                (
+                                    GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
+                                    Ok(()),
+                                ) => "canceled: previous index restored".to_owned(),
+                                (
+                                    GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                                    Ok(()),
+                                ) => "canceled: checkpoint kept".to_owned(),
+                                (_, Err(error)) => {
+                                    format!("canceled: restore failed: {error}")
+                                }
+                            };
                             let mut snapshot = self.refresh_media_match_runtime_snapshot(
                                 &projected_state.media_match.settings,
                             );
-                            snapshot.message = Some(error.clone());
+                            snapshot.background_status = Some(status);
+                            self.media_match_runtime_snapshot = snapshot.clone();
+                            Self::push_actions_and_project(
+                                handle,
+                                projected_state,
+                                vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+                            );
+                        }
+                        Err(error) => {
+                            let restore_error =
+                                self.finish_media_match_background_index_backup(false).err();
+                            let mut snapshot = self.refresh_media_match_runtime_snapshot(
+                                &projected_state.media_match.settings,
+                            );
+                            let message = restore_error
+                                .as_ref()
+                                .map(|restore_error| {
+                                    format!(
+                                        "{error}; failed restoring previous index: {restore_error}"
+                                    )
+                                })
+                                .unwrap_or_else(|| format!("{error}; previous index restored"));
+                            snapshot.message = Some(message.clone());
                             snapshot.background_status = Some("failed".to_owned());
                             self.media_match_runtime_snapshot = snapshot.clone();
                             Self::push_actions_and_project(
@@ -814,7 +917,7 @@ impl GuiPersistedConfigRuntimeOwner {
                                     GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
                                     GuiShellAction::PushTransientNotification {
                                         level: GuiTransientNotificationLevel::Warning,
-                                        message: error,
+                                        message,
                                     },
                                 ],
                             );
@@ -826,7 +929,22 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     keep_rx = false;
                     self.media_match_background_worker_cancel = None;
-                    self.publish_media_match_background_status(handle, projected_state, "failed");
+                    self.media_match_background_trigger_key = None;
+                    self.media_match_background_cancel_disposition = None;
+                    let status = self
+                        .finish_media_match_background_index_backup(false)
+                        .map(|()| "failed: previous index restored".to_owned())
+                        .unwrap_or_else(|error| format!("failed: restore failed: {error}"));
+                    let mut snapshot = self.refresh_media_match_runtime_snapshot(
+                        &projected_state.media_match.settings,
+                    );
+                    snapshot.background_status = Some(status);
+                    self.media_match_runtime_snapshot = snapshot.clone();
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+                    );
                     break;
                 }
             }
@@ -1052,12 +1170,51 @@ impl GuiPersistedConfigRuntimeOwner {
         true
     }
 
+    pub(super) fn handle_cancel_media_match_rebuild_request(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut SorotteGuiShellAppState,
+    ) -> bool {
+        if self.request_media_match_background_worker_cancel(
+            handle,
+            projected_state,
+            GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
+            "canceling rebuild: restoring previous index",
+        ) {
+            return true;
+        }
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "No Media Matching rebuild is running.".to_owned(),
+            }],
+        );
+        true
+    }
+
     pub(super) fn handle_clear_media_match_cache_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
     ) -> bool {
-        self.cancel_media_match_background_worker();
+        if self.request_media_match_background_worker_cancel(
+            handle,
+            projected_state,
+            GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+            "canceling background rebuild before clearing cache",
+        ) {
+            Self::push_actions_and_project(
+                handle,
+                projected_state,
+                vec![GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Info,
+                    message: "Canceling Media Matching background work before clearing cache. Run Clear Cache again when it is idle.".to_owned(),
+                }],
+            );
+            return true;
+        }
         if let Some(root) = self.media_match_root_for_request(projected_state)
             && let Err(error) = clear_persisted_media_match_cache_at_root(&root)
         {
@@ -1099,11 +1256,34 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         enabled: bool,
     ) -> bool {
+        let was_enabled = projected_state.media_match.settings.fingerprinting_enabled;
+        let should_start_initial_index = enabled
+            && !was_enabled
+            && self
+                .media_match_root_for_request(projected_state)
+                .is_some_and(|root| !media_match_sqlite_index_exists(&root));
         if !enabled {
-            self.cancel_media_match_background_worker();
+            self.request_media_match_background_worker_cancel(
+                handle,
+                projected_state,
+                GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                "canceling background rebuild: fingerprinting disabled",
+            );
         }
         projected_state.media_match.settings.fingerprinting_enabled = enabled;
-        self.persist_media_match_settings_request(handle, projected_state)
+        if !self.persist_media_match_settings_request(handle, projected_state) {
+            return false;
+        }
+        if should_start_initial_index {
+            let _ = self.queue_media_match_background_worker(
+                handle,
+                projected_state,
+                "initial index build",
+                false,
+                true,
+            );
+        }
+        true
     }
 
     pub(super) fn handle_set_media_match_background_warmup_request(
@@ -1117,7 +1297,12 @@ impl GuiPersistedConfigRuntimeOwner {
             .settings
             .background_warmup_enabled = enabled;
         if !enabled {
-            self.cancel_media_match_background_worker();
+            self.request_media_match_background_worker_cancel(
+                handle,
+                projected_state,
+                GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                "canceling background warmup",
+            );
         }
         self.persist_media_match_settings_request(handle, projected_state)
     }

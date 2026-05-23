@@ -165,6 +165,10 @@ impl GuiShellDispatchPlan {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::RebuildMediaMatchIndex);
                 }
+                GuiShellAction::CancelMediaMatchRebuild => {
+                    plan.runtime_requests
+                        .push(GuiRuntimeRequest::CancelMediaMatchRebuild);
+                }
                 GuiShellAction::ClearMediaMatchCache => {
                     plan.runtime_requests
                         .push(GuiRuntimeRequest::ClearMediaMatchCache);

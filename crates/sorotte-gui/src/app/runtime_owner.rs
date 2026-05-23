@@ -139,6 +139,9 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
     pub(super) media_match_background_trigger_key: Option<String>,
+    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexRebuildBackup>,
+    pub(super) media_match_background_cancel_disposition:
+        Option<GuiMediaMatchBackgroundCancelDisposition>,
     pub(super) media_match_wire_sync_token: Option<String>,
     pub(super) plex_client: Option<PlexHttpClient>,
     pub(super) plex_auth_session: Option<PlexAuthSession>,
@@ -194,6 +197,18 @@ pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
     Progress(MediaMatchToolProgress),
     FastResult(Result<MediaMatchIndexRebuildResult, String>),
     Finished(Result<MediaMatchIndexRebuildResult, String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GuiMediaMatchIndexRebuildBackup {
+    pub(super) root: PathBuf,
+    pub(super) backup_existed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuiMediaMatchBackgroundCancelDisposition {
+    RestorePrevious,
+    KeepCheckpoint,
 }
 
 pub(super) struct GuiAttachedMediaSearchIndex {

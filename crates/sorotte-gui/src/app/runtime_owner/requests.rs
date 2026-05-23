@@ -239,6 +239,9 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::RebuildMediaMatchIndex => {
                 return self.handle_rebuild_media_match_index_request(handle, projected_state);
             }
+            GuiRuntimeRequest::CancelMediaMatchRebuild => {
+                return self.handle_cancel_media_match_rebuild_request(handle, projected_state);
+            }
             GuiRuntimeRequest::ClearMediaMatchCache => {
                 return self.handle_clear_media_match_cache_request(handle, projected_state);
             }

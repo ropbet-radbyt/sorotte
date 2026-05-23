@@ -544,6 +544,7 @@ fn gui_shell_dispatch_plan_routes_media_match_actions_to_runtime_requests() {
             GuiShellAction::OpenMediaMatchInstallLocation,
             GuiShellAction::RecheckMediaMatchTools,
             GuiShellAction::RebuildMediaMatchIndex,
+            GuiShellAction::CancelMediaMatchRebuild,
             GuiShellAction::ClearMediaMatchCache,
         ],
     );
@@ -558,6 +559,7 @@ fn gui_shell_dispatch_plan_routes_media_match_actions_to_runtime_requests() {
             GuiRuntimeRequest::OpenMediaMatchInstallLocation,
             GuiRuntimeRequest::RecheckMediaMatchTools,
             GuiRuntimeRequest::RebuildMediaMatchIndex,
+            GuiRuntimeRequest::CancelMediaMatchRebuild,
             GuiRuntimeRequest::ClearMediaMatchCache,
         ]
     );

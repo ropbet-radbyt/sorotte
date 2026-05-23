@@ -443,6 +443,14 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
         GuiWidgetEguiRenderer::actions_for_button_node(&state, rebuild),
         vec![GuiShellAction::RebuildMediaMatchIndex]
     );
+    let cancel = plugins
+        .find("plugins:media-matching:cancel-rebuild")
+        .expect("cancel-rebuild button should exist");
+    assert!(!cancel.enabled);
+    assert_eq!(
+        GuiWidgetEguiRenderer::actions_for_button_node(&state, cancel),
+        vec![GuiShellAction::CancelMediaMatchRebuild]
+    );
     let clear = plugins
         .find("plugins:media-matching:clear-cache")
         .expect("clear-cache button should exist");
@@ -528,6 +536,10 @@ fn gui_shell_app_state_keeps_media_match_rebuild_index_clickable_when_tools_miss
         GuiWidgetEguiRenderer::actions_for_button_node(&state, rebuild),
         vec![GuiShellAction::RebuildMediaMatchIndex]
     );
+    let cancel = plugins
+        .find("plugins:media-matching:cancel-rebuild")
+        .expect("cancel-rebuild button should exist");
+    assert!(!cancel.enabled);
 }
 
 #[test]

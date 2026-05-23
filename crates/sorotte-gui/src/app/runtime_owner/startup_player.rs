@@ -60,6 +60,8 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_background_worker_rx: None,
             media_match_background_worker_cancel: None,
             media_match_background_trigger_key: None,
+            media_match_background_index_backup: None,
+            media_match_background_cancel_disposition: None,
             media_match_wire_sync_token: None,
             plex_client: None,
             plex_auth_session: None,

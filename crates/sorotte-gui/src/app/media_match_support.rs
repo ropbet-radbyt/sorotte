@@ -8,6 +8,9 @@ use std::{
 };
 
 #[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
 use std::{io::Read, time::Duration};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -30,9 +33,12 @@ use zip::ZipArchive;
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
 const MEDIA_MATCH_CACHE_FILE: &str = "media-match-cache-v1.json";
 const MEDIA_MATCH_INDEX_FILE: &str = "index-v2.sqlite3";
+const MEDIA_MATCH_INDEX_BACKUP_FILE: &str = "index-v2.previous.sqlite3";
 const MEDIA_MATCH_SQLITE_SCHEMA_VERSION: i64 = 1;
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const MEDIA_MATCH_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 #[cfg(windows)]
@@ -178,6 +184,91 @@ fn managed_media_match_index_path(root: &Path) -> PathBuf {
     managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_FILE)
 }
 
+fn managed_media_match_index_backup_path(root: &Path) -> PathBuf {
+    managed_media_match_index_dir(root).join(MEDIA_MATCH_INDEX_BACKUP_FILE)
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut text = path.as_os_str().to_os_string();
+    text.push(suffix);
+    PathBuf::from(text)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed removing '{}': {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn remove_sqlite_file_set(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(path)?;
+    remove_file_if_exists(&path_with_suffix(path, "-wal"))?;
+    remove_file_if_exists(&path_with_suffix(path, "-shm"))?;
+    remove_file_if_exists(&path_with_suffix(path, "-journal"))?;
+    Ok(())
+}
+
+pub(super) fn media_match_sqlite_index_exists(root: &Path) -> bool {
+    managed_media_match_index_path(root).exists()
+}
+
+pub(super) fn prepare_media_match_index_rebuild_backup(root: &Path) -> Result<bool, String> {
+    let index_dir = managed_media_match_index_dir(root);
+    fs::create_dir_all(&index_dir).map_err(|error| {
+        format!(
+            "failed creating media-match index directory '{}': {error}",
+            index_dir.display()
+        )
+    })?;
+    let index_path = managed_media_match_index_path(root);
+    let backup_path = managed_media_match_index_backup_path(root);
+    remove_file_if_exists(&backup_path)?;
+    if !index_path.exists() {
+        return Ok(false);
+    }
+    fs::copy(&index_path, &backup_path).map_err(|error| {
+        format!(
+            "failed preserving previous media-match index '{}' as '{}': {error}",
+            index_path.display(),
+            backup_path.display()
+        )
+    })?;
+    Ok(true)
+}
+
+pub(super) fn restore_media_match_index_rebuild_backup(
+    root: &Path,
+    backup_existed: bool,
+) -> Result<(), String> {
+    let index_path = managed_media_match_index_path(root);
+    let backup_path = managed_media_match_index_backup_path(root);
+    remove_sqlite_file_set(&index_path)?;
+    if backup_existed {
+        if !backup_path.exists() {
+            return Err(format!(
+                "previous media-match index backup '{}' is missing",
+                backup_path.display()
+            ));
+        }
+        fs::rename(&backup_path, &index_path).map_err(|error| {
+            format!(
+                "failed restoring previous media-match index '{}' to '{}': {error}",
+                backup_path.display(),
+                index_path.display()
+            )
+        })?;
+    } else {
+        remove_file_if_exists(&backup_path)?;
+    }
+    Ok(())
+}
+
+pub(super) fn discard_media_match_index_rebuild_backup(root: &Path) -> Result<(), String> {
+    remove_file_if_exists(&managed_media_match_index_backup_path(root))
+}
+
 pub(super) fn clear_persisted_media_match_cache_at_root(root: &Path) -> Result<(), String> {
     let cache_path = managed_media_match_cache_path(root);
     if cache_path.exists() {
@@ -189,14 +280,9 @@ pub(super) fn clear_persisted_media_match_cache_at_root(root: &Path) -> Result<(
         })?;
     }
     let index_path = managed_media_match_index_path(root);
-    if index_path.exists() {
-        fs::remove_file(&index_path).map_err(|error| {
-            format!(
-                "failed removing media-match SQLite index '{}': {error}",
-                index_path.display()
-            )
-        })?;
-    }
+    remove_sqlite_file_set(&index_path)
+        .map_err(|error| format!("failed removing media-match SQLite index: {error}"))?;
+    remove_file_if_exists(&managed_media_match_index_backup_path(root))?;
     let metadata_path = managed_media_match_metadata_path(root);
     if metadata_path.exists() {
         fs::remove_file(&metadata_path).map_err(|error| {
@@ -480,14 +566,28 @@ where
     let existing_cache =
         load_media_match_cache_for_settings(request.root, request.extraction_settings)
             .unwrap_or_default();
+    let checkpoint_connection = open_media_match_sqlite_index(request.root)?;
     let mut next_cache = initial_media_match_rebuild_cache(&existing_cache, selected.prefiltered);
     let mut reused = 0usize;
     let mut fingerprinted = 0usize;
     let mut skipped = 0usize;
-    let total = selected.paths.len().max(1);
+    let total = selected.paths.len();
+    let fresh_work_total = selected
+        .paths
+        .iter()
+        .filter(|path| {
+            !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings)
+        })
+        .count();
+    let mut fresh_work_done = 0usize;
     let mut query_record = None;
     let normalized_current_path = request.current_player_path.map(normalize_media_path);
     let mut strong_match_found = false;
+    progress(MediaMatchToolProgress::new(
+        "Fingerprinting media",
+        Some(format!("0/{fresh_work_total} files needing index")),
+        0.1,
+    ));
 
     for (index, path) in selected.paths.iter().enumerate() {
         if request
@@ -496,10 +596,16 @@ where
         {
             return Err("Media Matching index rebuild was canceled.".to_owned());
         }
-        let progress_fraction = 0.1 + (0.82 * (index as f32 / total as f32));
+        let denominator = total.max(1);
+        let progress_fraction = 0.1 + (0.82 * (index as f32 / denominator as f32));
+        let path_needs_fingerprint =
+            !media_match_cache_has_valid_record(&existing_cache, path, request.extraction_settings);
         progress(MediaMatchToolProgress::new(
             "Fingerprinting media",
-            Some(path.display().to_string()),
+            Some(format!(
+                "{fresh_work_done}/{fresh_work_total} files needing index: {}",
+                path.display()
+            )),
             progress_fraction,
         ));
         match cached_or_fresh_media_fingerprint(
@@ -514,6 +620,7 @@ where
                     reused += 1;
                 } else {
                     fingerprinted += 1;
+                    fresh_work_done += 1;
                 }
                 if normalized_current_path.as_deref()
                     == Some(record.identity.normalized_path.as_str())
@@ -523,6 +630,7 @@ where
                     let decision = decide_media_match(query, &record, request.settings);
                     strong_match_found = decision.tier == MediaMatchTier::Strong;
                 }
+                save_media_match_record_to_sqlite(&checkpoint_connection, &record)?;
                 next_cache.insert(record);
                 if strong_match_found {
                     break;
@@ -530,11 +638,13 @@ where
             }
             Err(_) => {
                 skipped += 1;
+                if path_needs_fingerprint {
+                    fresh_work_done += 1;
+                }
             }
         }
     }
 
-    save_media_match_cache(request.root, &next_cache)?;
     let (current_decision, last_evidence) =
         summarize_current_media_match(request.current_player_path, &next_cache, request.settings);
     let cache_status = format!("{} fingerprint records", next_cache.records.len());
@@ -553,7 +663,9 @@ where
     );
     progress(MediaMatchToolProgress::new(
         "Media Matching index rebuilt",
-        Some(cache_status.clone()),
+        Some(format!(
+            "{fresh_work_done}/{fresh_work_total} files needing index; {cache_status}"
+        )),
         1.0,
     ));
 
@@ -1041,6 +1153,31 @@ fn cached_or_fresh_media_fingerprint(
     .map_err(|error| error.to_string())
 }
 
+fn media_match_cache_has_valid_record(
+    existing_cache: &MediaMatchCacheV1,
+    path: &Path,
+    extraction_settings: &MediaExtractionSettings,
+) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let modified_unix_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    existing_cache
+        .get_valid(
+            path,
+            modified_unix_millis,
+            metadata.len(),
+            MEDIA_MATCH_ALGORITHM_VERSION,
+            extraction_settings,
+        )
+        .is_some()
+}
+
 fn summarize_current_media_match(
     current_player_path: Option<&str>,
     cache: &MediaMatchCacheV1,
@@ -1099,13 +1236,16 @@ fn find_executable_on_path(file_name: &str) -> Option<PathBuf> {
 }
 
 fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(path).args(args).output().map_err(|error| {
-        format!(
-            "failed to run '{} {}': {error}",
-            path.display(),
-            args.join(" ")
-        )
-    })?;
+    let output = hidden_media_match_command(path)
+        .args(args)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to run '{} {}': {error}",
+                path.display(),
+                args.join(" ")
+            )
+        })?;
     if !output.status.success() {
         return Err(format!(
             "exited with status {}",
@@ -1123,6 +1263,13 @@ fn probe_executable_version(path: &Path, args: &[&str]) -> Result<String, String
         .unwrap_or("version output empty")
         .trim();
     Ok(first_line.to_owned())
+}
+
+fn hidden_media_match_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
 }
 
 fn load_managed_media_match_metadata(root: &Path) -> Option<ManagedMediaMatchMetadata> {
@@ -1296,6 +1443,7 @@ pub(super) fn media_match_record_for_path(
         })
 }
 
+#[cfg(test)]
 fn save_media_match_cache(root: &Path, cache: &MediaMatchCacheV1) -> Result<(), String> {
     let connection = open_media_match_sqlite_index(root)?;
     save_media_match_cache_to_sqlite(&connection, cache)
@@ -1347,6 +1495,44 @@ fn save_media_match_cache_to_sqlite(
     transaction
         .commit()
         .map_err(|error| format!("failed committing media-match SQLite transaction: {error}"))
+}
+
+fn save_media_match_record_to_sqlite(
+    connection: &Connection,
+    record: &MediaFingerprintRecord,
+) -> Result<(), String> {
+    let extraction_settings_json = serde_json::to_string(&record.extraction_settings)
+        .map_err(|error| format!("failed serializing media-match extraction settings: {error}"))?;
+    let record_json = serde_json::to_string(record)
+        .map_err(|error| format!("failed serializing media-match record: {error}"))?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO fingerprints (
+                normalized_path,
+                profile,
+                modified_unix_millis,
+                size_bytes,
+                algorithm_version,
+                extraction_settings_json,
+                duration_seconds,
+                record_json,
+                last_error,
+                updated_unix_millis
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+            params![
+                record.identity.normalized_path,
+                record.extraction_settings.profile.label(),
+                record.identity.modified_unix_millis as i64,
+                record.identity.size_bytes as i64,
+                record.algorithm_version as i64,
+                extraction_settings_json,
+                record.duration_seconds,
+                record_json,
+                current_unix_millis() as i64,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("failed checkpointing media-match fingerprint record: {error}"))
 }
 
 fn media_match_sqlite_counts(root: &Path) -> Result<(usize, usize, usize), String> {
@@ -1625,6 +1811,60 @@ mod tests {
         assert!(!cache_path.exists());
         assert!(!index_path.exists());
         assert!(!metadata_path.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_index_backup_restore_reinstates_previous_sqlite_index() {
+        let root = unique_media_match_test_root("restore");
+        let mut previous_cache = MediaMatchCacheV1::default();
+        previous_cache.insert(fake_media_match_record("previous.mkv"));
+        save_media_match_cache(&root, &previous_cache).expect("previous cache should be written");
+
+        let backup_existed =
+            prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
+        assert!(backup_existed);
+
+        remove_sqlite_file_set(&managed_media_match_index_path(&root))
+            .expect("primary index should be removed for test");
+        let mut partial_cache = MediaMatchCacheV1::default();
+        partial_cache.insert(fake_media_match_record("partial.mkv"));
+        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
+
+        restore_media_match_index_rebuild_backup(&root, backup_existed)
+            .expect("previous index should be restored");
+        let restored =
+            load_media_match_cache_for_settings(&root, &MediaExtractionSettings::default())
+                .expect("restored cache should load");
+
+        assert!(
+            restored
+                .records
+                .contains_key(&normalize_media_path("previous.mkv"))
+        );
+        assert!(
+            !restored
+                .records
+                .contains_key(&normalize_media_path("partial.mkv"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_index_backup_restore_removes_partial_index_without_previous_db() {
+        let root = unique_media_match_test_root("restore-empty");
+        let backup_existed =
+            prepare_media_match_index_rebuild_backup(&root).expect("backup should be prepared");
+        assert!(!backup_existed);
+
+        let mut partial_cache = MediaMatchCacheV1::default();
+        partial_cache.insert(fake_media_match_record("partial.mkv"));
+        save_media_match_cache(&root, &partial_cache).expect("partial cache should be written");
+        assert!(managed_media_match_index_path(&root).exists());
+
+        restore_media_match_index_rebuild_backup(&root, backup_existed)
+            .expect("partial index should be removed");
+        assert!(!managed_media_match_index_path(&root).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

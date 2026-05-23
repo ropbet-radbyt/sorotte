@@ -231,6 +231,7 @@ pub(in crate::app) enum GuiShellAction {
     ImportMediaMatchFpcalc(String),
     RecheckMediaMatchTools,
     RebuildMediaMatchIndex,
+    CancelMediaMatchRebuild,
     ClearMediaMatchCache,
     OpenMediaMatchInstallLocation,
     SetMediaMatchFingerprintingEnabled(bool),

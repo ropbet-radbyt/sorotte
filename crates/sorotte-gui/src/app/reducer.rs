@@ -207,6 +207,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ImportMediaMatchFpcalc(_)
             | GuiShellAction::RecheckMediaMatchTools
             | GuiShellAction::RebuildMediaMatchIndex
+            | GuiShellAction::CancelMediaMatchRebuild
             | GuiShellAction::ClearMediaMatchCache
             | GuiShellAction::OpenMediaMatchInstallLocation
             | GuiShellAction::SetMediaMatchFingerprintingEnabled(_)

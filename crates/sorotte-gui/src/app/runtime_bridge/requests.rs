@@ -68,6 +68,7 @@ pub(in crate::app) enum GuiRuntimeRequest {
     OpenMediaMatchInstallLocation,
     RecheckMediaMatchTools,
     RebuildMediaMatchIndex,
+    CancelMediaMatchRebuild,
     ClearMediaMatchCache,
     SetMediaMatchFingerprintingEnabled(bool),
     SetMediaMatchBackgroundWarmupEnabled(bool),

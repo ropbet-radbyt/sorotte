@@ -7,6 +7,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -25,6 +28,8 @@ const VIDEO_FRAME_WIDTH: usize = 32;
 const VIDEO_FRAME_HEIGHT: usize = 32;
 const VIDEO_FRAME_BYTES: usize = VIDEO_FRAME_WIDTH * VIDEO_FRAME_HEIGHT;
 const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1372,8 +1377,10 @@ fn run_tool_output<I>(
 where
     I: IntoIterator<Item = std::ffi::OsString>,
 {
-    let mut child = Command::new(executable)
+    let mut command = hidden_media_match_command(executable);
+    let mut child = command
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1409,6 +1416,13 @@ where
             }
         }
     }
+}
+
+fn hidden_media_match_command(executable: &Path) -> Command {
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
 }
 
 pub fn pdq_style_luma_hash(width: usize, height: usize, luma: &[u8]) -> Option<u64> {

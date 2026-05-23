@@ -102,6 +102,10 @@ impl GuiRuntimeRequest {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rebuilding the media matching index.".to_owned(),
             }],
+            Self::CancelMediaMatchRebuild => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Canceling the media matching index rebuild.".to_owned(),
+            }],
             Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Clearing media matching cache data.".to_owned(),
@@ -274,6 +278,10 @@ impl GuiRuntimeRequest {
             Self::RebuildMediaMatchIndex => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,
                 message: "Rebuilding the media matching index.".to_owned(),
+            }],
+            Self::CancelMediaMatchRebuild => vec![GuiShellAction::PushTransientNotification {
+                level: GuiTransientNotificationLevel::Info,
+                message: "Canceling the media matching index rebuild.".to_owned(),
             }],
             Self::ClearMediaMatchCache => vec![GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Info,

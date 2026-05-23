@@ -211,6 +211,14 @@ impl SorotteGuiShellAppState {
                         false,
                     ),
                     GuiWidgetNode::leaf(
+                        "plugins:media-matching:cancel-rebuild",
+                        "Cancel Rebuild",
+                        GuiWidgetKind::Button,
+                        None,
+                        self.media_matching_plugin_action_enabled("cancel-index"),
+                        false,
+                    ),
+                    GuiWidgetNode::leaf(
                         "plugins:media-matching:clear-cache",
                         "Clear Cache",
                         GuiWidgetKind::Button,
@@ -422,7 +430,13 @@ impl SorotteGuiShellAppState {
     }
 
     fn media_matching_plugin_action_enabled(&self, action: &str) -> bool {
+        if action == "cancel-index" {
+            return self.media_matching_background_active();
+        }
         if self.pending_operation.is_some() || self.media_match_remediation.active {
+            return false;
+        }
+        if action == "index" && self.media_matching_background_active() {
             return false;
         }
         match action {
@@ -432,6 +446,16 @@ impl SorotteGuiShellAppState {
             "index" => self.media_match.integration_supported,
             _ => false,
         }
+    }
+
+    fn media_matching_background_active(&self) -> bool {
+        self.media_match
+            .background_status
+            .as_deref()
+            .is_some_and(|status| {
+                let lower = status.to_ascii_lowercase();
+                lower != "idle" && !lower.starts_with("failed") && !lower.starts_with("canceled")
+            })
     }
 
     fn plex_plugin_status_rows(&self) -> Vec<GuiWidgetNode> {
