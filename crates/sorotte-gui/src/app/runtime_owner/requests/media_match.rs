@@ -164,7 +164,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(local_record) = media_match_record_for_path(
                 &root,
                 current_path,
-                &MediaExtractionSettings::fast_v1(),
+                &MediaExtractionSettings::fast_anchor_v2(),
             ) else {
                 let status = "pending local fingerprint".to_owned();
                 let gate_tiers = BTreeMap::new();
@@ -625,7 +625,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 let fast_result = if let Some(candidates) = candidates {
                     media_match_tool_paths(&root).and_then(|tools| {
                         let extraction_settings =
-                            sorotte_media_match::MediaExtractionSettings::fast_v1();
+                            sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
                                 root: &root,
@@ -644,7 +644,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     })
                 } else {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::fast_v1();
+                        sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
                     rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
                         &root,
                         &search_roots,
@@ -682,7 +682,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 let full_result = media_match_tool_paths(&root).and_then(|tools| {
                     let extraction_settings =
-                        sorotte_media_match::MediaExtractionSettings::full_v1();
+                        sorotte_media_match::MediaExtractionSettings::full_anchor_v2();
                     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                         MediaMatchCandidateRebuildRequest {
                             root: &root,

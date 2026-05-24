@@ -24,6 +24,7 @@ rust-version = "1.95.0"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+base64 = "0.22.1"
 eframe = "0.33.3"
 egui = "0.33.3"
 getrandom = "0.2.15"

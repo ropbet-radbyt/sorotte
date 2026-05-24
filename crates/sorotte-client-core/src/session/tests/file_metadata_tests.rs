@@ -253,7 +253,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
         "size": 123456789,
         "duration": 95.5,
         "path": "C:/media/movie.mkv",
-        "mediaMatch": {"schema": "sorotte.mediaMatch.v1", "profiles": []},
+        "mediaMatch": {"schema": "sorotte.mediaMatch.v2", "profiles": []},
         "extra": "keep-me"
     });
 
@@ -269,7 +269,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
             "name": "https://example.invalid/media/Movie Name.mkv",
             "size": 123456789,
             "duration": 95.5,
-            "mediaMatch": {"schema": "sorotte.mediaMatch.v1", "profiles": []},
+            "mediaMatch": {"schema": "sorotte.mediaMatch.v2", "profiles": []},
             "extra": "keep-me"
         })
     );
@@ -286,7 +286,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
             "name": "a9858cb4803c",
             "size": "15e2b0d3c338",
             "duration": 95.5,
-            "mediaMatch": {"schema": "sorotte.mediaMatch.v1", "profiles": []},
+            "mediaMatch": {"schema": "sorotte.mediaMatch.v2", "profiles": []},
             "extra": "keep-me"
         })
     );
@@ -303,7 +303,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
             "name": PRIVACY_HIDDEN_FILENAME,
             "size": 0,
             "duration": 95.5,
-            "mediaMatch": {"schema": "sorotte.mediaMatch.v1", "profiles": []},
+            "mediaMatch": {"schema": "sorotte.mediaMatch.v2", "profiles": []},
             "extra": "keep-me"
         })
     );
