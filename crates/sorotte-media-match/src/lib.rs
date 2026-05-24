@@ -23,9 +23,11 @@ pub const MEDIA_MATCH_WIRE_MAX_BYTES: usize = 32 * 1024;
 pub const MEDIA_MATCH_ANCHOR_VERSION: u32 = 2;
 
 const FRAME_HASH_BITS: u32 = 64;
-const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
+pub const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
 const DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS: i64 = 1_000;
 const DEFAULT_ANCHOR_OFFSET_BIN_MS: i64 = 1_000;
+const VIDEO_LSH_BANDS: u32 = 4;
+const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
 const FAST_VIDEO_SAMPLE_FRAMES: usize = 12;
 const FAST_AUDIO_ANCHOR_LIMIT: usize = 96;
 const FAST_VIDEO_ANCHOR_LIMIT: usize = 48;
@@ -40,7 +42,7 @@ const FAST_AUDIO_SAMPLE_SECONDS: u32 = 120;
 const MEDIA_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FFPROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const FPCALC_TIMEOUT: Duration = Duration::from_secs(90);
-const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(12);
+const FFMPEG_FAST_FRAME_TIMEOUT: Duration = Duration::from_secs(45);
 const FFMPEG_FULL_VIDEO_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -666,11 +668,16 @@ pub fn video_anchors_from_fingerprint(
     let mut anchors = video
         .frames
         .iter()
-        .map(|frame| VideoAnchor {
-            bucket: anchor_bucket(frame.hash),
-            t_ms: frame.timestamp_millis.min(u64::from(u32::MAX)) as u32,
-            hash64: frame.hash,
-            weight: 1,
+        .flat_map(|frame| {
+            let t_ms = frame.timestamp_millis.min(u64::from(u32::MAX)) as u32;
+            video_lsh_buckets(frame.hash)
+                .into_iter()
+                .map(move |bucket| VideoAnchor {
+                    bucket,
+                    t_ms,
+                    hash64: frame.hash,
+                    weight: 1,
+                })
         })
         .collect::<Vec<_>>();
     bounded_time_distributed_video_anchors(&mut anchors, max_anchors)
@@ -937,6 +944,9 @@ pub fn media_match_wire_signature_from_value(
     if signature.profiles.is_empty() {
         return Err("media match wire signature has no profiles".to_owned());
     }
+    for profile in &signature.profiles {
+        media_anchor_profile_from_wire_profile(profile)?;
+    }
     Ok(signature)
 }
 
@@ -1004,6 +1014,30 @@ pub fn media_match_wire_anchor_profile_from_anchor_profile(
 pub fn media_anchor_profile_from_wire_profile(
     profile: &MediaMatchWireAnchorProfile,
 ) -> Result<MediaAnchorProfile, String> {
+    if profile.algorithm_version != MEDIA_MATCH_ANCHOR_VERSION {
+        return Err(format!(
+            "media match v2 profile '{}' uses unsupported algorithm version {}",
+            profile.profile, profile.algorithm_version
+        ));
+    }
+    let expected_settings = media_extraction_settings_for_profile_label(&profile.profile)
+        .ok_or_else(|| format!("media match v2 profile '{}' is unknown", profile.profile))?;
+    if let Some(block) = profile.audio.as_ref() {
+        validate_wire_anchor_block(
+            "audio",
+            block,
+            &expected_settings.audio_algorithm,
+            profile.profile.as_str(),
+        )?;
+    }
+    if let Some(block) = profile.video.as_ref() {
+        validate_wire_anchor_block(
+            "video",
+            block,
+            &expected_settings.video_algorithm,
+            profile.profile.as_str(),
+        )?;
+    }
     let audio_summary = profile
         .audio
         .as_ref()
@@ -1029,6 +1063,35 @@ pub fn media_anchor_profile_from_wire_profile(
         video_summary.as_deref(),
     )
     .map_err(|error| format!("media match v2 anchors could not decode: {error}"))
+}
+
+fn media_extraction_settings_for_profile_label(label: &str) -> Option<MediaExtractionSettings> {
+    match label {
+        "fast-anchor-v2" => Some(MediaExtractionSettings::fast_anchor_v2()),
+        "full-anchor-v2" => Some(MediaExtractionSettings::full_anchor_v2()),
+        _ => None,
+    }
+}
+
+fn validate_wire_anchor_block(
+    modality: &str,
+    block: &MediaMatchWireAnchorBlock,
+    expected_algorithm: &str,
+    profile_label: &str,
+) -> Result<(), String> {
+    if block.algorithm != expected_algorithm {
+        return Err(format!(
+            "media match v2 {modality} algorithm '{}' is unsupported for profile '{profile_label}'",
+            block.algorithm
+        ));
+    }
+    if block.time_base_ms != 1 {
+        return Err(format!(
+            "media match v2 {modality} time base {}ms is unsupported",
+            block.time_base_ms
+        ));
+    }
+    Ok(())
 }
 
 pub fn fingerprint_media_file(
@@ -1361,15 +1424,18 @@ fn extract_fast_video_fingerprint(
         .unwrap_or(60.0)
         .max(1.0);
     let filter = format!(
-        "trim=start={start:.3}:end={end:.3},select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{step:.3})',scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
+        "trim=start={start:.3}:end={end:.3},select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{step:.3})',showinfo,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
     );
     let output = run_tool_output(
         "ffmpeg",
         ffmpeg.as_ref(),
         [
             "-v".into(),
-            "error".into(),
+            "info".into(),
             "-nostdin".into(),
+            "-ss".into(),
+            format!("{start:.3}").into(),
+            "-copyts".into(),
             "-i".into(),
             media_path.as_ref().as_os_str().to_os_string(),
             "-vf".into(),
@@ -1388,12 +1454,26 @@ fn extract_fast_video_fingerprint(
         FFMPEG_FAST_FRAME_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
+    if output.stdout.len() % VIDEO_FRAME_BYTES != 0 {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: "raw grayscale frame output had a partial trailing frame".to_owned(),
+        });
+    }
+    let frame_count = output.stdout.len() / VIDEO_FRAME_BYTES;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let pts_times = parse_ffmpeg_showinfo_pts_times(&stderr);
+    if pts_times.len() < frame_count {
+        return Err(MediaFingerprintError::InvalidToolOutput {
+            tool: "ffmpeg",
+            reason: format!(
+                "ffmpeg emitted {frame_count} raw frames but only {} frame timestamps",
+                pts_times.len()
+            ),
+        });
+    }
     let mut frames = Vec::new();
     for (index, chunk) in output.stdout.chunks_exact(VIDEO_FRAME_BYTES).enumerate() {
-        let timestamp = timestamps
-            .get(index)
-            .copied()
-            .unwrap_or(start + (step * index as f64));
         let hash =
             pdq_style_luma_hash(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, chunk).ok_or_else(|| {
                 MediaFingerprintError::InvalidToolOutput {
@@ -1403,7 +1483,7 @@ fn extract_fast_video_fingerprint(
                             .to_owned(),
                 }
             })?;
-        frames.push(FrameFingerprint::new(timestamp, hash));
+        frames.push(FrameFingerprint::new(pts_times[index], hash));
     }
 
     if frames.is_empty() {
@@ -1499,6 +1579,25 @@ enum AnchorModality {
     Video,
 }
 
+#[derive(Debug, Clone)]
+struct AnchorScaleOffsetFit {
+    offset_ms: i64,
+    scale_ppm: i32,
+    drift_ratio: f64,
+    aligned: Vec<AnchorMatchPair>,
+}
+
+#[derive(Debug, Clone)]
+struct AnchorFitCandidate {
+    score: u32,
+    inlier_count: usize,
+    span_ms: u32,
+    max_residual_ms: f64,
+    scale: f64,
+    offset: f64,
+    aligned: Vec<AnchorMatchPair>,
+}
+
 pub fn decide_media_match_anchors(
     query: &MediaAnchorProfile,
     candidate: &MediaAnchorProfile,
@@ -1559,21 +1658,14 @@ pub fn decide_media_match_anchors(
             "anchor offsets did not form a dominant hypothesis",
         );
     };
-    let aligned = pairs
-        .iter()
-        .copied()
-        .filter(|pair| {
-            let offset = i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms);
-            (offset - best_offset_ms).abs() <= DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS
-        })
-        .collect::<Vec<_>>();
-    if aligned.is_empty() {
+    let Some(fit) = fit_anchor_scale_offset(&pairs, best_offset_ms) else {
         return decision(
             MediaMatchTier::Reject,
             evidence,
-            "no anchors aligned to the dominant offset",
+            "no anchors fit the dominant offset",
         );
-    }
+    };
+    let aligned = fit.aligned;
 
     let audio_pairs = aligned
         .iter()
@@ -1584,7 +1676,7 @@ pub fn decide_media_match_anchors(
         .filter(|pair| pair.modality == AnchorModality::Video)
         .count();
     let span_ms = aligned_anchor_span_ms(&aligned);
-    let drift_ratio = aligned_anchor_drift_ratio(&aligned);
+    let drift_ratio = fit.drift_ratio;
     let second_best_offset_margin = if best_weight > 0 {
         1.0 - (f64::from(second_weight) / f64::from(best_weight))
     } else {
@@ -1606,7 +1698,7 @@ pub fn decide_media_match_anchors(
             aligned_pairs: video_pairs,
             query_coverage: query_video_coverage,
             candidate_coverage: candidate_video_coverage,
-            best_offset_seconds: best_offset_ms as f64 / 1000.0,
+            best_offset_seconds: fit.offset_ms as f64 / 1000.0,
             drift_ratio,
             mean_hamming_distance: 0.0,
         });
@@ -1614,8 +1706,8 @@ pub fn decide_media_match_anchors(
     let (first_query_ms, last_query_ms, first_candidate_ms, last_candidate_ms) =
         aligned_anchor_bounds(&aligned);
     evidence.alignment = Some(MediaTimelineAlignment {
-        offset_seconds: best_offset_ms as f64 / 1000.0,
-        scale_ppm: aligned_anchor_scale_ppm(&aligned),
+        offset_seconds: fit.offset_ms as f64 / 1000.0,
+        scale_ppm: fit.scale_ppm,
         drift_ratio,
         aligned_pairs: aligned.len(),
         aligned_audio_anchors: audio_pairs,
@@ -1876,6 +1968,24 @@ pub fn parse_fpcalc_output(output: &str) -> Option<AudioFingerprint> {
     })
 }
 
+fn parse_ffmpeg_showinfo_pts_times(output: &str) -> Vec<f64> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (_, after_marker) = line.split_once("pts_time:")?;
+            let value = after_marker
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim();
+            value
+                .parse::<f64>()
+                .ok()
+                .filter(|timestamp| timestamp.is_finite() && *timestamp >= 0.0)
+        })
+        .collect()
+}
+
 fn run_tool_output<I>(
     tool: &'static str,
     executable: &Path,
@@ -1979,12 +2089,19 @@ fn collect_anchor_match_pairs(
             }
         }
     }
+    let mut seen_video_pairs = HashSet::<(u32, u32, u64, u64)>::new();
     for query_anchor in &query.video_anchors {
         if let Some(candidate_anchors) = candidate_video.get(&query_anchor.bucket) {
             for candidate_anchor in candidate_anchors {
-                if frame_hash_distance(query_anchor.hash64, candidate_anchor.hash64)
-                    > DEFAULT_FRAME_HAMMING_THRESHOLD
-                {
+                if !video_anchor_hashes_match(query_anchor.hash64, candidate_anchor.hash64) {
+                    continue;
+                }
+                if !seen_video_pairs.insert((
+                    query_anchor.t_ms,
+                    candidate_anchor.t_ms,
+                    query_anchor.hash64,
+                    candidate_anchor.hash64,
+                )) {
                     continue;
                 }
                 pairs.push(AnchorMatchPair {
@@ -2025,6 +2142,153 @@ fn rounded_offset_bin(offset_ms: i64) -> i64 {
     }
 }
 
+fn fit_anchor_scale_offset(
+    pairs: &[AnchorMatchPair],
+    voted_offset_ms: i64,
+) -> Option<AnchorScaleOffsetFit> {
+    let seeded = pairs
+        .iter()
+        .copied()
+        .filter(|pair| {
+            let offset = i64::from(pair.candidate_t_ms) - i64::from(pair.query_t_ms);
+            (offset - voted_offset_ms).abs() <= DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS * 2
+        })
+        .collect::<Vec<_>>();
+    if seeded.is_empty() {
+        return None;
+    }
+
+    let mut candidates = vec![(1.0, voted_offset_ms as f64)];
+    for (left_index, left) in seeded.iter().enumerate() {
+        for right in seeded.iter().skip(left_index + 1) {
+            let query_delta = f64::from(right.query_t_ms) - f64::from(left.query_t_ms);
+            if query_delta.abs() < 10_000.0 {
+                continue;
+            }
+            let candidate_delta = f64::from(right.candidate_t_ms) - f64::from(left.candidate_t_ms);
+            let scale = candidate_delta / query_delta;
+            if !(0.95..=1.05).contains(&scale) {
+                continue;
+            }
+            let offset = f64::from(left.candidate_t_ms) - (scale * f64::from(left.query_t_ms));
+            candidates.push((scale, offset));
+        }
+    }
+
+    let mut best: Option<AnchorFitCandidate> = None;
+    for (scale, offset) in candidates {
+        let inliers = anchor_fit_inliers(pairs, scale, offset);
+        if inliers.is_empty() {
+            continue;
+        }
+        let (scale, offset) = least_squares_anchor_fit(&inliers).unwrap_or((scale, offset));
+        let inliers = anchor_fit_inliers(pairs, scale, offset);
+        if inliers.is_empty() {
+            continue;
+        }
+        let score = inliers
+            .iter()
+            .map(|pair| u32::from(pair.weight.max(1)))
+            .sum::<u32>();
+        let span = aligned_anchor_span_ms(&inliers);
+        let max_residual = max_anchor_fit_residual_ms(&inliers, scale, offset);
+        let candidate = AnchorFitCandidate {
+            score,
+            inlier_count: inliers.len(),
+            span_ms: span,
+            max_residual_ms: max_residual,
+            scale,
+            offset,
+            aligned: inliers,
+        };
+        let replace = best.as_ref().is_none_or(|current| {
+            candidate
+                .score
+                .cmp(&current.score)
+                .then_with(|| candidate.inlier_count.cmp(&current.inlier_count))
+                .then_with(|| candidate.span_ms.cmp(&current.span_ms))
+                .then_with(|| {
+                    current
+                        .max_residual_ms
+                        .total_cmp(&candidate.max_residual_ms)
+                })
+                .is_gt()
+        });
+        if replace {
+            best = Some(candidate);
+        }
+    }
+
+    let best = best?;
+    let drift_ratio = if best.span_ms > 0 {
+        best.max_residual_ms / f64::from(best.span_ms)
+    } else {
+        0.0
+    };
+    let scale_ppm = (best.scale * 1_000_000.0)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    Some(AnchorScaleOffsetFit {
+        offset_ms: best.offset.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64,
+        scale_ppm,
+        drift_ratio,
+        aligned: best.aligned,
+    })
+}
+
+fn anchor_fit_inliers(pairs: &[AnchorMatchPair], scale: f64, offset: f64) -> Vec<AnchorMatchPair> {
+    pairs
+        .iter()
+        .copied()
+        .filter(|pair| {
+            let predicted = (scale * f64::from(pair.query_t_ms)) + offset;
+            (f64::from(pair.candidate_t_ms) - predicted).abs()
+                <= DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS as f64
+        })
+        .collect()
+}
+
+fn least_squares_anchor_fit(pairs: &[AnchorMatchPair]) -> Option<(f64, f64)> {
+    if pairs.len() < 2 {
+        return None;
+    }
+    let mut sum_weight = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_xy = 0.0;
+    for pair in pairs {
+        let weight = f64::from(pair.weight.max(1));
+        let x = f64::from(pair.query_t_ms);
+        let y = f64::from(pair.candidate_t_ms);
+        sum_weight += weight;
+        sum_x += weight * x;
+        sum_y += weight * y;
+        sum_xx += weight * x * x;
+        sum_xy += weight * x * y;
+    }
+    let denominator = (sum_weight * sum_xx) - (sum_x * sum_x);
+    if denominator.abs() < f64::EPSILON {
+        return None;
+    }
+    let scale = ((sum_weight * sum_xy) - (sum_x * sum_y)) / denominator;
+    if !(0.95..=1.05).contains(&scale) {
+        return None;
+    }
+    let offset = (sum_y - (scale * sum_x)) / sum_weight;
+    Some((scale, offset))
+}
+
+fn max_anchor_fit_residual_ms(pairs: &[AnchorMatchPair], scale: f64, offset: f64) -> f64 {
+    pairs
+        .iter()
+        .map(|pair| {
+            let predicted = (scale * f64::from(pair.query_t_ms)) + offset;
+            (f64::from(pair.candidate_t_ms) - predicted).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
 fn anchor_coverage(aligned: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
@@ -2052,40 +2316,6 @@ fn aligned_anchor_bounds(pairs: &[AnchorMatchPair]) -> (u32, u32, u32, u32) {
 fn aligned_anchor_span_ms(pairs: &[AnchorMatchPair]) -> u32 {
     let (first_query, last_query, _, _) = aligned_anchor_bounds(pairs);
     last_query.saturating_sub(first_query)
-}
-
-fn aligned_anchor_drift_ratio(pairs: &[AnchorMatchPair]) -> f64 {
-    if pairs.len() < 2 {
-        return 0.0;
-    }
-    let mut sorted = pairs.to_vec();
-    sorted.sort_by_key(|pair| pair.query_t_ms);
-    let first = sorted[0];
-    let last = sorted[sorted.len() - 1];
-    let first_offset = i64::from(first.candidate_t_ms) - i64::from(first.query_t_ms);
-    let last_offset = i64::from(last.candidate_t_ms) - i64::from(last.query_t_ms);
-    let query_span = i64::from(last.query_t_ms)
-        .saturating_sub(i64::from(first.query_t_ms))
-        .unsigned_abs()
-        .max(1);
-    (last_offset - first_offset).unsigned_abs() as f64 / query_span as f64
-}
-
-fn aligned_anchor_scale_ppm(pairs: &[AnchorMatchPair]) -> i32 {
-    if pairs.len() < 2 {
-        return 1_000_000;
-    }
-    let mut sorted = pairs.to_vec();
-    sorted.sort_by_key(|pair| pair.query_t_ms);
-    let first = sorted[0];
-    let last = sorted[sorted.len() - 1];
-    let query_span = i64::from(last.query_t_ms) - i64::from(first.query_t_ms);
-    let candidate_span = i64::from(last.candidate_t_ms) - i64::from(first.candidate_t_ms);
-    if query_span == 0 {
-        return 1_000_000;
-    }
-    ((candidate_span * 1_000_000) / query_span).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-        as i32
 }
 
 fn aligned_anchor_largest_gap_ratio(pairs: &[AnchorMatchPair]) -> f64 {
@@ -2148,6 +2378,21 @@ fn stable_hash_u64(bytes: impl IntoIterator<Item = u8>) -> u64 {
 
 fn anchor_bucket(hash: u64) -> u32 {
     (hash >> 32) as u32
+}
+
+fn video_lsh_buckets(hash: u64) -> [u32; VIDEO_LSH_BANDS as usize] {
+    let mask = (1u64 << VIDEO_LSH_BITS_PER_BAND) - 1;
+    let mut buckets = [0u32; VIDEO_LSH_BANDS as usize];
+    for band in 0..VIDEO_LSH_BANDS {
+        let shift = band * VIDEO_LSH_BITS_PER_BAND;
+        let band_bits = ((hash >> shift) & mask) as u32;
+        buckets[band as usize] = (band << VIDEO_LSH_BITS_PER_BAND) | band_bits;
+    }
+    buckets
+}
+
+pub fn video_anchor_hashes_match(left: u64, right: u64) -> bool {
+    frame_hash_distance(left, right) <= DEFAULT_FRAME_HAMMING_THRESHOLD
 }
 
 pub fn media_extraction_settings_hash(settings: &MediaExtractionSettings) -> [u8; 32] {
@@ -2605,9 +2850,51 @@ mod tests {
             MediaMatchTier::Strong | MediaMatchTier::Probable
         ));
         let alignment = decision.evidence.alignment.expect("alignment evidence");
-        assert!(alignment.drift_ratio > 0.0);
         assert!(alignment.drift_ratio <= 0.015);
         assert!(alignment.scale_ppm > 1_000_000);
+    }
+
+    #[test]
+    fn video_lsh_matches_hashes_with_high_bit_differences() {
+        let query_hash = 0x0123_4567_89ab_cdef;
+        let candidate_hash = query_hash ^ (1 << 60);
+        assert!(video_anchor_hashes_match(query_hash, candidate_hash));
+
+        let query_video = VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![FrameFingerprint {
+                timestamp_millis: 30_000,
+                hash: query_hash,
+            }],
+        };
+        let candidate_video = VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![FrameFingerprint {
+                timestamp_millis: 31_000,
+                hash: candidate_hash,
+            }],
+        };
+        let query = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&query_video, 4),
+        };
+        let candidate = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
+        };
+
+        let pairs = collect_anchor_match_pairs(&query, &candidate);
+
+        assert!(
+            !pairs.is_empty(),
+            "multi-bucket LSH should find a Hamming-near video hash even when high bits differ"
+        );
     }
 
     #[test]
@@ -2745,6 +3032,52 @@ mod tests {
             "profiles": []
         });
         assert!(media_match_wire_signature_from_value(&empty_v2).is_err());
+    }
+
+    #[test]
+    fn wire_signature_rejects_unsupported_v2_profile_fields() {
+        let record = record_with_extraction_settings(
+            "episode.mkv",
+            100,
+            Some(120.0),
+            Some(audio(&[1, 2, 3, 4, 5, 6, 7, 8])),
+            Some(shifted_video(0, &synthetic_hashes(&[1, 2, 3, 4]))),
+            MediaExtractionSettings::fast_anchor_v2(),
+        );
+        let value = media_match_wire_value_from_records(std::slice::from_ref(&record))
+            .expect("wire value should serialize");
+
+        let mut unsupported_version = value.clone();
+        unsupported_version["profiles"][0]["algorithmVersion"] =
+            serde_json::json!(MEDIA_MATCH_ANCHOR_VERSION + 1);
+        assert!(media_match_wire_signature_from_value(&unsupported_version).is_err());
+
+        let mut unknown_profile = value.clone();
+        unknown_profile["profiles"][0]["profile"] = serde_json::json!("fast-anchor-v999");
+        assert!(media_match_wire_signature_from_value(&unknown_profile).is_err());
+
+        let mut wrong_time_base = value.clone();
+        wrong_time_base["profiles"][0]["audio"]["timeBaseMs"] = serde_json::json!(1000);
+        assert!(media_match_wire_signature_from_value(&wrong_time_base).is_err());
+
+        let mut wrong_algorithm = value;
+        wrong_algorithm["profiles"][0]["video"]["algorithm"] =
+            serde_json::json!("unsupported-video-anchor-algorithm");
+        assert!(media_match_wire_signature_from_value(&wrong_algorithm).is_err());
+    }
+
+    #[test]
+    fn ffmpeg_showinfo_parser_preserves_irregular_frame_pts() {
+        let stderr = "\
+[Parsed_showinfo_1 @ 000001] n:   0 pts: 48000 pts_time:2.000 pos:0
+[Parsed_showinfo_1 @ 000001] n:   1 pts: 103200 pts_time:4.300 pos:0
+[Parsed_showinfo_1 @ 000001] n:   2 pts: 247200 pts_time:10.300 pos:0
+";
+
+        assert_eq!(
+            parse_ffmpeg_showinfo_pts_times(stderr),
+            vec![2.0, 4.3, 10.3]
+        );
     }
 
     #[test]

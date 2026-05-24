@@ -539,18 +539,6 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return false;
         };
-        let tool_snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
-        if tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
-            if notify_on_finish {
-                let message = tool_snapshot.message.unwrap_or_else(|| {
-                    "Media Matching tools are not ready for fingerprint extraction.".to_owned()
-                });
-                Self::push_runtime_error_notification(handle, projected_state, message);
-            }
-            return false;
-        }
-
         let search_roots = self.automatic_media_search_roots(projected_state);
         if search_roots.is_empty() {
             if notify_on_finish {
@@ -562,6 +550,22 @@ impl GuiPersistedConfigRuntimeOwner {
                         message: "Media Matching has no media-search roots to warm.".to_owned(),
                     }],
                 );
+            }
+            return false;
+        }
+        let current_player_path = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.clone());
+        let extraction_required = current_player_path.is_some();
+        let tool_snapshot =
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+        if extraction_required && tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
+            if notify_on_finish {
+                let message = tool_snapshot.message.unwrap_or_else(|| {
+                    "Media Matching tools are not ready for fingerprint extraction.".to_owned()
+                });
+                Self::push_runtime_error_notification(handle, projected_state, message);
             }
             return false;
         }
@@ -597,11 +601,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let root_keys = Self::automatic_media_search_root_keys(&search_roots);
-        let candidates = self.attached_media_match_candidate_paths(&root_keys);
-        let current_player_path = self
-            .player_local_file
-            .as_ref()
-            .and_then(|file| file.path.clone());
+        let candidates = extraction_required
+            .then(|| self.attached_media_match_candidate_paths(&root_keys))
+            .flatten();
         let settings = projected_state.media_match.settings.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
@@ -622,7 +624,22 @@ impl GuiPersistedConfigRuntimeOwner {
             .spawn(move || {
                 let progress_tx = tx.clone();
                 let hardening_candidates = candidates.clone();
-                let fast_result = if let Some(candidates) = candidates {
+                let fast_result = if current_player_path.is_none() {
+                    let extraction_settings =
+                        sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
+                    rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
+                        &root,
+                        &search_roots,
+                        None,
+                        &settings,
+                        &extraction_settings,
+                        Some(worker_cancel_flag.as_ref()),
+                        |progress| {
+                            let _ = progress_tx
+                                .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
+                        },
+                    )
+                } else if let Some(candidates) = candidates {
                     media_match_tool_paths(&root).and_then(|tools| {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::fast_anchor_v2();
@@ -662,7 +679,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     .as_ref()
                     .ok()
                     .and_then(|result| result.current_decision.as_deref())
-                    .is_some_and(|decision| decision.starts_with("strong:"));
+                    .is_some_and(|decision| {
+                        decision.starts_with("strong:") || decision.starts_with("probable:")
+                    });
                 if !strong_fast_match {
                     let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
                     return;
@@ -958,9 +977,6 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         if self.media_match_background_worker_rx.is_some() {
-            return;
-        }
-        if self.media_match_runtime_snapshot.health != GuiMediaMatchToolHealth::Healthy {
             return;
         }
         let _ = self.queue_media_match_background_worker(
@@ -1382,5 +1398,108 @@ impl GuiPersistedConfigRuntimeOwner {
         );
         self.maybe_queue_media_match_background_warmup(handle, projected_state);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::runtime_owner::{GuiAttachedMediaSearchIndex, GuiAttachedMediaSearchRootIndex};
+    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+
+    #[test]
+    fn background_worker_with_attached_index_and_no_current_file_inventories_only() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "sorotte-gui-media-match-runtime-inventory-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let config_path = root.join("sorotte.ini");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).expect("media root should be created");
+        std::fs::write(media_root.join("episode.mkv"), b"not real media")
+            .expect("candidate file should be created");
+        let media_root_text = media_root.to_string_lossy().into_owned();
+        let saved_settings = StoredClientSettingsMvp {
+            media_search_directories: Some(vec![media_root_text]),
+            media_match_fingerprinting_enabled: Some(true),
+            ..StoredClientSettingsMvp::default()
+        };
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
+        let root_key =
+            crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
+        owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
+            roots: vec![root_key.clone()],
+            root_indexes_by_key: std::collections::HashMap::from([(
+                root_key.clone(),
+                GuiAttachedMediaSearchRootIndex {
+                    root_key: root_key.clone(),
+                    root_path: media_root.clone(),
+                    built_at_unix_ms: 1,
+                    candidates_by_name: std::collections::HashMap::from([(
+                        "episode.mkv".to_owned(),
+                        vec!["episode.mkv".to_owned()],
+                    )]),
+                },
+            )]),
+            roots_requiring_refresh: std::collections::BTreeSet::new(),
+        });
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+
+        assert!(owner.queue_media_match_background_worker(
+            &handle,
+            &mut state,
+            "test inventory",
+            true,
+            false,
+        ));
+        let rx = owner
+            .media_match_background_worker_rx
+            .take()
+            .expect("worker should be queued");
+        let result = loop {
+            match rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("worker should finish")
+            {
+                GuiMediaMatchBackgroundWorkerEvent::Progress(_) => {}
+                GuiMediaMatchBackgroundWorkerEvent::FastResult(_) => {}
+                GuiMediaMatchBackgroundWorkerEvent::Finished(result) => break result,
+            }
+        }
+        .expect("inventory-only worker should succeed without media tools");
+        owner
+            .finish_media_match_background_index_backup(true)
+            .expect("backup should be discarded");
+
+        let connection = rusqlite::Connection::open(
+            root.join("cache")
+                .join("media-match")
+                .join("index-v2.sqlite3"),
+        )
+        .expect("SQLite index should open");
+        let inventory = connection
+            .query_row("SELECT COUNT(*) FROM media_files", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("inventory count should load");
+        let fingerprints = connection
+            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("fingerprint count should load");
+
+        assert_eq!(inventory, 1);
+        assert_eq!(fingerprints, 0);
+        assert_eq!(
+            result.current_decision,
+            Some("unknown: no current player file".to_owned())
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
