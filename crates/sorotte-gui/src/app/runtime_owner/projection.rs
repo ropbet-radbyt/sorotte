@@ -295,6 +295,7 @@ impl GuiPersistedConfigRuntimeOwner {
             || state.media_match.current_decision != desired_media_match.current_decision
             || state.media_match.last_evidence != desired_media_match.last_evidence
             || state.media_match.remote_status != desired_media_match.remote_status
+            || state.media_match.background_status != desired_media_match.background_status
             || state.media_match.open_install_location_available
                 != desired_media_match.open_install_location_available
         {

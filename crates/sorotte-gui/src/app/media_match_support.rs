@@ -17,13 +17,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION, MEDIA_MATCH_ANCHOR_VERSION,
-    MediaExtractionSettings, MediaFingerprintProfile, MediaFingerprintRecord, MediaMatchCache,
-    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, VideoAnchor,
-    audio_anchors_from_record, decide_media_match, decode_audio_anchor_summary,
-    decode_video_anchor_summary, fingerprint_media_file_cancellable_with_report,
-    media_extraction_settings_hash, media_fingerprint_summary_from_record,
-    media_match_wire_value_from_records, normalize_media_path, rank_media_match_candidates,
-    video_anchor_hashes_match, video_anchors_from_record,
+    MediaExtractionSettings, MediaFingerprintError, MediaFingerprintProfile,
+    MediaFingerprintRecord, MediaMatchCache, MediaMatchSettings, MediaMatchTier,
+    MediaMatchToolPaths, VideoAnchor, audio_anchors_from_record, decide_media_match,
+    decode_audio_anchor_summary, decode_video_anchor_summary,
+    fingerprint_media_file_cancellable_with_report, media_extraction_settings_hash,
+    media_fingerprint_summary_from_record, media_match_wire_value_from_records,
+    normalize_media_path, rank_media_match_candidates, video_anchor_hashes_match,
+    video_anchors_from_record,
 };
 
 use super::shell_state::{
@@ -695,6 +696,9 @@ where
                     break;
                 }
             }
+            Err(MediaFingerprintError::Cancelled { .. }) => {
+                return Err("Media Matching index rebuild was canceled.".to_owned());
+            }
             Err(_) => {
                 skipped += 1;
                 if path_needs_fingerprint {
@@ -831,13 +835,17 @@ fn media_match_health_message(
 }
 
 fn media_match_cache_status(root: &Path) -> String {
-    match media_match_sqlite_counts(root) {
+    match media_match_sqlite_all_settings_counts(root) {
         Ok((inventory, fast, full)) if inventory > 0 || fast > 0 || full > 0 => {
             let storage = media_match_sqlite_storage_status(root).unwrap_or_default();
             if storage.is_empty() {
-                format!("inventory: {inventory}, fast: {fast}, full: {full}")
+                format!(
+                    "inventory: {inventory}, fast(all settings): {fast}, full(all settings): {full}"
+                )
             } else {
-                format!("inventory: {inventory}, fast: {fast}, full: {full}; {storage}")
+                format!(
+                    "inventory: {inventory}, fast(all settings): {fast}, full(all settings): {full}; {storage}"
+                )
             }
         }
         Ok(_) => "empty".to_owned(),
@@ -938,6 +946,9 @@ fn inventory_media_match_candidates(
     cancel_flag: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let connection = open_media_match_sqlite_index(root)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("failed starting media-match inventory transaction: {error}"))?;
     for path in candidates {
         if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err("Media Matching inventory scan was canceled.".to_owned());
@@ -951,7 +962,29 @@ fn inventory_media_match_candidates(
             .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
             .unwrap_or(0);
-        connection
+        let normalized_path = normalize_media_path(path);
+        let size_bytes = metadata.len();
+        if let Some((file_id, old_mtime, old_size)) = transaction
+            .query_row(
+                "SELECT file_id, modified_unix_millis, size_bytes
+                 FROM media_files
+                 WHERE normalized_path = ?1",
+                [normalized_path.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("failed reading media-match inventory row: {error}"))?
+            && (old_mtime != modified_unix_millis as i64 || old_size != size_bytes as i64)
+        {
+            delete_media_match_fingerprints_and_anchors(&transaction, file_id)?;
+        }
+        transaction
             .execute(
                 "INSERT INTO media_files (
                     normalized_path,
@@ -969,14 +1002,17 @@ fn inventory_media_match_candidates(
                     size_bytes = excluded.size_bytes,
                     updated_unix_millis = excluded.updated_unix_millis",
                 params![
-                    normalize_media_path(path),
+                    normalized_path,
                     modified_unix_millis as i64,
-                    metadata.len() as i64,
+                    size_bytes as i64,
                     current_unix_millis() as i64,
                 ],
             )
             .map_err(|error| format!("failed writing media-match inventory row: {error}"))?;
     }
+    transaction
+        .commit()
+        .map_err(|error| format!("failed committing media-match inventory transaction: {error}"))?;
     Ok(())
 }
 
@@ -1268,13 +1304,11 @@ fn cached_or_fresh_media_fingerprint(
         bool,
         Option<sorotte_media_match::MediaFingerprintExtractionReport>,
     ),
-    String,
+    MediaFingerprintError,
 > {
-    let metadata = fs::metadata(path).map_err(|error| {
-        format!(
-            "failed reading media metadata '{}': {error}",
-            path.display()
-        )
+    let metadata = fs::metadata(path).map_err(|error| MediaFingerprintError::FileMetadata {
+        path: path.display().to_string(),
+        error: error.to_string(),
     })?;
     let modified_unix_millis = metadata
         .modified()
@@ -1298,7 +1332,6 @@ fn cached_or_fresh_media_fingerprint(
         cancel_flag.unwrap_or(&AtomicBool::new(false)),
     )
     .map(|fingerprint| (fingerprint.record, false, Some(fingerprint.report)))
-    .map_err(|error| error.to_string())
 }
 
 fn media_match_cache_has_valid_record(
@@ -1536,6 +1569,73 @@ fn collect_video_anchor_candidate_scores(
             }
             *scores.entry(hit.0).or_default() += hit.3.max(1);
         }
+        collect_video_anchor_hamming_fallback_scores(
+            connection,
+            current_file_id,
+            profile,
+            settings_hash,
+            query_t_ms,
+            query_hash64,
+            scores,
+            &mut seen_hits,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_video_anchor_hamming_fallback_scores(
+    connection: &Connection,
+    current_file_id: i64,
+    profile: &str,
+    settings_hash: &[u8],
+    query_t_ms: i64,
+    query_hash64: u64,
+    scores: &mut BTreeMap<i64, i64>,
+    seen_hits: &mut BTreeSet<(i64, i64, i64, u64, u64)>,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT anchors.file_id, anchors.t_ms, anchors.hash64, anchors.weight
+             FROM video_anchors anchors
+             JOIN fingerprints fingerprints
+                ON fingerprints.file_id = anchors.file_id
+               AND fingerprints.version = anchors.version
+               AND fingerprints.profile = anchors.profile
+             WHERE anchors.version = ?1
+                AND anchors.profile = ?2
+                AND anchors.file_id != ?3
+                AND fingerprints.settings_hash = ?4",
+        )
+        .map_err(|error| {
+            format!("failed preparing media-match video Hamming fallback query: {error}")
+        })?;
+    let hits = statement
+        .query_map(
+            params![
+                i64::from(MEDIA_MATCH_ANCHOR_VERSION),
+                profile,
+                current_file_id,
+                settings_hash,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("failed querying media-match video Hamming fallback: {error}"))?;
+    for hit in hits.flatten() {
+        if !video_anchor_hashes_match(query_hash64, hit.2) {
+            continue;
+        }
+        if !seen_hits.insert((hit.0, query_t_ms, hit.1, query_hash64, hit.2)) {
+            continue;
+        }
+        *scores.entry(hit.0).or_default() += hit.3.max(1);
     }
     Ok(())
 }
@@ -1782,6 +1882,22 @@ fn initialize_media_match_sqlite_index(connection: &Connection) -> Result<(), St
 
 fn media_match_profile_label(settings: &MediaExtractionSettings) -> &'static str {
     settings.profile.label()
+}
+
+fn delete_media_match_fingerprints_and_anchors(
+    connection: &Connection,
+    file_id: i64,
+) -> Result<(), String> {
+    connection
+        .execute("DELETE FROM audio_anchors WHERE file_id = ?1", [file_id])
+        .map_err(|error| format!("failed deleting stale media-match audio anchors: {error}"))?;
+    connection
+        .execute("DELETE FROM video_anchors WHERE file_id = ?1", [file_id])
+        .map_err(|error| format!("failed deleting stale media-match video anchors: {error}"))?;
+    connection
+        .execute("DELETE FROM fingerprints WHERE file_id = ?1", [file_id])
+        .map_err(|error| format!("failed deleting stale media-match fingerprints: {error}"))?;
+    Ok(())
 }
 
 pub(super) fn load_media_match_cache_for_settings(
@@ -2081,12 +2197,15 @@ fn save_media_match_record_to_sqlite_with_error(
     record: &MediaFingerprintRecord,
     error: Option<&str>,
 ) -> Result<(), String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("failed starting media-match save transaction: {error}"))?;
     let now = current_unix_millis() as i64;
     let duration_ms = record
         .duration_seconds
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| (value * 1000.0).round().min(f64::from(u32::MAX)) as i64);
-    connection
+    transaction
         .execute(
             "INSERT INTO media_files (
                 normalized_path,
@@ -2115,7 +2234,7 @@ fn save_media_match_record_to_sqlite_with_error(
             ],
         )
         .map_err(|error| format!("failed writing media-match media file row: {error}"))?;
-    let file_id = connection
+    let file_id = transaction
         .query_row(
             "SELECT file_id FROM media_files WHERE normalized_path = ?1",
             [record.identity.normalized_path.as_str()],
@@ -2142,7 +2261,7 @@ fn save_media_match_record_to_sqlite_with_error(
     } else {
         "complete"
     };
-    connection
+    transaction
         .execute(
             "DELETE FROM audio_anchors WHERE version = ?1 AND profile = ?2 AND file_id = ?3",
             params![
@@ -2152,7 +2271,7 @@ fn save_media_match_record_to_sqlite_with_error(
             ],
         )
         .map_err(|error| format!("failed clearing media-match audio anchors: {error}"))?;
-    connection
+    transaction
         .execute(
             "DELETE FROM video_anchors WHERE version = ?1 AND profile = ?2 AND file_id = ?3",
             params![
@@ -2165,7 +2284,7 @@ fn save_media_match_record_to_sqlite_with_error(
     let audio_anchors = audio_anchors_from_record(record);
     for anchor in &audio_anchors {
         insert_audio_anchor(
-            connection,
+            &transaction,
             file_id,
             record.extraction_settings.profile.label(),
             anchor,
@@ -2174,13 +2293,13 @@ fn save_media_match_record_to_sqlite_with_error(
     let video_anchors = video_anchors_from_record(record);
     for anchor in &video_anchors {
         insert_video_anchor(
-            connection,
+            &transaction,
             file_id,
             record.extraction_settings.profile.label(),
             anchor,
         )?;
     }
-    connection
+    transaction
         .execute(
             "INSERT OR REPLACE INTO fingerprints (
                 file_id,
@@ -2211,8 +2330,10 @@ fn save_media_match_record_to_sqlite_with_error(
                 now,
             ],
         )
-        .map(|_| ())
-        .map_err(|error| format!("failed checkpointing media-match v2 fingerprint row: {error}"))
+        .map_err(|error| format!("failed checkpointing media-match v2 fingerprint row: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed committing media-match save transaction: {error}"))
 }
 
 fn insert_audio_anchor(
@@ -2264,7 +2385,7 @@ fn insert_video_anchor(
         .map_err(|error| format!("failed writing media-match video anchor: {error}"))
 }
 
-fn media_match_sqlite_counts(root: &Path) -> Result<(usize, usize, usize), String> {
+fn media_match_sqlite_all_settings_counts(root: &Path) -> Result<(usize, usize, usize), String> {
     if !managed_media_match_index_path(root).exists() {
         return Ok((0, 0, 0));
     }
@@ -2646,7 +2767,7 @@ mod tests {
         save_media_match_cache(&root, &fast_cache).expect("fast cache should be written");
 
         assert_eq!(
-            media_match_sqlite_counts(&root).expect("counts should load"),
+            media_match_sqlite_all_settings_counts(&root).expect("counts should load"),
             (1, 1, 1)
         );
         assert_eq!(
@@ -2707,6 +2828,87 @@ mod tests {
     }
 
     #[test]
+    fn media_match_inventory_invalidates_fingerprints_and_anchors_when_file_changes() {
+        let root = unique_media_match_test_root("stale-invalidation");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let query_path = media_dir.join("query.mkv");
+        let candidate_path = media_dir.join("candidate.mkv");
+        std::fs::write(&query_path, b"query-v1").expect("query media should be written");
+        std::fs::write(&candidate_path, b"candidate-v1")
+            .expect("candidate media should be written");
+        let extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        let mut query = fake_media_match_record_for_file(&query_path, extraction_settings.clone());
+        query.audio_anchors = vec![AudioAnchor {
+            bucket: 42,
+            t_ms: 10_000,
+            weight: 1,
+        }];
+        let mut candidate =
+            fake_media_match_record_for_file(&candidate_path, extraction_settings.clone());
+        candidate.audio_anchors = vec![AudioAnchor {
+            bucket: 42,
+            t_ms: 11_000,
+            weight: 1,
+        }];
+        let candidate_normalized_path = candidate.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(query.clone());
+        cache.insert(candidate);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+        assert!(
+            media_match_anchor_candidate_paths(
+                &root,
+                &query.identity.normalized_path,
+                &extraction_settings,
+            )
+            .expect("anchor candidates should load")
+            .contains(&candidate_normalized_path),
+            "fixture should start with a candidate anchor hit"
+        );
+
+        std::fs::write(&candidate_path, b"candidate-v2-with-new-size")
+            .expect("candidate media should be changed");
+        inventory_media_match_candidates(
+            &root,
+            &[query_path.clone(), candidate_path.clone()],
+            None,
+        )
+        .expect("inventory should update");
+
+        let cache = load_media_match_cache_for_settings(&root, &extraction_settings)
+            .expect("query record should still load");
+        assert!(
+            cache.records.contains_key(&query.identity.normalized_path),
+            "unchanged query fingerprint should remain"
+        );
+        assert!(
+            !cache.records.contains_key(&candidate_normalized_path),
+            "changed candidate fingerprint must be invalidated"
+        );
+        assert!(
+            media_match_record_for_path(
+                &root,
+                candidate_path.to_str().expect("test path should be UTF-8"),
+                &extraction_settings,
+            )
+            .is_none(),
+            "direct lookup must not reconstruct a stale fingerprint from updated media_files identity"
+        );
+        assert!(
+            !media_match_anchor_candidate_paths(
+                &root,
+                &query.identity.normalized_path,
+                &extraction_settings,
+            )
+            .expect("anchor candidates should load")
+            .contains(&candidate_normalized_path),
+            "stale anchors for changed files must not be used for candidate lookup"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn media_match_anchor_candidates_use_video_lsh_and_hamming_verification() {
         let root = unique_media_match_test_root("video-lsh-candidates");
         let query_hash = 0x0123_4567_89ab_cdef;
@@ -2745,6 +2947,49 @@ mod tests {
         assert!(
             candidates.contains(&candidate_path),
             "candidate should be shortlisted when any video LSH band matches and full hash distance is within threshold"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_anchor_candidates_fallback_for_hamming_near_hashes_that_miss_lsh_bands() {
+        let root = unique_media_match_test_root("video-lsh-fallback-candidates");
+        let query_hash = 0x0123_4567_89ab_cdef;
+        let candidate_hash = query_hash ^ 0x0001_0001_0001_0001;
+        let mut query = fake_media_match_record("query.mkv");
+        query.extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        query.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![sorotte_media_match::FrameFingerprint {
+                timestamp_millis: 30_000,
+                hash: query_hash,
+            }],
+        });
+        let mut candidate = fake_media_match_record("candidate.mkv");
+        candidate.extraction_settings = MediaExtractionSettings::fast_anchor_v2();
+        candidate.video = Some(sorotte_media_match::VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![sorotte_media_match::FrameFingerprint {
+                timestamp_millis: 31_000,
+                hash: candidate_hash,
+            }],
+        });
+        let candidate_path = candidate.identity.normalized_path.clone();
+        let mut cache = MediaMatchCache::default();
+        cache.insert(query.clone());
+        cache.insert(candidate);
+        save_media_match_cache(&root, &cache).expect("cache should be written");
+
+        let candidates = media_match_anchor_candidate_paths(
+            &root,
+            &query.identity.normalized_path,
+            &MediaExtractionSettings::fast_anchor_v2(),
+        )
+        .expect("anchor candidates should load");
+
+        assert!(
+            candidates.contains(&candidate_path),
+            "candidate should be shortlisted by Hamming fallback when all LSH bands differ"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2948,7 +3193,51 @@ mod tests {
         assert!(
             result
                 .cache_status
-                .starts_with("inventory: 1, fast: 1, full: 0")
+                .starts_with("inventory: 1, fast(all settings): 1, full(all settings): 0")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_match_rebuild_cancellation_does_not_checkpoint_partial_fingerprint() {
+        let root = unique_media_match_test_root("cancel-no-checkpoint");
+        let media_dir = root.join("media");
+        std::fs::create_dir_all(&media_dir).expect("media dir should be created");
+        let media_path = media_dir.join("episode.mkv");
+        std::fs::write(&media_path, vec![42u8; 2000]).expect("test media file should be written");
+        let settings = MediaMatchSettings {
+            fingerprinting_enabled: true,
+            ..MediaMatchSettings::default()
+        };
+        let tools = MediaMatchToolPaths {
+            ffmpeg: PathBuf::from("ffmpeg-not-used"),
+            ffprobe: PathBuf::from("ffprobe-not-used"),
+            fpcalc: PathBuf::from("fpcalc-not-used"),
+        };
+        let cancel = AtomicBool::new(true);
+        let result = rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+            MediaMatchCandidateRebuildRequest {
+                root: &root,
+                candidates: vec![media_path.clone()],
+                current_player_path: media_path.to_str(),
+                settings: &settings,
+                tools: &tools,
+                extraction_settings: &MediaExtractionSettings::fast_anchor_v2(),
+                cancel_flag: Some(&cancel),
+            },
+            |_| {},
+        );
+
+        assert!(result.is_err());
+        let connection = open_media_match_sqlite_index(&root).expect("SQLite index should open");
+        let fingerprints = connection
+            .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("fingerprint count should load");
+        assert_eq!(
+            fingerprints, 0,
+            "cancelled rebuilds must not checkpoint empty or partial fingerprints"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

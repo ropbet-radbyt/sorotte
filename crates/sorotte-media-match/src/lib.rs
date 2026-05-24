@@ -27,6 +27,7 @@ const FRAME_HASH_BITS: u32 = 64;
 pub const DEFAULT_FRAME_HAMMING_THRESHOLD: u32 = 10;
 const DEFAULT_ANCHOR_ALIGNMENT_TOLERANCE_MS: i64 = 1_000;
 const DEFAULT_ANCHOR_OFFSET_BIN_MS: i64 = 1_000;
+const MAX_BROAD_SCALE_FIT_PAIRS: usize = 128;
 const VIDEO_LSH_BANDS: u32 = 4;
 const VIDEO_LSH_BITS_PER_BAND: u32 = 16;
 const FAST_VIDEO_SAMPLE_FRAMES: usize = 12;
@@ -1167,6 +1168,9 @@ pub fn fingerprint_media_file_with_report(
     report.timings.audio_millis = started_at.elapsed().as_millis();
     let audio = match audio_result {
         Ok(audio) => Some(audio),
+        Err(MediaFingerprintError::Cancelled { tool }) => {
+            return Err(MediaFingerprintError::Cancelled { tool });
+        }
         Err(error) => {
             report.audio_error = Some(error.to_string());
             None
@@ -1184,6 +1188,9 @@ pub fn fingerprint_media_file_with_report(
     report.timings.video_millis = started_at.elapsed().as_millis();
     let video = match video_result {
         Ok(video) => Some(video),
+        Err(MediaFingerprintError::Cancelled { tool }) => {
+            return Err(MediaFingerprintError::Cancelled { tool });
+        }
         Err(error) => {
             report.video_error = Some(error.to_string());
             None
@@ -1341,17 +1348,21 @@ fn extract_full_video_fingerprint(
         ffmpeg.as_ref(),
         [
             "-v".into(),
-            "error".into(),
+            "info".into(),
+            "-hide_banner".into(),
+            "-nostats".into(),
             "-nostdin".into(),
             "-i".into(),
             media_path.as_ref().as_os_str().to_os_string(),
             "-vf".into(),
             format!(
-                "fps=1/{interval},scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
+                "fps=1/{interval},showinfo,scale={VIDEO_FRAME_WIDTH}:{VIDEO_FRAME_HEIGHT}:flags=bicubic,format=gray"
             )
             .into(),
             "-frames:v".into(),
             extraction_settings.max_frames.max(1).to_string().into(),
+            "-fps_mode".into(),
+            "vfr".into(),
             "-f".into(),
             "rawvideo".into(),
             "-pix_fmt".into(),
@@ -1362,30 +1373,7 @@ fn extract_full_video_fingerprint(
         FFMPEG_FULL_VIDEO_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
-
-    let mut frames = Vec::new();
-    for (index, chunk) in output.stdout.chunks_exact(VIDEO_FRAME_BYTES).enumerate() {
-        let hash =
-            pdq_style_luma_hash(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, chunk).ok_or_else(|| {
-                MediaFingerprintError::InvalidToolOutput {
-                    tool: "ffmpeg",
-                    reason:
-                        "raw grayscale frame size did not match the requested extraction geometry"
-                            .to_owned(),
-                }
-            })?;
-        frames.push(FrameFingerprint::new(
-            index as f64 * f64::from(interval),
-            hash,
-        ));
-    }
-
-    if frames.is_empty() {
-        return Err(MediaFingerprintError::InvalidToolOutput {
-            tool: "ffmpeg",
-            reason: "no raw grayscale frames were extracted".to_owned(),
-        });
-    }
+    let frames = video_frames_from_ffmpeg_rawvideo(&output.stdout, &output.stderr)?;
 
     Ok(VideoFingerprint {
         duration_seconds: duration_seconds
@@ -1450,14 +1438,28 @@ fn extract_fast_video_fingerprint(
         FFMPEG_FAST_FRAME_TIMEOUT,
     )?;
     ensure_tool_success("ffmpeg", &output)?;
-    if output.stdout.len() % VIDEO_FRAME_BYTES != 0 {
+    let frames = video_frames_from_ffmpeg_rawvideo(&output.stdout, &output.stderr)?;
+
+    Ok(VideoFingerprint {
+        duration_seconds: duration_seconds
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
+        frames,
+    })
+}
+
+fn video_frames_from_ffmpeg_rawvideo(
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<Vec<FrameFingerprint>, MediaFingerprintError> {
+    if !stdout.len().is_multiple_of(VIDEO_FRAME_BYTES) {
         return Err(MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
             reason: "raw grayscale frame output had a partial trailing frame".to_owned(),
         });
     }
-    let frame_count = output.stdout.len() / VIDEO_FRAME_BYTES;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let frame_count = stdout.len() / VIDEO_FRAME_BYTES;
+    let stderr = String::from_utf8_lossy(stderr);
     let pts_times = parse_ffmpeg_showinfo_pts_times(&stderr);
     if pts_times.len() < frame_count {
         return Err(MediaFingerprintError::InvalidToolOutput {
@@ -1469,7 +1471,7 @@ fn extract_fast_video_fingerprint(
         });
     }
     let mut frames = Vec::new();
-    for (index, chunk) in output.stdout.chunks_exact(VIDEO_FRAME_BYTES).enumerate() {
+    for (index, chunk) in stdout.chunks_exact(VIDEO_FRAME_BYTES).enumerate() {
         let hash =
             pdq_style_luma_hash(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT, chunk).ok_or_else(|| {
                 MediaFingerprintError::InvalidToolOutput {
@@ -1488,13 +1490,7 @@ fn extract_fast_video_fingerprint(
             reason: "no raw grayscale frames were extracted".to_owned(),
         });
     }
-
-    Ok(VideoFingerprint {
-        duration_seconds: duration_seconds
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .map(|value| value.round().min(f64::from(u32::MAX)) as u32),
-        frames,
-    })
+    Ok(frames)
 }
 
 fn fast_video_multi_seek_filter(timestamps: &[f64]) -> (String, String) {
@@ -1859,6 +1855,10 @@ pub fn decide_media_match(
     decide_media_match_anchors(&query_profile, &candidate_profile, settings)
 }
 
+/// Legacy diagnostic helper for raw Chromaprint token vectors.
+///
+/// Media Matching v2 decisions use compact time-local anchors via
+/// [`decide_media_match_anchors`] instead of this non-queryable comparison.
 pub fn compare_audio_fingerprints(
     query: &AudioFingerprint,
     candidate: &AudioFingerprint,
@@ -1894,6 +1894,10 @@ pub fn compare_audio_fingerprints(
     }
 }
 
+/// Legacy diagnostic helper for direct frame-hash sequence alignment.
+///
+/// Media Matching v2 decisions use compact time-local anchors via
+/// [`decide_media_match_anchors`] instead of this non-queryable comparison.
 pub fn align_video_fingerprints(
     query: &VideoFingerprint,
     candidate: &VideoFingerprint,
@@ -2141,11 +2145,13 @@ fn collect_anchor_match_pairs(
             .push(anchor);
     }
     let mut candidate_video = HashMap::<u32, Vec<&VideoAnchor>>::new();
+    let mut candidate_video_all = Vec::new();
     for anchor in &candidate.video_anchors {
         candidate_video
             .entry(anchor.bucket)
             .or_default()
             .push(anchor);
+        candidate_video_all.push(anchor);
     }
     let mut pairs = Vec::new();
     for query_anchor in &query.audio_anchors {
@@ -2164,27 +2170,50 @@ fn collect_anchor_match_pairs(
     for query_anchor in &query.video_anchors {
         if let Some(candidate_anchors) = candidate_video.get(&query_anchor.bucket) {
             for candidate_anchor in candidate_anchors {
-                if !video_anchor_hashes_match(query_anchor.hash64, candidate_anchor.hash64) {
-                    continue;
-                }
-                if !seen_video_pairs.insert((
-                    query_anchor.t_ms,
-                    candidate_anchor.t_ms,
-                    query_anchor.hash64,
-                    candidate_anchor.hash64,
-                )) {
-                    continue;
-                }
-                pairs.push(AnchorMatchPair {
-                    query_t_ms: query_anchor.t_ms,
-                    candidate_t_ms: candidate_anchor.t_ms,
-                    modality: AnchorModality::Video,
-                    weight: query_anchor.weight.min(candidate_anchor.weight),
-                });
+                push_video_anchor_match_pair(
+                    &mut pairs,
+                    &mut seen_video_pairs,
+                    query_anchor,
+                    candidate_anchor,
+                );
             }
+        }
+        for candidate_anchor in &candidate_video_all {
+            push_video_anchor_match_pair(
+                &mut pairs,
+                &mut seen_video_pairs,
+                query_anchor,
+                candidate_anchor,
+            );
         }
     }
     pairs
+}
+
+fn push_video_anchor_match_pair(
+    pairs: &mut Vec<AnchorMatchPair>,
+    seen_video_pairs: &mut HashSet<(u32, u32, u64, u64)>,
+    query_anchor: &VideoAnchor,
+    candidate_anchor: &VideoAnchor,
+) -> bool {
+    if !video_anchor_hashes_match(query_anchor.hash64, candidate_anchor.hash64) {
+        return false;
+    }
+    if !seen_video_pairs.insert((
+        query_anchor.t_ms,
+        candidate_anchor.t_ms,
+        query_anchor.hash64,
+        candidate_anchor.hash64,
+    )) {
+        return true;
+    }
+    pairs.push(AnchorMatchPair {
+        query_t_ms: query_anchor.t_ms,
+        candidate_t_ms: candidate_anchor.t_ms,
+        modality: AnchorModality::Video,
+        weight: query_anchor.weight.min(candidate_anchor.weight),
+    });
+    true
 }
 
 fn dominant_anchor_offset(pairs: &[AnchorMatchPair]) -> Option<(i64, u32, u32)> {
@@ -2230,20 +2259,10 @@ fn fit_anchor_scale_offset(
     }
 
     let mut candidates = vec![(1.0, voted_offset_ms as f64)];
-    for (left_index, left) in seeded.iter().enumerate() {
-        for right in seeded.iter().skip(left_index + 1) {
-            let query_delta = f64::from(right.query_t_ms) - f64::from(left.query_t_ms);
-            if query_delta.abs() < 10_000.0 {
-                continue;
-            }
-            let candidate_delta = f64::from(right.candidate_t_ms) - f64::from(left.candidate_t_ms);
-            let scale = candidate_delta / query_delta;
-            if !(0.95..=1.05).contains(&scale) {
-                continue;
-            }
-            let offset = f64::from(left.candidate_t_ms) - (scale * f64::from(left.query_t_ms));
-            candidates.push((scale, offset));
-        }
+    add_scale_offset_candidates_from_pairs(&seeded, &mut candidates);
+    if seeded.len() < pairs.len() {
+        let broad_pairs = broad_scale_fit_sample(pairs);
+        add_scale_offset_candidates_from_pairs(&broad_pairs, &mut candidates);
     }
 
     let mut best: Option<AnchorFitCandidate> = None;
@@ -2305,6 +2324,37 @@ fn fit_anchor_scale_offset(
         drift_ratio,
         aligned: best.aligned,
     })
+}
+
+fn add_scale_offset_candidates_from_pairs(
+    pairs: &[AnchorMatchPair],
+    candidates: &mut Vec<(f64, f64)>,
+) {
+    for (left_index, left) in pairs.iter().enumerate() {
+        for right in pairs.iter().skip(left_index + 1) {
+            let query_delta = f64::from(right.query_t_ms) - f64::from(left.query_t_ms);
+            if query_delta.abs() < 10_000.0 {
+                continue;
+            }
+            let candidate_delta = f64::from(right.candidate_t_ms) - f64::from(left.candidate_t_ms);
+            let scale = candidate_delta / query_delta;
+            if !(0.95..=1.05).contains(&scale) {
+                continue;
+            }
+            let offset = f64::from(left.candidate_t_ms) - (scale * f64::from(left.query_t_ms));
+            candidates.push((scale, offset));
+        }
+    }
+}
+
+fn broad_scale_fit_sample(pairs: &[AnchorMatchPair]) -> Vec<AnchorMatchPair> {
+    if pairs.len() <= MAX_BROAD_SCALE_FIT_PAIRS {
+        return pairs.to_vec();
+    }
+    let stride = pairs.len() as f64 / MAX_BROAD_SCALE_FIT_PAIRS as f64;
+    (0..MAX_BROAD_SCALE_FIT_PAIRS)
+        .map(|index| pairs[(index as f64 * stride).floor() as usize])
+        .collect()
 }
 
 fn anchor_fit_inliers(pairs: &[AnchorMatchPair], scale: f64, offset: f64) -> Vec<AnchorMatchPair> {
@@ -2969,6 +3019,54 @@ mod tests {
     }
 
     #[test]
+    fn video_matching_falls_back_when_hamming_near_hash_touches_every_lsh_band() {
+        let query_hash = 0x0123_4567_89ab_cdef;
+        let candidate_hash = query_hash ^ 0x0001_0001_0001_0001;
+        assert!(video_anchor_hashes_match(query_hash, candidate_hash));
+        assert!(
+            video_lsh_buckets(query_hash)
+                .iter()
+                .all(|bucket| !video_lsh_buckets(candidate_hash).contains(bucket)),
+            "fixture must touch every contiguous LSH band"
+        );
+        let query_video = VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![FrameFingerprint {
+                timestamp_millis: 30_000,
+                hash: query_hash,
+            }],
+        };
+        let candidate_video = VideoFingerprint {
+            duration_seconds: Some(120),
+            frames: vec![FrameFingerprint {
+                timestamp_millis: 31_000,
+                hash: candidate_hash,
+            }],
+        };
+        let query = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&query_video, 4),
+        };
+        let candidate = MediaAnchorProfile {
+            version: MEDIA_MATCH_ANCHOR_VERSION,
+            profile: "fast-anchor-v2".to_owned(),
+            duration_ms: Some(120_000),
+            audio_anchors: Vec::new(),
+            video_anchors: video_anchors_from_fingerprint(&candidate_video, 4),
+        };
+
+        let pairs = collect_anchor_match_pairs(&query, &candidate);
+
+        assert!(
+            !pairs.is_empty(),
+            "Hamming fallback should recover a near perceptual hash even when LSH buckets all differ"
+        );
+    }
+
+    #[test]
     fn anchor_matching_handles_trimmed_start_body_overlap() {
         let query = regular_anchor_profile(1_200_000, 0, 0);
         let candidate_audio = query.audio_anchors[3..].to_vec();
@@ -3017,6 +3115,54 @@ mod tests {
         assert!(
             !matches!(decision.tier, MediaMatchTier::Strong),
             "shared intro/outro anchors must not be strong: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn anchor_matching_fits_long_duration_drift_when_offset_bins_are_spread() {
+        let query_times = (0..20)
+            .map(|index| 120_000 + index * 180_000)
+            .collect::<Vec<_>>();
+        let query_audio = query_times
+            .iter()
+            .enumerate()
+            .map(|(index, t_ms)| (index as u32 + 1, *t_ms))
+            .collect::<Vec<_>>();
+        let query_video = query_times
+            .iter()
+            .enumerate()
+            .map(|(index, t_ms)| (index as u32 + 100, *t_ms, synthetic_hash(index as u64 + 1)))
+            .collect::<Vec<_>>();
+        let candidate_audio = query_times
+            .iter()
+            .enumerate()
+            .map(|(index, t_ms)| (index as u32 + 1, shifted_anchor_time(*t_ms, 0, 1_200)))
+            .collect::<Vec<_>>();
+        let candidate_video = query_times
+            .iter()
+            .enumerate()
+            .map(|(index, t_ms)| {
+                (
+                    index as u32 + 100,
+                    shifted_anchor_time(*t_ms, 0, 1_200),
+                    synthetic_hash(index as u64 + 1),
+                )
+            })
+            .collect::<Vec<_>>();
+        let query = anchor_profile(3_800_000, &query_audio, &query_video);
+        let candidate = anchor_profile(3_800_000, &candidate_audio, &candidate_video);
+
+        let decision = decide_media_match_anchors(&query, &candidate, &enabled_settings());
+
+        assert!(matches!(
+            decision.tier,
+            MediaMatchTier::Strong | MediaMatchTier::Probable
+        ));
+        let alignment = decision.evidence.alignment.expect("alignment evidence");
+        assert!(alignment.aligned_pairs >= 30, "{alignment:?}");
+        assert!(
+            (alignment.scale_ppm - 1_001_200).abs() <= 250,
+            "{alignment:?}"
         );
     }
 
@@ -3149,6 +3295,83 @@ mod tests {
             parse_ffmpeg_showinfo_pts_times(stderr),
             vec![2.0, 4.3, 10.3]
         );
+    }
+
+    #[test]
+    fn ffmpeg_rawvideo_parser_uses_showinfo_pts_for_full_profile_frames() {
+        let mut stdout = vec![32u8; VIDEO_FRAME_BYTES];
+        stdout.extend(std::iter::repeat_n(224u8, VIDEO_FRAME_BYTES));
+        let stderr = "\
+[Parsed_showinfo_1 @ 000001] n:   0 pts: 48000 pts_time:2.000 pos:0
+[Parsed_showinfo_1 @ 000001] n:   1 pts: 103200 pts_time:4.300 pos:0
+";
+
+        let frames = video_frames_from_ffmpeg_rawvideo(&stdout, stderr.as_bytes())
+            .expect("frames should decode");
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].timestamp_millis, 2_000);
+        assert_eq!(frames[1].timestamp_millis, 4_300);
+    }
+
+    #[test]
+    fn pre_cancelled_fast_video_extraction_returns_cancelled_not_partial() {
+        let cancel = AtomicBool::new(true);
+        let result = extract_fast_video_fingerprint(
+            "ffmpeg-not-used",
+            "media-not-used.mkv",
+            Some(120.0),
+            &MediaExtractionSettings::fast_anchor_v2(),
+            Some(&cancel),
+        );
+
+        assert!(matches!(
+            result,
+            Err(MediaFingerprintError::Cancelled { tool: "ffmpeg" })
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg in SOROTTE_MEDIA_MATCH_FFMPEG or PATH"]
+    fn fast_video_extraction_preserves_pts_near_intended_samples_on_synthetic_media() {
+        let ffmpeg = std::env::var_os("SOROTTE_MEDIA_MATCH_FFMPEG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+        let mut media_path = std::env::temp_dir();
+        media_path.push(format!("sorotte-fast-video-pts-{}.mkv", std::process::id()));
+        let status = Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=64x64:rate=1:duration=120",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&media_path)
+            .status()
+            .expect("ffmpeg should create synthetic media");
+        assert!(status.success(), "ffmpeg fixture generation failed");
+        let mut settings = MediaExtractionSettings::fast_anchor_v2();
+        settings.max_frames = 3;
+        let video = extract_video_fingerprint(&ffmpeg, &media_path, Some(120.0), &settings)
+            .expect("fast video fingerprint should extract");
+        let intended = fast_video_sample_timestamps(Some(120.0), settings.max_frames);
+        let _ = std::fs::remove_file(&media_path);
+
+        assert_eq!(video.frames.len(), intended.len());
+        for (frame, intended_second) in video.frames.iter().zip(intended) {
+            let actual_second = frame.timestamp_millis as f64 / 1000.0;
+            assert!(
+                (actual_second - intended_second).abs() <= 1.5,
+                "actual {actual_second:.3}s should be near intended {intended_second:.3}s"
+            );
+        }
     }
 
     #[test]
